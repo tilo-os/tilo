@@ -10,9 +10,13 @@ autoexamples = false
 
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
-ignored = ["pkg-config"]
+# wgpu-hal is referenced through vello's wgpu re-export; the direct optional
+# dependency enables the qOS presentation-feedback feature in the patched HAL.
+ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
+test-support = []
+presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
@@ -69,7 +73,9 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # `webview-adblock`). The `content-blocking` feature provides the
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
-adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
+adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
+# runtime-collab is the qOS collab broker Cap'n Proto SDK.
+# `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../../runtime/runtime-collab" }
 capnp.workspace = true
 capnp-rpc.workspace = true
@@ -89,6 +95,7 @@ cosmic-text = { version = "0.19.0", default-features = false, features = ["fontc
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.40.0"
 pollster.workspace = true
+rustc-hash.workspace = true
 
 # Match wgpu-hal's ash version so Vulkan handles can pass through
 # `create_texture_from_hal`.
@@ -117,6 +124,7 @@ icu_segmenter = "1.5"
 hypher = "0.1.7"
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 uuid.workspace = true
 png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
@@ -281,6 +289,14 @@ name = "ui-perf"
 path = "examples/ui_perf.rs"
 
 [[example]]
+name = "ui-managed-history-probe"
+path = "examples/managed_history_probe.rs"
+
+[[example]]
+name = "ui-native-input-probe"
+path = "examples/native_input_probe.rs"
+
+[[example]]
 name = "native-file-picker"
 path = "examples/native_file_picker.rs"
 required-features = ["portal"]
@@ -313,3 +329,10 @@ path = "examples/card_composition_shots.rs"
 [[example]]
 name = "form-composition-shots"
 path = "examples/form_composition_shots.rs"
+
+[[example]]
+name = "manual-composition-shots"
+path = "examples/manual_composition_shots.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }

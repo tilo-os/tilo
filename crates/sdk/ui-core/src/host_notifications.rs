@@ -351,7 +351,7 @@ mod tests {
     fn notification_hosts_can_be_recreated_on_successive_threads() {
         for _ in 0..4 {
             std::thread::spawn(|| {
-                let host = HostNotifications::new("dev.tilo.clocks").unwrap();
+                let host = HostNotifications::new("so.tilo.clocks").unwrap();
                 let xml = host.notification_xml("Timer", "Ready").unwrap();
                 assert!(xml.GetXml().unwrap().to_string().contains("Ready"));
             })
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn notification_activation_uri_is_preserved_without_xml_injection() {
         let uri = "tilo-clocks:open?one=1&two=2";
-        let host = HostNotifications::new("dev.tilo.clocks")
+        let host = HostNotifications::new("so.tilo.clocks")
             .unwrap()
             .with_protocol_activation(uri)
             .unwrap();
@@ -400,9 +400,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let shortcut = directory.path().join("Clocks test.lnk");
         for id in [
-            "dev.tilo.test.first",
-            "dev.tilo.test.second",
-            "dev.tilo.test.third",
+            "so.tilo.test.first",
+            "so.tilo.test.second",
+            "so.tilo.test.third",
         ] {
             register_shortcut(
                 id,

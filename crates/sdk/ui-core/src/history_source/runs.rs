@@ -43,7 +43,7 @@ pub const MAX_LABEL_LEN: usize = 200;
 /// Holds no content — only where the work is and which changes it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunStep {
-    /// Application that owns the document, e.g. `dev.tilo.word-processor`. The
+    /// Application that owns the document, e.g. `so.tilo.word-processor`. The
     /// same id the collaboration broker routes on, so a coordinator can find
     /// the peer to ask.
     pub app: String,

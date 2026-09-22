@@ -24,3 +24,9 @@ mod scroll;
 mod search_focus;
 #[path = "shots_smoke.rs"]
 mod shots_smoke;
+
+#[path = "composition_balance.rs"]
+mod composition_balance;
+
+#[path = "alignment_review.rs"]
+mod alignment_review;

@@ -28,7 +28,7 @@ pub fn os_open(url: &str) {
 }
 
 /// Hand a URL to the desktop's registered handler. On Windows this uses
-/// ShellExecute rather than interpreting the URL as a command line.
+/// `ShellExecute` rather than interpreting the URL as a command line.
 ///
 /// # Errors
 /// Returns a launch error when the OS rejects the request, or invalid input

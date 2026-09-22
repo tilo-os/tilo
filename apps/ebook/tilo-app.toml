@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.ebook"
+id       = "so.tilo.ebook"
 name     = "E-Book Reader"
 category = "Office"
 version  = "0.1.0"

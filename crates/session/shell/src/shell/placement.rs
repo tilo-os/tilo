@@ -79,6 +79,17 @@ impl StripViewport {
             .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
     }
 
+    /// The rightmost place on the screen where a new group can be
+    /// inserted. Unlike [`Self::visible_seam`], this includes the
+    /// trailing edge of the last window: when there is visible canvas
+    /// after it, that is the most natural place for a searched app.
+    pub fn rightmost_visible_seam(&self) -> Option<Seam> {
+        self.seams()
+            .into_iter()
+            .rev()
+            .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
+    }
+
     /// Falls back to the rightmost seam when every seam is behind the
     /// viewport — the end of the strip is still a seam.
     pub fn next_seam_rightwards(&self) -> Option<Seam> {
@@ -136,6 +147,43 @@ pub fn placement_for_new_window(
     Placement::NewGroup
 }
 
+/// Placement for an app explicitly chosen from search.
+///
+/// Search is spatially predictable rather than focus-relative: take the
+/// rightmost insertion point currently visible, or, when the screen is
+/// full, the first insertion point immediately to its right. This also
+/// means selecting a result never silently turns it into another tab just
+/// because the currently focused group happens to contain several tabs.
+pub fn placement_for_search_result(
+    tree: &WorkspaceTree,
+    viewport: Option<&StripViewport>,
+) -> Placement {
+    let Some(ws) = tree.active_workspace() else {
+        return Placement::NewGroup;
+    };
+    let Some(strip) = tree
+        .active_strip
+        .get(&ws.id)
+        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+        .or_else(|| ws.strips.first())
+    else {
+        return Placement::NewGroup;
+    };
+
+    if let Some(view) = viewport.filter(|v| v.strip == strip.id)
+        && let Some(seam) = view
+            .rightmost_visible_seam()
+            .or_else(|| view.next_seam_rightwards())
+    {
+        return Placement::RightOf(seam.after);
+    }
+
+    strip
+        .window_groups
+        .last()
+        .map_or(Placement::NewGroup, |group| Placement::RightOf(group.id))
+}
+
 /// A launch and the toplevel it eventually maps are two events on two
 /// processes; this leaves the decision as a note the adoption reads,
 /// applied once against the layout the user was looking at.
@@ -148,8 +196,8 @@ pub fn note_placement_for_launch(
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
 
-/// [`note_placement_for_launch`] for a launch whose window identities
-/// cannot be derived from its id — a `.qpkg`'s wayland app-id follows
+/// Search-result placement for a host launch whose window identities
+/// cannot be derived from its id — a `.tapp`'s Wayland app-id follows
 /// its package id by convention, but a host app's cannot, so the caller
 /// that read the `.desktop`/Flatpak id passes it in instead.
 pub fn note_placement_for_launch_identities(
@@ -158,7 +206,7 @@ pub fn note_placement_for_launch_identities(
     tree: &WorkspaceTree,
     viewport: Option<&StripViewport>,
 ) -> Placement {
-    let placement = placement_for_new_window(tree, viewport);
+    let placement = placement_for_search_result(tree, viewport);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
     placement
 }
@@ -175,7 +223,7 @@ pub fn note_placement_for_launch_targeted(
 ) {
     let placement = match target {
         OpenTarget::Here(group) if group_exists(tree, group) => Placement::TabIn(group),
-        _ => placement_for_new_window(tree, viewport),
+        _ => placement_for_search_result(tree, viewport),
     };
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
@@ -352,6 +400,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn search_uses_the_rightmost_visible_seam_despite_focus() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, ids[0]);
+        // Three insertion points are visible. Focus would normally turn a
+        // launch into a tab in group 0; search instead takes the furthest
+        // visible point, after group 2.
+        let view = viewport(strip_id, &ids, (0.0, 350.0));
+        assert_eq!(
+            placement_for_search_result(&tree, Some(&view)),
+            Placement::RightOf(ids[2]),
+        );
+    }
+
+    #[test]
+    fn search_uses_visible_space_after_the_last_window() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let ids = strip_of(&mut tree, &[1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        let view = viewport(strip_id, &ids, (0.0, 350.0));
+        assert_eq!(
+            placement_for_search_result(&tree, Some(&view)),
+            Placement::RightOf(ids[1]),
+            "the trailing seam is the rightmost available on-screen spot",
+        );
+    }
+
+    #[test]
+    fn search_falls_to_the_first_seam_right_of_a_full_viewport() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let ids = strip_of(&mut tree, &[1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        // The viewport is wholly inside group 0, so its trailing edge at
+        // 100 is the first available insertion point to the right.
+        let view = viewport(strip_id, &ids, (20.0, 90.0));
+        assert_eq!(
+            placement_for_search_result(&tree, Some(&view)),
+            Placement::RightOf(ids[0]),
+        );
+    }
+
     // End to end: the note a launch leaves, read back by the adoption
     // that splices the window in. `PENDING_PLACEMENT` is process-global,
     // so these are serialised against the launcher's own tests.
@@ -405,7 +499,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.seamfixture",
+            "so.tilo.seamfixture",
             "seamfixture",
             9101,
             Some(&view),
@@ -433,7 +527,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.nextseamfixture",
+            "so.tilo.nextseamfixture",
             "nextseamfixture",
             9102,
             Some(&view),
@@ -463,7 +557,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.besidefixture",
+            "so.tilo.besidefixture",
             "besidefixture",
             9103,
             Some(&view),
@@ -491,7 +585,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.tabbedfixture",
+            "so.tilo.tabbedfixture",
             "tabbedfixture",
             9104,
             Some(&view),
@@ -499,6 +593,56 @@ mod tests {
 
         assert_eq!(landed, ids[1], "the window joined the selected group");
         assert_eq!(order, ids, "and the strip did not grow a column to hold it");
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, ids[0]);
+        let view = viewport(strip_id, &ids, (0.0, 350.0));
+
+        note_placement_for_launch_targeted(
+            "dev.tilo.searchfixture",
+            &tree,
+            Some(&view),
+            OpenTarget::Beside,
+        );
+        // Mapping is asynchronous. A later focus change must not move the
+        // result away from the target captured when Enter was pressed.
+        tree.set_active_group(strip_id, ids[3]);
+        crate::shell::tab_binding::adopt_toplevel(
+            &mut tree,
+            9_105,
+            Some("searchfixture".to_string()),
+        );
+
+        let groups = &tree.workspaces[0].strips[0].window_groups;
+        let landed = groups
+            .iter()
+            .find(|group| {
+                group.tabs.iter().any(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign {
+                            surface_id: 9_105,
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("searched app maps into a group")
+            .id;
+        assert_eq!(
+            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            vec![ids[0], ids[1], ids[2], landed, ids[3]],
+            "the mapped app must retain the rightmost on-screen target captured by search",
+        );
         crate::shell::launcher::clear_pending_placements();
     }
 

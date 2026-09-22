@@ -64,7 +64,7 @@ SHELL = os.path.join(REPO, "target", "debug", "shell")
 # One app, one document, announced identically by both sessions. These are
 # what the broker routes on; two clients that disagree on any of the three
 # are two different conversations.
-APP_ID = "dev.tilo.word-processor"
+APP_ID = "so.tilo.word-processor"
 RECORD = "file:/work/shared.odt"
 
 failures: list[str] = []

@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn encode_then_decode_round_trips() {
-        let payload = "https://tilo.example/welcome";
+        let payload = "https://example.test/welcome";
         let m = encode(payload).expect("encode");
         let (buf, dim) = rasterize(&m, 6, 4);
         let decoded = decode_greyscale(&buf, dim, dim);

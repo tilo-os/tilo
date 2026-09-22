@@ -5,7 +5,7 @@
   "inventory_receipt": "os/output/install-prep/native8544-public-evidence/reconstruction-reconstructed-native.json",
   "tools": [
     {
-      "name": "tilo-pkg",
+      "name": "tilo-app-package",
       "checkpoint_digest": "sha256:0d474c3568ac76c984c85472e924d47007f99cd6aecbf5a0a5656b2f1f4bb750",
       "layer_digest": "sha256:5da91959b37ef85ec745f7c0e0e8febac8626cbbd23fc280a5213e5e37881292",
       "compressed_bytes": 146266834,

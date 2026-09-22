@@ -1,6 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
-use super::App;
+use super::{App, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
@@ -11,13 +11,8 @@ use crate::widget::Widget;
 mod native_quit_request;
 
 impl App {
+    #[cfg(test)]
     pub(super) fn admit_native_close_request(&mut self) -> bool {
-        // Native hosts may deliver another window-close or application Quit
-        // while a decision is already visible. Coalesce it at the native
-        // boundary so explicit API retries can still re-check repaired owners.
-        if self.close_admission.dialog.is_some() {
-            return false;
-        }
         self.request_close() && self.finish_close_if_ready()
     }
 
@@ -32,6 +27,12 @@ impl App {
     pub fn request_close(&mut self) -> bool {
         if self.close_admission.admitted {
             return true;
+        }
+        // Native hosts may deliver another window-close or application Quit
+        // while a decision is already visible. Coalesce it here so it cannot
+        // replace the session, semantic addresses, focus, or failure detail.
+        if self.close_admission.dialog.is_some() {
+            return false;
         }
         self.close_admission.ready = false;
         if self.close_admission.save_waiting {
@@ -48,7 +49,7 @@ impl App {
                 "close-title",
                 "close-unsaved",
                 &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-                self.platform,
+                self.input.platform,
             );
             self.invalidate_close_presentation();
             return false;
@@ -59,7 +60,7 @@ impl App {
                 "close-save-failed",
                 &errors.join("\n"),
                 &[Choice::Retry, Choice::KeepEditing],
-                self.platform,
+                self.input.platform,
             );
             self.invalidate_close_presentation();
             return false;
@@ -98,17 +99,20 @@ impl App {
             {
                 errors.push(error);
             }
-        } else if let Some(records) = self.records.as_mut() {
+        } else if let Some(records) = self.persistence.records.as_mut() {
             if let Err(error) = records.try_flush(&mut self.state.doc) {
                 errors.push(error);
             }
-            if let (Some(saver), Some(index)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+            if let (Some(saver), Some(index)) = (
+                self.persistence.autosave.as_mut(),
+                self.persistence.room_index.as_mut(),
+            ) {
                 saver.request_checkpoint(index.document_mut());
                 if let Err(error) = saver.try_flush() {
                     errors.push(error);
                 }
             }
-        } else if let Some(saver) = self.autosave.as_mut() {
+        } else if let Some(saver) = self.persistence.autosave.as_mut() {
             saver.request_checkpoint(&mut self.state.doc);
             if let Err(error) = saver.try_flush() {
                 errors.push(error);
@@ -179,26 +183,17 @@ impl App {
             "close-title",
             "close-saving",
             &[Choice::KeepEditing],
-            self.platform,
+            self.input.platform,
         );
         self.invalidate_close_presentation();
         let before: std::collections::HashSet<_> =
             self.actions.local_invocations.keys().copied().collect();
         let broker_request = self.actions.next_broker_request_id;
-        let connected = self.collab_manager.is_connected();
-        let actor = self.local_author.0.clone();
+        let connected = self.collaboration.manager.is_connected();
+        let actor = self.collaboration.local_author.0.clone();
         // Do not supply an invocation or claim broker admission. This is the
         // ordinary local canonical action door, including permissions/effects.
-        let result = self.invoke_resource_action(
-            &document.save,
-            None,
-            &actor,
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));
         match result {
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {
                 self.close_admission.save_result = Some(Ok(()));
@@ -290,7 +285,7 @@ impl App {
         }
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_request.is_some()
-            && !self.collab_manager.is_connected()
+            && !self.collaboration.manager.is_connected()
         {
             self.close_admission.save_result = Some(Err(crate::i18n::I18nManager::lookup_plain(
                 "close-broker-disconnected",
@@ -311,7 +306,7 @@ impl App {
                         "close-save-failed",
                         &message,
                         &[Choice::Retry, Choice::KeepEditing],
-                        self.platform,
+                        self.input.platform,
                     );
                     self.invalidate_close_presentation();
                 }
@@ -322,7 +317,7 @@ impl App {
             && self.close_admission.save_broker_request.is_none()
             && std::time::Instant::now() >= self.close_admission.save_poll_at
         {
-            if !self.collab_manager.is_connected() {
+            if !self.collaboration.manager.is_connected() {
                 self.close_admission.save_result = Some(Err("save broker disconnected".into()));
                 return;
             }
@@ -331,7 +326,7 @@ impl App {
                 self.close_admission.save_broker_id,
             ) {
                 self.close_admission.save_broker_request = Some(request_id);
-                self.collab_manager.send(
+                self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::PublishedInvocationStatus {
                         request_id,
                         id,
@@ -353,42 +348,43 @@ impl App {
             self.rebuild_structure();
         }
         if let winit::event::WindowEvent::ModifiersChanged(modifiers) = event {
-            self.modifiers = *modifiers;
+            self.input.modifiers = *modifiers;
         }
         let mut handled = self.handle_screen_reader_key(event);
-        if !handled && let winit::event::WindowEvent::KeyboardInput { event, .. } = event {
-            if event.state == winit::event::ElementState::Pressed {
-                use winit::keyboard::{Key, NamedKey};
-                match &event.logical_key {
-                    Key::Named(NamedKey::Tab) => {
-                        self.focus_tab(self.modifiers.state().shift_key());
-                        handled = true;
-                    }
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        if let Some(node) = self.focused_node {
-                            let _ = self.dispatch_node(node, |widget, doc, path| {
-                                widget.perform_action(&crate::a11y::Action::Activate, doc, path)
-                            });
-                            handled = true;
-                        }
-                    }
-                    Key::Named(
-                        key @ (NamedKey::ArrowUp
-                        | NamedKey::ArrowDown
-                        | NamedKey::ArrowLeft
-                        | NamedKey::ArrowRight),
-                    ) => {
-                        let direction = match key {
-                            NamedKey::ArrowUp => super::Direction::Up,
-                            NamedKey::ArrowDown => super::Direction::Down,
-                            NamedKey::ArrowLeft => super::Direction::Left,
-                            _ => super::Direction::Right,
-                        };
-                        self.navigate_focus(direction);
-                        handled = true;
-                    }
-                    _ => {}
+        if !handled
+            && let winit::event::WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+        {
+            use winit::keyboard::{Key, NamedKey};
+            match &event.logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    self.focus_tab(self.input.modifiers.state().shift_key());
+                    handled = true;
                 }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                    if let Some(node) = self.focused_node {
+                        let _ = self.dispatch_node(node, |widget, doc, path| {
+                            widget.perform_action(&crate::a11y::Action::Activate, doc, path)
+                        });
+                        handled = true;
+                    }
+                }
+                Key::Named(
+                    key @ (NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight),
+                ) => {
+                    let direction = match key {
+                        NamedKey::ArrowUp => super::Direction::Up,
+                        NamedKey::ArrowDown => super::Direction::Down,
+                        NamedKey::ArrowLeft => super::Direction::Left,
+                        _ => super::Direction::Right,
+                    };
+                    self.navigate_focus(direction);
+                    handled = true;
+                }
+                _ => {}
             }
         }
         if !handled
@@ -399,7 +395,7 @@ impl App {
             dialog.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 &mut handled,
@@ -585,7 +581,7 @@ mod tests {
                 "fixture root owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
-        assert!(!app.admit_native_close_request());
+        assert!(!app.request_close());
         assert!(!app.close_admission.admitted);
         assert!(app.close_admission.dialog.is_some());
         let resource = app.close_admission.resources()[0].id.clone();
@@ -597,7 +593,7 @@ mod tests {
             .unwrap();
         fail.set(false);
         assert!(
-            !app.admit_native_close_request(),
+            !app.request_close(),
             "a duplicate native close cannot replace the failure decision"
         );
         assert_eq!(
@@ -678,7 +674,7 @@ mod tests {
             "close-title",
             "close-unsaved",
             &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-            app.platform,
+            app.input.platform,
         );
         let resources = app.close_admission.resources();
         let action = resources[0]
@@ -908,7 +904,7 @@ mod tests {
             "close-title",
             "close-unsaved",
             &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-            app.platform,
+            app.input.platform,
         );
         app.init_layout();
         let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;

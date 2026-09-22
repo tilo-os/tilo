@@ -5,18 +5,16 @@
 //! the small [`Action`] values emitted here to the current view and anchor.
 
 use chrono::{Datelike, NaiveDate};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
-use ui::icons::{Icon, draw_icon};
-#[cfg(test)]
-use ui::{text_render::TextRenderer, theme::Theme};
-#[cfg(test)]
-use vello::Scene;
-
 use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
-use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_rect, fill_round, selected_row};
 use crate::{date, model::View};
+use ui::surface::card;
 
 pub(crate) const HEIGHT: f64 = 60.0;
 const LARGE_TEXT_HEIGHT: f64 = 76.0;
@@ -109,9 +107,16 @@ impl Topbar {
         self.view_rect
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The calendar bar combines render context with the current view, anchor date, and pointer for action hit regions."
+    )]
     pub(crate) fn draw(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         view: View,
         anchor: NaiveDate,
         pointer: Point,
@@ -121,36 +126,43 @@ impl Topbar {
             return &self.hits;
         }
 
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let colors = &paint.theme.tokens.colors;
+        let colors = &theme.tokens.colors;
         fill_rect(scene, transform, colors.surfaces.base, self.rect);
-        stroke_line(
-            scene,
+        // Bar role: one chrome hairline under the app bar (HIG §9.5).
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
-            Point::new(self.rect.x0, self.rect.y1),
-            Point::new(self.rect.x1, self.rect.y1),
-            1.0,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1),
         );
 
         let center_y = self.rect.center().y;
-        let title_x = self.draw_navigation(paint, pointer, center_y);
-        let title_right = self.draw_actions(paint, view, pointer, center_y);
-        self.draw_title(paint, view, anchor, center_y, title_x, title_right);
+        let title_x = self.draw_navigation(scene, transform, text, theme, pointer, center_y);
+        let title_right = self.draw_actions(scene, transform, text, theme, view, pointer, center_y);
+        self.draw_title(
+            scene,
+            transform,
+            text,
+            theme,
+            view,
+            anchor,
+            center_y,
+            title_x,
+            title_right,
+        );
         &self.hits
     }
 
     fn draw_navigation(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         pointer: Point,
         center_y: f64,
     ) -> f64 {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let mut left = self.rect.x0 + 16.0;
         match self.leading {
@@ -197,18 +209,10 @@ impl Topbar {
         );
         draw_icon_button(scene, transform, theme, today, today.contains(pointer));
         if self.compact() {
-            // A real calendar glyph keeps the high-text-scale variant
-            // recognisable without spending the horizontal space required by
-            // the word "Today". The semantic tree names the same target "Go
-            // to today", so the visual and assistive affordances agree.
-            draw_icon(
-                scene,
-                transform,
-                today.inflate(-10.0, -10.0),
-                Icon::Calendar,
-                colors.neutral[8],
-                1.5,
-            );
+            // The named, keyboard-focusable semantic control remains the
+            // tooltip/accessibility affordance; the visual becomes a compact
+            // target so 2x text never collides with the period title.
+            center_text(scene, text, "•", 18.0, colors.neutral[8], today, transform);
         } else {
             center_text(
                 scene,
@@ -224,31 +228,38 @@ impl Topbar {
         today.x1 + 14.0
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "View and new-event controls share render context, current view, pointer position, and the measured bar center."
+    )]
     fn draw_actions(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         view: View,
         pointer: Point,
         center_y: f64,
     ) -> f64 {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
+        // Trailing inset mirrors the leading one in `draw_navigation` so the
+        // bar's contents sit symmetrically inside the content column.
         let segmented_x0 = if self.switcher_visible {
-            let x1 = self.rect.x1 - 14.0;
+            let x1 = self.rect.x1 - 16.0;
             let x0 = x1 - SEGMENTED_WIDTH;
             let segmented = Rect::new(x0, center_y - 16.0, x1, center_y + 16.0);
-            fill_round(scene, transform, colors.surfaces.raised, segmented, 9.0);
-            stroke_round(
+            let track_radius = f64::from(theme.tokens.radii.lg);
+            // Segmented track (HIG §9.5): raised tier with its derived edge;
+            // the chosen view is the selection lift, never an accent fill.
+            card(
                 scene,
                 transform,
-                colors.border_standard,
                 segmented,
-                9.0,
-                1.0,
+                track_radius,
+                colors.surfaces.raised,
             );
+            let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
             for (index, candidate) in View::ALL.iter().enumerate() {
                 let cell = Rect::new(
                     x0 + SEGMENT_WIDTH * index as f64,
@@ -256,30 +267,23 @@ impl Topbar {
                     x0 + SEGMENT_WIDTH * (index as f64 + 1.0),
                     segmented.y1,
                 );
-                if view == *candidate {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.accent[5],
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                } else if cell.contains(pointer) {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.lift(0.35),
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                }
+                selected_row(
+                    scene,
+                    transform,
+                    theme,
+                    colors.surfaces.raised,
+                    cell.inflate(-seg_inset, -seg_inset),
+                    track_radius - seg_inset,
+                    view == *candidate,
+                    cell.contains(pointer),
+                );
                 center_text(
                     scene,
                     text,
                     candidate.label(),
                     13.0,
                     if view == *candidate {
-                        colors.on_accent(4.5)
+                        colors.text_primary
                     } else {
                         colors.neutral[7]
                     },
@@ -290,7 +294,7 @@ impl Topbar {
             }
             x0
         } else {
-            self.rect.x1 - 14.0
+            self.rect.x1 - 16.0
         };
 
         let new_width = if self.compact() {
@@ -328,28 +332,27 @@ impl Topbar {
         new_event.x0 - 12.0
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Period title fitting needs render context, view and anchor date, vertical alignment, and the available title span."
+    )]
     fn draw_title(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         view: View,
         anchor: NaiveDate,
         center_y: f64,
         title_x: f64,
         title_right: f64,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let available = (title_right - title_x).max(0.0);
-        // At 200% text a compact bar still needs to retain *which month* is
-        // being shown. A modestly smaller base size leaves room for “Sep
-        // 2026” instead of falling all the way back to an ambiguous year.
-        let font_size = if self.compact() { 14.0 } else { 19.0 };
         let variants = period_title_variants(view, anchor);
         let title = variants
             .iter()
-            .find(|variant| f64::from(text.measure(variant, font_size, None).0) <= available)
+            .find(|variant| f64::from(text.measure(variant, 19.0, None).0) <= available)
             .or_else(|| variants.last());
         let Some(title) = title else {
             return;
@@ -365,7 +368,7 @@ impl Topbar {
         text.draw_text(
             scene,
             title,
-            font_size,
+            19.0,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((title_x, center_y - 11.0)),
             None,
@@ -390,7 +393,9 @@ fn switcher_fits(content_width: f64, leading: LeadingControl, text_scale: f32) -
         38.0
     };
     let title_x = 16.0 + leading_width + 74.0 + 60.0 + 14.0;
-    let segmented_x0 = content_width - 14.0 - SEGMENTED_WIDTH;
+    // Same trailing inset `draw_actions` paints, so the fit rule and the
+    // painted switcher never disagree about where the segments start.
+    let segmented_x0 = content_width - 16.0 - SEGMENTED_WIDTH;
     let new_event_x0 = segmented_x0 - NEW_BUTTON_WIDTH - 10.0;
     let title_right = new_event_x0 - 12.0;
     title_right - title_x >= MINIMUM_TITLE_WIDTH
@@ -474,12 +479,10 @@ mod tests {
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
         let hits = bar.draw(
-            &mut PaintContext {
-                scene: &mut scene,
-                transform: Affine::IDENTITY,
-                text: &mut text,
-                theme: &theme,
-            },
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
             View::Month,
             anchor,
             Point::ZERO,
@@ -507,15 +510,12 @@ mod tests {
         );
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        let theme = Theme::dark();
         let actions: Vec<_> = bar
             .draw(
-                &mut PaintContext {
-                    scene: &mut scene,
-                    transform: Affine::IDENTITY,
-                    text: &mut text,
-                    theme: &theme,
-                },
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
                 View::Month,
                 NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
                 Point::ZERO,
@@ -555,12 +555,10 @@ mod tests {
         text.set_text_scale(2.0);
         let theme = Theme::dark().with_text_scale(2.0);
         let hits = bar.draw(
-            &mut PaintContext {
-                scene: &mut scene,
-                transform: Affine::IDENTITY,
-                text: &mut text,
-                theme: &theme,
-            },
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
             View::Month,
             NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
             Point::ZERO,

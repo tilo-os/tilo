@@ -375,17 +375,14 @@ fn keyboard_slider_arrows_route_through_the_host() {
         .with_quick_settings_config(QuickSettingsConfig::default());
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // None → Edit → four labeled destinations → Brightness. The full set of
-    // destinations must remain keyboard-reachable before the live controls.
-    for _ in 0..6 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
+    // Controls come first: the first Tab reaches brightness immediately.
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
     assert!(press_key(
         &mut host,
         &taffy,
@@ -418,6 +415,15 @@ fn keyboard_slider_arrows_route_through_the_host() {
         calls.iter().any(|call| call.starts_with("set_volume(")),
         "Left Arrow on the focused volume slider did not reach QsActions: {calls:?}"
     );
+    let osd = chrome
+        .borrow()
+        .osd
+        .expect("a successful slider interaction raises the shared HUD");
+    assert!(matches!(
+        osd.kind,
+        shell::shell::osd::OsdKind::Volume { muted: false }
+    ));
+    assert_eq!(osd.caption(), "Volume 35%");
 }
 
 /// Enter, Space and reverse-Tab all use the same root actions exposed to
@@ -425,28 +431,23 @@ fn keyboard_slider_arrows_route_through_the_host() {
 /// overlay ordering and modifier state have historically swallowed keys.
 #[test]
 fn keyboard_actions_and_reverse_tab_route_through_the_host() {
-    // The first Tab selects Edit; the second selects Personal Settings.
-    // Enter dismisses the popover. The launcher itself is covered by the
+    // Sliders, live controls, power profile, and Customize precede Settings.
+    // Enter on Settings dismisses the popover. The launcher itself is covered by the
     // serial `quick_settings_settings_action_launches_personal_settings_app`
     // test; this route test also guards against reopening the unrelated
     // workspace-sharing settings surface.
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::empty(),
-    ));
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::empty(),
-    ));
+    for _ in 0..8 {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+    }
     assert!(press_key(
         &mut host,
         &taffy,
@@ -460,11 +461,11 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
         "Personal Settings must not be conflated with workspace sharing settings"
     );
 
-    // A fresh host: Space on History opens its in-panel activity route.
+    // A fresh host: Space on Customize enters edit mode without dismissing.
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..4 {
+    for _ in 0..7 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -480,12 +481,11 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
         Key::Named(NamedKey::Space),
         ModifiersState::empty(),
     ));
-    assert!(matches!(
-        chrome.borrow().quick_settings.current_level(),
-        shell::shell::quick_settings::QsLevel::Notifications
-    ));
+    assert!(chrome.borrow().overlays.quick_settings);
 
-    // Shift+Tab from no focus wraps to the final power-profile control.
+    // Shift+Tab from no focus wraps to the final visible utility: Power.
+    // Activating it dismisses Quick Settings and must not accidentally cycle
+    // the power-profile row immediately above the utility rail.
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
@@ -506,12 +506,16 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
         ModifiersState::empty(),
     ));
     assert!(
-        recorder
+        !chrome.borrow().overlays.quick_settings,
+        "Shift+Tab did not wrap to the final Power utility"
+    );
+    assert!(
+        !recorder
             .0
             .calls()
             .iter()
             .any(|call| call.starts_with("set_power_profile(")),
-        "Shift+Tab did not wrap to the power-profile control"
+        "the Power utility must not be conflated with Power profile"
     );
 }
 
@@ -531,16 +535,19 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
     });
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // Tab chooses Edit; Space enters it with the first editable row focused.
-    // Two further Tabs select Bluetooth. Move it below Night Light with
-    // Ctrl+Down.
-    assert!(press_key(
-        &mut host,
-        &taffy,
-        host_node,
-        Key::Named(NamedKey::Tab),
-        ModifiersState::empty(),
-    ));
+    // The control-first root puts Customize after two sliders, three live
+    // controls, and Power profile. Space enters edit mode with no hidden
+    // selection. Two Tabs then select Bluetooth. Move it below Night Light
+    // with Ctrl+Down.
+    for _ in 0..7 {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+    }
     assert!(press_key(
         &mut host,
         &taffy,
@@ -729,14 +736,15 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
-    // The drill-in header and hotspot affordance reserve 116 px; rows are
-    // 56 px, so +28 into a row lands mid-row.
-    let row_y =
-        |i: usize| rect.y0 + 116.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
+    // Read the discovery list's rhythm from the host rather than restating
+    // it: the click lands mid-row wherever the header, hotspot affordance
+    // and row pitch put each row.
+    let secured_row_y = host.quick_settings_wifi_row_rect_for_tests(0).center().y;
+    let connected_row_y = host.quick_settings_wifi_row_rect_for_tests(1).center().y;
 
     // Row 0 — secured, not joined: must prompt for a passphrase rather than
     // firing a connect that would fail silently.
-    click_at(&mut host, &taffy, host_node, click_x, row_y(0));
+    click_at(&mut host, &taffy, host_node, click_x, secured_row_y);
     {
         let st = chrome.borrow();
         let prompt = st
@@ -755,14 +763,14 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
         recorder.0.calls()
     );
 
-    // Row 1 is already connected, so the click connects directly with no
-    // passphrase needed.
+    // Row 1 is already connected, so it is truthful status rather than a
+    // second join action.
     {
         let mut st = chrome.borrow_mut();
         st.quick_settings.wifi_password = None;
         st.bump();
     }
-    click_at(&mut host, &taffy, host_node, click_x, row_y(1));
+    click_at(&mut host, &taffy, host_node, click_x, connected_row_y);
     let calls = recorder.0.calls();
     assert!(
         calls.is_empty(),
@@ -770,8 +778,8 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
     );
     assert_eq!(
         chrome.borrow().quick_settings.wifi_joining.as_deref(),
-        Some(scanned[1].ssid.as_str()),
-        "an open or already-known network must enter the asynchronous join lifecycle"
+        None,
+        "an already-connected network must not enter another join lifecycle"
     );
 }
 

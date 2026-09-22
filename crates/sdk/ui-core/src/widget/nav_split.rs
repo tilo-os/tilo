@@ -28,12 +28,15 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{Element, Widget};
+use crate::widget::{AuthoredExtent, Element, Widget};
 
 /// Default sidebar width (logical px) when docked or fully revealed.
+/// Predates `Metrics::sidebar_width` (280); `api_tester` and `slides` build
+/// their own breakpoints on this pair, so it is recorded, not moved.
 pub const DEFAULT_SIDEBAR_WIDTH: f64 = 300.0;
 /// Default width breakpoint (logical px). At or above this the sidebar is
-/// docked; below it the sidebar becomes an overlay flap.
+/// docked; below it the sidebar becomes an overlay flap. 180 px over
+/// `Metrics::compact_breakpoint` (720).
 pub const DEFAULT_BREAKPOINT: f64 = 900.0;
 /// Exponential approach rate for the reveal animation — `~0.2s` Adwaita-like
 /// slide.
@@ -227,6 +230,13 @@ pub struct NavSplit {
     sidebar: Element,
     content: Element,
     mode: SplitMode,
+    /// The breakpoint and sidebar width as the app authored them, at 1×
+    /// (HIG §9.6).
+    authored_breakpoint: AuthoredExtent,
+    authored_sidebar_width: AuthoredExtent,
+    /// The authored inputs resolved against the theme the outer tree was
+    /// last built with ([`AuthoredExtent::resolve`]). Equal to the authored
+    /// values until the first `build_layout`, and on a stock theme.
     breakpoint: f64,
     sidebar_width: f64,
     flap: FlapState,
@@ -247,26 +257,32 @@ pub struct NavSplit {
     inner_taffy: Option<TaffyTree<()>>,
     sidebar_node: Option<NodeId>,
     content_node: Option<NodeId>,
-    /// The `(sidebar_rect, content_rect)` the inner tree was last *solved* at.
-    /// A full re-solve (`place_children` — rebuild + `compute_layout` + text
-    /// re-measure) is only needed when the pane geometry actually changes
+    /// The `(width, height)` of each pane the inner tree was last *solved*
+    /// at. A full re-solve (`place_children` — rebuild + `compute_layout` +
+    /// text re-measure) is only needed when the pane extents actually change
     /// (first layout, resize, flap slide). A pure **scroll inside the content
-    /// pane** repositions but doesn't resize, so `apply_layout` re-applies the
-    /// children on the cached tree instead, letting the inner `Scrollable`
-    /// push its new offset down with no rebuild and no re-measure.
-    solved_rects: Option<(Rect, Rect)>,
-    /// Effective theme captured by the outer layout pass. `NavSplit` lays its
-    /// children out in a private Taffy tree from `apply_layout`, where the
-    /// `Widget` API no longer carries a theme; retaining it keeps inner text
-    /// measurement faithful to large-text and UI-scale preferences.
+    /// pane** — or a move of the whole split — repositions but doesn't
+    /// resize, so `apply_layout` re-applies the children on the cached tree
+    /// instead, letting the inner `Scrollable` push its new offset down with
+    /// no rebuild and no re-measure.
+    solved_extents: Option<[(f64, f64); 2]>,
+    /// The theme the outer tree was last built with. The panes are built
+    /// against it — never a throwaway `Theme::dark()` — so a `Text` under
+    /// the split measures at the host's text scale, not at 1×.
     layout_theme: Theme,
+    /// Set by `adjust_layout_with_measure` once the host solver has solved
+    /// the panes for this pass, consumed by the `apply_layout` that follows:
+    /// a freshly measured child still reports `layout_needs_measure()` until
+    /// it is drawn, and without this the apply would re-solve the very same
+    /// geometry with a throwaway renderer.
+    host_solved: bool,
     /// `true` while the reveal/push animation is settling — read by
     /// `needs_animation_frame`.
     animating: bool,
     /// Whether the user toggled this frame (so the host re-syncs).
     dirty: bool,
     /// Wall-clock anchor of the last `draw`, so the slide self-ticks off a
-    /// `dt` from inside the draw path — `ui::App` never calls
+    /// `dt` from inside the draw path — `tilo_ui::App` never calls
     /// `Widget::update()`, so the flap must advance here. `None` until the
     /// first draw, which therefore advances by `0` and never jumps.
     last_tick: Option<Instant>,
@@ -280,6 +296,8 @@ impl NavSplit {
             sidebar,
             content,
             mode: SplitMode::Adaptive,
+            authored_breakpoint: AuthoredExtent::text(DEFAULT_BREAKPOINT),
+            authored_sidebar_width: AuthoredExtent::text(DEFAULT_SIDEBAR_WIDTH),
             breakpoint: DEFAULT_BREAKPOINT,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             flap: FlapState::open_when_docked(),
@@ -293,26 +311,65 @@ impl NavSplit {
             inner_taffy: None,
             sidebar_node: None,
             content_node: None,
-            solved_rects: None,
+            solved_extents: None,
             layout_theme: Theme::dark(),
+            host_solved: false,
             animating: false,
             dirty: false,
             last_tick: None,
         }
     }
 
-    /// Override the width breakpoint (logical px).
+    /// Override the width breakpoint, in logical px **authored at 1×**. The
+    /// split multiplies it by [`Theme::responsive_scale`] when the tree is
+    /// built, so at 200 % text the panes stop fitting side by side at twice
+    /// the window width — the app never restates that rule.
     #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
+        self.authored_breakpoint = AuthoredExtent::text(px);
         self.breakpoint = px;
         self
     }
 
-    /// Override the docked / fully-revealed sidebar width (logical px).
+    /// Override the docked / fully-revealed sidebar width, in logical px
+    /// authored at 1× for a **text-sized** sidebar (a destination list);
+    /// scaled like [`Self::with_breakpoint`].
     #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_sidebar_width = AuthoredExtent::text(px);
         self.sidebar_width = px;
         self
+    }
+
+    /// Override the sidebar width for an **icon rail** — a column of glyphs
+    /// that is not sized by the text scale. Follows `ui_scale` only.
+    #[must_use]
+    pub fn with_icon_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_sidebar_width = AuthoredExtent::icon(px);
+        self.sidebar_width = px;
+        self
+    }
+
+    /// The breakpoint the split currently resolves against — the authored
+    /// value scaled by the theme it was last built with. Compare a window
+    /// width against this, not against the constant handed to
+    /// [`Self::with_breakpoint`], so an app's own narrow/wide decisions agree
+    /// with the shell's at every text scale.
+    pub fn breakpoint(&self) -> f64 {
+        self.breakpoint
+    }
+
+    /// The docked sidebar width the split currently lays out, resolved like
+    /// [`Self::breakpoint`].
+    pub fn sidebar_width(&self) -> f64 {
+        self.sidebar_width
+    }
+
+    /// Resolve the authored inputs against `theme` (HIG §9.6,
+    /// [`AuthoredExtent::resolve`]). Identity on a stock theme.
+    fn resolve_inputs(&mut self, theme: &Theme) {
+        self.breakpoint = self.authored_breakpoint.resolve(theme);
+        self.sidebar_width = self.authored_sidebar_width.resolve(theme);
     }
 
     /// Choose the structural mode (Adaptive / `AlwaysDocked` / Push).
@@ -510,7 +567,48 @@ impl NavSplit {
         self.inner_taffy = Some(taffy);
         self.sidebar_node = Some(s_node);
         self.content_node = Some(c_node);
-        self.solved_rects = Some((self.sidebar_rect, self.content_rect));
+        self.solved_extents = Some(self.pane_extents());
+    }
+
+    /// `(width, height)` of the sidebar and content panes — what the inner
+    /// solve depends on. Origins are not part of it: a move re-applies.
+    fn pane_extents(&self) -> [(f64, f64); 2] {
+        [self.sidebar_rect, self.content_rect].map(|r| (r.width(), r.height()))
+    }
+
+    /// Whether the panes need a full solve (rebuild + `compute_layout` +
+    /// text measure) rather than a re-apply of the cached tree: no tree yet,
+    /// the pane extents moved, or a child that is actually laid out asks to
+    /// be re-measured. A pane with no extent cannot be solved, so a child
+    /// parked in a collapsed pane never forces a solve every frame.
+    fn needs_resolve(&self) -> bool {
+        if self.inner_taffy.is_none() || split_cache_disabled() {
+            return true;
+        }
+        let extents = self.pane_extents();
+        if self.solved_extents != Some(extents) {
+            return true;
+        }
+        let laid_out = |(w, h): (f64, f64)| w > 0.0 && h > 0.0;
+        (laid_out(extents[0]) && self.sidebar.layout_needs_measure())
+            || (laid_out(extents[1]) && self.content.layout_needs_measure())
+    }
+
+    /// Whether the cached inner tree was solved at the current pane extents.
+    fn cached_extents_match(&self) -> bool {
+        self.inner_taffy.is_some() && self.solved_extents == Some(self.pane_extents())
+    }
+
+    /// Solve the panes with the theme the outer tree was built with and a
+    /// renderer at its text scale. This is the path for hosts that solve the
+    /// outer tree with plain taffy and call `apply_layout` directly; the
+    /// shared host solver reaches [`Widget::adjust_layout_with_measure`]
+    /// first and solves with its own renderer, so it never lands here.
+    fn resolve_children_fallback(&mut self) {
+        let theme = self.layout_theme.clone();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        self.place_children(&theme, &mut tr);
     }
 
     /// Re-apply the children onto the **cached** inner tree at the current
@@ -528,10 +626,7 @@ impl NavSplit {
         ) else {
             // Shouldn't happen on a reposition, but be safe: fall back to a
             // full solve, paying for the `TextRenderer` only here.
-            let theme = self.layout_theme.clone();
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(theme.text_scale);
-            self.place_children(&theme, &mut tr);
+            self.resolve_children_fallback();
             return;
         };
         let s_origin = Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0);
@@ -543,7 +638,7 @@ impl NavSplit {
 
     /// Advance the reveal + push animations off a wall-clock delta,
     /// recomputing the child rects when something moved. Driven from `draw`
-    /// (NOT `update`, which `ui::App` never calls) so the slide
+    /// (NOT `update`, which `tilo_ui::App` never calls) so the slide
     /// plays. The first draw sees `dt == 0` (no prior `Instant`), so the
     /// flap never teleports; later deltas are clamped to [`MAX_FRAME_DT`] so
     /// a parked event loop can't skip the slide.
@@ -601,7 +696,13 @@ impl Widget for NavSplit {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The panes are built against this same theme (text scale, tokens),
+        // and the authored breakpoint / width resolve against it once.
         self.layout_theme = theme.clone();
+        self.resolve_inputs(theme);
+        // A rebuilt outer tree carries new typography or child structure;
+        // the cached inner tree is stale either way.
+        self.inner_taffy = None;
         // The split occupies its whole allocation; children are laid out in
         // an isolated inner tree (their rects escape normal flow in overlay
         // mode). Same approach as ModalDialog / PopoverWidget.
@@ -616,6 +717,42 @@ impl Widget for NavSplit {
         node
     }
 
+    /// Solve the panes with the **host's** renderer while the host solver
+    /// still has it in hand. The allocation is known here (only the origin
+    /// is not, and the inner solve depends on extents alone), so the panes
+    /// are measured with the same fonts and text scale as everything else
+    /// on screen; `apply_layout` then only re-applies the cached tree at the
+    /// final origin. The host tree is not touched — the split's own
+    /// isolated child tree is what `apply_layout` would otherwise build
+    /// with a throwaway renderer — and no style changes, so this returns
+    /// `false` and never extends the settle loop.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let Ok(l) = taffy.layout(node) else {
+            return false;
+        };
+        self.rect = Rect::from_origin_size(
+            (self.rect.x0, self.rect.y0),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+        self.flap.reconcile(self.layout_mode());
+        self.recompute_rects();
+        // The settle loop calls this up to eight times a pass; once the
+        // panes are solved at these extents the later iterations are no-ops
+        // even though the just-measured children still read as dirty.
+        let already_solved_this_pass = self.host_solved && self.cached_extents_match();
+        if !already_solved_this_pass && self.needs_resolve() {
+            let theme = self.layout_theme.clone();
+            self.place_children(&theme, text);
+        }
+        self.host_solved = true;
+        false
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
@@ -625,7 +762,7 @@ impl Widget for NavSplit {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         // Reconcile + recompute geometry, then lay out children. A full
-        // (re)solve of the inner tree is only needed when the pane geometry
+        // (re)solve of the inner tree is only needed when the pane extents
         // changed; a pure reposition just re-applies the children on the
         // cached tree, skipping the expensive rebuild + `compute_layout` +
         // text re-measure that otherwise ran every scroll frame.
@@ -634,19 +771,16 @@ impl Widget for NavSplit {
         // A pure scroll reports no measure need (`Scrollable` overrides
         // `layout_needs_measure` to `false` for a reposition), so it takes
         // the cheap re-apply path, which does NOT build a `TextRenderer` (a
-        // cosmic-text `FontSystem`, expensive to construct).
-        let geometry_changed = self.solved_rects != Some((self.sidebar_rect, self.content_rect));
-        let needs_resolve = geometry_changed
-            || self.content.layout_needs_measure()
-            || self.sidebar.layout_needs_measure()
-            || split_cache_disabled();
-        if needs_resolve {
-            let theme = self.layout_theme.clone();
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(theme.text_scale);
-            self.place_children(&theme, &mut tr);
-        } else {
+        // cosmic-text `FontSystem`, expensive to construct). Under the shared
+        // host solver the panes were already solved with the host's renderer
+        // in `adjust_layout_with_measure` this pass, so this is a re-apply
+        // too — even though the just-measured children still read as dirty
+        // until they are drawn.
+        let host_solved = std::mem::take(&mut self.host_solved);
+        if (host_solved && self.cached_extents_match()) || !self.needs_resolve() {
             self.reapply_children();
+        } else {
+            self.resolve_children_fallback();
         }
     }
 
@@ -980,19 +1114,17 @@ mod tests {
         ns
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test viewport dimensions are small literals, never near f32::MAX"
-    )]
     fn lay_out(ns: &mut NavSplit, w: f64, h: f64) {
-        lay_out_with_theme(ns, w, h, &Theme::dark());
+        lay_out_with(ns, &Theme::dark(), w, h);
     }
 
+    /// Plain-taffy host: solve the outer node, then `apply_layout` — the
+    /// path with no `adjust_layout_with_measure` and no host renderer.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "test viewport dimensions are small literals, never near f32::MAX"
     )]
-    fn lay_out_with_theme(ns: &mut NavSplit, w: f64, h: f64, theme: &Theme) {
+    fn lay_out_with(ns: &mut NavSplit, theme: &Theme, w: f64, h: f64) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = ns.build_layout(&mut taffy, theme, &mut node_map);
@@ -1015,7 +1147,7 @@ mod tests {
             Box::new(Text::new("Scaled content").with_scaled_size(20.0)),
         )
         .with_mode(SplitMode::AlwaysDocked);
-        lay_out_with_theme(&mut ns, 1000.0, 600.0, &Theme::dark().with_text_scale(2.0));
+        lay_out_with(&mut ns, &Theme::dark().with_text_scale(2.0), 1000.0, 600.0);
 
         assert!(
             ns.content.get_rect().height() >= 49.0,
@@ -1436,6 +1568,164 @@ mod tests {
             builds.get() > 1,
             "a resize re-solves the content pane (build count {})",
             builds.get()
+        );
+    }
+
+    /// Shared-host path: build, admit, `compute_widget_layout` with the
+    /// host's renderer, `apply_layout`. Returns the content pane's rect.
+    fn host_layout(ns: &mut NavSplit, theme: &Theme, renderer: &mut TextRenderer) -> Rect {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let root = ns.build_layout(&mut taffy, theme, &mut nodes);
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the tree and maps come from this exact live build, and
+        // `ns` is exclusively owned for the whole solve.
+        unsafe {
+            bindings.rebuild(&*ns, &taffy, root, &nodes);
+            crate::widget::compute_widget_layout(
+                &mut taffy,
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+                &nodes,
+                &bindings,
+                renderer,
+            )
+            .unwrap();
+        }
+        ns.apply_layout(&taffy, root, Point::ZERO);
+        ns.content.get_rect()
+    }
+
+    /// A8 (tube): every `Text` under a split kept its 1× line height under
+    /// 2× glyphs because the panes were built against `Theme::dark()` and
+    /// measured with a fresh `TextRenderer::new()`. Under the shared host
+    /// solver the panes are now solved with the theme the outer tree was
+    /// built with and the host's own renderer — so the content line is
+    /// twice as tall at 200 % text, and the host path loads no font system
+    /// of its own.
+    #[test]
+    fn text_under_a_split_measures_at_the_host_text_scale() {
+        let height_at = |scale: f32| {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(scale);
+            let mut ns = NavSplit::new(
+                Box::new(Text::new("sidebar")),
+                Box::new(Text::new("content")),
+            )
+            .with_mode(SplitMode::AlwaysDocked);
+            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+            let content = host_layout(&mut ns, &theme, &mut renderer);
+            assert_eq!(
+                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+                0,
+                "the host path must measure with the host's renderer, not load fonts of its own"
+            );
+            content.height()
+        };
+        let one = height_at(1.0);
+        let two = height_at(2.0);
+        assert!(one > 0.0, "the content Text is laid out");
+        assert!(
+            (two / one - 2.0).abs() < 0.05,
+            "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
+        );
+    }
+
+    /// A host that solves the outer tree with plain taffy and calls
+    /// `apply_layout` directly gets the same answer: the panes are built
+    /// against the theme the outer tree was built with, at its text scale.
+    #[test]
+    fn raw_layout_path_measures_panes_at_the_built_theme_text_scale() {
+        let height_at = |scale: f32| {
+            let mut ns = NavSplit::new(
+                Box::new(Text::new("sidebar")),
+                Box::new(Text::new("content")),
+            )
+            .with_mode(SplitMode::AlwaysDocked);
+            lay_out_with(
+                &mut ns,
+                &Theme::dark().with_text_scale(scale),
+                1200.0,
+                600.0,
+            );
+            ns.content.get_rect().height()
+        };
+        let one = height_at(1.0);
+        let two = height_at(2.0);
+        assert!(one > 0.0);
+        assert!(
+            (two / one - 2.0).abs() < 0.05,
+            "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
+        );
+    }
+
+    /// HIG §9.6: a breakpoint and a text-sized sidebar width are authored at
+    /// 1× and resolved by the shell — `× ui_scale × text_scale.max(1.0)` —
+    /// so an app never restates the rule. An icon rail follows `ui_scale`
+    /// only, and text never shrinks a pane below its authored geometry.
+    #[test]
+    fn authored_inputs_follow_the_responsive_scale_and_icon_rails_follow_ui_scale_only() {
+        let text_sized = || {
+            NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
+                .with_breakpoint(760.0)
+                .with_sidebar_width(300.0)
+        };
+        let rail = || {
+            NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
+                .with_breakpoint(760.0)
+                .with_icon_sidebar_width(86.0)
+        };
+
+        let (mut list, mut icons) = (text_sized(), rail());
+        lay_out(&mut list, 1200.0, 600.0);
+        lay_out(&mut icons, 1200.0, 600.0);
+        assert_eq!((list.breakpoint(), list.sidebar_width()), (760.0, 300.0));
+        assert_eq!((icons.breakpoint(), icons.sidebar_width()), (760.0, 86.0));
+        assert_eq!(
+            list.layout_mode(),
+            SplitLayout::Docked,
+            "1× is the authored geometry"
+        );
+
+        let two = Theme::dark().with_text_scale(2.0);
+        let (mut list, mut icons) = (text_sized(), rail());
+        lay_out_with(&mut list, &two, 1200.0, 600.0);
+        lay_out_with(&mut icons, &two, 1200.0, 600.0);
+        assert_eq!((list.breakpoint(), list.sidebar_width()), (1520.0, 600.0));
+        assert_eq!(
+            (icons.breakpoint(), icons.sidebar_width()),
+            (1520.0, 86.0),
+            "an icon rail never grows with the text scale"
+        );
+        assert_eq!(
+            list.layout_mode(),
+            SplitLayout::Overlay,
+            "a 1200 px window at 2× has the room a 600 px window has at 1×, so it pushes"
+        );
+
+        let mut small = text_sized();
+        lay_out_with(
+            &mut small,
+            &Theme::dark().with_text_scale(0.75),
+            1200.0,
+            600.0,
+        );
+        assert_eq!(
+            (small.breakpoint(), small.sidebar_width()),
+            (760.0, 300.0),
+            "text never shrinks a pane below its authored geometry"
+        );
+
+        let mut dense = rail();
+        lay_out_with(&mut dense, &Theme::dark().with_ui_scale(1.5), 1200.0, 600.0);
+        assert!((dense.breakpoint() - 1140.0).abs() < 1e-9);
+        assert!(
+            (dense.sidebar_width() - 129.0).abs() < 1e-9,
+            "ui_scale grows an icon rail with the rest of the density system"
         );
     }
 }

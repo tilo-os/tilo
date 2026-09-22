@@ -13,12 +13,12 @@
 //! ### Storage
 //!
 //! One flat file: `notes/inbox.md` under the workspace root
-//! (or `~/.local/share/dev.tilo.notes-cli/notes/inbox.md` when
+//! (or `~/.local/share/so.tilo.notes-cli/notes/inbox.md` when
 //! standalone).
 //!
 //! ### Publishing
 //!
-//! Ships as `dev.tilo.notes-cli` via the crate's
+//! Ships as `so.tilo.notes-cli` via the crate's
 //! `manifest.toml`. The `[cli].commands = ["notes"]` block causes
 //! `tilo-install install ...` to drop a `notes` shim into
 //! `~/.local/share/tilo-apps/bin/`.

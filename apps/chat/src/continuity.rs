@@ -66,7 +66,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             command,
         }
     }
@@ -248,7 +248,7 @@ fn portable_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use automerge::ROOT;
-    use ui::widget::Widget;
+    use ui::widget::{Collaborative, Continuable, Widget};
 
     use super::*;
 
@@ -265,7 +265,7 @@ mod tests {
         app.call.join("c_huddle");
         app.call.muted = true;
         app.call.sharing = true;
-        let metadata = Widget::continuation_metadata(&app, &doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&app, &doc, &ROOT).unwrap();
         let json = String::from_utf8(metadata.bytes.clone()).unwrap();
         assert!(json.contains("c_huddle") && json.contains("ws_acme"));
         for forbidden in [
@@ -288,9 +288,9 @@ mod tests {
     fn restore_is_inert_and_requires_a_real_synced_voice_channel() {
         let (mut source, source_doc) = app_and_doc();
         source.call.join("c_huddle");
-        let metadata = Widget::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
         let (mut target, mut target_doc) = app_and_doc();
-        assert!(Widget::restore_continuation_metadata(
+        assert!(Continuable::restore_continuation_metadata(
             &mut target,
             &metadata,
             &mut target_doc,
@@ -305,7 +305,7 @@ mod tests {
             schema_version: CHAT_CONTINUATION_SCHEMA,
             bytes: serde_json::to_vec(&unknown).unwrap(),
         };
-        assert!(!Widget::restore_continuation_metadata(
+        assert!(!Continuable::restore_continuation_metadata(
             &mut target,
             &unknown,
             &mut target_doc,
@@ -361,7 +361,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         app.call.join("c_huddle");
         app.realtime.session = Some("session-1".into());
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::RolledBack {
@@ -371,7 +371,7 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(app.call.active, "rollback must leave source media live");
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -381,7 +381,7 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(app.call.active, "foreign cutover cannot stop this call");
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -419,7 +419,7 @@ mod tests {
         };
         assert!(app.restore_call_continuation(&metadata, &doc));
         app.realtime.offer = Some(("target-session".into(), offered));
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
@@ -431,13 +431,13 @@ mod tests {
             ),
         );
         assert!(matches!(
-            Widget::take_collab_requests(&mut app).as_slice(),
+            Collaborative::take_collab_requests(&mut app).as_slice(),
             [ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::Accept { .. },
                 ..
             }]
         ));
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::RealtimeCommandResult {
                 request_id: 1,
@@ -449,7 +449,7 @@ mod tests {
         assert!(app.call.active && app.call.muted && !app.call.audio_only);
         assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
         assert!(matches!(
-            Widget::take_collab_requests(&mut app).as_slice(),
+            Collaborative::take_collab_requests(&mut app).as_slice(),
             [ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
                 ..

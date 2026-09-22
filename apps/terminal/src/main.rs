@@ -70,7 +70,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.terminal", live_root)
+        &LaunchSpec::new_with_args("so.tilo.terminal", live_root)
             .live_handler(run_live)
             .shot_handler(run_shot)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -104,7 +104,7 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("dev.tilo.terminal");
+    let (state, autosave) = ui::persist::open("so.tilo.terminal");
     let app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
@@ -126,7 +126,12 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
         Some("ended") => {
             #[cfg(unix)]
-            let command = terminal::CommandBuilder::new("/bin/true");
+            let command = {
+                // Spawn the portable shell path: macOS has no /bin/true.
+                let mut command = terminal::CommandBuilder::new("/bin/sh");
+                command.args(["-c", "exit 0"]);
+                command
+            };
             #[cfg(windows)]
             let command = {
                 let mut command = terminal::CommandBuilder::new("cmd.exe");
@@ -146,8 +151,14 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    render_shot_to_png(&mut widget, viewport, out, scenario)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        &mut widget,
+        viewport,
+        ui::launch::shot_theme(args),
+        out,
+        scenario,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
@@ -162,29 +173,15 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_shot_to_png(
     widget: &mut TerminalWidget,
     viewport: (u32, u32),
+    theme: Theme,
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    theme.reduce_motion = matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    );
-    if let Some(scale) = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
-        .filter(|scale| scale.is_finite())
-    {
-        theme = theme.with_text_scale(scale);
-    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -206,22 +203,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

@@ -13,7 +13,7 @@
 
 
 [package]
-id       = "dev.tilo.settings"
+id       = "so.tilo.settings"
 name     = "Personal Settings"
 category = "System"
 version  = "0.1.0"

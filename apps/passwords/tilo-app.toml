@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.passwords"
+id = "so.tilo.passwords"
 name = "Passwords"
 category = "Utility"
 version = "0.1.0"

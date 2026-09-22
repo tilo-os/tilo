@@ -414,3 +414,105 @@ fn wide_label_aligns_to_first_control_even_with_long_help_and_validation() {
     let control = field.children()[1].children()[0].get_rect();
     assert!(label.y1 <= control.y0);
 }
+
+fn trailing_fixture() -> Element {
+    use crate::widget::Dropdown;
+    Box::new(
+        Form::new().section(
+            FormSection::new("Formats")
+                .field(
+                    Field::new(
+                        "Currency",
+                        Dropdown::new(vec!["USD".into(), "EUR".into()], "currency")
+                            .with_id("currency"),
+                    )
+                    .with_trailing_control(),
+                )
+                .field(
+                    Field::new(
+                        "First day of the week in calendars",
+                        Dropdown::new(vec!["Monday".into(), "Sunday".into()], "first-day")
+                            .with_id("first-day"),
+                    )
+                    .with_trailing_control(),
+                ),
+        ),
+    )
+}
+
+/// A settings card's choosers: one label fits beside its control, the other
+/// does not. The section decides once for both, and a trailing control keeps
+/// its own width — at the trailing edge beside its label, at the leading edge
+/// under it once the section stacks.
+#[test]
+fn trailing_controls_switch_with_their_section_and_share_the_trailing_edge() {
+    let wide = FrameHarness::new_with_theme(
+        crate::State::new(),
+        trailing_fixture(),
+        (1000, 400),
+        Theme::dark(),
+    );
+    let snapshot = wide.inspection();
+    let mut fields = Vec::new();
+    collect(&snapshot.root, "Field", &mut fields);
+    assert_eq!(fields.len(), 2);
+    let mut sections = Vec::new();
+    collect(&snapshot.root, "FormSection", &mut sections);
+    let section = sections[0].rect;
+    let section_x1 = section[0] + section[2];
+    let controls = [
+        named(&snapshot.root, "currency").rect,
+        named(&snapshot.root, "first-day").rect,
+    ];
+    for (field, control) in fields.iter().zip(controls) {
+        let mut labels = Vec::new();
+        collect(field, "Text", &mut labels);
+        let label = labels[0].rect;
+        assert!(
+            control[0] >= label[0] + label[2],
+            "wide: the control sits beside its label: label {label:?} control {control:?}"
+        );
+        assert!(
+            (control[0] + control[2] - section_x1).abs() < 0.5,
+            "wide: a trailing control ends on the section's trailing edge {section_x1}: {control:?}"
+        );
+        assert!(
+            control[2] < section[2] / 2.0,
+            "wide: a trailing control keeps its own width instead of filling: {control:?}"
+        );
+    }
+    assert!(
+        (controls[0][0] - controls[1][0]).abs() < 0.5,
+        "wide: sibling choosers share one column: {:?} {:?}",
+        controls[0],
+        controls[1]
+    );
+
+    let narrow = FrameHarness::new_with_theme(
+        crate::State::new(),
+        trailing_fixture(),
+        (320, 600),
+        Theme::dark(),
+    );
+    let snapshot = narrow.inspection();
+    let mut fields = Vec::new();
+    collect(&snapshot.root, "Field", &mut fields);
+    assert_eq!(fields.len(), 2);
+    let controls = [
+        named(&snapshot.root, "currency").rect,
+        named(&snapshot.root, "first-day").rect,
+    ];
+    for (field, control) in fields.iter().zip(controls) {
+        let mut labels = Vec::new();
+        collect(field, "Text", &mut labels);
+        let label = labels[0].rect;
+        assert!(
+            control[1] >= label[1] + label[3],
+            "narrow: every row of the section stacks, the short label too: label {label:?} control {control:?}"
+        );
+        assert!(
+            (control[0] - label[0]).abs() < 0.5,
+            "narrow: a stacked trailing control starts under its label: label {label:?} control {control:?}"
+        );
+    }
+}

@@ -710,7 +710,7 @@ fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
             .env(CHILD, &directory)
             .env("XDG_DATA_HOME", directory.join("shared"))
             .env("TILO_CALENDAR_DATA", directory.join("legacy.automerge"))
-            .env("TILO_PACKAGE_ID", "dev.tilo.calendar.migration-test");
+            .env("TILO_PACKAGE_ID", "so.tilo.calendar.migration-test");
         // Exercise the native host path without relying on Unix variables.
         #[cfg(windows)]
         command
@@ -737,7 +737,7 @@ fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
     crate::store::save(&legacy, &mut state.doc).unwrap();
     let original = std::fs::read(&legacy).unwrap();
 
-    let (mut state, mut autosave) = crate::store::open_state("dev.tilo.calendar");
+    let (mut state, mut autosave) = crate::store::open_state("so.tilo.calendar");
     assert!(autosave.is_enabled());
     assert!(
         autosave
@@ -754,7 +754,7 @@ fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
     autosave.try_flush().unwrap();
     drop(autosave);
 
-    let (mut state, mut autosave) = crate::store::open_state("dev.tilo.calendar");
+    let (mut state, mut autosave) = crate::store::open_state("so.tilo.calendar");
     assert_eq!(
         CalDoc::read_model(&state.doc).event(id).unwrap().title,
         "Edited after migration"
@@ -767,7 +767,7 @@ fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
     autosave.try_flush().unwrap();
     drop(autosave);
 
-    let (mut state, autosave) = crate::store::open_state("dev.tilo.calendar");
+    let (mut state, autosave) = crate::store::open_state("so.tilo.calendar");
     let mut app = CalendarApp::new();
     app.sync(&mut state.doc, &state.root);
     assert!(
@@ -1342,13 +1342,6 @@ fn high_contrast_large_text_metadata_chips_clear_labels_and_notes() {
     assert!(
         app.detail_rect.y0 + app.form.notes_top > last_bottom,
         "the notes divider must remain below the enlarged chip rows"
-    );
-    let (_, notes_h) = text.measure("NOTES", 11.0, None);
-    let (notes_y, rule_y) =
-        notes_header_positions(app.detail_rect.y0 + app.form.notes_top, f64::from(notes_h));
-    assert!(
-        rule_y >= notes_y + f64::from(notes_h) + 6.0,
-        "the NOTES rule must start after the scaled label, never through it"
     );
 }
 

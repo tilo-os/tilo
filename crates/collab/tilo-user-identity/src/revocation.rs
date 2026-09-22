@@ -26,8 +26,8 @@ use thiserror::Error;
 use crate::canonical::{CanonicalError, signing_digest};
 
 /// Signing-domain tag for `RevocationEntry`. Frozen wire ABI:
-/// `qos-revocation-v1` + NUL.
-pub const REVOCATION_PREIMAGE_TAG: &[u8] = b"qos-revocation-v1\0";
+/// `tilo-revocation-v1` + NUL.
+pub const REVOCATION_PREIMAGE_TAG: &[u8] = b"tilo-revocation-v1\0";
 
 /// Why a device was revoked. Advisory — peers reject the device
 /// regardless of reason. The value is surfaced in UI ("phone was

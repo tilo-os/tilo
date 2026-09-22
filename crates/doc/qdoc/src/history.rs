@@ -5,7 +5,7 @@
 use crate::document::DocError;
 use crate::model::{materialize, open};
 use crate::snapshot::DocSnapshot;
-use automerge::transaction::CommitOptions;
+use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,9 +27,15 @@ pub struct VersionMeta {
     pub message: Option<String>,
 }
 
-/// Commit the open transaction with a wall-clock timestamp attached. Returns
-/// `None` when there is nothing to commit.
-/// Unlike `AutoCommit::commit()`, this records the time needed for date filters.
+/// Commit the open transaction with a wall-clock timestamp attached. `AutoCommit::commit()`
+/// leaves the change's advisory `time` field at `0`, which is why routing commits through here is
+/// what makes [`VersionMeta::time_ms`] — and any date-range filter over the history — mean
+/// something. Returns `None` when there was nothing to commit, exactly like `AutoCommit::commit`.
+///
+/// Empty commits abandon any empty transaction and reset Automerge's diff
+/// cursor to avoid stale actor mappings. Explicit-head `diff(before, after)`
+/// remains valid; callers using `diff_incremental()` must treat that reset as
+/// requiring a fresh baseline rather than applying a delta to an old view.
 pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -37,7 +43,9 @@ pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     commit_stamped_at_with_message(doc, secs, None)
 }
 
-/// As [`commit_stamped`], but with a caller-supplied Unix time in seconds.
+/// As [`commit_stamped`], but with a caller-supplied Unix time in **seconds** (automerge's own
+/// unit). For hosts that own a clock (the FS layer replaying a durable change chain, a test spreading versions across a day) so the recorded time is when the edit happened.
+/// Empty commits reset the diff cursor as documented on [`commit_stamped`].
 pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeHash> {
     commit_stamped_at_with_message(doc, unix_secs, None)
 }
@@ -46,6 +54,7 @@ pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeH
 /// semantic message. This is the commit-boundary counterpart to action
 /// dispatch: flowing CRDT text remains a native splice while history still
 /// learns which app/resource the edit belongs to.
+/// Empty commits reset the diff cursor as documented on [`commit_stamped`].
 pub fn commit_stamped_with_message(
     doc: &mut AutoCommit,
     message: Option<String>,
@@ -61,6 +70,15 @@ pub fn commit_stamped_at_with_message(
     unix_secs: i64,
     message: Option<String>,
 ) -> Option<ChangeHash> {
+    // commit_with opens a transaction even when there are no edits. In
+    // Automerge 0.8 this can add then prune a fresh actor while leaving it in
+    // the patch log, poisoning the next differently authored transaction.
+    // An already-open empty transaction has the same hazard on commit.
+    if doc.pending_ops() == 0 {
+        doc.rollback();
+        doc.reset_diff_cursor();
+        return None;
+    }
     let mut options = CommitOptions::default().with_time(unix_secs);
     if let Some(message) = message {
         options = options.with_message(message);
@@ -131,6 +149,41 @@ pub fn materialize_at(doc: &mut AutoCommit, version: usize) -> Result<DocSnapsho
 #[cfg(test)]
 mod tests {
     use crate::Document;
+
+    fn check_empty_commit_actor_transition(open_empty: bool) {
+        use automerge::{ActorId, AutoCommit, ROOT, transaction::Transactable};
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(vec![0x80]));
+        doc.put(ROOT, "body", "seed").unwrap();
+        super::commit_stamped_at(&mut doc, 1).unwrap();
+        let heads = doc.get_heads();
+        doc.set_actor(ActorId::from(vec![0x10]));
+        if open_empty {
+            doc.delete(ROOT, "absent").unwrap();
+            assert_eq!(doc.pending_ops(), 0);
+        }
+        assert_eq!(super::commit_stamped_at(&mut doc, 2), None);
+        assert_eq!(doc.get_heads(), heads);
+        doc.set_actor(ActorId::from(vec![0x20]));
+        doc.put(ROOT, "body", "edited").unwrap();
+        let change = super::commit_stamped_at(&mut doc, 3).unwrap();
+        assert_eq!(doc.get_change_by_hash(&change).unwrap().timestamp(), 3);
+        let after = doc.get_heads();
+        let patches = doc.diff(&heads, &after);
+        assert!(matches!(patches.as_slice(), [automerge::Patch {
+            action: automerge::PatchAction::PutMap { key, value, .. }, ..
+        }] if key == "body" && value.0.to_str() == Some("edited")));
+    }
+
+    #[test]
+    fn empty_stamped_commit_does_not_poison_next_actor() {
+        check_empty_commit_actor_transition(false);
+    }
+
+    #[test]
+    fn empty_open_transaction_does_not_poison_next_actor() {
+        check_empty_commit_actor_transition(true);
+    }
 
     #[test]
     fn version_chain_and_time_travel() {

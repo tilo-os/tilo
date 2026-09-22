@@ -1,0 +1,66 @@
+{
+  "diagnostic_only": true,
+  "production_linux_acceptance": "UNRUN",
+  "input_fixture_directory": "/tmp/qos-ntfs-copy-times-fix1-fixtures-v4",
+  "tree": {
+    "source_image": "/tmp/qos-ntfs-copy-times-fix1-fixtures-v4/large.img",
+    "source_sha256": "7d2efa284ba005392982269bc040b4b7377b3c71cda228f3ade467a6631642be",
+    "image": "/tmp/qos-native-copy-consumer-image-fixture/copy-tree.img",
+    "image_sha256": "bd08e8c6becbe3ae36f5c24cb993168b1e4165f86ca4d6f7ed55a0f89be62242",
+    "bytes": 67108864,
+    "derivation": "fresh exclusive regular file cloned from large.img; fixture-only copy-directories adds nested/empty; no kernel or device mount",
+    "builder_sha256": "8f17a2054ebf0593b463aa52da275426cb4205540442b49a09f2b8feed1d3e4c"
+  },
+  "scoped": {
+    "times": {
+      "input_sha256": "97ea62974e87c64ee2dfbc2e80abedb6d905c5e3442de29b5b19e318a3fadee4",
+      "derived_sha256": "4f3f2482f93e6dae06f2de0d7579f46e151426918edd288fe78d3371c7b6f4f2",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "times-v1": {
+      "input_sha256": "d285cadc53b16b7cd523060da8767fe72375628ec0410225f60c3b2a2e19783f",
+      "derived_sha256": "73ef144c29846a1839b59820b2397fe50cfecd2ca57068f8e2a57c5977d1c603",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "times-duplicate": {
+      "input_sha256": "c273966bb3e0a44ca3f5667471be911a527206f5a33f10723f1b7b8be976c34e",
+      "derived_sha256": "0bafdcec629dfaf0b537313190b1d25a9fc1ed9261c94c3f461766e433e7a6a2",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "times-invalid-flags": {
+      "input_sha256": "0483dc5d206eae3b434b205ab32dbd2892491d72bcad79ee4e29eb3d088b8042",
+      "derived_sha256": "649d34ec89eafe11b210d589d9a1551e23c35ec67a5700ef90f80284259383e9",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "metadata": {
+      "input_sha256": "7f06c2137481d8bf2e5bdf5c9b248d5d43c2613e2a6902a4eac9ea7baec3a5a2",
+      "derived_sha256": "d1df32bfcfc70c85cb1824d7c96c61898832624f95a692b906138ed1744d35be",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "acl": {
+      "input_sha256": "288bfdb431debaeaffbb251f196413a486c6f6c97114dcacf72e49adaaba5912",
+      "derived_sha256": "ae733577142e4f379bd72a99bd9241ca25b71f00fe6b90f05229c915be4ac08e",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "hardlink": {
+      "input_sha256": "69a52a0f49ca49ef23bb1ee68380d50d74f20d6e749f397258f37e110d4f2e88",
+      "derived_sha256": "ac4977bf6670236e84321109229873db12ab8898ea064f8e87f5fb28da496d57",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    },
+    "dos-alias": {
+      "input_sha256": "3adffd753471b6a15cf43b811862b777b4b9a764d201c89a2049dde89bd86d2f",
+      "derived_sha256": "de5604c53d559ce9a8511bc4d61279a03908cc4dd3dc1669100091e20fdaeacd",
+      "bytes": 67108864,
+      "addition": "ordinary.txt = ordinary sibling\\n"
+    }
+  },
+  "ordinary_sibling_hex": "6f7264696e617279207369626c696e670a",
+  "boundaries": "Fresh regular image clones only. Existing inputs unchanged. No kernel/device mounts or VM actions."
+}

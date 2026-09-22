@@ -100,7 +100,7 @@ jobs:
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
           cache-from: |
             type=registry,ref=code.sandbox.example/qos/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:aarch64
+            type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:aarch64
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 

@@ -40,6 +40,8 @@ impl TemplatePicker {
     }
 
     pub(crate) fn open_at(&mut self, point: Point) {
+        // Start each invocation without a stale hover or queued selection.
+        *self = Self::default();
         self.menu.open_at([
             crate::num::f32_of_f64(point.x),
             crate::num::f32_of_f64(point.y),
@@ -56,6 +58,17 @@ impl TemplatePicker {
 
     pub(crate) fn close(&mut self) {
         self.menu.close();
+    }
+
+    /// The shared menu owns pointer tracking and keyboard navigation.
+    pub(crate) fn menu_mut(&mut self) -> &mut ContextMenu {
+        &mut self.menu
+    }
+
+    pub(crate) fn take_selection(&mut self) -> Option<Template> {
+        self.menu
+            .take_selection()
+            .and_then(|index| self.templates.get(index).copied())
     }
 
     /// Consume a click while open. A click outside the menu dismisses it;

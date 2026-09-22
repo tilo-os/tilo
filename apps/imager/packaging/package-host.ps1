@@ -5,8 +5,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $Version = if ($env:TILO_VERSION) { $env:TILO_VERSION -replace '^imager-v', '' -replace '^v', '' } else { "0.1.0" }
-$ReleaseRepository = if ($env:TILO_RELEASE_REPOSITORY) { $env:TILO_RELEASE_REPOSITORY } else { "tilo/releases" }
-$ReleaseServer = if ($env:GITHUB_SERVER_URL) { $env:GITHUB_SERVER_URL.TrimEnd('/') } else { "https://code.sandbox.example" }
+$ReleaseRepository = if ($env:TILO_RELEASE_REPOSITORY) { $env:TILO_RELEASE_REPOSITORY } else { "tilo-os/releases" }
+$ReleaseServer = if ($env:TILO_RELEASE_SERVER) { $env:TILO_RELEASE_SERVER.TrimEnd('/') } else { "https://github.com" }
 if ($ReleaseRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
     throw "release repository must be OWNER/REPOSITORY"
 }

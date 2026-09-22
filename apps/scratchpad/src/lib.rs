@@ -1,11 +1,19 @@
 //! A small native application exercising UI, FS and actions together.
 
 pub mod actions;
+mod native_fixture;
+pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
 mod storage;
 
-use actions::{EDIT, EditNote};
+use actions::EDIT;
+pub use actions::{EditNote, register};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::Path,
+    rc::Rc,
+};
 use taffy::{NodeId, TaffyTree};
 use tilo_actions::{
     ActionBinding, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource,
@@ -18,7 +26,7 @@ use vello::{
 };
 use winit::event::{Modifiers, WindowEvent};
 
-const SAVE: &str = "dev.tilo.scratchpad.save";
+const SAVE: &str = "so.tilo.scratchpad.save";
 
 fn body(doc: &AutoCommit) -> String {
     doc.get(ROOT, "body")
@@ -84,6 +92,7 @@ pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
         .with_font_size(18.0)
         .multiline(true)
         .on_action(binding);
+    let scroll_offset = Rc::new(Cell::new((0.0, 0.0)));
     let content = Column::new()
         .with_horizontal_padding(32.0, 32.0)
         .with_vertical_padding(28.0)
@@ -102,7 +111,9 @@ pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
                 .with_fill_remaining_height()
                 .push(Box::new(
                     Scrollable::new_vertical()
+                        .with_persisted_offset(Rc::clone(&scroll_offset))
                         .fill_parent_height()
+                        .with_content_min_viewport_height()
                         .with_child(Box::new(editor)),
                 )),
         ))
@@ -127,6 +138,7 @@ pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
         state,
         Box::new(Scratchpad {
             content,
+            scroll_offset,
             store,
             resource,
             status,
@@ -138,6 +150,7 @@ pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
 
 struct Scratchpad {
     content: Column,
+    scroll_offset: Rc<Cell<(f32, f32)>>,
     store: storage::NoteStore,
     resource: Resource,
     status: Rc<RefCell<String>>,
@@ -146,6 +159,54 @@ struct Scratchpad {
 }
 
 impl Widget for Scratchpad {
+    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+        fn rect(rect: vello::kurbo::Rect) -> [f64; 4] {
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+        }
+        fn find(
+            widget: &dyn Widget,
+            editor: &mut Option<[f64; 4]>,
+            scroll: &mut Option<[f64; 4]>,
+            focused: &mut bool,
+        ) {
+            if widget.test_id() == Some("note-editor") {
+                *editor = Some(rect(widget.get_rect()));
+                *focused = widget.is_focused();
+            }
+            if widget.name() == "Scrollable" {
+                *scroll = Some(rect(widget.get_rect()));
+            }
+            widget.for_each_child(&mut |child| find(child, editor, scroll, focused));
+        }
+        let body = body(doc);
+        let (mut editor_rect, mut scroll_rect) = (None, None);
+        let mut editor_focused = false;
+        find(
+            &self.content,
+            &mut editor_rect,
+            &mut scroll_rect,
+            &mut editor_focused,
+        );
+        let root_rect = self.get_rect();
+        let ready = root_rect.width() > 0.0
+            && root_rect.height() > 0.0
+            && editor_rect.is_some_and(|[x0, y0, x1, y1]| x1 > x0 && y1 > y0)
+            && scroll_rect.is_some_and(|[x0, y0, x1, y1]| x1 > x0 && y1 > y0);
+        let (offset_x, offset_y) = self.scroll_offset.get();
+        Some(serde_json::json!({
+            "app": "so.tilo.scratchpad",
+            "editor_id": "note-editor",
+            "editor_focused": editor_focused,
+            "body_hash": iroh_blobs::Hash::new(body.as_bytes()).to_hex(),
+            "body_bytes": body.len(),
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "root_rect": rect(root_rect),
+            "editor_rect": editor_rect,
+            "scroll_rect": scroll_rect,
+            "ready": ready,
+        }))
+    }
     fn name(&self) -> &'static str {
         "Scratchpad"
     }

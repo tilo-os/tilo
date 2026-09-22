@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.git-client"
+id       = "so.tilo.git-client"
 name     = "Git"
 category = "Development"
 version  = "0.1.0"

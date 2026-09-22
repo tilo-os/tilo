@@ -22,11 +22,18 @@ pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
 pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FONT_SYSTEM_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
 /// other characters not covered by the selected primary face.
 pub fn configured_font_system() -> FontSystem {
+    #[cfg(test)]
+    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]
     if let Some(font_system) =
         crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())
@@ -335,6 +342,9 @@ impl ParagraphAlign {
 pub enum TextWrapMode {
     #[default]
     Wrap,
+    /// Prefer word boundaries and fall back to glyph boundaries when one word
+    /// is wider than the available measure.
+    WordOrGlyph,
     /// Choose a narrower measure that keeps the same number of lines while
     /// minimizing raggedness, like CSS `text-wrap: balance`.
     Balance,
@@ -772,7 +782,10 @@ pub trait TextLayoutEngine {
         style: &TextStyle,
     ) -> (f32, f32);
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A layout engine needs renderer/scene, text and layout constraints, style, color, and the destination transform."
+    )]
     fn draw(
         &mut self,
         renderer: &mut TextRenderer,
@@ -1226,6 +1239,96 @@ struct GlyphRun {
 /// clone instead of a cosmic-text shape.
 const SHAPE_CACHE_LIMIT: usize = 4096;
 
+#[derive(Hash, PartialEq, Eq)]
+struct InkFontKey {
+    blob: u64,
+    index: u32,
+    face: cosmic_text::fontdb::ID,
+    weight: u16,
+    size: u32,
+    coords: Vec<vello::NormalizedCoord>,
+}
+
+/// Control points enclose every unhinted Bézier segment, including overhangs.
+#[derive(Default)]
+struct InkBoundsPen {
+    bounds: Option<Rect>,
+    invalid: bool,
+}
+
+fn outline_ink_bounds(
+    font: &Font,
+    glyph_id: u16,
+    size: f32,
+    coords: &[vello::NormalizedCoord],
+) -> Option<Rect> {
+    use skrifa::instance::{NormalizedCoord, Size};
+    use skrifa::outline::DrawSettings;
+    use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+    let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    // Outline ink cannot bound layered color or bitmap glyphs.
+    if [
+        b"COLR", b"CPAL", b"CBDT", b"CBLC", b"sbix", b"SVG ", b"EBDT", b"EBLC",
+    ]
+    .iter()
+    .any(|tag| face.table_data(Tag::new(tag)).is_some())
+    {
+        return None;
+    }
+    let location: Vec<_> = coords
+        .iter()
+        .map(|v| NormalizedCoord::from_bits(*v))
+        .collect();
+    let outline = face
+        .outline_glyphs()
+        .get(GlyphId::new(u32::from(glyph_id)))?;
+    let mut pen = InkBoundsPen::default();
+    outline
+        .draw(
+            DrawSettings::unhinted(Size::new(size), location.as_slice()),
+            &mut pen,
+        )
+        .ok()?;
+    if pen.invalid {
+        None
+    } else {
+        Some(pen.bounds.unwrap_or(Rect::ZERO))
+    }
+}
+
+impl InkBoundsPen {
+    fn point(&mut self, x: f32, y: f32) {
+        if !x.is_finite() || !y.is_finite() {
+            self.invalid = true;
+            return;
+        }
+        let point = Point::new(f64::from(x), -f64::from(y));
+        self.bounds = Some(
+            self.bounds
+                .map_or_else(|| Rect::from_points(point, point), |b| b.union_pt(point)),
+        );
+    }
+}
+
+impl skrifa::outline::OutlinePen for InkBoundsPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.point(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.point(x, y);
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.point(cx, cy);
+        self.point(x, y);
+    }
+    fn curve_to(&mut self, ax: f32, ay: f32, bx: f32, by: f32, x: f32, y: f32) {
+        self.point(ax, ay);
+        self.point(bx, by);
+        self.point(x, y);
+    }
+    fn close(&mut self) {}
+}
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -1238,6 +1341,8 @@ pub struct TextRenderer {
     /// Entries from prior generations never match a lookup (generation is
     /// part of the key); they age out when the cache hits its limit.
     generation: u64,
+    /// Identity of widget-owned layouts, unique across renderers and font epochs.
+    layout_epoch: Arc<()>,
     hits: u64,
     misses: u64,
     /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
@@ -1255,6 +1360,11 @@ pub struct TextRenderer {
     /// custom canvas widgets that use the low-level text API can honour the
     /// same scale as token-based controls without duplicating every draw call.
     text_scale: f32,
+    /// Bounded, generation-cleared cache; None means conservatively draw.
+    // The inner key is a bounded font glyph ID; avoid SipHash on every glyph.
+    // Font/variation identity retains the randomized outer map.
+    ink_bounds: HashMap<InkFontKey, rustc_hash::FxHashMap<u16, Option<Rect>>>,
+    ink_bounds_entries: usize,
 }
 
 impl Default for TextRenderer {
@@ -1340,6 +1450,7 @@ impl TextRenderer {
             swash_cache: SwashCache::new(),
             measure_cache: HashMap::with_capacity(256),
             generation: 0,
+            layout_epoch: Arc::new(()),
             hits: 0,
             misses: 0,
             shape_cache: HashMap::with_capacity(256),
@@ -1347,6 +1458,8 @@ impl TextRenderer {
             shape_misses: 0,
             shape_ns: 0,
             text_scale: 1.0,
+            ink_bounds: HashMap::new(),
+            ink_bounds_entries: 0,
         }
     }
 
@@ -1370,6 +1483,21 @@ impl TextRenderer {
     /// type collide with fixed-size controls.
     pub fn text_scale(&self) -> f32 {
         self.text_scale
+    }
+
+    /// Convert a fully resolved logical-pixel style into the renderer-relative
+    /// input consumed by [`Self::measure_style`] and [`Self::draw_style`].
+    ///
+    /// Theme typography already includes the active UI and text scales. Both
+    /// size and pixel letter spacing are therefore divided by the renderer's
+    /// sanitized accessibility scale so those final values are applied once.
+    /// Legacy base-size callers should keep passing their styles directly.
+    pub fn renderer_input_style(&self, resolved: &TextStyle) -> TextStyle {
+        let scale = self.text_scale();
+        let mut style = resolved.clone();
+        style.size /= scale;
+        style.letter_spacing /= scale;
+        style
     }
 
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
@@ -1399,15 +1527,22 @@ impl TextRenderer {
         (self.hits, self.misses)
     }
 
+    pub(crate) fn layout_epoch(&self) -> &Arc<()> {
+        &self.layout_epoch
+    }
+
     /// Call this when the font set or active locale changes; cosmic-text
     /// will shape glyphs differently after either swap, so stale numbers
     /// would let widgets compute wrong layouts.
     pub fn bump_generation(&mut self) {
+        self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
         // Entries key on `generation` so stale ones would never match
         // anyway; the explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
+        self.ink_bounds.clear();
+        self.ink_bounds_entries = 0;
     }
 
     fn measure_lookup(&mut self, key: MeasureKey) -> Option<(f32, f32)> {
@@ -1518,7 +1653,10 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(Wrap::Word);
+        buffer.set_wrap(match style.wrap_mode {
+            TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
+            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+        });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
             balance_buffer(
@@ -1711,7 +1849,10 @@ impl TextRenderer {
     /// Draw `text` with explicit weight + italic + optional monospace family
     /// override, used by [`crate::widget::RichTextLine`] to paint inline-mark
     /// spans. Pair with [`Self::measure_styled`] for accurate measurement.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Styled span painting exposes content, size/weight/italic/family, color, transform, and wrapping width alongside the scene."
+    )]
     pub fn draw_text_styled(
         &mut self,
         scene: &mut Scene,
@@ -1738,7 +1879,10 @@ impl TextRenderer {
 
     /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a
     /// named installed family / …) with a weight and italic flag.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Explicit-font painting exposes content, family and typography, color, transform, and wrapping width alongside the scene."
+    )]
     pub fn draw_text_font(
         &mut self,
         scene: &mut Scene,
@@ -1759,7 +1903,10 @@ impl TextRenderer {
     }
 
     /// Measure `text` shaped in an explicit [`FontChoice`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Font measurement mirrors the text, size, wrapping width, weight, italic flag, and family accepted by font painting."
+    )]
     pub fn measure_font(
         &mut self,
         text: &str,
@@ -1820,7 +1967,10 @@ impl TextRenderer {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Weighted text painting takes scene/content plus size, color, transform, wrapping width, and typographic weight."
+    )]
     pub fn draw_text_weighted(
         &mut self,
         scene: &mut Scene,
@@ -1901,7 +2051,10 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(Wrap::Word);
+        buffer.set_wrap(match style.wrap_mode {
+            TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
+            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+        });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
             balance_buffer(
@@ -2094,9 +2247,28 @@ impl TextRenderer {
 
         // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
-            self.draw_rich_run(scene, &run, layout, transform, color);
+            self.draw_rich_run(scene, &run, layout, transform, color, None);
         }
 
+        draw_rich_underlines(scene, layout, transform, color);
+        draw_rich_strikes(scene, layout, transform, color);
+    }
+
+    /// Draw rich text while omitting only glyph batches proven outside `clip`.
+    /// The clip is in final scene coordinates; callers must keep actual clip
+    /// layers. Decorations remain unchanged. Unsupported ink draws normally.
+    pub fn draw_rich_in_clip(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        clip: Rect,
+    ) {
+        draw_rich_backgrounds(scene, layout, transform);
+        for run in layout.buffer.layout_runs() {
+            self.draw_rich_run(scene, &run, layout, transform, color, Some(clip));
+        }
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
     }
@@ -2110,6 +2282,67 @@ impl TextRenderer {
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
         color: Color,
+        clip: Option<Rect>,
+    ) {
+        if !self.draw_uniform_rich_run(scene, run, layout, transform, color, clip) {
+            self.draw_rich_run_copied(scene, run, layout, transform, color, clip);
+        }
+    }
+
+    // Uniform runs need no rewritten positions or temporary glyph copies.
+    fn draw_uniform_rich_run(
+        &mut self,
+        scene: &mut Scene,
+        run: &cosmic_text::LayoutRun<'_>,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        clip: Option<Rect>,
+    ) -> bool {
+        if layout.hanging_punctuation.first || layout.hanging_punctuation.last {
+            return false;
+        }
+        let Some(first) = run.glyphs.first() else {
+            return false;
+        };
+        let shift = layout.baseline_at(layout.glyph_global_byte(run.line_i, first.start));
+        #[allow(
+            clippy::float_cmp,
+            reason = "batching requires exactly equal glyph sizes, not approximately equal sizes"
+        )]
+        let uniform = run.glyphs.iter().all(|glyph| {
+            glyph.font_id == first.font_id
+                && glyph.font_weight == first.font_weight
+                && glyph.color_opt == first.color_opt
+                && glyph.font_size == first.font_size
+                && layout.baseline_at(layout.glyph_global_byte(run.line_i, glyph.start)) == shift
+                && run.text.get(glyph.start..glyph.end) != Some("\u{ad}")
+        });
+        if !uniform {
+            return false;
+        }
+        self.flush_glyphs(
+            scene,
+            first.font_id,
+            run.glyphs,
+            first.font_size,
+            resolve_rich_color(color, first.color_opt),
+            transform,
+            run.line_y + shift.offset(first.font_size),
+            &layout.font_variations,
+            clip,
+        );
+        true
+    }
+
+    fn draw_rich_run_copied(
+        &mut self,
+        scene: &mut Scene,
+        run: &cosmic_text::LayoutRun<'_>,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        clip: Option<Rect>,
     ) {
         use crate::richtext::BaselineShift;
         let exercised_hyphen = run
@@ -2120,7 +2353,10 @@ impl TextRenderer {
         let mut cur_color: Option<cosmic_text::Color> = None;
         let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
-        let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
+        // Avoid repeated growth for ordinary lines without reserving an
+        // unbounded long run whose individual style batches may be short.
+        let mut batch: Vec<cosmic_text::LayoutGlyph> =
+            Vec::with_capacity(run.glyphs.len().min(128));
         let mut size = 16.0f32;
         let mut batch_size = 16.0f32;
         for g in run.glyphs {
@@ -2149,6 +2385,7 @@ impl TextRenderer {
                     transform,
                     run.line_y + dy,
                     &layout.font_variations,
+                    clip,
                 );
                 batch.clear();
             }
@@ -2175,6 +2412,7 @@ impl TextRenderer {
                 transform,
                 run.line_y + dy,
                 &layout.font_variations,
+                clip,
             );
         }
         if let Some(marker) = exercised_hyphen
@@ -2191,6 +2429,7 @@ impl TextRenderer {
                 transform,
                 run.line_y + shift.offset(hyphen.font_size),
                 &layout.font_variations,
+                clip,
             );
         }
     }
@@ -2198,7 +2437,10 @@ impl TextRenderer {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Glyph submission needs scene, face and glyph batch, size/color, transform/baseline, font variations, and clip bounds."
+    )]
     fn flush_glyphs(
         &mut self,
         scene: &mut Scene,
@@ -2209,6 +2451,7 @@ impl TextRenderer {
         transform: Affine,
         line_y: f32,
         variations: &[FontVariation],
+        clip: Option<Rect>,
     ) {
         let Some(first) = glyphs.first() else {
             return;
@@ -2223,6 +2466,21 @@ impl TextRenderer {
         );
         let normalized_coords = self.normalized_coords(face_id, variations, first.font_weight);
 
+        if let Some(clip) = clip
+            && self.glyph_batch_outside(
+                &vello_font,
+                face_id,
+                glyphs,
+                size,
+                line_y,
+                &normalized_coords,
+                transform,
+                clip,
+            )
+        {
+            return;
+        }
+
         let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
             id: u32::from(g.glyph_id),
             x: g.x,
@@ -2236,6 +2494,109 @@ impl TextRenderer {
             .brush(color)
             .transform(transform)
             .draw(StyleRef::Fill(vello::peniko::Fill::NonZero), vello_glyphs);
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Glyph culling needs font identity and variations, glyphs and size, baseline/transform, and the device-space clip."
+    )]
+    fn glyph_batch_outside(
+        &mut self,
+        font: &Font,
+        face: cosmic_text::fontdb::ID,
+        glyphs: &[cosmic_text::LayoutGlyph],
+        size: f32,
+        line_y: f32,
+        coords: &[vello::NormalizedCoord],
+        transform: Affine,
+        clip: Rect,
+    ) -> bool {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing is intentional to reject transforms that overflow f32"
+        )]
+        let transform_finite = transform
+            .as_coeffs()
+            .iter()
+            .all(|v| v.is_finite() && (*v as f32).is_finite());
+        if ![clip.x0, clip.y0, clip.x1, clip.y1]
+            .iter()
+            .all(|v| v.is_finite())
+            || !transform_finite
+            || !size.is_finite()
+            || size <= 0.0
+            || !line_y.is_finite()
+            || clip.x0 > clip.x1
+            || clip.y0 > clip.y1
+        {
+            return false;
+        }
+        let Some(first) = glyphs.first() else {
+            return true;
+        };
+        // Font identity and variation coordinates are shared by this batch.
+        // Hash them once, then resolve individual glyphs by their small IDs.
+        if self.ink_bounds_entries >= SHAPE_CACHE_LIMIT {
+            self.ink_bounds.clear();
+            self.ink_bounds_entries = 0;
+        }
+        let key = InkFontKey {
+            blob: font.data.id(),
+            index: font.index,
+            face,
+            weight: first.font_weight.0,
+            size: size.to_bits(),
+            coords: coords.to_vec(),
+        };
+        let cached = self.ink_bounds.entry(key).or_default();
+        let entry_count = &mut self.ink_bounds_entries;
+        let coefficients = transform
+            .as_coeffs()
+            .iter()
+            .fold(1.0_f64, |m, v| m.max(v.abs()));
+        glyphs.iter().all(|glyph| {
+            let bounds = if let Some(bounds) = cached.get(&glyph.glyph_id) {
+                *bounds
+            } else {
+                let bounds = outline_ink_bounds(font, glyph.glyph_id, size, coords);
+                if *entry_count < SHAPE_CACHE_LIMIT {
+                    cached.insert(glyph.glyph_id, bounds);
+                    *entry_count = entry_count.saturating_add(1);
+                }
+                bounds
+            };
+            let Some(bounds) = bounds else {
+                return false;
+            };
+            let x = f64::from(glyph.x);
+            // Match flush_glyphs' f32 addition before transforming the origin.
+            let y = f64::from(line_y + glyph.y);
+            if !x.is_finite() || !y.is_finite() {
+                return false;
+            }
+            #[allow(clippy::arithmetic_side_effects, reason = "rectangle translation is floating-point arithmetic; nonfinite bounds are rejected below")]
+            let local = bounds + vello::kurbo::Vec2::new(x, y);
+            let projected = transform.transform_rect_bbox(local);
+            let magnitude = [
+                local.x0,
+                local.y0,
+                local.x1,
+                local.y1,
+                projected.x0,
+                projected.y0,
+                projected.x1,
+                projected.y1,
+            ]
+            .iter()
+            .fold(1.0_f64, |m, v| m.max(v.abs()));
+            // Include pixel coverage and accumulated f32 transform/position rounding.
+            let padding = 2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients;
+            let ink = projected.inflate(padding, padding);
+            [ink.x0, ink.y0, ink.x1, ink.y1]
+                .iter()
+                .all(|v| v.is_finite())
+                && (ink.x1 < clip.x0 || ink.x0 > clip.x1 || ink.y1 < clip.y0 || ink.y0 > clip.y1)
+        })
     }
 
     fn visible_discretionary_hyphen(
@@ -3172,6 +3533,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales() {
+        let text = "Tracked resolved text";
+        let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+        let mut renderer = crate::font_catalog::fixture_renderer();
+
+        let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
+        let resolved_at_one = renderer.measure_style(text, None, &resolved);
+        let mut scene_at_one = Scene::new();
+        renderer.draw_style(
+            &mut scene_at_one,
+            text,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            &resolved,
+        );
+
+        renderer.set_text_scale(2.0);
+        let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
+        assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
+
+        let renderer_input = renderer.renderer_input_style(&resolved);
+        assert!((renderer_input.size - 14.0).abs() < 0.001);
+        assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
+        let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
+        assert_eq!(resolved_at_two, resolved_at_one);
+
+        let mut scene_at_two = Scene::new();
+        renderer.draw_style(
+            &mut scene_at_two,
+            text,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            &renderer_input,
+        );
+        let first = scene_at_one.encoding();
+        let second = scene_at_two.encoding();
+        assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
+        for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
+            assert_eq!(left.id, right.id);
+            assert_eq!(left.x, right.x);
+            assert_eq!(left.y, right.y);
+        }
+        assert_eq!(
+            first.resources.glyph_runs.len(),
+            second.resources.glyph_runs.len()
+        );
+        for (left, right) in first
+            .resources
+            .glyph_runs
+            .iter()
+            .zip(&second.resources.glyph_runs)
+        {
+            assert_eq!(left.font_size, right.font_size);
+            assert_eq!(left.transform, right.transform);
+            assert_eq!(left.glyphs, right.glyphs);
+        }
+    }
+
+    #[test]
+    fn resolved_theme_style_applies_ui_and_text_scale_once() {
+        let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
+        let theme = crate::theme::Theme::dark()
+            .with_ui_scale(1.25)
+            .with_text_scale(2.0);
+        let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        renderer.set_text_scale(2.0);
+        let renderer_input = renderer.renderer_input_style(&resolved);
+        let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
+        assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
     }
 }
 

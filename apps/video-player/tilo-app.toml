@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.video-player"
+id       = "so.tilo.video-player"
 name     = "Video Player"
 category = "Multimedia"
 version  = "0.1.0"

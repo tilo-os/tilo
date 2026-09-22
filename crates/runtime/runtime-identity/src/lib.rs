@@ -1,3 +1,9 @@
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::significant_drop_tightening,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Broker-backed identity signing on an owned, connected byte stream.
 //!
 //! [`BrokerSigningIdentity`] requests public metadata and signatures without

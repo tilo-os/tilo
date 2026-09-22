@@ -145,6 +145,15 @@ Debian/Ubuntu. The ARM full cycle currently supports the strong-passphrase
 until one exact measured AAVMF build and its PCR behavior have a release proof;
 merely finding a TPM-capable firmware is not evidence of measured boot.
 
+Protected `imager-v*` release jobs additionally run the x86-64 graphical cycle
+with `--software-tpm`. The job exports only the public certificate from the
+short-lived release signer, verifies its protected fingerprint, and uses
+`virt-fw-vars` to create a disposable enforcing OVMF store which trusts that
+exact certificate. The installed target must then cold-boot and unlock with the
+configured short PIN. Manual rehearsals have no signing lease and therefore do
+not claim this proof. This gate intentionally does not run on ARM64 until a
+specific measured AAVMF build and stable PCR behavior have been qualified.
+
 ### Firmware: only the 4 MB OVMF build can measure
 
 Fedora ships two. `OVMF_CODE_4M.secboot.qcow2` has TPM support compiled in;

@@ -46,7 +46,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FloatingSurfaceWidgetExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -74,7 +74,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         app,
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        args.text_scale,
+        ui::launch::shot_theme(args),
         out,
         scenario,
     )
@@ -92,7 +92,7 @@ pub fn main() {
         qdoc::blobstore::FsBlobStore::default_root(),
     )));
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.chat", chat::app_root)
+        &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
@@ -130,27 +130,11 @@ pub fn main() {
 fn render_shot_to_png(
     mut app: chat::ChatApp,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -175,22 +159,21 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: `widget`, `taffy`, `child`, and `node_map` were built together
+    // and remain exclusively owned for the duration of layout.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

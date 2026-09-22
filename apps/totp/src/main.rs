@@ -1,8 +1,11 @@
 //! Authenticator — standard Tilo application entry point.
 //!
-//! `--shots PATH` uses a deterministic sample vault. `--screen NAME` selects
-//! `add`, `add-advanced`, `add-picker`, or `empty`; the default is the account
-//! list. `--viewport WxH` controls the screenshot size.
+//! `--shots PATH` uses a deterministic sample vault. `--scenario NAME` (the
+//! shared screenshot vocabulary every app speaks; `--screen NAME` is the
+//! older spelling and still accepted) selects `list`, `add`, `add-advanced`,
+//! `add-picker`, `empty`, `provision`, `persistence-error` or
+//! `missing-secret`; the default is the account list. `--viewport WxH`
+//! controls the screenshot size.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -31,9 +34,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.tilo.totp";
+const APP_ID: &str = "so.tilo.totp";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const SCREENS: &[&str] = &[
+    "list",
     "add",
     "add-advanced",
     "add-picker",
@@ -44,8 +48,8 @@ const SCREENS: &[&str] = &[
 ];
 
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    match args.value("--screen") {
-        None => Ok(totp::app_root_demo()),
+    match args.scenario.as_deref().or_else(|| args.value("--screen")) {
+        None | Some("list") => Ok(totp::app_root_demo()),
         Some("add") => Ok(totp::app_root_add_screen()),
         Some("add-advanced") => Ok(totp::app_root_add_advanced_screen()),
         Some("add-picker") => Ok(totp::app_root_add_picker_screen()),
@@ -77,6 +81,7 @@ pub fn main() {
         &LaunchSpec::new(APP_ID, totp::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .scenarios(SCREENS)
             .allowed_options(&["--screen"])
             .configure_app(configure),
     );

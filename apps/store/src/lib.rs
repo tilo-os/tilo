@@ -4,7 +4,7 @@
 //!
 //!   * **Tilo apps** listed by any registry the user has configured. Each
 //!     entry carries an ed25519 publisher signature and a BLAKE3 root
-//!     hash of the `.qpkg`, so the client can verify identity + integrity
+//!     hash of the `.tapp`, so the client can verify identity + integrity
 //!     before running `tilo-install`.
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
 //!     Actions cross the capability-scoped app-host service.

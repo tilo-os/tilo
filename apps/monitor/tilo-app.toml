@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.monitor"
+id       = "so.tilo.monitor"
 name     = "System Monitor"
 category = "System"
 version  = "0.1.0"

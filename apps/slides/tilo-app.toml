@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.slides"
+id       = "so.tilo.slides"
 name     = "Slides"
 category = "Office"
 version  = "0.1.0"

@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.mail"
+id       = "so.tilo.mail"
 name     = "Mail"
 category = "Office"
 version  = "0.1.0"

@@ -1,3 +1,4 @@
+use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
@@ -6,19 +7,26 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::cell::Cell;
 
+#[path = "profiling/native_input_isolation.rs"]
+mod native_input_isolation;
+
+#[path = "animation_schedule.rs"]
+mod animation_schedule;
+
+mod action_directory_snapshot;
+mod bound_record_sync;
 mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
-
-/// Toolkit-owned continuation schema used when an app has no narrower
-/// domain-specific projection. The CRDT document travels on its stable record
-/// route; this payload restores the complementary local presentation state.
-pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
-/// Framework-owned continuation envelope. Every new checkpoint uses this
-/// schema, so app semantics augment rather than replace presentation state.
-pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
+include!("app/floating.rs");
+mod runtime;
+use runtime::{
+    AccessibilityRuntime, ActionRuntime, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
+    InputRuntime, LayoutRuntime, PersistenceRuntime, PresenceRuntime, WindowRuntime,
+};
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -89,206 +97,6 @@ impl ApplicationLaunchPayload {
     }
 }
 
-/// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
-/// strings and `RecordId::for_file` values: both may contain local paths or
-/// app secrets. File navigation is restored by the shell's typed
-/// `FileRecordId` launch intent; this fallback carries presentation only.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct PortableContinuationView {
-    scroll: Vec<f64>,
-    focus_ordinal: Option<usize>,
-    viewport: crate::view::ViewRect,
-    view_mode: Option<String>,
-}
-
-impl PortableContinuationView {
-    fn capture(view: crate::view::View) -> Self {
-        let scroll = view
-            .scroll
-            .into_iter()
-            .filter(|value| value.is_finite())
-            .take(32)
-            .collect();
-        let view_mode = view.view_mode.filter(|mode| {
-            !mode.is_empty()
-                && mode.len() <= 64
-                && mode
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        });
-        Self {
-            scroll,
-            focus_ordinal: view.focus.map(|focus| focus.ordinal),
-            viewport: view.viewport,
-            view_mode,
-        }
-    }
-
-    fn into_view(self) -> crate::view::View {
-        crate::view::View {
-            scroll: self.scroll,
-            focus: self.focus_ordinal.map(|ordinal| crate::view::FocusView {
-                ordinal,
-                ephemeral: String::new(),
-            }),
-            // Stable file records are routed by the shell and never encoded
-            // as the toolkit's path-bearing `RecordId::for_file`.
-            open_resource: None,
-            viewport: self.viewport,
-            view_mode: self.view_mode,
-        }
-    }
-
-    fn valid(&self) -> bool {
-        self.scroll.len() <= 32
-            && self.scroll.iter().all(|value| value.is_finite())
-            && [
-                self.viewport.x,
-                self.viewport.y,
-                self.viewport.width,
-                self.viewport.height,
-            ]
-            .into_iter()
-            .all(f64::is_finite)
-            && self.view_mode.as_ref().is_none_or(|mode| {
-                !mode.is_empty()
-                    && mode.len() <= 64
-                    && mode
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            })
-    }
-}
-
-const CONTINUATION_FACET_PRESENTATION: u8 = 1 << 0;
-const CONTINUATION_FACET_SEMANTIC: u8 = 1 << 1;
-const CONTINUATION_KNOWN_FACETS: u8 = CONTINUATION_FACET_PRESENTATION | CONTINUATION_FACET_SEMANTIC;
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct StructuralContinuationEnvelope {
-    facets: u8,
-    presentation: PortableContinuationView,
-    semantic: Option<StructuralSemanticProjection>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct StructuralSemanticProjection {
-    schema_version: u16,
-    #[serde(with = "serde_bytes")]
-    bytes: Vec<u8>,
-}
-
-/// Facets present in a validated structural continuation envelope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StructuralContinuationFacets(u8);
-
-impl StructuralContinuationFacets {
-    pub fn presentation(self) -> bool {
-        self.0 & CONTINUATION_FACET_PRESENTATION != 0
-    }
-
-    pub fn semantic(self) -> bool {
-        self.0 & CONTINUATION_FACET_SEMANTIC != 0
-    }
-}
-
-fn valid_structural_envelope(envelope: &StructuralContinuationEnvelope) -> bool {
-    envelope.facets & !CONTINUATION_KNOWN_FACETS == 0
-        && envelope.facets & CONTINUATION_FACET_PRESENTATION != 0
-        && (envelope.facets & CONTINUATION_FACET_SEMANTIC != 0) == envelope.semantic.is_some()
-        && envelope.presentation.valid()
-}
-
-/// Inspect the framework facets without exposing their private wire shape.
-pub fn structural_continuation_facets(bytes: &[u8]) -> Option<StructuralContinuationFacets> {
-    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
-    valid_structural_envelope(&envelope).then_some(StructuralContinuationFacets(envelope.facets))
-}
-
-/// Compose the toolkit-owned checkpoint used by [`App`]. Public shell/runtime
-/// hosts may use this to produce the identical envelope in conformance tests.
-pub fn compose_structural_continuation_metadata(
-    view: crate::view::View,
-    semantic: Option<crate::collaboration::ContinuationMetadata>,
-) -> Option<crate::collaboration::ContinuationMetadata> {
-    // Invalid widget projections must never suppress the toolkit checkpoint.
-    // Shell policy performs app-specific validation; these common bounds
-    // prevent malformed implementations from poisoning publication.
-    let semantic = semantic
-        .filter(|metadata| {
-            metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
-                && metadata.schema_version != GENERIC_VIEW_CONTINUATION_SCHEMA
-                && !metadata.bytes.is_empty()
-                && metadata.bytes.len() <= 32 * 1024
-        })
-        .map(|metadata| StructuralSemanticProjection {
-            schema_version: metadata.schema_version,
-            bytes: metadata.bytes,
-        });
-    let facets = CONTINUATION_FACET_PRESENTATION
-        | if semantic.is_some() {
-            CONTINUATION_FACET_SEMANTIC
-        } else {
-            0
-        };
-    let mut envelope = StructuralContinuationEnvelope {
-        facets,
-        presentation: PortableContinuationView::capture(view),
-        semantic,
-    };
-    let mut bytes = postcard::to_stdvec(&envelope).ok()?;
-    if bytes.len() > 32 * 1024 && envelope.semantic.is_some() {
-        envelope.semantic = None;
-        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
-        bytes = postcard::to_stdvec(&envelope).ok()?;
-    }
-    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
-        crate::collaboration::ContinuationMetadata {
-            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
-            bytes,
-        },
-    )
-}
-
-/// Validate and canonicalize a framework envelope at the shell boundary.
-/// An unrecognized app projection is removed rather than retained as opaque
-/// bytes; its generic presentation checkpoint remains usable on every device.
-pub fn sanitize_structural_continuation_metadata(
-    bytes: &[u8],
-    semantic_is_safe: impl FnOnce(u16, &[u8]) -> bool,
-) -> Option<Vec<u8>> {
-    if bytes.is_empty() || bytes.len() > 32 * 1024 {
-        return None;
-    }
-    let mut envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
-    if !valid_structural_envelope(&envelope) {
-        return None;
-    }
-    if envelope.semantic.as_ref().is_some_and(|semantic| {
-        semantic.schema_version == STRUCTURAL_CONTINUATION_SCHEMA
-            || semantic.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA
-            || semantic.bytes.is_empty()
-            || semantic.bytes.len() > 32 * 1024
-            || !semantic_is_safe(semantic.schema_version, &semantic.bytes)
-    }) {
-        envelope.semantic = None;
-        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
-    }
-    postcard::to_stdvec(&envelope)
-        .ok()
-        .filter(|canonical| !canonical.is_empty() && canonical.len() <= 32 * 1024)
-}
-
-/// Validate the toolkit-owned generic wire shape at the shell boundary.
-/// App-provided opaque bytes must not be accepted merely because they use the
-/// generic schema number.
-pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
-    let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
-        return false;
-    };
-    view.valid()
-}
-
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.
@@ -298,7 +106,7 @@ pub enum UserEvent {
         x: f64,
         y: f64,
     },
-    /// `CursorMoved` → Pressed → Released, dispatched as one unit.
+    /// `CursorMoved` â†’ Pressed â†’ Released, dispatched as one unit.
     Click {
         x: f64,
         y: f64,
@@ -307,6 +115,11 @@ pub enum UserEvent {
         dx: f32,
         dy: f32,
     },
+    /// Keyboard press and release routed through the ordinary window handler.
+    Key(winit::keyboard::Key),
+    /// Opt-in workload input with an absolute schedule and stable input identity.
+    NativeScenarioInput(crate::native_scenario::Packet),
+    RenderReady(winit::window::WindowId),
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
@@ -332,7 +145,10 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{
+    AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _,
+    Widget,
+};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
@@ -349,7 +165,7 @@ fn perf_enabled() -> bool {
 }
 
 /// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
-/// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
+/// forcing a full `compute_layout` on every `layout_dirty` frame â€” a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.
 fn scroll_opt_disabled() -> bool {
@@ -363,41 +179,6 @@ fn scroll_opt_disabled() -> bool {
 /// redraw, so their raw demand must not keep an otherwise-idle app awake.
 const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
-}
-
-/// How frequently an otherwise-idle app polls a connected collaboration
-/// transport. The shovel currently has no winit wake bridge, so `Wait`
-/// forever would strand inbound presence/document events; polling it at the
-/// display cadence, however, wakes every built-in app 60 times per second
-/// even when nothing changed. Ten hertz keeps remote state interactive while
-/// bounding idle CPU independently of the monitor refresh rate.
-const COLLAB_IDLE_POLL: Duration = Duration::from_millis(100);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IdlePumpCadence {
-    Wait,
-    Deadline(Instant),
-}
-
-fn idle_pump_deadline(
-    now: Instant,
-    visual_work: bool,
-    collab_connected: bool,
-    scheduled_deadline: Option<Instant>,
-) -> IdlePumpCadence {
-    let periodic = if visual_work {
-        now.checked_add(Duration::from_nanos(16_666_667))
-            .unwrap_or(now)
-    } else if collab_connected {
-        now.checked_add(COLLAB_IDLE_POLL).unwrap_or(now)
-    } else if let Some(deadline) = scheduled_deadline {
-        return IdlePumpCadence::Deadline(deadline);
-    } else {
-        return IdlePumpCadence::Wait;
-    };
-    IdlePumpCadence::Deadline(
-        scheduled_deadline.map_or(periodic, |deadline| deadline.min(periodic)),
-    )
 }
 
 fn continuation_publication(
@@ -418,10 +199,7 @@ fn continuation_publication(
 
 #[cfg(test)]
 mod animation_pump_tests {
-    use super::{
-        COLLAB_IDLE_POLL, IdlePumpCadence, animation_pump_needed, continuation_publication,
-        idle_pump_deadline,
-    };
+    use super::{animation_pump_needed, continuation_publication};
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
@@ -429,33 +207,6 @@ mod animation_pump_tests {
         assert!(animation_pump_needed(true, false));
         assert!(!animation_pump_needed(true, true));
         assert!(!animation_pump_needed(false, false));
-    }
-
-    #[test]
-    fn connected_idle_collaboration_does_not_use_the_animation_cadence() {
-        let now = std::time::Instant::now();
-        assert_eq!(
-            idle_pump_deadline(now, false, true, None),
-            IdlePumpCadence::Deadline(now + COLLAB_IDLE_POLL)
-        );
-        assert_eq!(
-            idle_pump_deadline(now, false, false, None),
-            IdlePumpCadence::Wait
-        );
-        assert_eq!(
-            idle_pump_deadline(now, true, true, None),
-            IdlePumpCadence::Deadline(now + std::time::Duration::from_nanos(16_666_667))
-        );
-    }
-
-    #[test]
-    fn an_earlier_widget_deadline_wins_over_periodic_polling() {
-        let now = std::time::Instant::now();
-        let scheduled = now + std::time::Duration::from_millis(25);
-        assert_eq!(
-            idle_pump_deadline(now, false, true, Some(scheduled)),
-            IdlePumpCadence::Deadline(scheduled)
-        );
     }
 
     #[test]
@@ -637,13 +388,15 @@ struct ResourceCacheKey {
 struct ResourceCache {
     key: ResourceCacheKey,
     declared: Vec<tilo_actions::Resource>,
-    complete: Vec<tilo_actions::Resource>,
+    // None is deferred; Some(empty) is a completed, rejected surface.
+    complete: Option<Vec<tilo_actions::Resource>>,
 }
 
 struct LocalResourceCache {
     key: ResourceCacheKey,
     permission_generation: u64,
-    resources: Vec<tilo_actions::Resource>,
+    // Control availability can exist before the complete local catalogue.
+    resources: Option<Vec<tilo_actions::Resource>>,
     allowed: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
 
@@ -678,7 +431,7 @@ pub struct ControlBindingCoverage {
 
 /// One visible expression of a domain action in the retained UI. The action
 /// address remains the execution identity; this route is presentation
-/// metadata for focus, presence, animation, and “show me where” behavior.
+/// metadata for focus, presence, animation, and â€œshow me whereâ€ behavior.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionUiRoute {
     pub address: tilo_actions::ActionAddress,
@@ -740,16 +493,11 @@ struct ActionRuntime {
     resource_cache: RefCell<Option<ResourceCache>>,
     bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     bound_publication: crate::bound_dispatch::BoundPublication,
-    bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    bound_directory_stamp: Option<(
-        Vec<crate::bound_dispatch::BoundDirectoryWitness>,
-        u64,
-        Vec<String>,
-        String,
-    )>,
+    action_directory_stamp: Option<(action_directory_snapshot::DirectoryWitness, String)>,
+    action_directory_snapshot: Option<action_directory_snapshot::ActionDirectorySnapshot>,
     bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -760,6 +508,8 @@ struct ActionRuntime {
     permission_generation: Cell<u64>,
     last_control_availability: Option<(ResourceCacheKey, u64)>,
     last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    #[cfg(test)]
+    action_surface_publication_attempts: u64,
     /// Opaque, revision-bound continuation state for the broker pull
     /// directory. It holds provider cursors, never resource bodies, and is
     /// touched only by the main/UI thread.
@@ -791,11 +541,11 @@ impl ActionRuntime {
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
-            bound_directory_route: None,
             last_published_bound_route: None,
             #[cfg(test)]
             bound_broker_route_for_test: None,
-            bound_directory_stamp: None,
+            action_directory_stamp: None,
+            action_directory_snapshot: None,
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
@@ -803,6 +553,8 @@ impl ActionRuntime {
             permission_generation: Cell::new(0),
             last_control_availability: None,
             last_published_actions: None,
+            #[cfg(test)]
+            action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
@@ -822,8 +574,16 @@ pub struct App {
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
+    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    #[cfg(any(test, feature = "test-support"))]
+    controlled_installed_history_definition:
+        Option<&'static crate::history_mode::HistoryDefinition>,
+    framework_input: std::rc::Rc<Cell<bool>>,
+    history_key_release: bool,
+    history_focus: Option<crate::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -849,97 +609,29 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<std::time::SystemTime>,
     last_theme_store_check: Instant,
-    modifiers: winit::event::Modifiers,
+    input: InputRuntime,
 
-    interaction: crate::interaction::InteractionEnvironment,
-    platform: crate::platform::PlatformConventions,
+    history: HistoryRuntime,
 
-    nav_gestures: crate::gesture::NavGestureRecognizer,
-
-    // Stable state for Undo/Redo tracking
-    last_stable_focus_idx: Option<usize>,
-    last_stable_metadata: Option<String>,
-
-    // Collaboration
-    collab_manager: CollaborationManager,
-    /// The unqualified `(app, room)` channel carries the room's record
-    /// index.  Once a widget checks out a record, `collab_manager` switches
-    /// to that record's route while this manager remains subscribed solely
-    /// to grants/discovery.
-    room_collab_manager: Option<CollaborationManager>,
-    /// Every committed action is attributed to it and Ctrl+Z only reverts
-    /// actions carrying it, so undo walks past collaborators' work rather
-    /// than through it.
-    local_author: crate::permissions::UserId,
+    collaboration: CollaborationRuntime,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
-    /// `None` disables outbound broadcast (headless tests, `quick-ui`
-    /// examples).
-    presence_broadcast_scope: Option<PresenceKey>,
-    /// `None` is the ordinary case; the shell sets
-    /// [`crate::presence::PointerSpace::Desktop`] for its own chrome, whose
-    /// window *is* the desktop other surfaces resolve against. Set rather
-    /// than guessed — a wrong guess publishes a position in the wrong space
-    /// with nothing to detect it from outside.
-    pointer_space: Option<crate::presence::PointerSpace>,
-    /// The peer "followed" via a clicked presence indicator; `None` = not
-    /// following.
-    followed_peer: Option<String>,
-    last_pointer_broadcast: Option<Instant>,
-    /// Diffed against, to avoid re-sending unchanged presence every frame.
-    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_view_presence: Option<crate::view::ViewSubset>,
-    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
-    /// send. Invoked after the throttle gate.
-    presence_broadcast_sink: Option<PresenceBroadcastSink>,
-    /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-    frame_tick: Option<FrameTick>,
+    presence: PresenceRuntime,
 
-    /// Only calls into winit when it changes, keeping the hot pointer path
-    /// cheap.
-    current_cursor: CursorIcon,
-
-    tooltip_host: crate::widget::TooltipHost,
-
-    /// `None` makes every narration call site a no-op, so a reader-off
-    /// build is byte-for-byte unaffected.
-    screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
-    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
-    /// press/release is tracked here for the `Insert + <key>` command layer.
-    screen_reader_modifier_down: bool,
-    live_region_last: std::collections::HashMap<String, String>,
-
-    /// Tracked to detect the open→close transition and restore focus.
-    focus_trap_active: bool,
-    focus_before_trap: Option<NodeId>,
-
-    /// Kept separate from the live [`Self::theme`] so disabling high
-    /// contrast restores it exactly.
-    base_theme: Theme,
-    a11y: crate::a11y::A11ySettings,
-    text_scale: f32,
-    /// Composes on top of the per-output device scale
-    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
-    /// fractional scale.
-    ui_scale: f32,
+    accessibility: AccessibilityRuntime,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
-    /// frame so a steady desired state issues one `set_fullscreen` call —
+    /// frame so a steady desired state issues one `set_fullscreen` call â€”
     /// see [`fullscreen_request_decision`].
     fullscreen_requested: bool,
     /// To distinguish app-driven from compositor-driven transitions.
     fullscreen_active: bool,
 
-    autosave: Option<crate::persist::Autosave>,
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
-    /// When present the live document is one record's, named by the root
-    /// widget via [`crate::widget::Widget::record_intent`].
-    records: Option<crate::record::RecordSet>,
-    room_index: Option<crate::state::DocumentReplica>,
+    persistence: PersistenceRuntime,
+    autosave_generation: u64,
+    document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -947,17 +639,11 @@ pub struct App {
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
-    /// Last app-owned continuation projection sent to the local shell.
-    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    continuation: ContinuationRuntime,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
-    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
-    /// Generic view restoration waits until the first layout has built the
-    /// focus order. App-specific projections still apply before first sync.
-    pending_continuation_view: Option<crate::view::View>,
-    semantic_tree: crate::a11y_tree::SemanticTree,
-
     profiler: Option<crate::profiling::FrameProfiler>,
+    native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
     /// Wins over the automatic env/package-id/binary-name resolution.
     window_title: Option<String>,
@@ -965,7 +651,7 @@ pub struct App {
     /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
     window_app_id: Option<String>,
 
-    /// Optional app → shell lifecycle channel for detachable surfaces. It is
+    /// Optional app â†’ shell lifecycle channel for detachable surfaces. It is
     /// discovered from the launcher-provided service fd and absent outside a
     /// Tilo session, where apps simply keep their overlays attached.
     floating_surface_client: Option<crate::floating_surface::FloatingSurfaceServiceClient>,
@@ -980,7 +666,7 @@ pub struct App {
     /// desktop coordinate space. Before this edge, presentation geometry is
     /// still app-local and must not overwrite the translated detach request.
     prepared_floating_presentations: std::collections::HashSet<String>,
-    /// App-local → desktop translation supplied by the shell for each
+    /// App-local â†’ desktop translation supplied by the shell for each
     /// prepared native surface. While a frozen transfer proxy owns the pixels,
     /// pointer capture can still arrive through the primary app window; the
     /// runtime uses this to keep that held drag in desktop coordinates.
@@ -1024,6 +710,7 @@ struct AppConstructionInputs {
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
@@ -1041,6 +728,34 @@ struct AppConstructionInputs {
 }
 
 impl AppConstructionInputs {
+    fn native_component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        Self::component_with_services(
+            inputs,
+            binding,
+            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+        )
+    }
+
+    fn component_with_services(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        mut services: Self,
+    ) -> Self {
+        // Keep the explicit presentation and canonical author. Only the native
+        // runner supplies process services; the application factory stays pure.
+        services.configured_theme = ConstructionValue::Ready(inputs.theme);
+        services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
+        services.palette_source = PaletteSource::Host;
+        services.local_author = ConstructionValue::Ready(binding.author.clone());
+        let mut presence = services.presence_ctx.resolve();
+        presence.add_own_identity(&binding.author.0);
+        services.presence_ctx = ConstructionValue::Ready(presence);
+        services
+    }
+
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1052,6 +767,7 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
+            watch_system_settings: false,
             local_author: ConstructionValue::Ready(binding.author.clone()),
             presence_ctx: ConstructionValue::Ready(presence),
             surface_id: ConstructionValue::Ready(format!(
@@ -1081,6 +797,7 @@ impl AppConstructionInputs {
                 renderer: TextRenderer::new,
                 field: crate::widget::SearchField::new,
             },
+            watch_system_settings: true,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -1110,7 +827,7 @@ impl AppConstructionInputs {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn controlled() -> Self {
         Self {
             collab_manager: CollaborationManager::disabled(),
@@ -1120,6 +837,7 @@ impl AppConstructionInputs {
                 renderer: crate::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
+            watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
@@ -1145,31 +863,112 @@ impl AppConstructionInputs {
 }
 
 impl App {
+    /// Install a read-only workload observer for scheduled native inputs.
+    /// Snapshots verify fixture state changes; they do not prove pixel presentation.
+    /// Keep this callback inexpensive: it executes on the UI thread.
+    pub fn set_native_input_probe(&mut self, probe: impl Fn() -> serde_json::Value + 'static) {
+        self.native_input_probe = Some(Box::new(probe));
+    }
+
+    pub(crate) fn native_input_snapshot(&self) -> Option<serde_json::Value> {
+        self.native_input_probe
+            .as_ref()
+            .map(|probe| probe())
+            .or_else(|| {
+                self.root_widget
+                    .native_input_snapshot(&self.state.doc, &self.state.root)
+            })
+    }
+
     /// Mount an already prepared component with explicit presentation and local services.
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::component)
+    }
+
+    /// Mount a standalone native component with the process's existing system
+    /// services, including record-scoped collaboration and accessibility.
+    /// Presentation, identity, storage and authority still belong to the host.
+    /// # Errors
+    /// Preserves the component's recovery owners on mount or route mismatch.
+    pub fn from_component_with_native_services(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+    }
+
+    fn from_component_using(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        construction: fn(
+            crate::application::ComponentRunnerInputs,
+            &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
-        let root = Box::new(crate::widget::BoundAppWidget { component });
-        Ok(Self::from_scoped_parts_with_inputs(
-            scope,
-            State::new(),
-            root,
-            || inputs,
-        ))
+        let binding = component.callback_binding();
+        let inputs = construction(inputs, &binding);
+        if let Some(route) = inputs.collab_manager.primary_route()
+            && !binding.matches_broker_route(Some(route))
+        {
+            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+        }
+        let history = component.history.take();
+        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            return Err(root
+                .component
+                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+        }
+        let mut app = Self::from_scoped_parts_with_inputs(scope, State::new(), root, || inputs);
+        if let Some(registration) = history
+            && let Err(error) = app.install_history(registration)
+        {
+            app.close_components();
+            return Err(crate::launch::LaunchError::ComponentSetup {
+                source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
+                record: binding.checkout,
+                records: binding.records,
+                reports: app.take_component_close_reports(),
+            });
+        }
+        Ok(app)
+    }
+
+    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let theme = Theme::configured().with_a11y(
+            &crate::a11y::A11ySettings {
+                high_contrast: Self::high_contrast_env_enabled(),
+                reduce_motion: Self::reduce_motion_env_enabled(),
+                ..Default::default()
+            },
+            Self::text_scale_env().unwrap_or(1.0),
+            Self::ui_scale_env().unwrap_or(1.0),
+        );
+        let mut text_renderer = TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        crate::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        }
     }
 
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.actions.bound_record_sync = None;
         self.component_close_reports
             .extend(self.root_widget.close_components());
         self.component_close_reports
@@ -1179,7 +978,7 @@ impl App {
     }
     fn close_native_content(&mut self) {
         self.close_components();
-        self.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
@@ -1224,6 +1023,28 @@ impl App {
             )
         }
     }
+    fn dispatch_semantic_node<R>(
+        &mut self,
+        node: NodeId,
+        action: &crate::a11y::Action,
+        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+    ) -> Result<R, String> {
+        let author = self.collaboration.local_author.clone();
+        // SAFETY: the runner exclusively owns the unchanged admitted tree.
+        unsafe {
+            crate::bound_dispatch::invoke_bound_semantic_node(
+                &self.bindings,
+                &self.layout.node_map,
+                node,
+                &mut self.state.doc,
+                &self.state.root,
+                action,
+                &self.permission_ctx,
+                &author,
+                callback,
+            )
+        }
+    }
     fn dispatch_node<R>(
         &mut self,
         node: NodeId,
@@ -1242,6 +1063,41 @@ impl App {
         }
     }
 
+    /// Apply the native host's fallback for an Enter/Space press that the
+    /// focused widget did not consume during normal event dispatch.
+    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
+        if *handled
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(
+                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
+                        ),
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            return;
+        }
+        let Some(focused) = self.focused_node else {
+            return;
+        };
+        let activated = self
+            .dispatch_node(focused, |widget, doc, root| {
+                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+            })
+            .unwrap_or(false);
+        if activated {
+            *handled = true;
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+    }
+
     fn initial_presence_context() -> PresenceCtx {
         // Own identity, in preference order: the handle announced on `Hello`,
         // then the fallback app id. Anything else is somebody else and gets
@@ -1255,12 +1111,44 @@ impl App {
         context
     }
 
+    /// Detached convenience for explicitly supplied managed roots. Production
+    /// launchers construct under their installed wake scope, then install History.
+    /// # Errors
+    /// Refuses invalid or mismatched managed owner registrations.
+    pub fn from_managed_root(
+        state: State,
+        root: crate::history_mode::ManagedRoot,
+    ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
+        root.history.validate_root(root.widget.as_ref())?;
+        let mut app = Self::new(state, root.widget);
+        app.install_history(root.history)?;
+        Ok(app)
+    }
+
+    pub(crate) fn install_history(
+        &mut self,
+        registration: crate::history_mode::HistoryRegistration,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        let _entry = self.enter_wake_scope();
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        registration.validate_root(self.root_widget.as_ref())?;
+        #[cfg(any(test, feature = "test-support"))]
+        let controlled_definition = registration.definition;
+        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(
+            registration,
+            &self.state.doc,
+        )?));
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.controlled_installed_history_definition = Some(controlled_definition);
+        }
+        self.init_layout();
+        self.validate_history_registration()
+    }
+
     /// Construct an explicitly detached app for headless or test execution.
-    ///
-    /// This masks any ambient host while App setup runs. It cannot retroactively
-    /// change handles already captured while constructing `state` or
-    /// `root_widget`. Native launchers must use [`Self::from_factory`],
-    /// [`Self::try_from_factory`], or [`Self::from_scoped_parts`].
+    /// This masks any ambient host while setup runs; native launchers use
+    /// [`Self::from_factory`], [`Self::try_from_factory`] or [`Self::from_scoped_parts`].
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
         let _entry = crate::wake::WakeScope::enter_detached();
         Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
@@ -1341,6 +1229,31 @@ impl App {
         })
     }
 
+    /// Construct a live app without discovering workspace services or identity.
+    ///
+    /// Local effects and wake ownership remain available. The caller still owns
+    /// storage policy; private windows must supply memory-only state/autosave.
+    pub fn from_scoped_parts_local(
+        wake_scope: crate::wake::WakeScope,
+        state: State,
+        root_widget: Box<dyn Widget>,
+    ) -> Self {
+        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
+            let identity = uuid::Uuid::new_v4();
+            let author = crate::permissions::UserId(format!("local:{identity}"));
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity([author.0.clone()]);
+            let mut inputs = AppConstructionInputs::production(CollaborationManager::disabled());
+            inputs.local_author = ConstructionValue::Ready(author);
+            inputs.presence_ctx = ConstructionValue::Ready(presence);
+            inputs.surface_id = ConstructionValue::Ready(format!("local-surface:{identity}"));
+            inputs.pending_continuation_restore = || None;
+            inputs.floating_surface_client = || None;
+            inputs.startup_presence_scope = || None;
+            inputs
+        })
+    }
+
     fn from_scoped_parts_with_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -1351,7 +1264,7 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -1397,7 +1310,7 @@ impl App {
         {
             return false;
         }
-        self.needs_sync = true;
+        self.needs_sync |= event.requires_sync();
         true
     }
 
@@ -1422,13 +1335,20 @@ impl App {
             wake_scope,
             state,
             root_widget,
+            history: None,
+            #[cfg(any(test, feature = "test-support"))]
+            controlled_installed_history_definition: None,
+            framework_input: std::rc::Rc::new(Cell::new(false)),
+            history_key_release: false,
+            history_focus: None,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
+            watch_system_settings: inputs.watch_system_settings,
             layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
             close_admission: crate::close_admission::Admission::default(),
-            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            input: InputRuntime::new(),
             needs_sync: true,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
@@ -1439,14 +1359,11 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            modifiers: winit::event::Modifiers::default(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            platform: crate::platform::PlatformConventions::default(),
-            last_stable_focus_idx: None,
-            last_stable_metadata: None,
-            collab_manager: inputs.collab_manager,
-            room_collab_manager: None,
-            local_author: inputs.local_author.resolve(),
+            history: HistoryRuntime::new(),
+            collaboration: CollaborationRuntime::new(
+                inputs.collab_manager,
+                inputs.local_author.resolve(),
+            ),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
@@ -1472,23 +1389,21 @@ impl App {
             ui_scale: 1.0,
             fullscreen_requested: false,
             fullscreen_active: false,
-            autosave: None,
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
-            records: None,
-            room_index: None,
+            persistence: PersistenceRuntime::new(),
+            autosave_generation: 0,
+            document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
-            last_published_continuation: None,
+            continuation: ContinuationRuntime::new((inputs.pending_continuation_restore)()),
             last_published_playback: None,
             last_playback_publish: None,
-            pending_continuation_restore: (inputs.pending_continuation_restore)(),
-            pending_continuation_view: None,
-            semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: (inputs.profiler)(),
+            native_input_probe: None,
             window_title: None,
             window_app_id: None,
             floating_surface_client: (inputs.floating_surface_client)(),
@@ -1500,18 +1415,18 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.base_theme.reduce_motion,
+        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+        app.accessibility.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
             PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
         };
-        app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = match app.palette_source {
+        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+        app.accessibility.text_scale = match app.palette_source {
             PaletteSource::Host => app.text_renderer.text_scale(),
             PaletteSource::Owned { .. } => (inputs.text_scale)(),
         };
-        app.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.base_theme.ui_scale,
+        app.accessibility.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
             PaletteSource::Owned { .. } => (inputs.ui_scale)(),
         };
         app.rebuild_theme();
@@ -1538,24 +1453,28 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer.set_text_scale(self.text_scale);
-                self.text_scale = self.text_renderer.text_scale();
-                let base = if self.a11y.high_contrast {
+                self.text_renderer
+                    .set_text_scale(self.accessibility.text_scale);
+                self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = if self.accessibility.a11y.high_contrast {
                     Theme::high_contrast()
                 } else {
-                    self.base_theme.clone()
+                    self.accessibility.base_theme.clone()
                 };
                 let theme = base
-                    .with_component_scales(self.text_scale, self.ui_scale)
-                    .with_reduce_motion(self.a11y.reduce_motion);
-                self.ui_scale = theme.ui_scale;
+                    .with_component_scales(
+                        self.accessibility.text_scale,
+                        self.accessibility.ui_scale,
+                    )
+                    .with_reduce_motion(self.accessibility.a11y.reduce_motion);
+                self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => {
-                self.base_theme
-                    .clone()
-                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
-            }
+            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
+                &self.accessibility.a11y,
+                self.accessibility.text_scale,
+                self.accessibility.ui_scale,
+            ),
         };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
@@ -1564,6 +1483,7 @@ impl App {
         self.root_widget
             .set_motion_reduced(self.theme.reduce_motion);
     }
+}
 
     #[allow(
         clippy::too_many_lines,
@@ -1930,13 +1850,29 @@ impl App {
         if let Some(next) = self.actions.resource_generation.get().checked_add(1) {
             self.actions.resource_generation.set(next);
         }
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_stamp = None;
+        self.actions.action_directory_cursors.clear();
         self.actions.resource_cache.get_mut().take();
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
     }
 
-    fn ensure_resource_cache(&self) -> ResourceCacheKey {
+    fn trace_resource_stage(
+        &self,
+        stage: crate::profiling::resource_trace::Stage,
+    ) -> crate::profiling::resource_trace::Span {
+        crate::profiling::resource_trace::Span::start(
+            stage,
+            self.actions.resource_generation.get(),
+            self.actions.permission_generation.get(),
+        )
+    }
+
+    /// Materialize declarations without walking the semantic catalogue.
+    fn ensure_declared_resource_cache(&self) -> ResourceCacheKey {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         let key = self.resource_cache_key();
         if self
             .actions
@@ -1947,14 +1883,48 @@ impl App {
         {
             return key;
         }
-
+        let trace = self.trace_resource_stage(Stage::DeclarationGeneration);
         let mut declared = Vec::new();
         crate::bound_dispatch::collect_unbound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
             &mut declared,
         );
-        let mut complete = declared.clone();
+        trace.finish(CacheResult::NotApplicable);
+        *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
+            key: key.clone(),
+            declared,
+            complete: None,
+        });
+        // A new declaration generation invalidates both local projections.
+        self.actions.local_resource_cache.borrow_mut().take();
+        key
+    }
+
+    fn ensure_resource_cache(&self) -> ResourceCacheKey {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
+        let key = self.resource_cache_key();
+        let trace = self.trace_resource_stage(Stage::ResourceCache);
+        if self
+            .actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| cache.key == key && cache.complete.is_some())
+        {
+            trace.finish(CacheResult::Hit);
+            return key;
+        }
+        trace.finish(CacheResult::Miss);
+        let key = self.ensure_declared_resource_cache();
+        let trace = self.trace_resource_stage(Stage::SemanticConstruction);
+        let mut complete = self
+            .actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
         semantics.refresh_bound(
             self.root_widget.as_ref(),
@@ -1963,6 +1933,8 @@ impl App {
             &[],
         );
         complete.extend(semantics.action_resources());
+        trace.finish(CacheResult::NotApplicable);
+        let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations = tilo_actions::validate_surface(
@@ -1980,15 +1952,17 @@ impl App {
             }
             complete.clear();
         }
-        *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
-            key: key.clone(),
-            declared,
-            complete,
-        });
-        // The local projection is keyed by the same generation, but eagerly
-        // dropping it bounds retained action trees after a large document is
-        // closed.
-        self.actions.local_resource_cache.borrow_mut().take();
+        trace.finish(CacheResult::NotApplicable);
+        if let Some(cache) = self
+            .actions
+            .resource_cache
+            .borrow_mut()
+            .as_mut()
+            .filter(|cache| cache.key == key)
+        {
+            cache.complete = Some(complete);
+        }
+        // Completing this generation must retain its already-filtered allowed set.
         key
     }
 
@@ -2002,7 +1976,8 @@ impl App {
             .map_or_else(Vec::new, |cache| cache.declared.clone())
     }
 
-    fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
+    fn ensure_local_control_cache(&self) -> (ResourceCacheKey, u64) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         fn collect_addresses(
             resources: &[tilo_actions::Resource],
             allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -2015,8 +1990,9 @@ impl App {
             }
         }
 
-        let key = self.ensure_resource_cache();
+        let key = self.ensure_declared_resource_cache();
         let permission_generation = self.actions.permission_generation.get();
+        let trace = self.trace_resource_stage(Stage::LocalCache);
         if self
             .actions
             .local_resource_cache
@@ -2026,22 +2002,18 @@ impl App {
                 cache.key == key && cache.permission_generation == permission_generation
             })
         {
+            trace.finish(CacheResult::Hit);
             return (key, permission_generation);
         }
-        let (declared, complete) = self
+        trace.finish(CacheResult::Miss);
+        let trace = self.trace_resource_stage(Stage::LocalPermissionProjection);
+        let declared = self
             .actions
             .resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(
-                || (Vec::new(), Vec::new()),
-                |cache| (cache.declared.clone(), cache.complete.clone()),
-            );
-        let resources = complete
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
+            .map_or_else(Vec::new, |cache| cache.declared.clone());
         let allowed_resources = declared
             .into_iter()
             .filter_map(|resource| self.filter_resource_for_local_actor(resource))
@@ -2051,9 +2023,59 @@ impl App {
         *self.actions.local_resource_cache.borrow_mut() = Some(LocalResourceCache {
             key: key.clone(),
             permission_generation,
-            resources,
+            resources: None,
             allowed,
         });
+        trace.finish(CacheResult::NotApplicable);
+        (key, permission_generation)
+    }
+
+    fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
+        // Every full consumer still constructs and validates the combined surface.
+        self.ensure_resource_cache();
+        let (key, permission_generation) = self.ensure_local_control_cache();
+        let trace = self.trace_resource_stage(Stage::LocalCache);
+        if self
+            .actions
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.key == key
+                    && cache.permission_generation == permission_generation
+                    && cache.resources.is_some()
+            })
+        {
+            trace.finish(CacheResult::Hit);
+            return (key, permission_generation);
+        }
+        trace.finish(CacheResult::Miss);
+        let trace = self.trace_resource_stage(Stage::LocalPermissionProjection);
+        let complete = self
+            .actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default();
+        let resources = complete
+            .into_iter()
+            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+            .collect();
+        if let Some(cache) = self
+            .actions
+            .local_resource_cache
+            .borrow_mut()
+            .as_mut()
+            .filter(|cache| {
+                cache.key == key && cache.permission_generation == permission_generation
+            })
+        {
+            cache.resources = Some(resources);
+        }
+        trace.finish(CacheResult::NotApplicable);
         (key, permission_generation)
     }
 
@@ -2067,7 +2089,8 @@ impl App {
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .and_then(|cache| cache.resources.clone())
+            .unwrap_or_default();
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -2084,6 +2107,8 @@ impl App {
     }
 
     fn refresh_control_action_availability(&mut self) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
+        let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         self.refresh_history_controls();
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
@@ -2092,12 +2117,27 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
+        trace.finish(CacheResult::NotObserved);
+        let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ =
             crate::bound_dispatch::refresh_bound_controls(self.root_widget.as_mut(), &snapshots);
-        let cache_key = self.ensure_local_resource_cache();
-        if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
+        trace.finish(CacheResult::NotApplicable);
+        // Only ActionEmitter controls consume this address projection. Semantic,
+        // document and legacy controls still use their normal invocation doors.
+        // Recheck presence: widget-local changes can add/remove emitters.
+        if !self.root_widget.has_action_control_bindings() {
+            // A replacement emitter must not inherit a prior refresh stamp.
+            self.actions.last_control_availability = None;
             return;
         }
+        let cache_key = self.ensure_local_control_cache();
+        let trace = self.trace_resource_stage(Stage::ControlCache);
+        if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
+            trace.finish(CacheResult::Hit);
+            return;
+        }
+        trace.finish(CacheResult::Miss);
+        let trace = self.trace_resource_stage(Stage::ControlRefresh);
         // Clone only the compact address set so the cache borrow does not
         // span a mutable call into the retained widget tree.
         let allowed = self
@@ -2111,6 +2151,7 @@ impl App {
         self.root_widget
             .refresh_control_action_availability(&allowed);
         self.actions.last_control_availability = Some(cache_key);
+        trace.finish(CacheResult::NotApplicable);
     }
 
     /// The complete machine-driveable surface: domain resources declared by
@@ -2125,7 +2166,8 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.complete.clone());
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default();
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -2329,7 +2371,8 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.complete.clone())
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default()
             .into_iter()
             .filter_map(remove_reserved)
             .collect::<Vec<_>>();
@@ -2370,12 +2413,20 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
-        if !self.collab_manager.is_connected() {
+        #[cfg(test)]
+        {
+            self.actions.action_surface_publication_attempts = self
+                .actions
+                .action_surface_publication_attempts
+                .saturating_add(1);
+        }
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let route = self.bound_broker_route().cloned();
         if self.actions.last_published_bound_route != route {
             self.actions.last_published_actions = None;
+            self.actions.action_directory_snapshot = None;
             self.actions.last_published_bound_route = route;
         }
         let publication_app_id = self.publication_app_id();
@@ -2394,6 +2445,9 @@ impl App {
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
         {
+            self.actions.action_directory_snapshot = None;
+            self.actions.action_directory_stamp = None;
+            self.actions.action_directory_cursors.clear();
             for entry in binding_coverage
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -2463,6 +2517,7 @@ impl App {
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
+        self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
@@ -2503,18 +2558,19 @@ impl App {
     }
 
     fn action_directory_revision(&mut self) -> String {
-        let route = self.bound_broker_route().cloned();
-        if self.actions.bound_directory_route != route {
-            self.actions.bound_directory_stamp = None;
-            self.actions.bound_directory_route = route;
-        }
-        let Ok(witnesses) =
-            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc)
-        else {
-            return format!("v4:{}", uuid::Uuid::new_v4());
-        };
-        if !witnesses.is_empty() {
-            let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+        let owners =
+            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc);
+        let reusable = owners
+            .as_ref()
+            .is_ok_and(|owners| owners.iter().all(|owner| owner.generation.is_some()));
+        let witness = action_directory_snapshot::DirectoryWitness {
+            key: self.resource_cache_key(),
+            permissions: self.permission_ctx.clone(),
+            permission_generation: self.actions.permission_generation.get(),
+            route: self.bound_broker_route().cloned(),
+            owners: owners.unwrap_or_default(),
+            root_revision: self.root_widget.action_directory_revision(&self.state.doc),
+            providers: crate::bound_dispatch::search_providers(self.root_widget.as_ref())
                 .into_iter()
                 .map(|provider| {
                     format!(
@@ -2526,52 +2582,21 @@ impl App {
                         provider.action_directory_generation()
                     )
                 })
-                .collect::<Vec<_>>();
-            let local = self.actions.resource_generation.get();
-            if let Some((old, generation, old_providers, revision)) =
-                &self.actions.bound_directory_stamp
-                && witnesses.iter().all(|witness| witness.generation.is_some())
-                && old == &witnesses
-                && *generation == local
-                && *old_providers == providers
-            {
-                return revision.clone();
-            }
-            let revision = format!("v4:{}", uuid::Uuid::new_v4());
-            self.actions.bound_directory_stamp =
-                Some((witnesses, local, providers, revision.clone()));
-            return revision;
+                .collect(),
+        };
+        if reusable
+            && let Some((old, revision)) = &self.actions.action_directory_stamp
+            && old == &witness
+        {
+            return revision.clone();
         }
-
-        // Automerge heads are the authority generation for document-backed
-        // resources. Remote revisions never call legacy `resources()`: that
-        // hook predates paging and may allocate an unbounded contextual tree.
-        let heads = self
-            .state
-            .doc
-            .get_heads()
-            .iter()
-            .map(|head| format!("{head:?}"))
-            .collect::<Vec<_>>();
-        let root_revision = self
-            .root_widget
-            .action_directory_revision(&self.state.doc)
-            .unwrap_or_default();
-        let provider_generations =
-            crate::bound_dispatch::search_providers(self.root_widget.as_ref())
-                .into_iter()
-                .filter_map(|provider| {
-                    provider
-                        .action_directory_generation()
-                        .map(|generation| format!("{}:{generation}", provider.name()))
-                })
-                .collect::<Vec<_>>();
-        format!(
-            "v3:{}:{}:{}",
-            heads.join(","),
-            root_revision,
-            provider_generations.join("\u{1e}")
-        )
+        // Generations are updated at mutation boundaries; reading Automerge
+        // heads here would commit an open transaction and split an undo unit.
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_cursors.clear();
+        let revision = format!("v5:{}", uuid::Uuid::new_v4());
+        self.actions.action_directory_stamp = Some((witness, revision.clone()));
+        revision
     }
 
     fn exported_directory_action(
@@ -2602,20 +2627,17 @@ impl App {
         }
     }
 
-    fn directory_resource_row(
+    fn directory_explicit_visibility(
         &self,
         resource: &tilo_actions::Resource,
-        parent_resource: &str,
-        may_descend: bool,
-    ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptors = tilo_actions::door::survey(std::slice::from_ref(resource));
+    ) -> Option<tilo_actions::ActionAddress> {
         let target = self
             .actions
             .bound_publication
             .target(&tilo_actions::ActionAddress::new(resource.id.as_str(), ""))
             .ok()
             .flatten();
-        let explicit = crate::bound_dispatch::publication_visibility(
+        crate::bound_dispatch::publication_visibility(
             self.root_widget.as_ref(),
             &self.state.doc,
             target.as_ref().map(|target| &target.binding),
@@ -2632,16 +2654,41 @@ impl App {
                     .ok()?;
             }
             Some(address)
-        });
-        // A view operation is a safe derived disclosure policy: it does not
-        // mutate or trigger an external effect, and the broker still checks
-        // its action contract before forwarding this container label.
-        let visibility = descriptors.into_iter().find(|descriptor| {
-            explicit
-                .as_ref()
-                .is_some_and(|address| &descriptor.address == address)
-                || (explicit.is_none() && descriptor.kind == tilo_actions::OperationKind::View)
-        })?;
+        })
+    }
+
+    fn directory_resource_row(
+        &self,
+        resource: &tilo_actions::Resource,
+        parent_resource: &str,
+        may_descend: bool,
+    ) -> Option<runtime_collab::ActionDirectoryRow> {
+        // Preserve the explicit-or-View disclosure rule, finding only the
+        // needed descriptor in this bounded provider result, not surveying a
+        // complete action catalogue for each displayed row.
+        fn visibility(
+            resource: &tilo_actions::Resource,
+            explicit: Option<&tilo_actions::ActionAddress>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            resource
+                .actions
+                .iter()
+                .find(|action| match explicit {
+                    Some(address) => {
+                        address.resource == resource.id.as_str() && address.action == action.id
+                    }
+                    None => action.kind == tilo_actions::OperationKind::View,
+                })
+                .map(|action| App::directory_descriptor(resource, action))
+                .or_else(|| {
+                    resource
+                        .children
+                        .iter()
+                        .find_map(|child| visibility(child, explicit))
+                })
+        }
+        let explicit = self.directory_explicit_visibility(resource);
+        let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
             resource: resource.id.as_str().to_owned(),
@@ -2662,13 +2709,45 @@ impl App {
         })
     }
 
+    fn directory_descriptor(
+        resource: &tilo_actions::Resource,
+        action: &tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionDescriptor {
+        tilo_actions::ActionDescriptor {
+            address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),
+            resource_kind: resource.kind.clone(),
+            resource_label: resource.label.clone(),
+            action_label: action.label.clone(),
+            description: action.description.clone(),
+            locus: action.locus,
+            kind: action.kind,
+            contract: action.contract.clone(),
+            input: match &action.input {
+                tilo_actions::ActionInput::Immediate(_) => tilo_actions::InputSpec::None,
+                tilo_actions::ActionInput::Prompted {
+                    prompt,
+                    placeholder,
+                    collects,
+                    ..
+                } => tilo_actions::InputSpec::Text {
+                    prompt: prompt.clone(),
+                    placeholder: placeholder.clone(),
+                    collects: *collects,
+                },
+            },
+            params: action.params().to_vec(),
+        }
+    }
+
     fn directory_action_row(
         resource: &tilo_actions::Resource,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptor = tilo_actions::door::survey(std::slice::from_ref(resource))
-            .into_iter()
-            .find(|descriptor| descriptor.address.action == action_id)?;
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)?;
+        let descriptor = Self::directory_descriptor(resource, action);
         let exported = Self::exported_directory_action(&descriptor);
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: resource.id.as_str().to_owned(),
@@ -2828,10 +2907,29 @@ impl App {
         if query.needle.is_empty() {
             if query.parent_resource.is_empty() {
                 let mut widget_index = state.root_widget_index;
-                let mut provider_cursor = state.root_provider_cursor;
+                let mut provider_cursor = state.root_provider_cursor.clone();
                 let mut inspected = 0usize;
                 let mut exhausted = false;
-                while rows.len() < max_results && inspected < max_work {
+                let mut projected_offset = state.browse_offset;
+                let mut projected_done = true;
+                if let Some(snapshot) = &self.actions.action_directory_snapshot {
+                    while let Some(row) = snapshot.roots.get(projected_offset) {
+                        if rows.len() >= max_results || inspected >= max_work {
+                            break;
+                        }
+                        let mut row = row.clone();
+                        row.has_children &= max_depth > 0;
+                        add(row, &mut rows, &mut estimated_bytes);
+                        if estimated_bytes > max_bytes {
+                            rows.pop();
+                            break;
+                        }
+                        projected_offset = projected_offset.saturating_add(1);
+                        inspected = inspected.saturating_add(1);
+                    }
+                    projected_done = projected_offset >= snapshot.roots.len();
+                }
+                while projected_done && rows.len() < max_results && inspected < max_work {
                     let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
                         &self.state.doc,
@@ -2897,6 +2995,9 @@ impl App {
                     let before_index = widget_index;
                     let before_cursor = provider_cursor.clone();
                     if let Some(resource) = page.resources.first()
+                        && !self.actions.action_directory_snapshot.as_ref().is_some_and(
+                            |snapshot| snapshot.nodes.contains_key(resource.id.as_str()),
+                        )
                         && let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
                     {
                         add(row, &mut rows, &mut estimated_bytes);
@@ -2933,6 +3034,7 @@ impl App {
                 }
                 let next_cursor = (!exhausted).then(|| {
                     self.action_directory_next_cursor(ActionDirectoryCursor {
+                        browse_offset: projected_offset,
                         root_widget_index: widget_index,
                         root_provider_cursor: provider_cursor,
                         ..state
@@ -2947,6 +3049,46 @@ impl App {
                     budget_exhausted: !exhausted,
                 };
             }
+            let mut offset = state.browse_offset;
+            let mut inspected = 0usize;
+            let mut projected_total = 0usize;
+            if let Some(node) = self
+                .actions
+                .action_directory_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.nodes.get(&query.parent_resource))
+            {
+                projected_total = node.rows.len();
+                while let Some(row) = node.rows.get(offset) {
+                    if rows.len() >= max_results || inspected >= max_work {
+                        break;
+                    }
+                    let mut row = row.clone();
+                    row.has_children &= max_depth > 0
+                        && node.depth.saturating_add(1) < usize::from(ACTION_DIRECTORY_MAX_DEPTH);
+                    add(row, &mut rows, &mut estimated_bytes);
+                    if estimated_bytes > max_bytes {
+                        rows.pop();
+                        break;
+                    }
+                    offset = offset.saturating_add(1);
+                    inspected = inspected.saturating_add(1);
+                }
+            }
+            if offset < projected_total || rows.len() >= max_results || inspected >= max_work {
+                let next_cursor = self.action_directory_next_cursor(ActionDirectoryCursor {
+                    browse_offset: offset,
+                    ..state
+                });
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows,
+                    next_cursor,
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                };
+            }
             let parent = self.resolve_publication_resource(&query.parent_resource, "");
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
                 resource
@@ -2958,20 +3100,44 @@ impl App {
             let direct = parent
                 .as_ref()
                 .map_or_else(Vec::new, |resource| resource.children.clone());
-            let mut offset = state.browse_offset;
-            let mut inspected = 0usize;
-            let total = parent_actions.len().saturating_add(direct.len());
+            let total = projected_total
+                .saturating_add(parent_actions.len())
+                .saturating_add(direct.len());
             while offset < total && rows.len() < max_results && inspected < max_work {
-                let row = if offset < parent_actions.len() {
-                    parent.as_ref().and_then(|resource| {
-                        Self::directory_action_row(resource, &parent_actions[offset])
-                    })
+                let provider_offset = offset.saturating_sub(projected_total);
+                let row = if provider_offset < parent_actions.len() {
+                    let action = &parent_actions[provider_offset];
+                    let projected =
+                        self.actions
+                            .action_directory_snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| {
+                                snapshot
+                                    .actions
+                                    .contains_key(&tilo_actions::ActionAddress::new(
+                                        &query.parent_resource,
+                                        action,
+                                    ))
+                            });
+                    if projected {
+                        None
+                    } else {
+                        parent
+                            .as_ref()
+                            .and_then(|resource| Self::directory_action_row(resource, action))
+                    }
                 } else {
-                    self.directory_resource_row(
-                        &direct[offset - parent_actions.len()],
-                        &query.parent_resource,
-                        max_depth > 0,
-                    )
+                    let resource = &direct[provider_offset - parent_actions.len()];
+                    if self
+                        .actions
+                        .action_directory_snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.id.as_str()))
+                    {
+                        None
+                    } else {
+                        self.directory_resource_row(resource, &query.parent_resource, max_depth > 0)
+                    }
                 };
                 if let Some(row) = row {
                     add(row, &mut rows, &mut estimated_bytes);
@@ -3201,6 +3367,18 @@ impl App {
         if revision != self.action_directory_revision() {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        if let Some(row) = self
+            .actions
+            .action_directory_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .actions
+                    .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
+            })
+        {
+            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+        }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
@@ -3238,9 +3416,9 @@ impl App {
         if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
             return;
         }
-        let semantic = self
-            .root_widget
-            .continuation_metadata(&self.state.doc, &self.state.root);
+        let semantic = self.root_widget.continuable().and_then(|continuable| {
+            continuable.continuation_metadata(&self.state.doc, &self.state.root)
+        });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let metadata = compose_structural_continuation_metadata(view, semantic);
         if metadata == self.last_published_continuation {
@@ -3256,11 +3434,12 @@ impl App {
         self.last_published_continuation = metadata;
     }
 
+impl App {
     /// Publish private source descriptors over the authenticated local app
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collab_manager.is_connected() {
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let now = Instant::now();
@@ -3279,7 +3458,8 @@ impl App {
         let Ok(reports_json) = serde_json::to_vec(&reports) else {
             return;
         };
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(crate::collaboration::CollabRequest::ReportPlayback {
                 app_id,
                 reports_json,
@@ -3287,6 +3467,7 @@ impl App {
         self.last_published_playback = Some(reports);
         self.last_playback_publish = Some(now);
     }
+}
 
     fn apply_pending_continuation_restore(&mut self) {
         if let Some(metadata) = self.pending_continuation_restore.take() {
@@ -3302,11 +3483,13 @@ impl App {
                             schema_version: semantic.schema_version,
                             bytes: semantic.bytes,
                         };
-                        let _ = self.root_widget.restore_continuation_metadata(
-                            &metadata,
-                            &mut self.state.doc,
-                            &root,
-                        );
+                        if let Some(continuable) = self.root_widget.continuable_mut() {
+                            let _ = continuable.restore_continuation_metadata(
+                                &metadata,
+                                &mut self.state.doc,
+                                &root,
+                            );
+                        }
                         self.invalidate_widget_resource_cache();
                     }
                 }
@@ -3320,11 +3503,13 @@ impl App {
                 return;
             }
             let root = self.state.root.clone();
-            let _ = self.root_widget.restore_continuation_metadata(
-                &metadata,
-                &mut self.state.doc,
-                &root,
-            );
+            if let Some(continuable) = self.root_widget.continuable_mut() {
+                let _ = continuable.restore_continuation_metadata(
+                    &metadata,
+                    &mut self.state.doc,
+                    &root,
+                );
+            }
             self.invalidate_widget_resource_cache();
         }
     }
@@ -4078,6 +4263,19 @@ impl App {
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
         self.service_close_admission();
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input())
+        {
+            self.discard_history_local_intents();
+            return 0;
+        }
+        // Embedded History refresh discards only its own hidden live queue.
+        // Defer sibling work until this input frame ends without consuming it.
+        if self.framework_input.get() {
+            return 0;
+        }
         let mut dispatched = self.dispatch_history_controls();
         let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         if let Some(error) = bound.error {
@@ -4336,6 +4534,11 @@ impl App {
         }
         if changed {
             self.invalidate_widget_resource_cache();
+            // Accepted operations can finish from a later model pass without
+            // another broker or native input event. Their progress/terminal
+            // transition may change document-dependent operations, so refresh
+            // the broker surface from this lifecycle boundary as well.
+            self.publish_action_surface();
         }
         changed
     }
@@ -4351,7 +4554,8 @@ impl App {
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .and_then(|cache| cache.resources.clone())
+            .unwrap_or_default();
         resources.extend(self.history_local_resources());
         let cached_open_resources = {
             self.actions
@@ -4454,7 +4658,8 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key && cache.permission_generation == generation)
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .and_then(|cache| cache.resources.clone())
+            .unwrap_or_default();
         resources.extend(self.history_local_resources());
         let lazy_resource_ids = self
             .actions
@@ -4973,6 +5178,7 @@ impl App {
         }
     }
 
+impl App {
     /// Reconciles both directions, idempotently: app-driven (push
     /// `fullscreen_intent` to the window on change) and compositor-driven
     /// (read the actual state back and notify the root on a transition, e.g.
@@ -4981,7 +5187,8 @@ impl App {
         let mut changed = false;
 
         let want = self.root_widget.fullscreen_intent();
-        if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
+        if let Some(new_state) = fullscreen_request_decision(self.window.fullscreen_requested, want)
+        {
             if new_state {
                 // An empty monitor list falls back to `Borderless(None)`,
                 // still a full-output surface.
@@ -5006,7 +5213,7 @@ impl App {
             } else {
                 window.set_fullscreen(None);
             }
-            self.fullscreen_requested = new_state;
+            self.window.fullscreen_requested = new_state;
             changed = true;
         }
 
@@ -5016,13 +5223,13 @@ impl App {
         changed
     }
 
-    /// Split from [`Self::reconcile_fullscreen`] so the App→root notification
+    /// Split from [`Self::reconcile_fullscreen`] so the Appâ†’root notification
     /// wiring is unit-testable without a live winit window.
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
-        if actual == self.fullscreen_active {
+        if actual == self.window.fullscreen_active {
             return false;
         }
-        self.fullscreen_active = actual;
+        self.window.fullscreen_active = actual;
         self.root_widget.on_fullscreen_changed(actual);
         self.needs_sync = true;
         self.layout.layout_dirty = true;
@@ -5039,24 +5246,24 @@ impl App {
             return false;
         };
         let mut changed = false;
-        if intent.base_theme.name != self.base_theme.name {
-            self.base_theme = intent.base_theme;
+        if intent.base_theme.name != self.accessibility.base_theme.name {
+            self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
-        if intent.high_contrast != self.a11y.high_contrast {
-            self.a11y.high_contrast = intent.high_contrast;
+        if intent.high_contrast != self.accessibility.a11y.high_contrast {
+            self.accessibility.a11y.high_contrast = intent.high_contrast;
             changed = true;
         }
-        if intent.reduce_motion != self.a11y.reduce_motion {
-            self.a11y.reduce_motion = intent.reduce_motion;
+        if intent.reduce_motion != self.accessibility.a11y.reduce_motion {
+            self.accessibility.a11y.reduce_motion = intent.reduce_motion;
             changed = true;
         }
-        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
-            self.text_scale = intent.text_scale;
+        if (intent.text_scale - self.accessibility.text_scale).abs() > f32::EPSILON {
+            self.accessibility.text_scale = intent.text_scale;
             changed = true;
         }
-        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = intent.ui_scale;
+        if (intent.ui_scale - self.accessibility.ui_scale).abs() > f32::EPSILON {
+            self.accessibility.ui_scale = intent.ui_scale;
             changed = true;
         }
         if changed {
@@ -5084,8 +5291,8 @@ impl App {
         stamp: impl FnOnce() -> Option<std::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Prepared components retain the caller's presentation and local services.
-        if matches!(self.palette_source, PaletteSource::Host) {
+        // Only an explicitly native service host watches process settings.
+        if !self.watch_system_settings {
             return false;
         }
         if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
@@ -5105,17 +5312,17 @@ impl App {
     }
 
     fn apply_configured_theme(&mut self) {
-        self.base_theme = Theme::configured();
+        self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
-        if let Some(reader) = self.screen_reader.as_mut() {
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
         }
-        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -5146,7 +5353,7 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
-        if !self.interaction.supports_hover() {
+        if !self.input.interaction.supports_hover() {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
@@ -5164,6 +5371,7 @@ impl App {
         }
         best.map(|(_, rect, label)| (rect, label))
     }
+}
 
     /// Called once per event-loop wakeup, so it must be cheap and
     /// non-blocking.
@@ -5197,7 +5405,7 @@ impl App {
     }
 
     /// Decides *whether* to publish and under what scope, not what space the
-    /// pointer is in — see [`Self::set_pointer_space`].
+    /// pointer is in â€” see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         let _entry = self.enter_wake_scope();
         self.presence_broadcast_scope.clone_from(&key);
@@ -5267,6 +5475,9 @@ impl App {
         if let Some(next) = self.actions.permission_generation.get().checked_add(1) {
             self.actions.permission_generation.set(next);
         }
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_stamp = None;
+        self.actions.action_directory_cursors.clear();
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
@@ -5432,7 +5643,7 @@ impl App {
         }
     }
 
-    /// The subset has no `PresencePayload` variant of its own — it rides the
+    /// The subset has no `PresencePayload` variant of its own â€” it rides the
     /// existing presence frame inside a
     /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
     /// inert paired payload; the receiver recognises the key and decodes the
@@ -5499,36 +5710,6 @@ impl App {
         let events = self.collab_manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
-        }
-    }
-
-    fn apply_signed_document_envelope(
-        &mut self,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
-    ) {
-        if self.records.is_some() && self.room_collab_manager.is_none() {
-            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
-            return;
-        }
-        let applied = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                self.state.merge_snapshot(&data).is_ok()
-            }
-            Ok(collab_types::DocumentMutation::Incremental(data)) => {
-                self.state.load_incremental(&data).is_ok()
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
-                false
-            }
-        };
-        if applied {
-            self.invalidate_widget_resource_cache();
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
         }
     }
 
@@ -5631,13 +5812,18 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
-        for request in self.root_widget.take_collab_requests() {
-            self.collab_manager.send(request);
+        self.refresh_document_routes();
+        self.drain_document_routes();
+        self.publish_owned_documents();
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
+            self.collaboration.manager.send(request);
         }
-        let events = self.collab_manager.poll();
+        let events = self.collaboration.manager.poll();
+        let mut action_surface_may_have_changed = false;
         for event in events {
             any = true;
-            self.root_widget.handle_collab_event(&event);
+            action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
+            self.forward_session_notification(&event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -5696,18 +5882,10 @@ impl App {
                 } => {
                     // Broker pre-validated each envelope, trusted the same
                     // way as a live document mutation.
-                    tracing::debug!(
-                        target: "tilo.state",
-                        event = "document_scrollback",
-                        operations = ops.len(),
-                        "applying document scrollback"
-                    );
-                    for (index, envelope) in ops.into_iter().enumerate() {
-                        let decrypted = decrypted_payloads
-                            .get(index)
-                            .and_then(|payload| payload.as_deref());
-                        self.apply_signed_document_envelope(&envelope, decrypted);
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
+                    self.apply_document_scrollback(ops, &decrypted_payloads);
                 }
                 CollabEvent::Invocation {
                     id,
@@ -5799,7 +5977,27 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
+        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
+            && self.actions.last_published_actions.is_some()
+            && self.actions.action_directory_snapshot.is_none();
+        if action_surface_may_have_changed || published_snapshot_was_evicted {
+            // The normal idle pump also repairs invalidation from a later
+            // model sync or a presence-only batch. Neither necessarily brings
+            // another action event after a terminal operation was published.
+            // Query/resolve remain bounded reads; this refresh runs even with
+            // no directory requests or inbound events, and skips stable idle.
+            self.publish_action_surface();
+        }
         any
+    }
+
+    fn collab_event_may_change_action_surface(event: &CollabEvent) -> bool {
+        !matches!(
+            event,
+            CollabEvent::FollowChanged { .. }
+                | CollabEvent::RemoteCursorMoved { .. }
+                | CollabEvent::RemotePresenceUpdate { .. }
+        )
     }
 
     /// The self row carries the address others use for this participant (so
@@ -5819,7 +6017,7 @@ impl App {
         // Filtered to others: letting the self row through would put the
         // local user in every list built from presence.
         for c in collaborators.into_iter().filter(|c| !c.is_self) {
-            // Relabel only — the roster doesn't say where a peer's pointer
+            // Relabel only â€” the roster doesn't say where a peer's pointer
             // is, so it must not mint one at the origin.
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
@@ -5859,7 +6057,7 @@ impl App {
         }
     }
 
-    /// Bypasses the collab manager's socket/poll path — for tests using a
+    /// Bypasses the collab manager's socket/poll path â€” for tests using a
     /// `MemoryRelay`.
     #[doc(hidden)]
     // This test adapter deliberately mirrors the complete collaboration event
@@ -5870,7 +6068,8 @@ impl App {
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.handle_collab_event(&event);
+        let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
+        self.forward_session_notification(&event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -5889,6 +6088,13 @@ impl App {
                 ..
             } => {
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
+            }
+            CollabEvent::ScrollbackBatch {
+                ops,
+                decrypted_payloads,
+                ..
+            } => {
+                self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
@@ -5975,12 +6181,16 @@ impl App {
             _ => {}
         }
         self.invalidate_widget_resource_cache();
+        if action_surface_may_have_changed {
+            self.publish_action_surface();
+        }
     }
 
     pub fn local_author(&self) -> &crate::permissions::UserId {
         &self.local_author
     }
 
+impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         self.invalidate_widget_resource_cache();
@@ -6034,6 +6244,12 @@ impl App {
             None
         }
 
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
+            self.update_history_focus_order();
+            return;
+        }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
             return;
@@ -6059,7 +6275,7 @@ impl App {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 } else {
-                    // No focusable content — drop focus so Tab can't reach
+                    // No focusable content â€” drop focus so Tab can't reach
                     // the content behind the backdrop.
                     self.set_focused_node(None);
                 }
@@ -6173,6 +6389,14 @@ impl App {
 
     /// Unique admitted node visits keep child reports and requests off shell history.
     fn service_history(&mut self) -> bool {
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return false;
+        }
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -6180,7 +6404,8 @@ impl App {
                 std::ptr::from_mut(self.root_widget.as_mut()),
                 &self.layout.node_map,
                 &self.bindings,
-                &self.local_author,
+                &self.collaboration.local_author,
+                &self.permission_ctx,
             )
         };
         let mut visited = std::collections::HashSet::new();
@@ -6206,6 +6431,15 @@ impl App {
                         .history_request(&mut self.state.doc, request)
                         .ok()
                         .flatten()
+                } else if let Some(owner) = self.bindings.legacy_for(node) {
+                    crate::bound_dispatch::legacy_history_request(
+                        &owner,
+                        request,
+                        &self.permission_ctx,
+                        &self.collaboration.local_author,
+                    )
+                    .ok()
+                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => {
@@ -6218,10 +6452,39 @@ impl App {
                 };
                 changed |= entry.is_some();
             }
-            let status = if let Some(binding) = binding {
-                binding.undo_status(&mut self.state.doc).unwrap_or_default()
-            } else {
-                self.state.undo_status(Some(&self.local_author))
+            // The former eager status read flushed open transactions whenever
+            // history existed. Preserve that boundary without deriving labels.
+            if binding.is_none()
+                && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+                && (self
+                    .state
+                    .can_undo_as(Some(&self.collaboration.local_author))
+                    || self
+                        .state
+                        .can_redo_as(Some(&self.collaboration.local_author)))
+            {
+                self.state.doc.get_heads();
+            }
+            // Bound histories intentionally keep completed-action labels warm
+            // across pending edits and dynamically mounted controls.
+            let bound_status = binding
+                .as_ref()
+                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .or_else(|| {
+                    self.bindings
+                        .legacy_status(node, &self.collaboration.local_author)
+                });
+            let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+            let mut status = || {
+                bound_status.clone().unwrap_or_else(|| {
+                    if embedded {
+                        self.state
+                            .undo_status_snapshot(Some(&self.collaboration.local_author))
+                    } else {
+                        self.state
+                            .undo_status(Some(&self.collaboration.local_author))
+                    }
+                })
             };
             // SAFETY: the same unique admitted node remains live and exclusive.
             let _ = unsafe {
@@ -6229,7 +6492,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.set_undo_status(&status),
+                    |widget| widget.set_undo_status(&mut status),
                 )
             };
         }
@@ -6252,13 +6515,21 @@ impl App {
     }
 
     fn commit_action(&mut self) {
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return;
+        }
         if self.service_history() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
-        // not the CRDT — `changed` lets those skip persisting/syncing.
+        // not the CRDT â€” `changed` lets those skip persisting/syncing.
         let context = self.root_widget.take_commit_context();
         let changed = self.state.commit_action_authored_with_context(
             self.last_stable_focus_idx,
@@ -6276,7 +6547,7 @@ impl App {
         });
         self.invalidate_widget_resource_cache();
 
-        // Incremental delta, not the whole document — serialising per
+        // Incremental delta, not the whole document â€” serialising per
         // keystroke scales with document size. `UndoLog::apply_inverse`
         // writes the inverse as new changes, so a delta carries undo/redo
         // like any other edit.
@@ -6286,6 +6557,7 @@ impl App {
     }
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+        self.suspend_history_focus(new_id);
         if new_id.is_some_and(|node| self.is_history_node(node)) {
             self.remember_history_content();
         }
@@ -6358,7 +6630,7 @@ impl App {
         Some((id, crate::screen_reader::describe_state(&node)))
     }
 
-    /// Only fires if focus did NOT move — a move is narrated separately by
+    /// Only fires if focus did NOT move â€” a move is narrated separately by
     /// [`set_focused_node`].
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
         let Some((pre_id, pre_state)) = pre else {
@@ -6536,7 +6808,7 @@ impl App {
     }
 
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
-    /// pointer click-through — gating Tab on it instead either froze focus
+    /// pointer click-through â€” gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         modal_rect.is_none() || self.focus_trap_active
@@ -6569,30 +6841,6 @@ impl App {
             return self.focus_tab(self.modifiers.state().shift_key());
         }
         false
-    }
-
-    /// Native Enter/Space fallback, after the focused widget has declined input.
-    fn activate_focused_control_key(&mut self, event: &WindowEvent) -> bool {
-        if !matches!(event, WindowEvent::KeyboardInput { event, .. }
-            if event.state == winit::event::ElementState::Pressed
-                && matches!(event.logical_key, winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space)))
-        {
-            return false;
-        }
-        let Some(fid) = self.focused_node else {
-            return false;
-        };
-        let did = self
-            .dispatch_node(fid, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
-            })
-            .unwrap_or(false);
-        if did {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
-        did
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -6628,6 +6876,21 @@ impl App {
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        if let Some(history) = &self.history {
+            let resources = if history.live_interactive() {
+                self.collect_declared_resources()
+            } else {
+                vec![]
+            };
+            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+                &self.history_presentation_roots(),
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                scale,
+                &resources,
+            );
+        }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
         self.with_native_presentation(|root, nodes, focused, _| {
@@ -6695,7 +6958,7 @@ impl App {
             let _ = self.open_action_palette_at(&address);
             return true;
         }
-        let actor = crate::collaboration::local_user_id().0;
+        let actor = self.collaboration.local_author.0.clone();
         if self
             .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
             .is_ok()
@@ -6711,27 +6974,45 @@ impl App {
     /// refusal; synthetic children additionally carry an opaque stable target
     /// produced by that widget. If a retained widget declines, `Action::Focus`
     /// moves keyboard focus and activation returns click coordinates.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence"
+    )]
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        use crate::accesskit_bridge::{A11yTarget, resolve_node_id_bound};
+        use crate::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
 
         self.refresh_control_action_availability();
+        // A retained AT id is operable only while the exact target is exported
+        // in the current presentation; hidden resources cannot bypass chrome.
+        if !self
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .any(|(id, _)| *id == target)
+        {
+            return None;
+        }
         if self.dispatch_resource_a11y_action(target, action) {
             return None;
         }
 
-        let resolved = self
-            .with_native_presentation(|root, nodes, _, _| {
-                resolve_node_id_bound(root, nodes, target)
-            })
-            .ok()
-            .flatten()?;
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        let resolved = if self.history.is_some() {
+            self.history_presentation_roots()
+                .into_iter()
+                .find_map(|root| exported.resolve(root, target))?
+        } else {
+            self.with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+                .ok()
+                .flatten()?
+        };
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
             A11yTarget::Root => return None,
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
@@ -6742,8 +7023,23 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target, true),
         };
+        let framework = crate::history_mode::embedded::owns_node(
+            self.root_widget.as_ref(),
+            taffy_id,
+            &self.layout.taffy,
+        ) || self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &self.framework_input,
+            framework || self.bindings.owns_document(taffy_id),
+        );
+        if framework {
+            self.suspend_history_focus(Some(taffy_id));
+        }
         let handled = self
-            .dispatch_node(taffy_id, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     widget.perform_semantic_action(target, action, doc, root)
                 } else if synthetic {
@@ -6754,7 +7050,12 @@ impl App {
             })
             .ok()?;
         if handled {
-            if matches!(action, Action::Focus) {
+            if matches!(action, Action::Focus)
+                || (matches!(action, Action::SetSelection { .. })
+                    && self
+                        .inspect_node(taffy_id, |widget| widget.is_focused())
+                        .unwrap_or(false))
+            {
                 self.set_focused_node(Some(taffy_id));
             }
             // `Widget::perform_action` is deliberately the same path as a
@@ -6766,6 +7067,11 @@ impl App {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout.layout_dirty = true;
+            if framework {
+                self.refresh_framework_history(
+                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
+                );
+            }
             return None;
         }
 
@@ -6829,6 +7135,10 @@ impl App {
         ];
         let mut handled_any = false;
         for event in events {
+            if self.history_controls_event(&event, 1.0) {
+                handled_any |= self.dispatch_framework_history_event(&event, 1.0);
+                continue;
+            }
             let mut handled = false;
             let mut focus_target = None;
             self.presentation_handle_event(&event, 1.0, &mut handled, &mut focus_target);
@@ -6858,10 +7168,7 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
-        let mut tree = std::mem::replace(
-            &mut self.semantic_tree,
-            crate::a11y_tree::SemanticTree::new(),
-        );
+        let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
             .with_native_presentation(|root, nodes, focused, _| {
                 tree.refresh_components(root, nodes, focused, &resources, &components)
@@ -6959,7 +7266,18 @@ impl App {
                     return Ok(false);
                 };
                 if let Some(semantic_target) = semantic_target {
-                    let taffy_id = NodeId::from(taffy_raw);
+                    // Semantic owners use the same lifetime-scoped aliases as
+                    // native accessibility. Resolve only current admissions;
+                    // an expired alias must never fall back to a raw layout id.
+                    let exported = self.bindings.exported_nodes(&self.layout.node_map);
+                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
+                        .resolve(
+                            self.root_widget.as_ref(),
+                            accesskit::NodeId(taffy_raw.saturating_add(1)),
+                        )
+                    else {
+                        return Ok(false);
+                    };
                     let keyed_path = semantic_target
                         .strip_prefix("tilo.key-action:")
                         .and_then(|target| target.rsplit_once(':'))
@@ -7047,7 +7365,7 @@ impl App {
         self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
-        if let Some(view) = self.pending_continuation_view.take() {
+        if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
@@ -7056,10 +7374,10 @@ impl App {
         {
             self.set_focused_node(Some(first));
         }
-        self.last_stable_focus_idx = self
+        self.history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
+        self.history.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -7124,7 +7442,7 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change && !self.focus_trap_active {
+        if self.autofocus_on_structure_change && !self.accessibility.focus_trap_active {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -7160,15 +7478,65 @@ impl App {
     /// previous session left plus its writer:
     ///
     /// ```ignore
-    /// let (state, autosave) = ui::persist::open("dev.tilo.my-app");
-    /// ui::App::from_factory(state, my_app::app_root)
+    /// let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
+    /// tilo_ui::App::from_factory(state, my_app::app_root)
     ///     .with_autosave(autosave)
     ///     .run();
     /// ```
     #[must_use]
+    /// # Panics
+    /// Fails closed if the host storage lifetime counter is exhausted.
+    #[allow(
+        clippy::expect_used,
+        reason = "storage identity must fail closed rather than wrap and admit an old owner"
+    )]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
-        self.autosave = Some(autosave);
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("autosave generation exhausted");
+        if let Some(history) = &mut self.history {
+            self.layout.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.layout.structure_dirty = true;
+        }
+        self.persistence.autosave = Some(autosave);
         self
+    }
+    pub(crate) fn history_storage_generation(&self) -> u64 {
+        self.autosave_generation
+    }
+    pub(crate) fn install_app_state_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        if self.persistence.records.is_some() {
+            return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
+        }
+        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
+            definition,
+            self.persistence.autosave.as_ref(),
+            uuid::Uuid::new_v4(),
+        )?;
+        self.install_history(registration)
+    }
+
+    /// Inspect controlled launch composition without opening a native window.
+    /// Available only to downstream runner tests through `test-support`.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn controlled_history_definitions_for_test(
+        &self,
+    ) -> (
+        Option<&'static crate::history_mode::HistoryDefinition>,
+        Option<&'static crate::history_mode::HistoryDefinition>,
+    ) {
+        (
+            self.controlled_installed_history_definition,
+            self.root_widget.document_history_definition(),
+        )
     }
 
     pub(crate) fn with_legacy_persistence(
@@ -7182,32 +7550,39 @@ impl App {
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
-        self.window_title = Some(title.into());
+        self.window.title = Some(title.into());
         self
     }
 
     /// Set the stable Wayland application id announced by this window.
     #[must_use]
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
-        self.window_app_id = Some(app_id.into());
+        self.window.app_id = Some(app_id.into());
         self
     }
 
     /// `None` clears the override and restores automatic resolution.
     pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window_title = title;
+        self.window.title = title;
     }
 
-    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
-    /// name → generic default.
+    /// Precedence: explicit override â†’ `TILO_APP_NAME` â†’ package id â†’ binary
+    /// name â†’ generic default.
     pub fn resolved_window_title(&self) -> String {
         resolve_window_title(self.window_title.as_deref())
     }
 
     /// `records` owns per-record documents and persistence; `room_index` is
     /// which records the room holds. Pair with [`App::with_autosave`] only if
-    /// the room index itself should persist — records persist through
+    /// the room index itself should persist â€” records persist through
     /// `records`.
+    ///
+    /// # Panics
+    /// Panics if the document generation counter is exhausted, refusing identity reuse.
+    #[allow(
+        clippy::expect_used,
+        reason = "exhausted document generation must fail closed rather than reuse custody"
+    )]
     #[must_use]
     pub fn with_records(
         mut self,
@@ -7215,6 +7590,17 @@ impl App {
         room_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("document generation exhausted");
+        if let Some(history) = &mut self.history {
+            self.layout.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.layout.structure_dirty = true;
+        }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
@@ -7235,8 +7621,15 @@ impl App {
     }
 
     /// The record is the collaboration routing key, so a checkout is a
-    /// change of address — without re-announcing it, deltas keep publishing
+    /// change of address â€” without re-announcing it, deltas keep publishing
     /// under the previous record's name.
+    ///
+    /// # Panics
+    /// Panics if the document generation counter is exhausted, refusing identity reuse.
+    #[allow(
+        clippy::expect_used,
+        reason = "exhausted document generation must fail closed rather than reuse custody"
+    )]
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let Some(set) = self.records.as_mut() else {
@@ -7252,6 +7645,17 @@ impl App {
         );
         match switched {
             Some(id) => {
+                self.autosave_generation = self
+                    .autosave_generation
+                    .checked_add(1)
+                    .expect("document generation exhausted");
+                if let Some(history) = &mut self.history {
+                    self.layout.node_map.clear();
+                    self.bindings.clear();
+                    self.focused_node = None;
+                    history.invalidate_owner();
+                    self.layout.structure_dirty = true;
+                }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
@@ -7290,7 +7694,7 @@ impl App {
     }
 
     /// With records in play, the App's autosave writes the room index
-    /// instead of the live document — sending the live doc to both would put
+    /// instead of the live document â€” sending the live doc to both would put
     /// a record's content in the room index.
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         match self.records.as_mut() {
@@ -7341,13 +7745,11 @@ impl App {
     /// keystroke still finds it on disk.
     fn autosave_flush(&mut self) {
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) = self
-                .root_widget
-                .try_flush_owned_persistence()
-                .unwrap_or_else(|| {
-                    Err("widget-owned persistence requires a checked flush hook".into())
-                })
-            {
+            self.close_components();
+            if let Err(error) = flush_widget_owned_persistence(
+                self.root_widget.as_mut(),
+                &mut self.component_close_reports,
+            ) {
                 tracing::error!(%error, "widget-owned persistence failed during shutdown");
                 eprintln!("tilo: notebook save failed during shutdown: {error}");
             }
@@ -7405,8 +7807,18 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        self.enable_document_history_chrome();
-        let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+        if self.history.is_none() {
+            self.enable_document_history_chrome();
+        }
+        let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
+        #[cfg(target_os = "macos")]
+        if std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1") {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            // Native scripted input does not need to take the user's keyboard.
+            // Keep normal launches unchanged; this is an opt-in profiling mode.
+            event_loop_builder.with_activate_ignoring_other_apps(false);
+        }
+        let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
         let wake_proxy = proxy.clone();
         self.wake_scope
@@ -7419,6 +7831,16 @@ impl App {
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
+        #[allow(
+            clippy::panic,
+            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
+        )]
+        let native_scenario = crate::native_scenario::load_from_env()
+            .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
+        assert!(
+            native_scenario.is_none() || self.profiler.is_some(),
+            "native performance scenarios require QOS_PROFILE_OUT or QOS_PROFILE"
+        );
         {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -7437,10 +7859,17 @@ impl App {
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             last_primary_frame_presented: 0,
+            primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
+            native_scenario,
+            native_input_ids: Vec::new(),
+            native_input_origin: None,
+            native_input_pointer_passthrough: false,
+            native_input_route_isolation: false,
+            animation_schedule: animation_schedule::AnimationSchedule::default(),
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -7503,6 +7932,79 @@ fn completed_primary_frame_gates(
                 .then_some(id.clone())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod occlusion_probe_event_tests {
+    use super::*;
+    #[test]
+    fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
+        let pointer = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
+        };
+        assert!(render_probe_event(&pointer));
+        let mut retry = crate::render_thread::retry::RenderRetryState::default();
+        assert!(
+            !retry.request_probe(),
+            "ordinary pointer motion adds no redraw"
+        );
+        retry.admitted();
+        retry.observe(FrameOutcome::Occluded, Instant::now());
+        assert!(
+            retry.request_probe(),
+            "pointer interaction wakes a blocked surface"
+        );
+        for event in [
+            WindowEvent::Occluded(false),
+            WindowEvent::Focused(true),
+            WindowEvent::Resized(winit::dpi::PhysicalSize::new(800, 600)),
+        ] {
+            assert!(render_probe_event(&event));
+        }
+        for event in [
+            WindowEvent::RedrawRequested,
+            WindowEvent::Occluded(true),
+            WindowEvent::Focused(false),
+        ] {
+            assert!(
+                !render_probe_event(&event),
+                "worker redraws must not bypass backoff"
+            );
+        }
+    }
+}
+
+fn render_probe_event(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::Occluded(false)
+            | WindowEvent::Focused(true)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Touch(_)
+            | WindowEvent::Ime(_)
+            | WindowEvent::DroppedFile(_)
+    )
+}
+
+fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
+    render.is_none_or(|render| {
+        !render.buffers.redraw_deferred() && render.retry.allows(Instant::now())
+    })
+}
+
+#[cfg(test)]
+#[allow(dead_code, reason = "used by feature-gated render retry tests")]
+fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
+    matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
+        now.checked_add(Duration::from_nanos(16_666_667))
+            .unwrap_or(now)
+    })
 }
 
 /// The first surface submission may race a Wayland compositor's initial
@@ -7596,7 +8098,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 
 /// Public because it is half of a protocol: what a pointer published in this
 /// surface's content coordinates is scoped to
-/// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
+/// ([`crate::presence::PointerSpace::Surface`]) â€” both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
     let package_id = std::env::var("TILO_PACKAGE_ID").ok();
@@ -7679,11 +8181,22 @@ fn humanize_ident(ident: &str) -> String {
 }
 
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
-/// dedicated worker thread (see [`crate::render_thread`]) — this struct
+/// dedicated worker thread (see [`crate::render_thread`]) â€” this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
 struct AppHandler {
     app: App,
-    /// `None` until the first `resumed` — every modern platform gates window
+    animation_schedule: animation_schedule::AnimationSchedule,
+    /// Taken exactly once after the first primary worker presentation.
+    native_scenario: Option<crate::native_scenario::Scenario>,
+    /// Inputs dispatched since the last committed primary CPU frame.
+    native_input_ids: Vec<usize>,
+    // Opt-in native timeline shares one Instant origin across input/redraw stages.
+    native_input_origin: Option<Instant>,
+    /// Actual backend acknowledgement for opt-in benchmark pointer isolation.
+    native_input_pointer_passthrough: bool,
+    /// Frozen for the benchmark window, including the interval before its first packet.
+    native_input_route_isolation: bool,
+    /// `None` until the first `resumed` â€” every modern platform gates window
     /// creation behind an `ActiveEventLoop`.
     window: Option<Arc<Window>>,
     /// `None` again in `exiting`, after the worker is joined, so its surface
@@ -7706,6 +8219,7 @@ struct AppHandler {
     primary_frames_sent: u64,
     primary_frames_completed: u64,
     last_primary_frame_presented: u64,
+    primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
     /// until that exact-or-newer frame is reported Presented by the worker.
     floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
@@ -7801,7 +8315,14 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<std::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
+    let __prof_resources = app.profiler.as_ref().map(|_| std::time::Instant::now());
     app.refresh_control_action_availability();
+    if let Some(p) = app.profiler.as_mut() {
+        p.record_since(
+            crate::profiling::Pass::ResourceAvailability,
+            __prof_resources,
+        );
+    }
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -7812,8 +8333,22 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
-    app.root_widget.native_view_frame_start();
-    if app.history_layout.is_none_or(|layout| layout.app_visible) {
+    if let Some(history) = &mut app.history {
+        history.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
+        crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.root_widget.draw_with_presence(
             scene,
             transform,
@@ -7827,7 +8362,12 @@ fn draw_frame_content(
     // Widgets whose visual extent escapes their layout box (an open
     // `Dropdown`, a popover) composite above every later-drawn sibling here.
     // No-op by default.
-    if app.history_layout.is_none_or(|layout| layout.app_visible) {
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
         app.root_widget.draw_overlay(
             scene,
             transform,
@@ -7887,25 +8427,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    app.tooltip_host.tick(Instant::now());
-    if let Some((text, anchor)) = app
-        .tooltip_host
-        .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let win_h = f64::from(height) / f64::from(scale_factor);
-        let viewport = KurboRect::new(0.0, 0.0, win_w, win_h);
-        crate::widget::tooltip::draw_hover_tooltip(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            anchor,
-            &text,
-            viewport,
-        );
-    }
+    draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
@@ -7915,8 +8437,53 @@ fn draw_frame_content(
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
-/// Only active in `App::debug_mode` — draws each widget's layout rect and a
+/// Only active in `App::debug_mode` â€” draws each widget's layout rect and a
 /// depth-cycled label over the frame just rendered.
+fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
+    for cursor in app.state.collab.cursors.values() {
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(14.0, 14.0));
+        path.line_to(Point::new(6.0, 16.0));
+        path.line_to(Point::new(0.0, 22.0));
+        path.close_path();
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+        )]
+        let cursor_transform =
+            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            cursor_transform,
+            cursor.color,
+            None,
+            &path,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            cursor_transform,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            None,
+            &path,
+        );
+
+        app.text_renderer.draw_text(
+            scene,
+            &cursor.name,
+            10.0,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            {
+                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
+                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
+                name_transform
+            },
+            None,
+        );
+    }
+}
+
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     fn draw_debug_recursive(
         widget: &dyn Widget,
@@ -8016,6 +8583,7 @@ fn run_layout_pass(
         app.layout_close_dialog(logical);
         return Some((true, 0, 0));
     }
+    app.refresh_framework_history(logical.0);
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
@@ -8079,6 +8647,16 @@ fn run_layout_pass(
                 if app.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
+            } else {
+                // Anonymous retained widgets keep their own state. Resolve a
+                // current admitted focus path; the old NodeId is invalid here.
+                app.focused_node = unsafe {
+                    CompositionFocus::current(
+                        &app.layout.node_map,
+                        &app.bindings,
+                        Some(&app.focusable_order),
+                    )
+                };
             }
             current_root = app
                 .layout
@@ -8125,12 +8703,27 @@ fn run_layout_pass(
         app.layout.last_layout_logical = None;
         return None;
     }
+    if app.settle_history_presentation() {
+        let root = app.layout.root_node?;
+        return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
+    }
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
     if (structure_rebuilt || recomposed)
+        && app
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
         && let Some(host) = native_host
     {
         app.root_widget.mount_native_views(host);
+    }
+    if app
+        .history
+        .as_ref()
+        .is_some_and(|history| !history.live_interactive())
+    {
+        crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -8161,8 +8754,9 @@ fn run_layout_pass(
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    create_window_render_prepared(window, transparent, None)
+    create_window_render_prepared(window, transparent, None, proxy)
 }
 
 pub(crate) struct PreparedRenderer {
@@ -8217,6 +8811,7 @@ fn create_window_render_prepared(
     window: &Arc<Window>,
     transparent: bool,
     prepared: Option<PreparedRenderer>,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
     tilo_startup_metrics::mark("window-render-context-start");
     let size = window.inner_size();
@@ -8248,7 +8843,7 @@ fn create_window_render_prepared(
     // Flipping to the sRGB suffix here would panic on mismatch with the
     // format `create_surface` already chose. `configure` returns no
     // `Result`, so guard it like the worker's reconfigures do
-    // (`render_thread::configure_surface_checked`) — an already-lost
+    // (`render_thread::configure_surface_checked`) â€” an already-lost
     // surface would otherwise hit wgpu's panicking default handler.
     tilo_startup_metrics::mark("window-surface-validation-scope-start");
     let configure_scope = device_handle
@@ -8270,7 +8865,16 @@ fn create_window_render_prepared(
         _ => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
-    let render = spawn_render_thread(render_cx, surface, renderer)?;
+    let window_id = window.id();
+    let render = spawn_render_thread(
+        render_cx,
+        surface,
+        renderer,
+        Arc::new(move || {
+            // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
+            let _ = proxy.send_event(UserEvent::RenderReady(window_id));
+        }),
+    )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
 }
@@ -8304,12 +8908,13 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
 fn begin_window_render_init(
     window: Arc<Window>,
     transparent: bool,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<mpsc::Receiver<Result<RenderThreadHandle, String>>, String> {
     let (result_tx, result_rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("floating-render-init".into())
         .spawn(move || {
-            let result = create_window_render(&window, transparent);
+            let result = create_window_render(&window, transparent, proxy);
             // The surface may have been permanently closed while a slow GPU
             // backend was still probing. In that case, stop the newly-created
             // render worker here so its surface is dropped before `window`.
@@ -8337,6 +8942,7 @@ impl AppHandler {
                         window,
                         false,
                         Some(prepared),
+                        self.a11y_proxy.clone(),
                     )?);
                     return Ok(());
                 }
@@ -8348,7 +8954,11 @@ impl AppHandler {
                 }
             }
         }
-        self.render = Some(create_window_render(window, false)?);
+        self.render = Some(create_window_render(
+            window,
+            false,
+            self.a11y_proxy.clone(),
+        )?);
         Ok(())
     }
 
@@ -8475,7 +9085,11 @@ impl AppHandler {
         };
         if audience.render.is_none() {
             if audience.render_init.is_none() {
-                match begin_window_render_init(audience.window.clone(), false) {
+                match begin_window_render_init(
+                    audience.window.clone(),
+                    false,
+                    self.a11y_proxy.clone(),
+                ) {
                     Ok(init) => audience.render_init = Some(init),
                     Err(error) => tracing::warn!(%error, "could not start audience renderer"),
                 }
@@ -8503,30 +9117,35 @@ impl AppHandler {
         let Some(render) = audience.render.as_mut() else {
             return false;
         };
-        let mut followup = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented => {}
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => followup = true,
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
+                    render.retry.observe(outcome, Instant::now());
+                }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        let mut scene = match render.scene_pool.try_recv() {
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return true,
+            Err(_) => return false,
+        }
+        let (mut scene, mut damage_regions) = match render.buffers.try_recv() {
             Ok(scene) => scene,
             Err(mpsc::TryRecvError::Empty) => {
-                if followup {
-                    audience.window.request_redraw();
-                }
                 return true;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 tracing::warn!("audience render worker exited");
                 return false;
             }
-        };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            tracing::warn!("audience render worker damage pool exited");
-            return false;
         };
         damage_regions.clear();
         let size = audience.window.inner_size();
@@ -8550,6 +9169,7 @@ impl AppHandler {
         if render
             .render_tx
             .send(RenderRequest::Frame {
+                cpu_frame_id: None,
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
@@ -8563,9 +9183,6 @@ impl AppHandler {
                 "audience render worker stopped; returning to the single-output fallback"
             );
             return false;
-        }
-        if followup {
-            audience.window.request_redraw();
         }
         true
     }
@@ -8626,7 +9243,7 @@ impl AppHandler {
         }
         let logical_size = native_floating_logical_size(rect);
         let attributes = Window::default_attributes()
-            .with_title(format!("Floating · {id}"))
+            .with_title(format!("Floating Â· {id}"))
             .with_decorations(false)
             .with_resizable(false)
             .with_transparent(true)
@@ -8845,7 +9462,11 @@ impl AppHandler {
         }
         if surface.render.is_none() {
             if surface.render_init.is_none() {
-                match begin_window_render_init(surface.window.clone(), true) {
+                match begin_window_render_init(
+                    surface.window.clone(),
+                    true,
+                    self.a11y_proxy.clone(),
+                ) {
                     Ok(init) => surface.render_init = Some(init),
                     Err(error) => {
                         tracing::warn!(%error, id = %surface.id, "floating surface renderer failed");
@@ -8877,19 +9498,30 @@ impl AppHandler {
         let Some(render) = surface.render.as_mut() else {
             return false;
         };
-        let mut followup = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented => {}
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => followup = true,
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
+                    render.retry.observe(outcome, Instant::now());
+                }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        let Ok(mut scene) = render.scene_pool.recv() else {
-            return false;
-        };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            return false;
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return true,
+            Err(_) => return false,
+        }
+        let (mut scene, mut damage_regions) = match render.buffers.try_recv() {
+            Ok(buffers) => buffers,
+            Err(mpsc::TryRecvError::Empty) => return true,
+            Err(mpsc::TryRecvError::Disconnected) => return false,
         };
         damage_regions.clear();
         // Every pooled scene is either newly seeded or reset by the worker
@@ -8909,6 +9541,7 @@ impl AppHandler {
         if render
             .render_tx
             .send(RenderRequest::Frame {
+                cpu_frame_id: None,
                 scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
@@ -8919,9 +9552,6 @@ impl AppHandler {
             .is_err()
         {
             return false;
-        }
-        if followup {
-            surface.window.request_redraw();
         }
         true
     }
@@ -8995,11 +9625,37 @@ impl AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame handshake shares render state, timing locals, and early exits"
-    )]
+    fn visible_auxiliary_needs_shared_root(&self) -> bool {
+        self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.known_occluded())
+        }) || self.audience_presentation.as_ref().is_some_and(|audience| {
+            audience
+                .render
+                .as_ref()
+                .is_none_or(|render| !render.retry.known_occluded())
+        })
+    }
+
+    /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
+    /// Body unchanged from the original inline arm â€” see `window_event` for the
+    /// event-loop plumbing this is called from. The layout pass, draw pass,
+    /// legacy cursor drawing, and debug-outline drawing are further split
+    /// into [`run_layout_pass`], [`draw_frame_content`], [`draw_legacy_cursors`]
+    /// and [`draw_debug_outlines`] respectively; what remains is a single
+    /// frame's render-thread handshake (acquire scene, draw, send, log) whose
+    /// phases share `render`/`app`/`scene`/timing locals and several early
+    /// `return`s â€” further fragmenting it risks changing frame-timing or
+    /// error-path behaviour with no clippy/cargo loop available here to
+    /// verify against.
+    #[allow(clippy::too_many_lines, reason = "see doc comment above")]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        let native_redraw_entry = self
+            .native_input_origin
+            .map(|origin| (origin, Instant::now()));
         // Capture only the initial frame attempts, not steady-state redraws.
         // An early return leaves its final marker absent rather than inventing
         // a completed stage. A later successful submission ends capture.
@@ -9021,6 +9677,10 @@ impl AppHandler {
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
         }
+        let visible_sibling = self.visible_auxiliary_needs_shared_root();
+        if visible_sibling {
+            self.primary_retry.keep_shared_cadence(Instant::now());
+        }
         let Some(render) = self.render.as_mut() else {
             return;
         };
@@ -9033,9 +9693,18 @@ impl AppHandler {
             match outcome {
                 FrameOutcome::Presented => {
                     self.last_primary_frame_presented = self.primary_frames_completed;
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
-                    needs_followup_redraw = true;
+                FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
                 FrameOutcome::SurfaceGone => {
                     surface_gone = true;
@@ -9088,6 +9757,21 @@ impl AppHandler {
             tracing::info!("drawing surface is gone; closing the window");
             event_loop.exit();
             return;
+        }
+        // Do not consume sync/layout/dirty state unless a finite render buffer
+        // is available. Worker completion wakes this window if admission defers.
+        match crate::render_thread::prepare_frame(
+            &mut self.primary_retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(_) => {
+                tracing::error!("ui-render thread died; closing window");
+                event_loop.exit();
+                return;
+            }
         }
         let app = &mut self.app;
 
@@ -9152,6 +9836,10 @@ impl AppHandler {
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
+        if app.root_widget.take_window_close_intent() {
+            event_loop.exit();
+            return;
+        }
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
@@ -9166,7 +9854,7 @@ impl AppHandler {
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
         app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
-        // Captured BEFORE `rebuild_structure` clears it — a fresh
+        // Captured BEFORE `rebuild_structure` clears it â€” a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
         let structure_rebuilt = app.layout.structure_dirty;
@@ -9210,20 +9898,17 @@ impl AppHandler {
         // independent native floating surfaces.
         floating_content_changed |= app.root_widget.needs_redraw() || app.history_needs_redraw();
 
-        // Bounded CPU↔GPU backpressure belongs immediately before scene
-        // encoding. Model update, sync and layout above can overlap the
-        // worker presenting the previous frame instead of waiting for a
-        // recycled encoder before doing any useful CPU work.
-        let Ok(mut scene) = render.scene_pool.recv() else {
+        // Admission reserved this pair before state updates. Taking it cannot
+        // wait on GPU work; aborted layouts retain it in the handle for retry.
+        let __prof_pool_wait = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
             tracing::error!("ui-render thread died; closing window");
             event_loop.exit();
             return;
         };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            tracing::error!("ui-render damage pool died; closing window");
-            event_loop.exit();
-            return;
-        };
+        if let Some(p) = app.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::ScenePoolWait, __prof_pool_wait);
+        }
         damage_regions.clear();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
@@ -9242,11 +9927,15 @@ impl AppHandler {
         } else {
             None
         };
+        crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
 
+        let __prof_presence = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        draw_legacy_cursors(app, &mut scene, transform);
+
         // A pointer that arrived on a desktop scope is the
-        // compositor's to draw, and the helper skips it — see
+        // compositor's to draw, and the helper skips it â€” see
         // `presence::PointerOwner`. Only the *painting* has one
         // owner; the shell threads this same context into its own
         // overlay too.
@@ -9319,14 +10008,48 @@ impl AppHandler {
             interaction_now,
         );
 
+        if let Some(p) = app.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
+        }
+
+        let mut native_main_stages = (self.native_input_origin.is_some()
+            && crate::render_thread::timing::enabled())
+        .then(MainStages::default);
+        record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
+
         // Folds in any `handle_event` time banked since last frame.
         if let (Some(p), Some(start)) = (app.profiler.as_mut(), __prof_frame_start) {
             p.commit_frame(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
+            if !self.native_input_ids.is_empty() {
+                let cpu_frame_id = p.history().back().map(|sample| sample.frame);
+                crate::native_scenario::log::emit_json(
+                    "qos-native-frame",
+                    serde_json::json!({
+                        "cpu_frame_id": cpu_frame_id,
+                        "input_ids": std::mem::take(&mut self.native_input_ids),
+                        "frame_commit_us": self.native_input_origin.map(|origin| origin.elapsed().as_micros()),
+                        // Capture after drawing: layout may clamp scroll state.
+                        // Input-time effects alone cannot prove the frame used it.
+                        "state": app.native_input_snapshot(),
+                    }),
+                );
+            }
+        } else {
+            record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
+        crate::webview::frame_trace::finish_scene(
+            app.profiler
+                .as_ref()
+                .and_then(|p| p.history().back())
+                .map(|sample| sample.frame),
+        );
+        record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
             draw_debug_outlines(app, &mut scene, transform);
         }
+        record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -9353,6 +10076,7 @@ impl AppHandler {
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
         app.root_widget.mark_drawn();
+        record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
 
         // `update_if_active` only builds + sends when an AT is
         // attached, so this is free on the common no-reader path.
@@ -9363,6 +10087,7 @@ impl AppHandler {
                 crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
             });
         }
+        record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
 
         // Painted last, after the frame timing was committed above,
         // so the HUD's own cost never enters its numbers.
@@ -9384,6 +10109,11 @@ impl AppHandler {
             }
         }
         let req = RenderRequest::Frame {
+            cpu_frame_id: app
+                .profiler
+                .as_ref()
+                .and_then(|profiler| profiler.history().back())
+                .map(|sample| sample.frame),
             scene,
             width,
             height,
@@ -9391,7 +10121,50 @@ impl AppHandler {
             damage_regions,
             full_redraw: full_redraw_required,
         };
-        if render.render_tx.send(req).is_err() {
+        record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
+        if let Some((origin, entered)) = native_redraw_entry {
+            // All three values use the input timeline's monotonic origin.
+            // This is a CPU submit attempt, not GPU/display completion.
+            crate::native_scenario::log::emit_json(
+                "qos-native-redraw",
+                serde_json::json!({
+                    "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                    "redraw_enter_us": entered.duration_since(origin).as_micros(),
+                    "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
+                    "submit_attempt_us": origin.elapsed().as_micros(),
+                }),
+            );
+        }
+        record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
+        let send_cpu_frame_id = match &req {
+            RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
+            RenderRequest::Shutdown => None,
+        };
+        let (send_result, send_bounds) = crate::render_thread::timing::around(
+            self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+            || render.render_tx.send(req),
+        );
+        if let Some(bounds) = send_bounds {
+            crate::native_scenario::log::emit_json(
+                "qos-native-send",
+                serde_json::json!({
+                    "cpu_frame_id": send_cpu_frame_id,
+                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                    "send_ok": send_result.is_ok(),
+                }),
+            );
+        }
+        if let Some(stages) = native_main_stages {
+            crate::native_scenario::log::emit_json(
+                "qos-native-main-stages",
+                stages.row(send_cpu_frame_id),
+            );
+        }
+        if send_result.is_err() {
             tracing::error!("ui-render thread receiver closed; exiting");
             event_loop.exit();
             return;
@@ -9456,6 +10229,11 @@ impl AppHandler {
             return;
         }
         let app = &mut self.app;
+        let history_input = app.history_controls_event(&event, window.scale_factor());
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &app.framework_input,
+            history_input,
+        );
         let detected_interaction = if self.dispatching_touch_pointer {
             None
         } else {
@@ -9478,9 +10256,14 @@ impl AppHandler {
         if let Some(environment) = detected_interaction {
             app.set_interaction_environment(environment);
         }
+        if history_input {
+            app.dispatch_framework_history_event(&event, window.scale_factor());
+            window.request_redraw();
+            return;
+        }
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
-        // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
-        // not throttled here — when the bug is "no clicks work", you
+        // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
+        // not throttled here â€” when the bug is "no clicks work", you
         // want to see whether moves arrive at all.
         match &event {
             WindowEvent::MouseInput { state, button, .. } => {
@@ -9500,7 +10283,7 @@ impl AppHandler {
         }
         // `CursorMoved` is measured in this window's own content,
         // never the desktop — see the `pointer_space` field.
-        if app.presence_broadcast_scope.is_some() {
+        if app.presence.broadcast_scope.is_some() {
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = Instant::now();
@@ -9638,14 +10421,31 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let entry = if let Some(binding) = app
+                    let binding = app
                         .focused_node
                         .and_then(|node| app.bindings.binding_for(node))
-                    {
+                        .or_else(|| app.root_widget.callback_binding());
+                    let owned_target = binding.is_some()
+                        || app
+                            .focused_node
+                            .is_some_and(|node| app.bindings.owns_document(node));
+                    let entry = if let Some(binding) = binding {
                         binding
                             .history_request(&mut app.state.doc, request)
                             .ok()
                             .flatten()
+                    } else if let Some(owner) = app
+                        .focused_node
+                        .and_then(|node| app.bindings.legacy_for(node))
+                    {
+                        crate::bound_dispatch::legacy_history_request(
+                            &owner,
+                            request,
+                            &app.permission_ctx,
+                            &app.collaboration.local_author,
+                        )
+                        .ok()
+                        .flatten()
                     } else {
                         match request {
                             crate::undo::UndoRequest::Undo => app.state.undo_as(
@@ -9661,7 +10461,7 @@ impl AppHandler {
                         }
                     };
                     if let Some(entry) = entry {
-                        if entry.instance_id.is_some() {
+                        if owned_target {
                             app.needs_sync = true;
                             app.layout.layout_dirty = true;
                         } else {
@@ -9826,14 +10626,14 @@ impl AppHandler {
             }
         }
 
-        if !handled && app.activate_focused_control_key(&event) {
-            handled = true;
-        }
+        // If no widget consumed Enter/Space (text inputs do), activate
+        // the focused control the same way a mouse click would.
+        app.handle_unconsumed_activation_key(&event, &mut handled);
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:
-        //   plain  → one step       Shift → four steps (coarse)
-        //   Ctrl   → jump to min/max (Left = min, Right = max)
+        //   plain  â†’ one step       Shift â†’ four steps (coarse)
+        //   Ctrl   â†’ jump to min/max (Left = min, Right = max)
         // Other widgets ignore the action, falling through to
         // directional navigation below.
         if !handled
@@ -9998,265 +10798,99 @@ impl AppHandler {
     }
 }
 
-impl ApplicationHandler<UserEvent> for AppHandler {
-    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
-    // DeviceId is opaque and the dispatch chain never inspects it (same
-    // trick `shell::compositor::native` uses headless).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "winit requires the complete synthetic event dispatch at this callback boundary"
-    )]
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        let _entry = self.app.enter_wake_scope();
-        let event = match event {
-            UserEvent::Wake(wake) => {
-                if self.app.accept_wake(&wake)
-                    && let Some(window) = self.window.as_ref()
-                {
-                    window.request_redraw();
-                }
-                return;
-            }
-            other => other,
-        };
-        let Some(window) = self.window.clone() else {
-            return;
-        };
-        let window_id = window.id();
-        match event {
-            UserEvent::Hover { x, y } => {
-                let ev = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(x, y),
-                };
-                self.window_event(event_loop, window_id, ev);
-            }
-            UserEvent::Click { x, y } => {
-                let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(x, y),
-                };
-                self.window_event(event_loop, window_id, moved);
-                let press = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                };
-                self.window_event(event_loop, window_id, press);
-                let release = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                };
-                self.window_event(event_loop, window_id, release);
-            }
-            UserEvent::Wheel { dx, dy } => {
-                let ev = WindowEvent::MouseWheel {
-                    device_id: unsafe { std::mem::zeroed() },
-                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-                    phase: winit::event::TouchPhase::Moved,
-                };
-                self.window_event(event_loop, window_id, ev);
-            }
-            UserEvent::External(payload) => {
-                let app = &mut self.app;
-                app.root_widget
-                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
-                app.needs_sync = true;
-                window.request_redraw();
-            }
-            UserEvent::Wake(_) => {}
-            UserEvent::AccessKit(ak_event) => {
-                use accesskit_winit::WindowEvent as AkWindowEvent;
-                match ak_event {
-                    AkWindowEvent::InitialTreeRequested => {
-                        if let Some(adapter) = self.a11y_adapter.as_mut() {
-                            let scale = window.scale_factor();
-                            let app_ref: &mut App = &mut self.app;
-                            adapter.update_if_active(|| {
-                                crate::accesskit_bridge::native_tree_update(
-                                    app_ref.build_a11y_tree_update(scale),
-                                )
-                            });
-                        }
-                        window.request_redraw();
-                    }
-                    AkWindowEvent::ActionRequested(req) => {
-                        // `Some((x, y))` means "synthesise a click here".
-                        if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
-                            req.action,
-                            req.data.as_ref(),
-                        ) {
-                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
-                            if let Some((x, y)) = click {
-                                let scale = window.scale_factor();
-                                let (px, py) = (x * scale, y * scale);
-                                let moved = WindowEvent::CursorMoved {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    position: PhysicalPosition::new(px, py),
-                                };
-                                self.window_event(event_loop, window_id, moved);
-                                let press = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    state: ElementState::Pressed,
-                                    button: MouseButton::Left,
-                                };
-                                self.window_event(event_loop, window_id, press);
-                                let release = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    state: ElementState::Released,
-                                    button: MouseButton::Left,
-                                };
-                                self.window_event(event_loop, window_id, release);
-                            }
-                            window.request_redraw();
-                        }
-                    }
-                    AkWindowEvent::AccessibilityDeactivated => {}
-                }
-            }
-        }
-    }
-
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let _entry = self.app.enter_wake_scope();
-        // Can fire more than once (suspend/resume on mobile).
-        if self.window.is_some() {
-            return;
-        }
-        // Required, not incidental: the compositor only accepts
-        // `set_selection` from the connection that owns the focused surface.
-        #[cfg(target_os = "linux")]
-        {
-            crate::clipboard::install_wayland_backend_from_display(event_loop);
-        }
-        // AccessKit's adapter asserts it's created while the window is
-        // hidden, so build invisible, create the adapter, show.
-        let title = resolve_window_title(self.app.window_title.as_deref());
-        let icon = crate::window_icon::resolve();
-        let window_attributes = Window::default_attributes()
-            .with_title(title)
-            .with_window_icon(icon.clone())
-            // Draggable title bar on compositors with no server-side
-            // decorations (e.g. GNOME/mutter); explicit though it's the
-            // winit default, so the intent is unmistakable.
-            .with_decorations(true)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // See `resolve_app_id`: a shared id collapses per-app compositor
-        // lookups.
-        #[cfg(target_os = "linux")]
-        let window_attributes = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
-            let app_id = resolve_app_id(
-                self.app.window_app_id.as_deref().or(package_id.as_deref()),
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .as_deref(),
-            );
-            window_attributes.with_name(app_id, "")
-        };
-        // `resumed` is a winit `ApplicationHandler` callback returning `()`,
-        // so a `create_window` failure (compositor gone) has nowhere to
-        // propagate to; there is no window to run without it either way.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
-        )]
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        #[cfg(target_os = "macos")]
-        {
-            use winit::platform::macos::ActiveEventLoopExtMacOS;
-            if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
-                crate::diag!("tilo: cannot protect application Quit: {error}");
-                event_loop.exit();
-                return;
-            }
-        }
-        tilo_startup_metrics::mark("primary-window-created");
-        // Some backends only honour the icon post-creation; a no-op on
-        // Wayland compositors that source it from the app_id instead.
-        window.set_window_icon(icon);
-
-        // Must be created before the window is shown.
-        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+impl AppHandler {
+    /// `UserEvent` injection keeps the ordinary window dispatch after admission.
+    fn injected_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        self.route_window_event(
             event_loop,
-            &window,
-            self.a11y_proxy.clone(),
-        ));
-        self.app
-            .root_widget
-            .mount_native_views(&crate::widget::NativeViewHost::live(
-                &window,
-                self.app.platform,
-            ));
-        // Windows otherwise exposes an empty white client area while GPU
-        // pipelines compile. Prepare those before revealing the window; the
-        // normal visible-window redraw path still submits its first frame.
-        #[cfg(target_os = "windows")]
-        if let Err(reason) = self.init_render(&window) {
-            crate::diag!("tilo: {reason}");
-            event_loop.exit();
-            return;
-        }
-        tilo_startup_metrics::mark("primary-window-show-start");
-        window.set_visible(true);
-        tilo_startup_metrics::mark("primary-window-show-done");
-
-        self.app.layout.layout_dirty = true;
-        // On Wayland GPU init is deferred to first `RedrawRequested`: the
-        // ~50ms surface+device init here would block `resumed`'s seat
-        // wiring — on mutter that intermittently left the toplevel
-        // unfocused with dead input on first launch.
-        window.request_redraw();
-        tilo_startup_metrics::mark("primary-window-redraw-requested");
-        crate::dnd::set_drag_window(&window);
-        self.window = Some(window);
-        tilo_startup_metrics::mark("primary-window-resumed-done");
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Injected,
+        );
     }
 
-    /// BEFORE the `Window` arc is dropped — the worker's
-    /// `RenderSurface<'static>` references it, and wgpu may panic if the
-    /// surface outlives the window.
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.app.close_wake_scope();
-        let _entry = self.app.enter_wake_scope();
-        // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
-        // before the native views and window disappear, so external clients
-        // receive the provider's normal unregister/teardown rather than being
-        // left with object paths whose backing Wayland surface is already
-        // gone.  This also makes the ordering explicit instead of relying on
-        // AppHandler field-drop order.
-        self.a11y_adapter = None;
-        if !self.app.close_admission.admitted {
-            self.app.autosave_flush();
-        }
-        self.app.close_native_content();
-        self.close_audience_presentation();
-        for surface in &mut self.floating_windows {
-            if let Some(mut render) = surface.render.take() {
-                render.shutdown_and_join();
-            }
-        }
-        self.floating_windows.clear();
-        if let Some(mut render) = self.render.take() {
-            render.shutdown_and_join();
-        }
+    fn route_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+        origin: native_input_isolation::EventOrigin,
+    ) {
+        native_input_isolation::dispatch(
+            self.native_input_route_isolation,
+            origin,
+            event,
+            |event| {
+                self.handle_routed_window_event(event_loop, window_id, event);
+            },
+        );
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "winit requires the complete per-window event dispatch at this callback boundary"
     )]
-    fn window_event(
+    fn handle_routed_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
         let _entry = self.app.enter_wake_scope();
+        if render_probe_event(&event) {
+            let auxiliary_event = self
+                .floating_windows
+                .iter()
+                .any(|surface| surface.window.id() == window_id)
+                || self
+                    .audience_presentation
+                    .as_ref()
+                    .is_some_and(|audience| audience.window.id() == window_id);
+            if auxiliary_event
+                && self.primary_retry.request_probe()
+                && let Some(primary) = &self.window
+            {
+                primary.request_redraw();
+            }
+
+            if self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+                && self.primary_retry.request_probe()
+                && let Some(window) = &self.window
+            {
+                window.request_redraw();
+            }
+            if let Some(surface) = self
+                .floating_windows
+                .iter_mut()
+                .find(|surface| surface.window.id() == window_id)
+                && surface
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+            {
+                surface.window.request_redraw();
+            }
+            if let Some(audience) = self
+                .audience_presentation
+                .as_mut()
+                .filter(|audience| audience.window.id() == window_id)
+                && audience
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+            {
+                audience.window.request_redraw();
+            }
+        }
+
         if self
             .audience_presentation
             .as_ref()
@@ -10399,7 +11033,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         match event {
             WindowEvent::CloseRequested => {
-                if self.app.admit_native_close_request() {
+                if self.app.request_close() && self.app.finish_close_if_ready() {
                     event_loop.exit();
                 } else {
                     window.request_redraw();
@@ -10430,6 +11064,386 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             other => self.handle_other_window_event(&window, other),
         }
     }
+}
+
+impl ApplicationHandler<UserEvent> for AppHandler {
+    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
+    // DeviceId is opaque and the dispatch chain never inspects it (same
+    // trick `shell::compositor::native` uses headless).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit requires the complete synthetic event dispatch at this callback boundary"
+    )]
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let _entry = self.app.enter_wake_scope();
+        let event = match event {
+            UserEvent::RenderReady(id) => {
+                if let Some(window) = self.window.as_ref().filter(|window| window.id() == id) {
+                    window.request_redraw();
+                } else if let Some(surface) = self
+                    .floating_windows
+                    .iter()
+                    .find(|surface| surface.window.id() == id)
+                {
+                    surface.window.request_redraw();
+                } else if let Some(audience) = self
+                    .audience_presentation
+                    .as_ref()
+                    .filter(|audience| audience.window.id() == id)
+                {
+                    audience.window.request_redraw();
+                }
+                return;
+            }
+            UserEvent::Wake(wake) => {
+                if self.app.accept_wake(&wake)
+                    && wake.requires_sync()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
+                return;
+            }
+            other => other,
+        };
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let window_id = window.id();
+        let mut effect_before = None;
+        let event = match event {
+            UserEvent::NativeScenarioInput(packet) => {
+                if self.native_input_origin.is_none() {
+                    let size = window.inner_size();
+                    crate::native_scenario::log::emit_json(
+                        "qos-native-window",
+                        serde_json::json!({
+                            "scale_factor": window.scale_factor(),
+                            "physical_width": size.width,
+                            "physical_height": size.height,
+                            "pointer_passthrough": self.native_input_pointer_passthrough,
+                            "input_route_isolation": self.native_input_route_isolation,
+                        }),
+                    );
+                }
+                self.native_input_origin.get_or_insert(packet.origin);
+                let (now, dispatch_host) = crate::native_scenario::host_clock::sample();
+                crate::native_scenario::log::emit_json(
+                    "qos-native-input",
+                    serde_json::json!({
+                        "id": packet.id,
+                        "warmup": packet.warmup,
+                        "input": packet.input,
+                        "scheduled_us": packet.scheduled_at.duration_since(packet.origin).as_micros(),
+                        "sent_us": packet.sent_at.duration_since(packet.origin).as_micros(),
+                        "dispatch_start_us": now.duration_since(packet.origin).as_micros(),
+                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "sent_host_lo_s": packet.sent_host.map(|bounds| bounds.lo_s),
+                        "sent_host_hi_s": packet.sent_host.map(|bounds| bounds.hi_s),
+                        "dispatch_host_lo_s": dispatch_host.map(|bounds| bounds.lo_s),
+                        "dispatch_host_hi_s": dispatch_host.map(|bounds| bounds.hi_s),
+                        "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
+                    }),
+                );
+                effect_before = self
+                    .app
+                    .native_input_snapshot()
+                    .map(|value| (packet.id, value));
+                self.native_input_ids.push(packet.id);
+                match packet.input {
+                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
+                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
+                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
+                    crate::native_scenario::Input::Character { value } => {
+                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
+                    }
+                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                }
+            }
+            other => other,
+        };
+        match event {
+            UserEvent::Hover { x, y } => {
+                let ev = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: PhysicalPosition::new(x, y),
+                };
+                self.injected_window_event(event_loop, window_id, ev);
+            }
+            UserEvent::Click { x, y } => {
+                let moved = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: PhysicalPosition::new(x, y),
+                };
+                self.injected_window_event(event_loop, window_id, moved);
+                let press = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                };
+                self.injected_window_event(event_loop, window_id, press);
+                let release = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                };
+                self.injected_window_event(event_loop, window_id, release);
+            }
+            UserEvent::Key(key) => {
+                for state in [ElementState::Pressed, ElementState::Released] {
+                    self.injected_window_event(
+                        event_loop,
+                        window_id,
+                        crate::synthetic_input::key_event(&key, state),
+                    );
+                }
+            }
+            UserEvent::Wheel { dx, dy } => {
+                let ev = WindowEvent::MouseWheel {
+                    device_id: unsafe { std::mem::zeroed() },
+                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
+                    phase: winit::event::TouchPhase::Moved,
+                };
+                self.injected_window_event(event_loop, window_id, ev);
+            }
+            UserEvent::External(payload) => {
+                let app = &mut self.app;
+                app.root_widget
+                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.needs_sync = true;
+                window.request_redraw();
+            }
+            UserEvent::Wake(_) | UserEvent::NativeScenarioInput(_) | UserEvent::RenderReady(_) => {}
+            UserEvent::AccessKit(ak_event) => {
+                use accesskit_winit::WindowEvent as AkWindowEvent;
+                match ak_event {
+                    AkWindowEvent::InitialTreeRequested => {
+                        if let Some(adapter) = self.a11y_adapter.as_mut() {
+                            let scale = window.scale_factor();
+                            let app_ref: &mut App = &mut self.app;
+                            adapter.update_if_active(|| {
+                                crate::accesskit_bridge::native_tree_update(
+                                    app_ref.build_a11y_tree_update(scale),
+                                )
+                            });
+                        }
+                        window.request_redraw();
+                    }
+                    AkWindowEvent::ActionRequested(req) => {
+                        // `Some((x, y))` means "synthesise a click here".
+                        if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+                            req.action,
+                            req.data.as_ref(),
+                        ) {
+                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            if let Some((x, y)) = click {
+                                let scale = window.scale_factor();
+                                let (px, py) = (x * scale, y * scale);
+                                let moved = WindowEvent::CursorMoved {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    position: PhysicalPosition::new(px, py),
+                                };
+                                self.injected_window_event(event_loop, window_id, moved);
+                                let press = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Pressed,
+                                    button: MouseButton::Left,
+                                };
+                                self.injected_window_event(event_loop, window_id, press);
+                                let release = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Released,
+                                    button: MouseButton::Left,
+                                };
+                                self.injected_window_event(event_loop, window_id, release);
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    AkWindowEvent::AccessibilityDeactivated => {}
+                }
+            }
+        }
+        if let Some((id, before)) = effect_before {
+            crate::native_scenario::log::emit_json(
+                "qos-native-effect",
+                serde_json::json!({
+                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
+                }),
+            );
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let _entry = self.app.enter_wake_scope();
+        // Can fire more than once (suspend/resume on mobile).
+        if self.window.is_some() {
+            return;
+        }
+        // Required, not incidental: the compositor only accepts
+        // `set_selection` from the connection that owns the focused surface.
+        #[cfg(target_os = "linux")]
+        {
+            crate::clipboard::install_wayland_backend_from_display(event_loop);
+        }
+        // AccessKit's adapter asserts it's created while the window is
+        // hidden, so build invisible, create the adapter, show.
+        let title = resolve_window_title(self.app.window_title.as_deref());
+        let icon = crate::window_icon::resolve();
+        let window_attributes = Window::default_attributes()
+            .with_title(title)
+            .with_window_icon(icon.clone())
+            // Draggable title bar on compositors with no server-side
+            // decorations (e.g. GNOME/mutter); explicit though it's the
+            // winit default, so the intent is unmistakable.
+            .with_decorations(true)
+            .with_visible(false)
+            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+        // Optional profiling placement keeps concurrent benchmark windows from
+        // completely occluding one another. Platform window managers may ignore it.
+        let window_attributes = match std::env::var("QOS_PROFILE_WINDOW_POSITION")
+            .ok()
+            .and_then(|value| crate::profiling::profile_window_position(&value))
+        {
+            Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+            None => window_attributes,
+        };
+        // Benchmarks can keep their own windows above unrelated desktop apps.
+        // This does not change normal application window ordering.
+        let window_attributes = if std::env::var("QOS_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+            window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+        } else {
+            window_attributes
+        };
+        // See `resolve_app_id`: a shared id collapses per-app compositor
+        // lookups.
+        #[cfg(target_os = "linux")]
+        let window_attributes = {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            let package_id = std::env::var("TILO_PACKAGE_ID")
+                .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
+                .ok();
+            let app_id = resolve_app_id(
+                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .as_deref(),
+            );
+            window_attributes.with_name(app_id, "")
+        };
+        // `resumed` is a winit `ApplicationHandler` callback returning `()`,
+        // so a `create_window` failure (compositor gone) has nowhere to
+        // propagate to; there is no window to run without it either way.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
+        )]
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
+                crate::diag!("tilo: cannot protect application Quit: {error}");
+                event_loop.exit();
+                return;
+            }
+        }
+        tilo_startup_metrics::mark("primary-window-created");
+        self.native_input_pointer_passthrough = false;
+        self.native_input_route_isolation = false;
+        if std::env::var("QOS_PROFILE_POINTER_PASSTHROUGH").as_deref() == Ok("1")
+            && std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1")
+            && (self.native_scenario.is_some() || self.native_input_origin.is_some())
+        {
+            // Physical pointer movement must not replace the scripted hover.
+            // Scripted inputs still use the normal UserEvent dispatch route.
+            if let Err(error) = window.set_cursor_hittest(false) {
+                eprintln!("Native benchmark pointer isolation failed: {error}");
+                event_loop.exit();
+                return;
+            }
+            self.native_input_pointer_passthrough = true;
+            self.native_input_route_isolation = true;
+        }
+        // Some backends only honour the icon post-creation; a no-op on
+        // Wayland compositors that source it from the app_id instead.
+        window.set_window_icon(icon);
+
+        // Must be created before the window is shown.
+        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.a11y_proxy.clone(),
+        ));
+        crate::widget::mount_native_views(
+            self.app.root_widget.as_mut(),
+            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+        );
+        #[cfg(windows)]
+        if let Err(reason) = self.init_render(&window) {
+            crate::diag!("tilo: {reason}");
+            event_loop.exit();
+            return;
+        }
+        tilo_startup_metrics::mark("primary-window-show-start");
+        window.set_visible(true);
+        tilo_startup_metrics::mark("primary-window-show-done");
+
+        self.app.layout.layout_dirty = true;
+        // GPU init deferred to first `RedrawRequested` (`init_render`): the
+        // ~50ms surface+device init here would block `resumed`'s seat
+        // wiring â€” on mutter that intermittently left the toplevel
+        // unfocused with dead input on first launch.
+        window.request_redraw();
+        tilo_startup_metrics::mark("primary-window-redraw-requested");
+        crate::dnd::set_drag_window(&window);
+        self.window = Some(window);
+        tilo_startup_metrics::mark("primary-window-resumed-done");
+    }
+
+    /// BEFORE the `Window` arc is dropped â€” the worker's
+    /// `RenderSurface<'static>` references it, and wgpu may panic if the
+    /// surface outlives the window.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.app.close_wake_scope();
+        let _entry = self.app.enter_wake_scope();
+        // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
+        // before the native views and window disappear, so external clients
+        // receive the provider's normal unregister/teardown rather than being
+        // left with object paths whose backing Wayland surface is already
+        // gone.  This also makes the ordering explicit instead of relying on
+        // AppHandler field-drop order.
+        self.a11y_adapter = None;
+        if !self.app.close_admission.admitted {
+            self.app.autosave_flush();
+        }
+        self.app.close_native_content();
+        self.close_audience_presentation();
+        for surface in &mut self.floating_windows {
+            if let Some(mut render) = surface.render.take() {
+                render.shutdown_and_join();
+            }
+        }
+        self.floating_windows.clear();
+        if let Some(mut render) = self.render.take() {
+            render.shutdown_and_join();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        self.route_window_event(
+            event_loop,
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Platform,
+        );
+    }
 
     #[allow(
         clippy::too_many_lines,
@@ -10441,32 +11455,124 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
-
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
             return;
         };
+        // Conservative shared-root fallback: hidden primary work may stay at
+        // 60Hz while a visible auxiliary depends on its update/sync projection.
+        // Only all-known-occluded surfaces receive full idle backoff.
+        if self.visible_auxiliary_needs_shared_root() {
+            self.primary_retry.keep_shared_cadence(Instant::now());
+        }
+        // Once admission defers, periodic animation/startup demand must not
+        // spin redraw events against the busy worker. Keep updating dirty state;
+        // the worker's armed completion callback requests the next paint.
+        let mut auxiliary_retry_at: Option<Instant> = None;
+        for (aux_window, render) in self
+            .floating_windows
+            .iter()
+            .filter(|surface| !surface.suspended)
+            .map(|surface| (&surface.window, surface.render.as_ref()))
+            .chain(
+                self.audience_presentation
+                    .iter()
+                    .map(|audience| (&audience.window, audience.render.as_ref())),
+            )
+        {
+            if let Some(deadline) = render.and_then(|render| render.retry.deadline()) {
+                auxiliary_retry_at =
+                    Some(auxiliary_retry_at.map_or(deadline, |prior| prior.min(deadline)));
+                if deadline <= Instant::now() && auxiliary_redraw_allowed(render) {
+                    aux_window.request_redraw();
+                }
+            }
+        }
+        let auxiliary_retry_due =
+            auxiliary_retry_at.is_some_and(|deadline| deadline <= Instant::now());
+        let retry_now = Instant::now();
+        let primary_blocked_until = self
+            .primary_retry
+            .occlusion_blocked(retry_now)
+            .then(|| self.primary_retry.deadline())
+            .flatten();
+        let any_render_available = primary_blocked_until.is_none()
+            || self.floating_windows.iter().any(|surface| {
+                !surface.suspended
+                    && surface
+                        .render
+                        .as_ref()
+                        .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            })
+            || self.audience_presentation.as_ref().is_some_and(|audience| {
+                audience
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            });
+        let retry_at = self.primary_retry.deadline();
+        let retry_due = retry_at.is_some_and(|deadline| deadline <= Instant::now());
+        let redraw_deferred = self
+            .render
+            .as_ref()
+            .is_some_and(|render| render.buffers.redraw_deferred())
+            || retry_at.is_some_and(|deadline| Instant::now() < deadline);
+        let request_primary_redraw = || {
+            if !redraw_deferred {
+                window.request_redraw();
+            }
+        };
+        if retry_due {
+            request_primary_redraw();
+        }
         self.sync_ime(&window);
+        if self.last_primary_frame_presented > 0
+            && let Some(scenario) = self.native_scenario.take()
+        {
+            crate::native_scenario::log::emit_json(
+                "qos-native-scenario",
+                serde_json::json!({
+                    "name": scenario.name, "steps": scenario.steps.len(),
+                    "warmup_steps": scenario.warmup_steps, "interval_us": scenario.interval_us,
+                    "event": "started_after_first_worker_presentation",
+                }),
+            );
+            let proxy = self.a11y_proxy.clone();
+            if let Err(error) = crate::native_scenario::spawn(scenario, move |packet| {
+                proxy
+                    .send_event(UserEvent::NativeScenarioInput(packet))
+                    .is_ok()
+            }) {
+                crate::native_scenario::log::emit_json(
+                    "qos-native-scenario",
+                    serde_json::json!({"event":"failed", "error":error}),
+                );
+                event_loop.exit();
+            }
+        }
 
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();
-            window.request_redraw();
+            request_primary_redraw();
         }
         self.sync_native_floating_geometry();
         if self.recover_stalled_floating_windows() {
-            window.request_redraw();
+            request_primary_redraw();
         }
         // `RedrawRequested` polls the asynchronous renderer setup. The shell
         // keeps showing its live transfer proxy in the meantime, so these
         // frames are cheap but essential: the first real buffer should take
         // ownership as soon as it is ready, without waiting for fresh input.
         for surface in &self.floating_windows {
-            if !surface.suspended && !surface.adopted {
+            if !surface.suspended
+                && !surface.adopted
+                && auxiliary_redraw_allowed(surface.render.as_ref())
+            {
                 surface.window.request_redraw();
             }
         }
@@ -10475,7 +11581,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.last_primary_frame_presented,
         );
         if awaiting_primary_first_present {
-            window.request_redraw();
+            request_primary_redraw();
         }
         // This runs before the ordinary fullscreen reconciliation below. If a
         // real second output appears, the root is notified first and keeps
@@ -10497,15 +11603,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             && window.inner_size() != prev
         {
             app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
         if app.pump_collab_presence() {
-            window.request_redraw();
+            request_primary_redraw();
         }
         if app.poll_directed_invocations() {
             app.needs_sync = true;
             app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
         app.publish_playback_handoff();
 
@@ -10515,26 +11621,35 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         app.presence_ctx.prune_typing(typing_now);
         let typing_active = app.presence_ctx.has_active_typing(typing_now);
         if typing_active {
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         if app.dispatch_control_invocations() != 0 {
             app.needs_sync = true;
             app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         if app.service_history() {
             app.needs_sync = true;
             app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         if app.root_widget.needs_commit() {
+            if let Some(origin) = self.native_input_origin {
+                crate::native_scenario::log::emit_json(
+                    "qos-native-commit-redraw",
+                    serde_json::json!({
+                        "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                        "at_us": origin.elapsed().as_micros(),
+                    }),
+                );
+            }
             app.commit_action();
             app.root_widget.on_commit();
             app.needs_sync = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // Level-triggered rather than hooked into individual mutations:
@@ -10544,7 +11659,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
 
         if app.reconcile_fullscreen(&window) {
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // Run both: Settings' open Appearance pane may intentionally override
@@ -10553,7 +11668,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let appearance_changed = app.reconcile_appearance();
         if configured_changed || appearance_changed {
             app.needs_sync = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // The active page/view can change during `sync` (e.g. the initial
@@ -10562,25 +11677,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         app.broadcast_view_presence();
 
         // Run here too, not only `RedrawRequested`, since painting isn't
-        // guaranteed — a background tab, or a first frame behind a shader
+        // guaranteed â€” a background tab, or a first frame behind a shader
         // compile.
         if app.record_tick() {
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // Without this a first peer with no input never re-syncs to seed its
         // doc after the grace window, so a late joiner diverges.
         if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
             app.needs_sync = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         app.broadcast_doc_delta();
 
-        // Flag drained by the draw handler, not here — just pump a redraw.
+        // Flag drained by the draw handler, not here â€” just pump a redraw.
         if app.root_widget.take_structure_dirty() {
             app.layout.structure_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         let scheduled_deadline = crate::close_admission::wake_deadline(
@@ -10591,29 +11706,37 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
         if scheduled_due {
             app.needs_sync = true;
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
-        let tooltip_pending = app.tooltip_host.needs_frame();
+        let tooltip_pending = app.input.tooltip_host.needs_frame();
         if tooltip_pending {
-            window.request_redraw();
+            request_primary_redraw();
         }
 
         // Reduced motion lets the loop go idle since animated widgets
         // already paint their resting state.
         let needs_frame = app.root_widget.needs_animation_frame();
-        if needs_frame && !app.theme.reduce_motion {
+        let (animation_due, animation_deadline) = self.animation_schedule.poll(
+            Instant::now(),
+            any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
+        );
+        if animation_due {
             app.needs_sync = true;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
             app.layout.layout_dirty = true;
-            window.request_redraw();
+            request_primary_redraw();
             for surface in &self.floating_windows {
-                surface.window.request_redraw();
+                if auxiliary_redraw_allowed(surface.render.as_ref()) {
+                    surface.window.request_redraw();
+                }
             }
-            if let Some(audience) = self.audience_presentation.as_ref() {
+            if let Some(audience) = self.audience_presentation.as_ref()
+                && auxiliary_redraw_allowed(audience.render.as_ref())
+            {
                 audience.window.request_redraw();
             }
         }
@@ -10624,37 +11747,46 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if let Some(tick) = app.frame_tick.as_mut()
             && tick(&mut app.presence_ctx)
         {
-            window.request_redraw();
+            request_primary_redraw();
         }
 
-        // `Wait` sleeps until real input. Visual work keeps a display-cadence
-        // pump; an otherwise-idle collaboration socket gets a slower bounded
-        // poll because its shovel does not yet own a winit wake proxy.
-        let awaiting_floating_pixels = self
-            .floating_windows
-            .iter()
-            .any(|surface| !surface.suspended && !surface.adopted);
-        let visual_work =
-            // A widget may keep reporting animation demand until it receives
-            // another paint. Under reduced motion we intentionally suppress
-            // that paint above, so counting the raw flag here would leave an
-            // otherwise-idle app waking at 60 Hz forever.
-            animation_pump_needed(needs_frame, app.theme.reduce_motion)
-            || tooltip_pending
-            || typing_active
-            || awaiting_floating_pixels
-            || awaiting_primary_first_present
-            || scheduled_due;
-        match idle_pump_deadline(
+        // `Wait` sleeps until real input, zero CPU; escalate to a bounded
+        // ~60 Hz tick only while something no winit event surfaces on its
+        // own needs draining â€” a live collab socket, or a root still
+        // wanting another frame.
+        let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && !surface.adopted
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(Instant::now()))
+        });
+        let retry_at = retry_at.into_iter().chain(auxiliary_retry_at).min();
+        // Widget deadlines are serviced by sync/redraw. While occluded they can
+        // be delayed by at most the 250ms probe cap; independent history, record,
+        // autosave and collaboration work above continues on its existing doors.
+        let demand = crate::render_thread::retry::WakeDemand {
+            model: app.collaboration.manager.is_connected(),
+            typing: typing_active,
+            primary_startup: awaiting_primary_first_present,
+            tooltip: tooltip_pending,
+            widget_due: scheduled_due,
+            animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
+            auxiliary_startup: awaiting_floating_pixels,
+            retry_due: retry_due || auxiliary_retry_due,
+        };
+        match crate::render_thread::retry::next_wake(
             Instant::now(),
-            visual_work,
-            app.collab_manager.is_connected(),
+            primary_blocked_until,
+            any_render_available,
+            demand,
             scheduled_deadline,
+            retry_at,
+            animation_deadline,
         ) {
-            IdlePumpCadence::Deadline(deadline) => {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
-            IdlePumpCadence::Wait => event_loop.set_control_flow(ControlFlow::Wait),
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -10676,12 +11808,12 @@ mod window_title_tests {
     #[test]
     fn explicit_title_wins_over_everything() {
         let t = resolve_title_from(
-            Some("My Doc — Notes"),
+            Some("My Doc â€” Notes"),
             Some("Notes"),
             Some("dev.tilo.notes"),
             Some("notes"),
         );
-        assert_eq!(t, "My Doc — Notes");
+        assert_eq!(t, "My Doc â€” Notes");
     }
 
     #[test]
@@ -10831,7 +11963,7 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn pointer_broadcast_allowed_passes_at_and_past_gap() {
-        // Exactly at the gap boundary is allowed — strict `>` would
+        // Exactly at the gap boundary is allowed â€” strict `>` would
         // accumulate single-ms drift under a sawtooth wakeup schedule.
         let t0 = Instant::now();
         assert!(pointer_broadcast_allowed(
@@ -10959,6 +12091,11 @@ mod pointer_broadcast_tests {
         let app_state = State::load(&base_bytes).unwrap();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
+        let route = crate::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: route.clone(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         {
             let doc = &mut app.state_mut_for_test().doc;
             let Ok(Some((automerge::Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "m") else {
@@ -10978,13 +12115,14 @@ mod pointer_broadcast_tests {
             collab_types::DocumentMutation::Snapshot(incoming)
                 .encode()
                 .unwrap(),
-            collab_types::ArtifactId::new(),
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-            collab_types::AttestationId::new(),
+            collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::OpClass::Splice,
             std::time::SystemTime::UNIX_EPOCH,
             0,
         );
+        app.state.commit_action(None, None);
         app.apply_signed_document_envelope(&envelope, None);
 
         // A replace would drop "a".
@@ -11302,7 +12440,7 @@ mod screen_reader_tests {
     // SAFETY: test-only, single-threaded, so the !Send Rc is fine.
     #[allow(
         clippy::non_send_fields_in_send_ty,
-        reason = "the Rc<RefCell<_>> is deliberately asserted Send above — this test double \
+        reason = "the Rc<RefCell<_>> is deliberately asserted Send above â€” this test double \
                   never actually crosses a thread"
     )]
     unsafe impl Send for SharedRecorder {}
@@ -11889,6 +13027,32 @@ mod focus_trap_tests {
     }
 
     #[test]
+    fn container_overlay_traps_tab_in_its_controls() {
+        use crate::widget::{Column, Container};
+        let root = Column::new()
+            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(
+                Container::new()
+                    .with_focus_trap()
+                    .with_child(Box::new(TwoKids::new())),
+            ));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        app.init_layout();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(app.focusable_order.len(), 2);
+        assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
+        app.set_focused_node(Some(first));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(second));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(first));
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(second));
+    }
+
+    #[test]
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
@@ -12016,7 +13180,7 @@ mod focus_trap_tests {
         let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
         assert_eq!(node.role, Role::Dialog);
         assert_eq!(node.name.as_deref(), Some("Delete file?"));
-        assert!(node.state.modal, "an open modal traps focus → modal flag");
+        assert!(node.state.modal, "an open modal traps focus â†’ modal flag");
         assert!(!node.state.hidden);
     }
 }
@@ -12115,7 +13279,7 @@ mod low_vision_tests {
         a.set_text_scale(1.25);
         a.set_reduce_motion(true);
         a.set_high_contrast(true);
-        // Swap the *base* theme — the a11y layer must re-apply on top.
+        // Swap the *base* theme â€” the a11y layer must re-apply on top.
         a.set_theme(Theme::light());
         assert!(a.theme.reduce_motion);
         assert_eq!(a.text_scale(), 1.25);
@@ -12260,7 +13424,7 @@ mod low_vision_tests {
     fn appearance_reconcile_applies_scale_theme_and_contrast_live() {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
         let base_type = Theme::high_contrast().tokens.typography.scale.base;
-        // Nord base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
+        // Nord base + high_contrast=true â†’ high-contrast track wins; ui 1.5, text 1.2.
         let root = AppearanceRoot {
             intent: intent(Theme::nord(), 1.5, 1.2, true),
         };
@@ -12277,7 +13441,7 @@ mod low_vision_tests {
             a.theme.name, "High Contrast",
             "high_contrast overrides the Nord base"
         );
-        // Spacing grew by the UI factor; type by UI × text.
+        // Spacing grew by the UI factor; type by UI Ã— text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
         assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
         assert!(
@@ -12654,6 +13818,36 @@ mod action_palette_tests {
         }
     }
 
+    include!("resource_projection_tests.rs");
+
+    #[test]
+    fn control_refresh_without_action_bindings_does_not_materialize_catalog() {
+        use std::sync::atomic::Ordering;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        for _ in 0..3 {
+            app.invalidate_widget_resource_cache();
+            app.refresh_control_action_availability();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        app.actions.last_control_availability = Some((
+            app.resource_cache_key(),
+            app.actions.permission_generation.get(),
+        ));
+        app.refresh_control_action_availability();
+        assert!(app.actions.last_control_availability.is_none());
+        // Discovery still sees the complete surface on demand.
+        assert!(
+            app.collect_resources()
+                .iter()
+                .any(|r| r.id.as_str() == "test.cache:1")
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn resource_tree_is_materialized_once_per_exact_generation() {
         use std::sync::atomic::Ordering;
@@ -12801,7 +13995,8 @@ mod action_palette_tests {
                     "focused chrome input must never reach consuming app content"
                 );
                 assert!(!handled, "Button leaves activation to the native fallback");
-                assert!(app.activate_focused_control_key(&event));
+                app.handle_unconsumed_activation_key(&event, &mut handled);
+                assert!(handled);
                 assert_eq!(app.dispatch_control_invocations(), 1);
                 assert_eq!(app.action_palette().is_some(), open_search);
                 assert_eq!(app.document_history.is_open(), !open_search);
@@ -12935,7 +14130,7 @@ mod action_palette_tests {
         assert_eq!(res[0].kind, "test.obj");
 
         // Scopes the palette to those resources AND folds in the widget's
-        // searchable content — one surface, both kinds.
+        // searchable content â€” one surface, both kinds.
         app.open_action_palette();
         let ap = app.action_palette().expect("palette is open");
         assert!(ap.is_open());
@@ -13063,7 +14258,7 @@ mod action_palette_tests {
         );
     }
 
-    /// A content row does NOT dispatch — it hands its id back through
+    /// A content row does NOT dispatch â€” it hands its id back through
     /// [`Widget::activate_search_result`] instead.
     #[test]
     fn ctrl_k_content_row_navigates_through_the_app() {
@@ -13240,7 +14435,7 @@ impl crate::view::FreezeThaw for App {
         self.state.doc.clone().save()
     }
 
-    /// Also resets the undo history — the old stacks name changes this
+    /// Also resets the undo history â€” the old stacks name changes this
     /// document has never seen.
     fn restore_state(&mut self, bytes: &[u8]) -> Result<(), crate::view::ThawError> {
         let doc = automerge::AutoCommit::load(bytes)
@@ -13294,7 +14489,7 @@ impl crate::view::FreezeThaw for App {
     }
 }
 
-// View presence: exercised on the real broadcast/receive path —
+// View presence: exercised on the real broadcast/receive path â€”
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
 #[cfg(test)]
@@ -13319,7 +14514,7 @@ mod view_presence_tests {
     use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use winit::event::WindowEvent;
 
-    /// No focus field — [`ViewSubset`] excludes the caret.
+    /// No focus field â€” [`ViewSubset`] excludes the caret.
     struct ViewRoot {
         scroll: Vec<f64>,
         mode: Option<String>,
@@ -13840,10 +15035,12 @@ mod semantic_tree_app_tests {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
         Bump,
+        Reset,
         HostBump,
         SetLabel(String),
     }
     const COUNTER_TYPE: &str = "test.counter";
+    const ASYNC_COUNTER_TYPE: &str = "test.async-counter";
 
     #[derive(Clone)]
     struct LargeDirectoryProvider {
@@ -13950,6 +15147,9 @@ mod semantic_tree_app_tests {
                     };
                     doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
                 }
+                CounterAction::Reset => {
+                    doc.put(&ROOT, "n", ScalarValue::Int(0))?;
+                }
                 CounterAction::SetLabel(s) => {
                     doc.put(&ROOT, "label", s.as_str())?;
                 }
@@ -13973,9 +15173,17 @@ mod semantic_tree_app_tests {
         lazy_resource: Option<Resource>,
         directory_provider: Option<LargeDirectoryProvider>,
         directory_roots: usize,
+        post_bump_reset: bool,
+        async_bump: bool,
+        pending_bump: Option<tilo_actions::InvocationId>,
+        resource_result: Option<tilo_actions::InvocationUpdate>,
     }
 
     fn counter_resource(destructive: bool) -> Resource {
+        counter_resource_with_reset(destructive, false)
+    }
+
+    fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resource {
         let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
             .unwrap()
             .requiring(PermissionRequirement::Write);
@@ -13984,7 +15192,7 @@ mod semantic_tree_app_tests {
         } else {
             bump
         };
-        Resource::new("test.counter", "test.counter", "Counter")
+        let resource = Resource::new("test.counter", "test.counter", "Counter")
             .with_action(bump)
             .with_action(
                 ActionSpec::immediate(
@@ -14022,13 +15230,22 @@ mod semantic_tree_app_tests {
                 "set-label",
                 "Set label",
                 "Label",
-                "name…",
+                "nameâ€¦",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {
                     EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
                         .unwrap()
                 },
-            ))
+            ));
+        if reset_visible {
+            resource.with_action(
+                ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset)
+                    .unwrap()
+                    .requiring(PermissionRequirement::Write),
+            )
+        } else {
+            resource
+        }
     }
 
     impl CounterCard {
@@ -14045,7 +15262,23 @@ mod semantic_tree_app_tests {
                 lazy_resource: None,
                 directory_provider: None,
                 directory_roots: 1,
+                post_bump_reset: false,
+                async_bump: false,
+                pending_bump: None,
+                resource_result: None,
             }
+        }
+
+        fn with_post_bump_reset() -> Self {
+            let mut card = Self::new();
+            card.post_bump_reset = true;
+            card
+        }
+
+        fn with_async_post_bump_reset() -> Self {
+            let mut card = Self::with_post_bump_reset();
+            card.async_bump = true;
+            card
         }
 
         fn with_lazy_resource(resource: Resource) -> Self {
@@ -14055,6 +15288,10 @@ mod semantic_tree_app_tests {
                 lazy_resource: Some(resource),
                 directory_provider: None,
                 directory_roots: 1,
+                post_bump_reset: false,
+                async_bump: false,
+                pending_bump: None,
+                resource_result: None,
             }
         }
 
@@ -14069,10 +15306,40 @@ mod semantic_tree_app_tests {
             card.directory_roots = count;
             card
         }
+
+        fn current_resource(&self, doc: &automerge::AutoCommit) -> Resource {
+            let resource = counter_resource_with_reset(
+                self.destructive,
+                self.post_bump_reset && counter_in_doc(doc) > 0,
+            );
+            if self.async_bump {
+                resource.with_action(
+                    ActionSpec::operation(
+                        "async-bump",
+                        "Asynchronous bump",
+                        OperationKind::Effect,
+                        ASYNC_COUNTER_TYPE,
+                        &(),
+                    )
+                    .unwrap()
+                    .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+                    .returns(tilo_actions::ResultSpec::Job),
+                )
+            } else {
+                resource
+            }
+        }
     }
     impl Widget for CounterCard {
         fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
             self.button.sync(s, p);
+            if let Some(invocation) = self.pending_bump.take() {
+                CounterAction::Bump.apply(s).unwrap();
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                });
+            }
         }
         fn build_layout(
             &mut self,
@@ -14122,16 +15389,16 @@ mod semantic_tree_app_tests {
         fn get_rect(&self) -> KurboRect {
             KurboRect::ZERO
         }
-        fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
             self.lazy_resource
                 .is_none()
-                .then(|| counter_resource(self.destructive))
+                .then(|| self.current_resource(doc))
                 .into_iter()
                 .collect()
         }
         fn action_directory_resource_page(
             &self,
-            _doc: &automerge::AutoCommit,
+            doc: &automerge::AutoCommit,
             cursor: &[u8],
             max_results: usize,
         ) -> Option<crate::widget::ActionDirectoryResourcePage> {
@@ -14143,7 +15410,7 @@ mod semantic_tree_app_tests {
             let resources = (offset..end)
                 .map(|index| {
                     if index == 0 {
-                        counter_resource(self.destructive)
+                        self.current_resource(doc)
                     } else {
                         Resource::new(
                             format!("test.counter:{index}"),
@@ -14170,14 +15437,14 @@ mod semantic_tree_app_tests {
                 exhausted: end >= self.directory_roots,
             })
         }
-        fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+        fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
             if let Some(resource) = self.lazy_resource.as_ref().filter(|resource| {
                 find_action_resource(std::slice::from_ref(resource), id).is_some()
             }) {
                 return Some(resource.clone());
             }
             if id == "test.counter" {
-                return Some(counter_resource(self.destructive));
+                return Some(self.current_resource(doc));
             }
             id.strip_prefix("test.counter:")
                 .and_then(|suffix| suffix.parse::<usize>().ok())
@@ -14208,7 +15475,40 @@ mod semantic_tree_app_tests {
                 .unwrap_or_default()
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &[COUNTER_TYPE]
+            &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
+        }
+        fn start_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
+                self.pending_bump = Some(invocation);
+                return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+            }
+            self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
+        }
+        fn poll_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            _cancellation_requested: bool,
+            _doc: &automerge::AutoCommit,
+            _path: &automerge::ObjId,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            if self
+                .resource_result
+                .as_ref()
+                .is_some_and(|update| update.invocation() == invocation)
+            {
+                self.resource_result.take()
+            } else {
+                None
+            }
         }
         fn invoke_resource_operation_v2(
             &mut self,
@@ -14253,7 +15553,11 @@ mod semantic_tree_app_tests {
     }
 
     fn counter(app: &App) -> i64 {
-        match app.state.doc.get(&ROOT, "n") {
+        counter_in_doc(&app.state.doc)
+    }
+
+    fn counter_in_doc(doc: &automerge::AutoCommit) -> i64 {
+        match doc.get(&ROOT, "n") {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         }
@@ -14461,6 +15765,97 @@ mod semantic_tree_app_tests {
                 .and_then(|entry| entry.author.as_ref()),
             Some(&crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
+        );
+    }
+
+    #[test]
+    fn broker_invocation_republishes_a_document_dependent_action_surface() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .all(|descriptor| descriptor.address.action != "reset"),
+            "reset is unavailable before the counter changes"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 42,
+            resource: "test.counter".into(),
+            action: "bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+
+        assert_eq!(counter(&app), 1, "the directed document action ran");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the post-mutation surface exposes the newly valid reset action"
+        );
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "the broker event batch republishes without waiting for native window input"
+        );
+    }
+
+    #[test]
+    fn accepted_broker_invocation_republishes_when_its_terminal_update_arrives() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 43,
+            resource: "test.counter".into(),
+            action: "async-bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+        assert_eq!(counter(&app), 0, "admission alone does not mutate");
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .map(|pending| pending.wire_id),
+            Some(43),
+            "Accepted remains pending until the widget reports a terminal update"
+        );
+
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "the later model pass applied the job");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the terminal document now exposes reset"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        assert!(
+            app.poll_directed_invocations(),
+            "the terminal update arrived"
+        );
+        assert!(app.actions.directed_invocations.is_empty());
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "terminal lifecycle polling republishes without native input"
         );
     }
 
@@ -15280,6 +16675,8 @@ mod semantic_tree_app_tests {
         assert_eq!(presses.get(), 0);
     }
 
+    include!("app/action_directory_snapshot_tests.rs");
+
     fn directory_query(
         revision: impl Into<String>,
         parent_resource: impl Into<String>,
@@ -15721,6 +17118,28 @@ mod wake_integration_tests {
         app.needs_sync = false;
         assert!(!app.accept_wake(&current));
         assert!(!app.needs_sync);
+    }
+
+    #[test]
+    fn collaboration_queue_wake_does_not_force_document_sync() {
+        let (scope, rx) = bound_scope();
+        let handle = scope.handle();
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            scope,
+            State::new(),
+            Box::new(crate::widget::Text::new("root")),
+        );
+        app.needs_sync = false;
+        handle.notify_events();
+        assert!(app.accept_wake(&rx.try_recv().unwrap()));
+        assert!(!app.needs_sync);
+        app.needs_sync = true;
+        handle.notify_events();
+        assert!(app.accept_wake(&rx.try_recv().unwrap()));
+        assert!(
+            app.needs_sync,
+            "queue wake must not erase an earlier model invalidation"
+        );
     }
 
     #[test]
@@ -16543,14 +17962,6 @@ mod bound_component_tests {
         app.close_admission.save_waiting = true;
         app.close_admission.save_local = Some(close_probe);
         app.close_components();
-        // The target was revoked while its canonical operation was Accepted.
-        // The actual poll path must turn refusal into recoverable close UI.
-        app.poll_directed_invocations();
-        assert!(matches!(app.close_admission.save_result, Some(Err(_))));
-        app.service_close_admission();
-        assert!(!app.close_admission.save_waiting);
-        assert!(!app.close_admission.admitted);
-        assert!(app.close_admission.dialog.is_some());
         assert_eq!(
             CAPTURES.with_borrow(|c| c
                 .iter()
@@ -16782,6 +18193,8 @@ mod bound_component_tests {
             }
         }
     }
+
+    include!("app/bound_record_sync_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
@@ -20055,3 +21468,63 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "app/form_composition_tests.rs"]
 mod form_composition_tests;
+
+#[cfg(test)]
+#[path = "app/manual_composition_tests.rs"]
+mod manual_composition_tests;
+
+#[cfg(test)]
+#[path = "app/number_input_layout_tests.rs"]
+mod number_input_layout_tests;
+
+#[cfg(test)]
+#[path = "app/history_tests.rs"]
+mod framework_history_tests;
+
+#[path = "app/history.rs"]
+mod framework_history;
+
+#[path = "app/document_routes.rs"]
+mod document_routes;
+
+#[cfg(test)]
+#[path = "app/focus_selection_tests.rs"]
+mod focus_selection_tests;
+
+#[cfg(test)]
+#[path = "app/local_privacy_tests.rs"]
+mod local_privacy_tests;
+
+/// Finish the current writer and every retained outgoing-owner failure before
+/// reporting widget-owned durability. Reports remain owned by the runner.
+pub(crate) fn flush_widget_owned_persistence(
+    root: &mut dyn Widget,
+    reports: &mut Vec<crate::application::ComponentCloseReport>,
+) -> Result<(), String> {
+    reports.extend(root.take_component_close_reports());
+    let current = root
+        .try_flush_owned_persistence()
+        .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
+    reports.extend(root.take_component_close_reports());
+    for report in reports.iter_mut() {
+        if report.record_error.is_some() && report.record_retry.is_some() {
+            let _ = report.retry_record();
+        }
+    }
+    current?;
+    for report in reports.iter() {
+        if let Some(error) = report
+            .record_error
+            .as_ref()
+            .or(report.view_error.as_ref())
+            .or(report.teardown_error.as_ref())
+        {
+            return Err(error.clone());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "app/notes_rich_controls_tests.rs"]
+mod notes_rich_controls_tests;

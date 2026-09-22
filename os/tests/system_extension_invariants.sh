@@ -201,6 +201,13 @@ if grep -Fq 'tilo-system-extension-userspace.service": true' "$polkit" \
 else
     ok 'desktop has no broad polkit grant for model or extension services'
 fi
+need "$polkit" 'action.lookup("unit") == "tilo-deployment-update.service"' 'ush cannot request the exact signed image staging unit'
+need "$polkit" 'subject.isInGroup("wheel")' 'signed image staging is not limited to administrators'
+if grep -F '"tilo-deployment-update.service": true' "$polkit" >/dev/null; then
+    bad 'signed image staging is mixed into the broader boot-control grant'
+else
+    ok 'ush receives only the exact signed image staging operation'
+fi
 need "$containerfile" 'systemctl enable tilo-system-extension-dispatcher.socket' 'fixed request socket is not enabled in the image'
 containerfile_has_copy "$containerfile" /out/tilo-system-extension-manager \
   /usr/libexec/tilo-system-extension-manager builder \

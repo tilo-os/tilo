@@ -2191,22 +2191,31 @@ fn a_long_export_failure_wraps_above_the_footer_and_buttons() {
     app.export_status = ExportStatus::Failed {
         reason: reason.into(),
     };
-    let r = app.regions();
-    let layout = app.export_layout(&r);
+    // The one layout the event path and the draw pass both resolve from
+    // the current state: the failure lines fill the status slot, which
+    // sits clear of the size line above it and the action row below it.
     let mut tr = TextRenderer::new();
-    let lines = tr.clamp_to_lines(reason, 10.5, (layout.card.width() - 48.0) as f32, 2);
+    let layout = app.export_layout(&mut tr, &Theme::dark());
+    let ty = layout.type_sizes;
+    let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
     assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
-    let line_h = f64::from(tr.measure("Hg", 10.5, None).1);
-    let info_bottom = layout.card.y1 - 96.0 + f64::from(tr.measure("Hg", 12.0, None).1);
-    let error_top = layout.card.y1 - 80.0;
-    let error_bottom = layout.card.y1 - 80.0 + 14.0 + line_h;
+    let line_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+    let info_bottom = layout.info_top + f64::from(tr.measure("Hg", ty.sm, None).1);
+    let error_top = layout.status.y0;
+    let error_bottom = layout.status.y0 + 2.0 * line_h;
     assert!(
         error_top >= info_bottom,
         "the wrapped failure overlaps the footer metadata: {error_top} < {info_bottom}"
     );
     assert!(
-        error_bottom <= layout.cancel.y0,
-        "the wrapped failure overlaps the footer buttons: {error_bottom} > {}",
+        error_bottom <= layout.status.y1 + 1e-6,
+        "two failure lines do not fit the status slot: {error_bottom} > {}",
+        layout.status.y1
+    );
+    assert!(
+        layout.status.y1 <= layout.cancel.y0,
+        "the status slot overlaps the footer buttons: {} > {}",
+        layout.status.y1,
         layout.cancel.y0
     );
     // Exercise the real Vello draw pass as well as its layout math.
@@ -2441,37 +2450,58 @@ fn the_shortcut_sheet_has_room_for_every_shortcut_it_lists() {
     // silently, with no error and no clipped glyph to notice. A sheet that
     // is missing shortcuts is worse than no sheet, because it is the one
     // place a user goes to find out what exists.
-    let (split, content_h) = help_columns(true);
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let ty = dialog_type(&tr, &theme);
+    let m = HelpMetrics::measure(&mut tr, &theme, ty);
+    let (split, _) = help_columns(true, m);
     assert!(
         split > 0 && split < SHORTCUTS.len(),
         "both columns carry groups"
     );
 
-    // The card is sized from that, and every row must land above its foot.
-    let card_h = HELP_TOP + content_h + 16.0;
-    for (col, groups) in [(0, &SHORTCUTS[..split]), (1, &SHORTCUTS[split..])] {
-        let mut y = HELP_TOP;
-        for (group, rows) in groups {
-            y += HELP_HEADER_H;
-            for (combo, _) in rows.iter() {
-                y += HELP_ROW_H;
-                assert!(
-                    y <= card_h - 16.0,
-                    "column {col}: {group} / {combo} falls off the card \
-                         ({y} past {})",
-                    card_h - 16.0,
-                );
-            }
-            y += HELP_GROUP_GAP;
+    // The card is sized from that, and every row must land inside the
+    // body the frame gave it — the one layout the event path and the
+    // draw pass both resolve, not re-derived from the table.
+    let mut app = app_with_sample();
+    app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    app.navigation.help_open = true;
+    let layout = app.help_layout(&mut tr, &theme);
+    assert!(
+        !layout.modal.body_overflows,
+        "a 1280x800 window holds the whole sheet"
+    );
+    assert_eq!(layout.max_scroll, 0.0, "nothing to scroll");
+    render(&mut app);
+    assert_eq!(layout.groups.len(), SHORTCUTS.len());
+    let body = layout.modal.body;
+    let mut columns = std::collections::BTreeSet::new();
+    for ((group, rows), g) in SHORTCUTS.iter().zip(&layout.groups) {
+        columns.insert(g.heading.x0.to_bits());
+        assert!(
+            g.heading.y0 >= body.y0 && g.heading.y1 <= body.y1 + 1e-6,
+            "{group}: the heading falls off the body ({:?} vs {body:?})",
+            g.heading,
+        );
+        assert_eq!(g.rows.len(), rows.len(), "{group}: one band per row");
+        for ((combo, _), row) in rows.iter().zip(&g.rows) {
+            assert!(
+                row.y0 >= body.y0 && row.y1 <= body.y1 + 1e-6,
+                "{group} / {combo} falls off the body ({row:?} vs {body:?})",
+            );
+            assert!(
+                row.x0 + layout.what_dx < row.x1,
+                "{group} / {combo}: the description column starts past the row",
+            );
         }
     }
+    assert_eq!(columns.len(), 2, "a 1280px sheet lays out two columns");
 
     // And the sheet a reader hears is the same list, whole — plus the one
     // extra node the screen has no equivalent element for: the sheet's
     // "Esc or ? to close" line is an instruction to the eye and a real
     // Close button to a reader, which is the same affordance, not a
     // tidier claim.
-    let app = app_with_sample();
     let node = app.a11y_help_sheet();
     let rows: usize = SHORTCUTS.iter().map(|(_, r)| r.len()).sum();
     assert_eq!(
@@ -3314,14 +3344,14 @@ fn the_header_lock_pill_locks_a_track_and_blocks_its_edits() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
     let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-    let pill = app.lock_pill_rect(header);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.track_head_layout(header).lock;
     assert!(
         header.contains(pill.center()),
         "the lock pill sits inside the track header"
     );
     assert!(
-        pill.x1 <= app.mute_pill_rect(header).x0,
+        pill.x1 <= app.track_head_layout(header).mute.x0,
         "the lock pill sits clear of the mute pill",
     );
     // Click the pill through the real press path.
@@ -3385,8 +3415,8 @@ fn a_locked_lane_refuses_a_bin_drop_and_the_clip_lands_elsewhere() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
     let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-    let pill = app.lock_pill_rect(header);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     let before = app.project.clips_on(tid).len();
     let (_mid, row) = app
@@ -3710,7 +3740,7 @@ fn the_track_menu_lock_entry_locks_the_track() {
     let (mut app, mut doc) = app_and_doc();
     let r = app.regions();
     let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+    let header = app.track_head_rect(&r, &lane);
     move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
     right_press(&mut app, &mut doc);
     assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
@@ -3794,8 +3824,8 @@ fn the_pointer_says_what_each_region_does() {
         .find(|(t, _, _)| *t == tid)
         .unwrap()
         .2;
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-    let pill = app.lock_pill_rect(header);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
 }
@@ -3892,29 +3922,39 @@ fn the_scrubber_knob_stays_inside_its_track_at_every_size() {
 #[test]
 fn the_export_dialog_header_never_collides_with_the_first_section() {
     let mut tr = TextRenderer::new();
-    let subtitle_h = tr.measure("Hg", 12.0, None).1 as f64;
+    let theme = Theme::dark();
     for (w, h) in SIZES {
         let (mut app, _doc) = app_sized(w, h);
         app.presentation.export_open = true;
-        let r = app.regions();
-        let l = app.export_layout(&r);
-        let subtitle_bottom = l.card.y0 + 44.0 + subtitle_h;
-        let first_label_top = l
-            .resolution
-            .first()
-            .expect("the dialog always offers a resolution")
-            .1
-            .y0
-            - 18.0;
-        assert!(
-            first_label_top >= subtitle_bottom,
-            "{w}x{h}: RESOLUTION starts at {first_label_top} but the filename \
-                 runs to {subtitle_bottom} — they overlap",
+        let l = app.export_layout(&mut tr, &theme);
+        let ty = l.type_sizes;
+        let header_bottom = l.mix_top.map_or(
+            l.filename_top + f64::from(tr.measure("Hg", ty.sm, None).1),
+            |top| top + f64::from(tr.measure("Hg", ty.xs, None).1),
         );
+        let first_label_top = l.captions[0];
+        assert!(
+            first_label_top >= header_bottom,
+            "{w}x{h}: RESOLUTION starts at {first_label_top} but the header \
+                 runs to {header_bottom} — they overlap",
+        );
+        let caption_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+        for (caption, rects) in l.captions.iter().zip([
+            l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+            l.container.iter().map(|(_, r)| *r).collect(),
+            l.fps.iter().map(|(_, r)| *r).collect(),
+        ]) {
+            let first = rects.first().expect("every group offers an option");
+            assert!(
+                caption + caption_h <= first.y0,
+                "{w}x{h}: a caption at {caption} runs into its segments at {}",
+                first.y0,
+            );
+        }
         // …and the groups still stop before the footer they share the card with.
         let last = l.fps.last().expect("frame rates are offered").1;
         assert!(
-            last.y1 <= l.card.y1 - 96.0,
+            last.y1 <= l.info_top,
             "{w}x{h}: the frame-rate row runs into the size estimate",
         );
     }
@@ -3927,8 +3967,11 @@ fn the_export_dialog_header_never_collides_with_the_first_section() {
 fn the_export_button_is_only_offered_when_export_can_actually_run() {
     let (mut app, mut doc) = app_sized(1280.0, 800.0);
     app.presentation.export_open = true;
-    let r = app.regions();
-    let l = app.export_layout(&r);
+    // The event path lays the dialog out with the theme of the last
+    // frame, so paint one first.
+    render(&mut app);
+    let mut tr = TextRenderer::new();
+    let l = app.export_layout(&mut tr, &Theme::dark());
     assert_eq!(
         app.export_is_offered(),
         crate::export::unavailable_reason().is_none(),
@@ -3936,7 +3979,7 @@ fn the_export_button_is_only_offered_when_export_can_actually_run() {
     );
     if !app.export_is_offered() {
         // Pressing it must do nothing at all — no job, no status change.
-        app.press_export(&mut doc, &r, l.confirm.center());
+        app.press_export(&mut doc, l.confirm.center());
         assert!(
             matches!(app.export_status, ExportStatus::Idle),
             "a refused Export must not move the status",
@@ -4407,7 +4450,8 @@ fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
         let r = app.regions();
         let px = render_pixels(&mut app, 1280, 800, &theme);
         // The timeline lanes stretch well past the card on both sides.
-        let card = app.export_layout(&r).card;
+        let mut tr = TextRenderer::new();
+        let card = app.export_layout(&mut tr, &theme).modal.card;
         let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
         let colours = region_colours(&px, 1280, 800, left);
         assert!(
@@ -4422,20 +4466,20 @@ fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
 fn the_export_dialog_stays_inside_the_window() {
     // Regression: a fixed 460x360 card hung off both edges of a small
     // window, putting Cancel and Export outside the surface.
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
     for (w, h) in SIZES {
         let (mut app, _doc) = app_sized(w, h);
         app.presentation.export_open = true;
-        let r = app.regions();
-        let l = app.export_layout(&r);
+        let l = app.export_layout(&mut tr, &theme);
+        let card = l.modal.card;
         assert!(
-            l.card.x0 >= app.rect.x0 && l.card.x1 <= app.rect.x1,
-            "the export card fits horizontally at {w}x{h}: {:?}",
-            l.card,
+            card.x0 >= app.rect.x0 && card.x1 <= app.rect.x1,
+            "the export card fits horizontally at {w}x{h}: {card:?}",
         );
         assert!(
-            l.card.y0 >= app.rect.y0 && l.card.y1 <= app.rect.y1,
-            "the export card fits vertically at {w}x{h}: {:?}",
-            l.card,
+            card.y0 >= app.rect.y0 && card.y1 <= app.rect.y1,
+            "the export card fits vertically at {w}x{h}: {card:?}",
         );
         for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
             assert!(
@@ -5309,8 +5353,8 @@ fn pasting_after_its_track_is_locked_lands_on_a_track_that_accepts_it() {
         "Ctrl+C is handled"
     );
     // Lock the source track, then paste.
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-    let pill = app.lock_pill_rect(header);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     app.playhead = 2.0;
     assert!(
@@ -6210,7 +6254,7 @@ fn pressing_undo_asks_the_host_only_when_there_is_something_to_undo() {
         "with nothing to undo the button raises no request at all",
     );
     // Once the host says there is, the same press does.
-    app.set_undo_status(&ui::UndoStatus {
+    app.set_undo_status(&mut || ui::UndoStatus {
         can_undo: true,
         undo_summary: Some("2 fields".into()),
         ..Default::default()
@@ -6258,7 +6302,7 @@ fn the_undo_node_reports_disabled_exactly_when_it_cannot_act() {
         "the reader hears the honest reason, not a described action",
     );
 
-    app.set_undo_status(&ui::UndoStatus {
+    app.set_undo_status(&mut || ui::UndoStatus {
         can_undo: true,
         undo_summary: Some("2 fields".into()),
         ..Default::default()
@@ -6278,7 +6322,7 @@ fn the_undo_node_reports_disabled_exactly_when_it_cannot_act() {
 #[test]
 fn activating_the_undo_node_raises_the_same_request_a_click_does() {
     let (mut app, _doc) = app_and_doc();
-    app.set_undo_status(&ui::UndoStatus {
+    app.set_undo_status(&mut || ui::UndoStatus {
         can_undo: true,
         ..Default::default()
     });
@@ -6286,7 +6330,7 @@ fn activating_the_undo_node_raises_the_same_request_a_click_does() {
     assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
     assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
     // With the history empty again the same activation refuses.
-    app.set_undo_status(&ui::UndoStatus::empty());
+    app.set_undo_status(&mut || ui::UndoStatus::empty());
     assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
     assert_eq!(app.take_undo_request(), None);
     // And the transport's own buttons still work, so the new key lookup
@@ -8668,9 +8712,9 @@ fn two_x_text_scales_every_canvas_band_without_collisions() {
             "{track:?} retains its scaled row height"
         );
         let pills = [
-            app.solo_pill_rect(header),
-            app.lock_pill_rect(header),
-            app.mute_pill_rect(header),
+            app.track_head_layout(header).solo,
+            app.track_head_layout(header).lock,
+            app.track_head_layout(header).mute,
         ];
         for pill in pills {
             assert!(
@@ -8682,7 +8726,7 @@ fn two_x_text_scales_every_canvas_band_without_collisions() {
             );
         }
         assert!(
-            app.track_meter_rect(header).y0 >= pills[0].y1,
+            app.track_head_layout(header).meter.y0 >= pills[0].y1,
             "the meter is below the track controls, not behind their labels"
         );
     }
@@ -10255,8 +10299,8 @@ fn a_picture_lane_is_metered_only_when_its_footage_carries_sound() {
         .into_iter()
         .find(|(_, kind, _)| *kind == TrackKind::Video)
         .expect("the sample timeline has a picture lane");
-    let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-    let strip = app.track_meter_rect(header);
+    let header = app.track_head_rect(&r, &lane);
+    let strip = app.track_head_layout(header).meter;
     // The head only, never the lane: turning the sound on also asks for a
     // waveform, and a waveform lands on the *clip*. Comparing the whole
     // row would be reading one change as the other.
@@ -10463,4 +10507,92 @@ fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
         }
     }
     out
+}
+
+#[test]
+fn the_export_dialog_answers_a_click_the_frame_after_the_shortcut_opened_it() {
+    let (mut app, mut doc) = app_sized(1280.0, 800.0);
+    // One frame with the dialog closed, so the editor knows its theme.
+    render(&mut app);
+    assert!(!app.presentation.export_open);
+    assert!(
+        key_press(&mut app, &mut doc, "e", true),
+        "Ctrl+E opens the dialog"
+    );
+    assert!(app.presentation.export_open);
+    let mut tr = TextRenderer::new();
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    let (wanted, rect) = l.resolution[2];
+    assert_ne!(
+        app.export.resolution, wanted,
+        "the fixture starts elsewhere"
+    );
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(
+        app.export.resolution, wanted,
+        "the click on an option the frame has not painted yet still lands"
+    );
+    // And a resize between the shortcut and the click moves the target
+    // with it: the layout follows the rect, not a painted frame.
+    app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    let (wanted, rect) = l.container[1];
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(app.export.container, wanted);
+}
+
+#[test]
+fn ctrl_e_does_not_open_the_export_dialog_under_the_shortcut_sheet() {
+    let (mut app, mut doc) = app_sized(1280.0, 800.0);
+    app.navigation.help_open = true;
+    assert!(
+        key_press(&mut app, &mut doc, "e", true),
+        "the sheet swallows the key"
+    );
+    assert!(
+        !app.presentation.export_open,
+        "nothing opens under the sheet"
+    );
+    assert!(app.navigation.help_open, "and the sheet stays");
+    assert!(key_press(&mut app, &mut doc, "?", false));
+    assert!(!app.navigation.help_open, "? still closes it");
+}
+
+#[test]
+fn a_disabled_export_button_offers_no_pointer() {
+    use winit::window::CursorIcon;
+    let (mut app, _doc) = app_and_doc();
+    // Production has painted before this dialog can receive pointer input;
+    // seed the same theme/layout state before starting the deliberately
+    // unexportable job. Rendering afterwards would poll and clear that job.
+    render(&mut app);
+    app.presentation.export_open = true;
+    app.project = unexportable_project();
+    let dest = scratch("cursor-export").join("never-written.mp4");
+    app.begin_export_to(dest);
+    assert!(
+        !app.export_is_offered(),
+        "a render in flight disables Export"
+    );
+    let l = app
+        .with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
+        .expect("rendered dialog layout");
+    assert_eq!(
+        app.cursor_shape(l.confirm.center()),
+        Some(CursorIcon::Default),
+        "no pointer over a disabled Export"
+    );
+    assert_eq!(
+        app.cursor_shape(l.cancel.center()),
+        Some(CursorIcon::Pointer),
+        "Cancel is live and says so"
+    );
+    app.export_job = None;
+    app.export_status = ExportStatus::Idle;
+    if app.export_is_offered() {
+        assert_eq!(
+            app.cursor_shape(l.confirm.center()),
+            Some(CursorIcon::Pointer)
+        );
+    }
 }

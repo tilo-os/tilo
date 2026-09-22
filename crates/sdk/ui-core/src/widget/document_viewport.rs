@@ -99,8 +99,13 @@ pub struct ViewportState {
     /// Inclusive zoom bounds.
     min_zoom: f64,
     max_zoom: f64,
-    /// Screen-px padding reserved around the content.
+    /// Screen-px padding reserved around the content. Follows the theme's
+    /// `spacing.s6` from `build_layout` unless a host pinned it with
+    /// [`Self::with_padding`]; [`DEFAULT_PADDING`] is the theme-less value
+    /// a viewport has before its first layout.
     pad: f64,
+    /// `with_padding` was called: keep the host's value over the theme's.
+    pad_overridden: bool,
     /// Per-axis small-content alignment.
     align_x: SmallContentAlign,
     align_y: SmallContentAlign,
@@ -153,6 +158,7 @@ impl ViewportState {
             min_zoom: DEFAULT_MIN_ZOOM,
             max_zoom: DEFAULT_MAX_ZOOM,
             pad: DEFAULT_PADDING,
+            pad_overridden: false,
             align_x: SmallContentAlign::Center,
             align_y: SmallContentAlign::Start,
             pan: None,
@@ -174,10 +180,13 @@ impl ViewportState {
         self
     }
 
-    /// Override the screen-px padding reserved around the content.
+    /// Override the screen-px padding reserved around the content. A pinned
+    /// value stays put across layouts; without it the padding is the
+    /// theme's `spacing.s6` (24 px at the default density).
     #[must_use]
     pub fn with_padding(mut self, pad: f64) -> Self {
         self.pad = pad.max(0.0);
+        self.pad_overridden = true;
         self
     }
 
@@ -958,6 +967,13 @@ impl Widget for DocumentViewport {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The gutter is a spacing token, not a constant: the viewport has
+        // no theme when it is constructed, so it takes the token here, the
+        // first place the theme is handed to it, and follows the theme's
+        // density from then on unless a host pinned its own value.
+        if !self.state.pad_overridden {
+            self.state.pad = f64::from(theme.tokens.spacing.s6);
+        }
         self.layout_theme = theme.clone();
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -1169,7 +1185,10 @@ impl DocumentViewport {
     /// Route an event to the wrapped child, if any. Events reach the child
     /// in window/screen coordinates; its inner taffy node is passed through
     /// so child containers can recurse.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "child event routing forwards the Widget event, scale, modifiers, CRDT state and focus outputs unchanged"
+    )]
     fn route_to_child(
         &mut self,
         event: &WindowEvent,
@@ -1221,6 +1240,48 @@ mod tests {
         v.set_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
         v.set_content_size(1000.0, 1400.0);
         v
+    }
+
+    /// The theme-less default is the spacing token it stands in for, and
+    /// the scrollbar's thickness is the step below it.
+    #[test]
+    fn default_gutter_and_scrollbar_thickness_equal_the_spacing_tokens() {
+        let spacing = crate::tokens::Spacing::default();
+        assert_eq!(DEFAULT_PADDING, f64::from(spacing.s6));
+        assert_eq!(SCROLLBAR_THICKNESS, f64::from(spacing.s2));
+    }
+
+    /// Once laid out, the gutter is the theme's `spacing.s6` — so a denser
+    /// or larger UI scale moves it — unless the host pinned its own value,
+    /// which then survives every layout.
+    #[test]
+    fn gutter_follows_the_theme_unless_a_host_pinned_it() {
+        let theme = Theme::dark().with_ui_scale(2.0);
+        let expected = f64::from(theme.tokens.spacing.s6);
+        assert!(
+            (expected - DEFAULT_PADDING).abs() > 1.0,
+            "the scaled theme must move the token for this test to observe anything"
+        );
+
+        let noop = || -> ContentDraw { Box::new(|_, _, _, _, _| {}) };
+        let mut v = DocumentViewport::from_draw(100.0, 100.0, noop());
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map = HashMap::new();
+        v.build_layout(&mut taffy, &theme, &mut map);
+        assert!(
+            (v.state.pad - expected).abs() < 1e-9,
+            "gutter {} did not follow spacing.s6 {expected}",
+            v.state.pad
+        );
+
+        let mut pinned = DocumentViewport::from_draw(100.0, 100.0, noop()).with_padding(10.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map = HashMap::new();
+        pinned.build_layout(&mut taffy, &theme, &mut map);
+        assert!(
+            (pinned.state.pad - 10.0).abs() < 1e-9,
+            "a pinned gutter was overwritten by the theme"
+        );
     }
 
     #[test]

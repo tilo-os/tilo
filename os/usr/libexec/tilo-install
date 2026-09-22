@@ -88,6 +88,7 @@ GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
 BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-contract}"
+LOCALE_CATALOG=/usr/share/tilo/installer-locales.txt
 
 # Alongside installs share a firmware-visible FAT ESP with Tilo's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -764,8 +765,15 @@ promote_target_uki() {
   # bootc stores SHA256(.linux + .initrd) in deployment origin metadata.
   # A command-line-only target variant preserves it; fail before replacing the
   # ESP entry if finalization accidentally rebuilt either payload differently.
-  [ "$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_UKI")" = \
-    "$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_VARIANT")" ] \
+  local installed_boot_digest target_boot_digest
+  installed_boot_digest="$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_UKI")" \
+    || die "cannot read installed UKI boot identity"
+  target_boot_digest="$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_VARIANT")" \
+    || die "cannot read target UKI boot identity"
+  [[ "$installed_boot_digest" =~ ^[0-9a-f]{64}$ ]] \
+    && [[ "$target_boot_digest" =~ ^[0-9a-f]{64}$ ]] \
+    || die "UKI boot identity is not a SHA-256 digest"
+  [ "$installed_boot_digest" = "$target_boot_digest" ] \
     || die "target UKI changes the bootc kernel/initramfs identity"
   install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"
   mv -f "$TARGET_UKI.new" "$TARGET_UKI"
