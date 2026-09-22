@@ -460,7 +460,8 @@ fn inspect_efi_signature_list(
 /// # Errors
 ///
 /// Returns an error when the certificate is invalid or too large for the EFI
-/// structure's 32-bit length fields.
+/// structure's 32-bit length fields, or when the operating system cannot
+/// provide randomness for the owner GUID.
 pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, String> {
     let der = certificate_der(certificate)?;
     let signature_size = 16_usize
@@ -483,7 +484,10 @@ pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, Str
     output.extend_from_slice(&list_size.to_le_bytes());
     output.extend_from_slice(&0_u32.to_le_bytes());
     output.extend_from_slice(&signature_size.to_le_bytes());
-    output.extend_from_slice(&rand::random::<[u8; 16]>());
+    let mut owner = [0_u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut owner)
+        .map_err(|_| "operating-system random generator failed")?;
+    output.extend_from_slice(&owner);
     output.extend_from_slice(&der);
     Ok(output)
 }
@@ -494,6 +498,7 @@ pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, Str
 ///
 /// Returns an error if the OS random source or certificate encoder fails.
 pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertificate, String> {
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_RSA_SHA256};
     use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey};
 
@@ -503,7 +508,7 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
     {
         return Err("certificate common name must be 1–200 printable characters".into());
     }
-    let generated_key = RsaPrivateKey::new(&mut rand10::rng(), 4096)
+    let generated_key = RsaPrivateKey::new(&mut UnwrapErr(SysRng), 4096)
         .map_err(|error| format!("cannot generate RSA key: {error}"))?;
     let private_key_pem = generated_key
         .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
@@ -538,12 +543,13 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
 /// Returns an error if the operating-system random source fails or either PEM
 /// representation cannot be encoded.
 pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use rsa::{
         RsaPrivateKey, RsaPublicKey,
         pkcs8::{EncodePrivateKey, EncodePublicKey},
     };
 
-    let private = RsaPrivateKey::new(&mut rand10::rng(), 2048)
+    let private = RsaPrivateKey::new(&mut UnwrapErr(SysRng), 2048)
         .map_err(|error| format!("cannot generate TPM authority key: {error}"))?;
     let public_key_pem = RsaPublicKey::from(&private)
         .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
