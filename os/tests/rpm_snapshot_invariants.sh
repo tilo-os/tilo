@@ -152,6 +152,12 @@ has "$workflow" 'if type == "array" then .[] else . end' \
   'snapshot verification accepts current object and legacy array Cosign output'
 has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'OS CI verifies exact RPM snapshot provenance'
+has "$image_workflow" './os/dev/derive-rpm-package-set.py --arch x86_64' \
+  'OS CI derives the explicit x86-64 RPM package set'
+has "$image_workflow" './os/dev/derive-rpm-package-set.py --arch aarch64' \
+  'OS CI derives the explicit ARM64 RPM package set'
+has "$image_workflow" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
+  'OS CI verifies architecture-specific RPM package-set provenance'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
