@@ -55,6 +55,11 @@ Writes to the OS disk go to QEMU's disposable snapshot. Replacing a candidate
 therefore copies only the UKI-sized payload and a small ESP, while the installed
 root disk and its PARTUUID remain unchanged.
 
+For repeatable Windows-WHPX attempts, copy the small override ESP to an NTFS
+path once and verify its hash. Keep the large source disk in a verified native
+raw copy too; do not put either active QEMU backing file behind an NBD or WSL
+network path.
+
 ## Exercise the live installer with an isolated target
 
 The same launcher can attach a newly-created sparse raw disk as the installer
@@ -64,7 +69,7 @@ the target disk the stable serial the installer accepts:
 ```powershell
 .\tools\launch-arm64-boot-esp.ps1 `
   -BaseDisk C:\tilo-build\tilo-install-native-test.raw `
-  -EspDisk '\\wsl.localhost\FedoraLinux-42\home\xemmerling\tilo-vm\media\debug-esp.raw' `
+  -EspDisk C:\tilo-build\tilo-debug-esp.raw `
   -InstallTargetDisk C:\tilo-build\tilo-installer-target.raw `
   -CreateInstallTarget -InstallTargetGiB 64 `
   -StateDirectory "$env:LOCALAPPDATA\Tilo\qemu-arm64-installer" `
