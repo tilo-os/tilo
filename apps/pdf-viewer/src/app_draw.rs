@@ -1465,9 +1465,9 @@ impl PdfApp {
             return;
         };
         // The selection band is normally painted by `draw_text_overlays` (raster
-        // backend). On the text backend it isn't drawn there, so paint it here
-        // for the seeded screenshot path — a production text-backend document has
-        // no raster text layer, so this only fires for a staged selection.
+        // backend). The block-model sample isn't drawn there, so paint it here
+        // for the seeded screenshot path — with no PDF open there is no raster
+        // text layer, so this only fires for a staged selection.
         if !self.raster_active() {
             let z = self.zoom();
             let origins = self.page_origins();

@@ -8,10 +8,9 @@
 //!
 //! ## Rendering backend
 //!
-//! A real PDF is loaded through [`source`], which rasterises pages with a
-//! dynamically-loaded `pdfium` when one is available and otherwise falls back
-//! to pure-Rust text extraction. Either way the durable markup lives in the
-//! shared Automerge document, so undo/redo and live collaboration come for
+//! A real PDF is loaded through [`source`], which rasterises pages and
+//! extracts their text layer with a dynamically-loaded `pdfium`. The durable
+//! markup lives in the shared Automerge document, so undo/redo and live collaboration come for
 //! free. Launched with a file path the app opens it; launched bare it shows
 //! an empty state. The bundled demonstration document ([`model::sample_document`])
 //! is used only by the screenshot harness and the tests.

@@ -1,24 +1,18 @@
 //! Loading real PDF files — and writing markup back into them.
 //!
-//! Two backends, chosen at open time with a graceful fallback:
-//!
-//!  * **Raster** — when a `pdfium` native library can be located, each page is
-//!    rasterised on demand to an RGBA bitmap at the current zoom and painted
-//!    directly, so the viewer shows the document exactly as authored (fonts,
-//!    figures, vector art and all). Bitmaps are cached per page + zoom bucket
-//!    so scrolling and panning never re-rasterise. The raster backend also
-//!    extracts a **text layer** ([`crate::text_layer`]) per page from
-//!    pdfium, so search finds text hits and text can be selected, and it can
-//!    **flatten** the reader's annotations + signatures back onto the pages and
-//!    save a valid `.pdf` reopenable in any viewer.
-//!  * **Text** — when no native library is available, the page text is
-//!    extracted in pure Rust and reflowed onto the page card. The words are the
-//!    document's own, so search, selection and markup still operate on real
-//!    content; only the exact visual layout is lost.
+//! Every page is rasterised on demand by a `pdfium` native library to an RGBA
+//! bitmap at the current zoom and painted directly, so the viewer shows the
+//! document exactly as authored (fonts, figures, vector art and all). Bitmaps
+//! are cached per page + zoom bucket so scrolling and panning never
+//! re-rasterise. The backend also extracts a **text layer**
+//! ([`crate::text_layer`]) per page from pdfium, so search finds text hits and
+//! text can be selected, and it can **flatten** the reader's annotations +
+//! signatures back onto the pages and save a valid `.pdf` reopenable in any
+//! viewer.
 //!
 //! The library is discovered via `TILO_PDFIUM_LIB`, a few well-known system
-//! paths, or the platform loader — never bundled, so the binary runs whether
-//! or not pdfium is present on the host.
+//! paths, or the platform loader — never bundled into the binary. On a host
+//! without it, opening a PDF fails with an error naming the missing library.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
@@ -72,8 +66,10 @@ const MAX_RASTER_PIXELS: f64 = 32.0 * 1024.0 * 1024.0;
 /// Keep document imagery responsive without letting a long read of a large
 /// file turn the process into an unbounded bitmap cache.
 const MAX_RASTER_CACHE_BYTES: usize = 192 * 1024 * 1024;
-const MAX_FALLBACK_TEXT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_FALLBACK_PAGE_TEXT_BYTES: usize = 1024 * 1024;
+/// Why a PDF cannot open on a host without the native engine, in the words
+/// the operator needs.
+const NO_PDFIUM: &str = "no usable pdfium library was found; install one \
+     (e.g. ~/.local/lib/pdfium/libpdfium.so) or set TILO_PDFIUM_LIB";
 
 fn read_file_bounded(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
     let metadata =
@@ -183,23 +179,21 @@ fn valid_page_size(width: f64, height: f64) -> bool {
         && width * height <= MAX_PAGE_AREA_POINTS
 }
 
-/// A document loaded from disk plus its optional raster backend.
+/// A document loaded from disk plus the pdfium backend that renders it.
 pub struct LoadedDoc {
     pub doc: Document,
-    /// Present only in raster mode; `None` means the text backend is in use.
-    pub raster: Option<Rasterizer>,
+    pub raster: Rasterizer,
     /// The file's display name (for the window chrome / status bar).
     pub name: String,
 }
 
-/// Load a PDF from `path`, preferring pixel-accurate rasterisation and falling
-/// back to pure-Rust text extraction.
+/// Load a PDF from `path` through pdfium.
 ///
 /// # Errors
 ///
-/// Returns an error if `path` cannot be read, or — only when no pdfium
-/// library is available and the pure-Rust fallback is used — if the bytes at
-/// `path` cannot be parsed as a PDF for text extraction.
+/// Returns an error if `path` cannot be read, if no pdfium library can be
+/// located on this host, or if pdfium cannot parse the bytes as a PDF within
+/// the reader's page and geometry limits.
 pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
     let t = Instant::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
@@ -215,124 +209,30 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
         .unwrap_or(&name)
         .to_string();
 
-    // Hand the freshly-read bytes straight to pdfium (it takes ownership). The
-    // previous `bytes.clone()` here doubled memory and, on a large file, cost a
-    // full-buffer memcpy on the open→first-paint path (~140ms for a 365MB PDF);
-    // the pure-Rust text fallback below is rare (no pdfium, or an unreadable
-    // file), so it re-reads the file rather than the raster path paying to keep
-    // a spare copy every open.
+    // Hand the freshly-read bytes straight to pdfium (it takes ownership), so
+    // a large file is never copied on the open→first-paint path.
     let t = Instant::now();
-    let opened = Rasterizer::open(bytes);
+    let r = Rasterizer::open(bytes)?;
     prof("Rasterizer::open (pdfium parse + page sizes)", t);
-    if let Some(r) = opened {
-        let t = Instant::now();
-        let (mut title, author, subject) = r.metadata();
-        prof("metadata", t);
-        if title.trim().is_empty() {
-            title = stem;
-        }
-        let (pw, ph) = r.first_page_size();
-        let t = Instant::now();
-        let mut doc = Document::blank_pages(&title, &author, r.page_count(), pw, ph);
-        prof("Document::blank_pages", t);
-        doc.subject = subject;
-        let t = Instant::now();
-        doc.outline = r.outline();
-        prof("outline (bookmarks)", t);
-        return Ok(LoadedDoc {
-            doc,
-            raster: Some(r),
-            name,
-        });
+    let t = Instant::now();
+    let (mut title, author, subject) = r.metadata();
+    prof("metadata", t);
+    if title.trim().is_empty() {
+        title = stem;
     }
-
-    // No native library (or an unreadable-by-pdfium file) — extract the text so
-    // the words are still real. `bytes` was moved into the raster attempt above,
-    // so re-read the file for this rare path.
-    let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
-    let pages = extract_text_fallback_bounded(&bytes)?;
-    let doc = Document::from_text_pages(&stem, "", &pages);
+    let (pw, ph) = r.first_page_size();
+    let t = Instant::now();
+    let mut doc = Document::blank_pages(&title, &author, r.page_count(), pw, ph);
+    prof("Document::blank_pages", t);
+    doc.subject = subject;
+    let t = Instant::now();
+    doc.outline = r.outline();
+    prof("outline (bookmarks)", t);
     Ok(LoadedDoc {
         doc,
-        raster: None,
+        raster: r,
         name,
     })
-}
-
-/// `pdf-extract`'s convenience function accumulates every page in an
-/// unbounded `Vec<String>`. Drive it page-by-page through a bounded writer so
-/// a tiny compressed content stream cannot expand into arbitrary UI memory.
-fn extract_text_fallback_bounded(bytes: &[u8]) -> anyhow::Result<Vec<String>> {
-    let doc = pdf_extract::Document::load_mem(bytes)
-        .map_err(|error| anyhow!("pdf text extraction failed: {error}"))?;
-    if doc.is_encrypted() {
-        return Err(anyhow!("encrypted PDFs require the native PDF backend"));
-    }
-    let pages = doc.get_pages();
-    if pages.is_empty() || pages.len() > MAX_SOURCE_PAGES {
-        return Err(anyhow!(
-            "the PDF has more than the {MAX_SOURCE_PAGES}-page open limit"
-        ));
-    }
-    let mut output = Vec::with_capacity(pages.len());
-    let mut total = 0usize;
-    for page in pages.keys() {
-        let remaining = MAX_FALLBACK_TEXT_BYTES.saturating_sub(total);
-        let limit = remaining.min(MAX_FALLBACK_PAGE_TEXT_BYTES);
-        if limit == 0 {
-            return Err(anyhow!("PDF text exceeds the bounded extraction limit"));
-        }
-        let mut writer = BoundedTextWriter::new(limit);
-        let result = {
-            let writer_ref: &mut dyn std::io::Write = &mut writer;
-            let mut sink = pdf_extract::PlainTextOutput::new(writer_ref);
-            pdf_extract::output_doc_page(&doc, &mut sink, *page)
-        };
-        if writer.limit_hit {
-            return Err(anyhow!("PDF text exceeds the bounded extraction limit"));
-        }
-        result.map_err(|error| anyhow!("pdf text extraction failed: {error}"))?;
-        total = total.saturating_add(writer.bytes.len());
-        let text = String::from_utf8(writer.bytes)
-            .map_err(|_| anyhow!("pdf text extraction returned invalid UTF-8"))?;
-        output.push(text);
-    }
-    Ok(output)
-}
-
-struct BoundedTextWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-    limit_hit: bool,
-}
-
-impl BoundedTextWriter {
-    fn new(limit: usize) -> Self {
-        Self {
-            bytes: Vec::with_capacity(limit.min(64 * 1024)),
-            limit,
-            limit_hit: false,
-        }
-    }
-}
-
-impl std::io::Write for BoundedTextWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.limit.saturating_sub(self.bytes.len());
-        if bytes.len() > remaining {
-            self.limit_hit = true;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "bounded PDF text output exceeded",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// A retained pdfium document that rasterises pages on demand, extracts their
@@ -399,7 +299,7 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
     // `static` directly. Leak one behind the `OnceLock` (it lives for the whole
     // process anyway) and cache its address as a `usize`, which is `Sync`. The
     // `OnceLock` guarantees the leak happens exactly once; `0` records "no
-    // pdfium available" so the fallback text backend still engages.
+    // pdfium available" so opening reports the missing library.
     static PDFIUM_ADDR: OnceLock<usize> = OnceLock::new();
     let addr = *PDFIUM_ADDR.get_or_init(|| match find_pdfium() {
         Some(bindings) => {
@@ -510,14 +410,15 @@ impl RasterBackend {
         })
     }
 
-    fn open(bytes: Vec<u8>) -> Option<Self> {
-        let pdfium = shared_pdfium()?;
-        let source = Self::load_source(pdfium, bytes)?;
+    fn open(bytes: Vec<u8>) -> anyhow::Result<Self> {
+        let pdfium = shared_pdfium().ok_or_else(|| anyhow!(NO_PDFIUM))?;
+        let source = Self::load_source(pdfium, bytes)
+            .ok_or_else(|| anyhow!("pdfium could not open this file as a PDF"))?;
         let source_len = source.page_sizes.len();
         let plan = (0..source.page_sizes.len())
             .map(|page| Some(PageSlot { source: 0, page }))
             .collect();
-        Some(RasterBackend {
+        Ok(RasterBackend {
             pdfium,
             sources: vec![source],
             plan,
@@ -1446,7 +1347,7 @@ pub enum RasterEvent {
         request: OpenRequest,
         document: Document,
         name: String,
-        raster: Option<RasterDocument>,
+        raster: RasterDocument,
     },
     OpenFailed {
         request: OpenRequest,
@@ -2147,24 +2048,16 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
         let event = match command.command {
             RasterCommand::OpenPath(request) => match open(&request.path) {
                 Ok(LoadedDoc { doc, raster, name }) => {
-                    let raster = if let Some(backend) = raster {
-                        let page_sizes = (0..backend.page_count())
-                            .map(|page| backend.page_size(page))
-                            .collect();
-                        active
-                            .entry(session_id)
-                            .or_default()
-                            .insert(request.id, backend);
-                        Some(RasterDocument {
-                            id: request.id,
-                            page_sizes,
-                        })
-                    } else {
-                        // Keep the visible predecessor until the UI accepts
-                        // this fallback result. A cancelled/stale fallback
-                        // must not invalidate the reader that was already on
-                        // screen.
-                        None
+                    let page_sizes = (0..raster.page_count())
+                        .map(|page| raster.page_size(page))
+                        .collect();
+                    active
+                        .entry(session_id)
+                        .or_default()
+                        .insert(request.id, raster);
+                    let raster = RasterDocument {
+                        id: request.id,
+                        page_sizes,
                     };
                     RasterEvent::Opened {
                         request,

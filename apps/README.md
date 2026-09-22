@@ -151,7 +151,7 @@ touch. Expanded neighbouring targets must not overlap.
 | `calculator` | Scientific calculator with 2D/3D function graphing. |
 | `snippets` | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview. |
 | `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, embedded cover art, shared annotation model. |
-| `pdf-viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
+| `pdf-viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation and text layer (dynamically loaded); highlight/ink/sticky-note annotations + signing. |
 
 ## Media
 
