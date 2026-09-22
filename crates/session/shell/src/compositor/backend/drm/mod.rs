@@ -531,10 +531,10 @@ mod direct_damage_history_tests {
     use super::*;
 
     const REGION: [vello::FineDamageRect; 1] = [vello::FineDamageRect {
-        x0: 1,
-        y0: 2,
-        x1: 3,
-        y1: 4,
+        x: 1,
+        y: 2,
+        width: 2,
+        height: 2,
     }];
 
     fn sparse(previous_revision: Option<u64>) -> SceneDamage<'static> {
