@@ -44,7 +44,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.remote", remote::app_root)
+        &LaunchSpec::new("so.tilo.remote", remote::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "narrow",

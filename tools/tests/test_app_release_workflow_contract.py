@@ -24,22 +24,14 @@ class AppReleaseWorkflowContract(unittest.TestCase):
     def test_each_job_checks_out_only_the_exact_event_commit(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         checkouts = source.split('uses: actions/checkout@')[1:]
-        self.assertEqual(len(checkouts), 6)
-        event_checkouts = 0
-        main_checkouts = 0
+        self.assertEqual(len(checkouts), 5)
         for checkout in checkouts:
             block = checkout.split('\n      - ', 1)[0]
             self.assertIn('fetch-depth: 1', block)
             self.assertNotIn('fetch-depth: 0', block)
             self.assertIn('persist-credentials: false', block)
-            if 'ref: ${{ github.sha }}' in block:
-                event_checkouts += 1
-            elif 'ref: main' in block:
-                main_checkouts += 1
-            else:
-                self.fail('checkout must select the exact event or fresh main tip')
-        self.assertEqual(event_checkouts, 4)
-        self.assertEqual(main_checkouts, 2)
+            self.assertIn('ref: ${{ github.sha }}', block)
+            self.assertNotIn('ref: main', block)
 
         plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
         self.assertIn('    needs: coordinator-preguard', plan)
@@ -48,12 +40,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
         builder = plan.index('      - name: Resolve one immutable builder for every architecture\n')
         preparation = plan.index('      - name: Prepare exact release comparison history\n')
-        authorization = plan.index('      - name: Authorize current main for publication planning\n')
         guard = plan.index('      - name: Validate prepared nonpublishing coordinator qualification\n')
         selection = plan.index('      - name: Select only the affected apps or requested collection\n')
         self.assertLess(builder, preparation)
-        self.assertLess(preparation, authorization)
-        self.assertLess(authorization, guard)
         self.assertLess(preparation, guard)
         self.assertLess(guard, selection)
         preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
@@ -77,17 +66,13 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertIn('app_packaging_qualification.py --preflight', sanitized)
         self.assertNotIn('SOURCE_TOKEN', sanitized)
         self.assertNotIn('github.token', sanitized)
-        preparation_step = plan[preparation:authorization]
+        preparation_step = plan[preparation:guard]
         self.assertIn("if: \"github.event_name != 'workflow_dispatch'", preparation_step)
         self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preparation_step)
         self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
         self.assertNotIn('tools/', preparation_step)
         self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
         self.assertIn('GIT_CONFIG_KEY_0=http.https://code.podesta.ai/.extraheader', preparation_step)
-        authorization_step = plan[authorization:guard]
-        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', authorization_step)
-        self.assertNotIn('tools/', authorization_step)
-        self.assertIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', authorization_step)
         selection_step = plan[selection:]
         self.assertNotIn('SOURCE_TOKEN', selection_step)
         self.assertNotIn('github.token', selection_step)
@@ -117,30 +102,23 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn('container:', authorization)
         self.assertNotIn('tools/', authorization)
         self.assertIn('persist-credentials: false', authorization)
-        self.assertIn('[[ $observed == "$GITHUB_SHA" ]]', authorization)
-        final_authorization = source.split('\n  authorize-publish-final:\n', 1)[1].split(
-            '\n  publish:\n', 1
-        )[0]
-        self.assertIn('needs: [plan, authorize-publish, build]', final_authorization)
-        self.assertIn('persist-credentials: false', final_authorization)
-        self.assertIn('[[ $observed == "$GITHUB_SHA" ]]', final_authorization)
-        self.assertNotIn('tools/', final_authorization)
-        self.assertNotIn('secrets.', final_authorization)
-        self.assertNotIn('enable-openid-connect', final_authorization)
+        self.assertIn('ref: ${{ github.sha }}', authorization)
+        self.assertIn('[[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]', authorization)
+        self.assertIn('[[ $GITHUB_REF == refs/heads/main ]]', authorization)
+        self.assertIn('[[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]', authorization)
+        self.assertNotIn('authorize-publish-final:', source)
         build = source.split('\n  build:\n', 1)[1].split(
             '\n  final-collection:\n', 1
         )[0]
-        revalidation = build.split(
-            '      - name: Revalidate publication source immediately before signing\n', 1
-        )[1].split('\n      - name:', 1)[0]
-        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', revalidation)
-        self.assertNotIn('tools/', revalidation)
-        self.assertIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', revalidation)
+        self.assertNotIn('Revalidate publication source', build)
+        self.assertNotIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build)
+        self.assertIn("TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}", build)
+        self.assertIn("TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}", build)
         history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
         self.assertNotIn('SOURCE_TOKEN', history_helper)
         self.assertNotIn('extraheader', history_helper)
         publish = source.split('\n  publish:\n', 1)[1]
-        self.assertIn('needs: [plan, authorize-publish, build, authorize-publish-final]', publish)
+        self.assertIn('needs: [plan, authorize-publish, build]', publish)
         self.assertIn('persist-credentials: false', publish)
         self.assertNotIn('TAG_AUDIENCE', publish)
         self.assertIn('audience=$MAIN_AUDIENCE', publish)
@@ -162,11 +140,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
 
     def test_token_scoped_git_steps_are_syntactically_complete(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        for name in (
-            'Prepare exact release comparison history',
-            'Authorize current main for publication planning',
-            'Revalidate publication source immediately before signing',
-        ):
+        for name in ('Prepare exact release comparison history',):
             with self.subTest(name=name):
                 step = source.split(f'      - name: {name}\n', 1)[1].split(
                     '\n      - name:', 1
@@ -332,16 +306,15 @@ class AppReleaseWorkflowContract(unittest.TestCase):
     def test_signing_secrets_exist_only_on_publishing_builds(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
-        self.assertIn("if: needs.plan.outputs.publish == 'true'", build)
         self.assertIn(
-            "QPKG_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.QPKG_PUBLISHER_IDENTITY || '' }}",
+            "TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}",
             build,
         )
         self.assertIn(
             "RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}",
             build,
         )
-        self.assertIn(
+        self.assertNotIn(
             '/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build
         )
 
@@ -389,16 +362,33 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn('channel_url=$bundle_upload_url', publish)
         self.assertIn("$package_public_api != *'.svc.cluster.local'*", publish)
 
-    def test_published_qpkgs_are_submitted_to_the_signed_registry(self):
+    def test_published_tapps_are_submitted_to_the_signed_registry(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         build, publish = source.split('\n  publish:\n', 1)
-        self.assertIn('install -m 0755 target/release/tilo-pkg dist/app-release/tilo-pkg', build)
-        self.assertIn('dist/app-release/tilo-pkg', build)
-        self.assertIn('TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL }}', publish)
-        self.assertIn('QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}', publish)
-        self.assertIn('"$registry_cli" entry --arch "$arch"', publish)
-        self.assertIn('--action add --url "$qpkg_url"', publish)
-        self.assertIn('--action update --previous-entry "$previous"', publish)
+        self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
+        self.assertIn('dist/app-release/tilo-app-package', build)
+        self.assertIn(
+            "TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}",
+            publish,
+        )
+        self.assertIn('TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}', publish)
+        self.assertIn('publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"', publish)
+        self.assertIn("sort -t $'\\t' -k1,1 -k4,4", publish)
+        self.assertIn("done < <(cut -f1 \"$publication_plan\" | uniq)", publish)
+        self.assertIn('--metadata "$metadata" --action "$action" --url "$tapp_url"', publish)
+        self.assertIn('args+=(--previous-entry "$aggregate")', publish)
+        self.assertIn("jq -e -s '.[0] == .[1]'", publish)
+        self.assertIn('tools/apps/registry_metadata.py build', publish)
+        self.assertIn('tilo-app-metadata/$VERSION/$media', publish)
+        self.assertIn('registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"', publish)
+        self.assertIn('tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"', publish)
+        self.assertIn('public registry media is unavailable or has the wrong type', publish)
+        self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
+        self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
+        self.assertIn("*.webp) expected_type='image/webp'", publish)
+        self.assertIn('done < "$registry_media_urls"', publish)
+        self.assertIn('metadata="$registry_metadata/$name.json"', publish)
+        self.assertIn('--metadata "$metadata"', publish)
         self.assertIn('--data-binary "@$request"', publish)
         self.assertIn('[[ $status == 202 ]]', publish)
         self.assertIn('$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file', publish)

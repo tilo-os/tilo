@@ -94,7 +94,7 @@ pub async fn handle_connection(
     let handoff: serde_json::Value = serde_json::from_slice(&bytes)?;
     anyhow::ensure!(
         handoff.get("protocol").and_then(serde_json::Value::as_u64) == Some(1)
-            && handoff.get("app_id").and_then(serde_json::Value::as_str) == Some("dev.tilo.store"),
+            && handoff.get("app_id").and_then(serde_json::Value::as_str) == Some("so.tilo.store"),
         "caller is not authorized for app-host"
     );
     let (reader, writer) = stream.into_split();

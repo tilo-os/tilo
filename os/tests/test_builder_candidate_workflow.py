@@ -353,7 +353,7 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn("if: github.ref == 'refs/heads/main'", replication)
         self.assertIn('replicate-builder-index.py', replication)
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
-        self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
+        self.assertIn('podesta-burst-usw2-tilo-builder-replication', replication)
 
     def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
         tools = step_block(BUILD, 'Install publication tools')

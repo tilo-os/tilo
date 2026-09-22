@@ -8,10 +8,11 @@ set -euo pipefail
 : "${TILO_SITE_GIT_TOKEN:?missing short-lived website token}"
 : "${TILO_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
 
-release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
-release_root="${GITHUB_SERVER_URL%/}/${release_repository}/releases"
+release_root="${release_server%/}/${release_repository}/releases"
 
 version="${GITHUB_REF_NAME#imager-v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
@@ -34,7 +35,7 @@ SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
-  "$GITHUB_SERVER_URL/qos/site.git" "$work/site"
+  "$GITHUB_SERVER_URL/tilo/site.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
@@ -109,28 +110,28 @@ npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
 npm --prefix "$work/site" run build
 
-# The current enabled release matrix has no macOS artifacts. A separate website
-# deployment must understand that scope before its release pointer can advance.
-# Inspect the rendered download URLs, not only a manifest the UI might ignore.
-if grep -REq 'tilo-imager-macos-[^"<>[:space:]]*\.(dmg|zip)' "$work/site/dist"; then
-  printf 'landing page advertises deferred macOS downloads; update its enabled platform matrix before promotion\n' >&2
-  exit 1
-fi
-
 # The manifest is the release-origin contract. Refuse to publish a manifest a
 # site build ignores: that would turn every attractive download action into an
 # authentication-gated or dead link even though its own tests passed.
 expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
 grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
   || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
+for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable; do
+  asset="$(jq -r --arg key "$asset_key" '.assets[$key] // empty' "$manifest")"
+  [ -n "$asset" ] \
+    || { printf 'landing page manifest is missing required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+  expected_download="$release_root/download/$GITHUB_REF_NAME/$asset"
+  grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
+    || { printf 'landing page does not expose required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+done
 if grep -R -Fq -- 'https://code.podesta.ai/qos/qos/releases/download/' "$work/site/dist" \
-   || grep -R -Fq -- 'https://code.podesta.ai/tilo/releases/download/' "$work/site/dist"; then
+   || grep -R -Fq -- 'https://code.podesta.ai/qos/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
   exit 1
 fi
 
 git -C "$work/site" config user.name "Tilo release automation"
-git -C "$work/site" config user.email "release-bot@tilo.dev"
+git -C "$work/site" config user.email "release-bot@tilo.so"
 git -C "$work/site" add src/data/imager-release.json src/data/install-contract.json
 if git -C "$work/site" diff --cached --quiet; then
   printf 'landing page already targets %s\n' "$GITHUB_REF_NAME"

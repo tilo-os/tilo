@@ -46,12 +46,27 @@ const SHOT_SCENARIOS: &[&str] = &[
     "drawer",
     "drag",
     "block_drag",
+    "block_type_menu",
     "menu",
+    "sidebar_hover",
+    "note_menu",
     "rename",
     "rename_commit",
     "slash",
     "slash_applied",
     "heading",
+    "fenced_code",
+    "fenced_code_opening",
+    "code_keyboard",
+    "code_keyboard_active",
+    "typed_lists",
+    "multiline_typing",
+    "mixed_outline",
+    "rich_outline",
+    "paragraph_click",
+    "code_group_drag",
+    "code_group_drop",
+    "adjacent_code_fences",
     "quote",
     "title_edit",
     "recipes",
@@ -59,14 +74,19 @@ const SHOT_SCENARIOS: &[&str] = &[
     "transclusion",
     "external_link",
     "table",
+    "table_large",
+    "table_large_scrolled",
+    "table_cell_edit",
     "image",
+    "image_edit",
     "status",
     "saving",
     "save_error",
     "import_success",
     "presence",
     "shortcuts",
-    "tag_palette",
+    "shortcuts_bottom",
+    "find",
     "scrolled",
     "sidebar_scroll",
 ];
@@ -81,8 +101,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .allowed_live_flags(&["--import-legacy-stopped"])
             .allowed_live_options(&["--notebook-dir", "--notebook-state-dir"])
             .max_positionals(1)
-            .prepare_legacy_with_args(prepare_launch)
-            .shot_handler(render_shot)
+            .component_host(prepare_component)
+            .native_services()
+            .capture_scenario(capture_scenario)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .scenarios(SHOT_SCENARIOS),
     )?;
     Ok(())

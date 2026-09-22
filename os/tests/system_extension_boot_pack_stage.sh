@@ -24,7 +24,7 @@ printf '%s\n' '#!/bin/sh' \
     "umount '$mount_dir'" > "$mock_bootc"
 chmod 0755 "$mock_bootc"
 
-image="registry.tilo.example/boot-pack@sha256:$(printf 'a%.0s' {1..64})"
+image="registry.example.test/boot-pack@sha256:$(printf 'a%.0s' {1..64})"
 systemd-run --quiet --wait --collect --pipe \
     --property=PrivateDevices=no \
     --property=NoNewPrivileges=yes \

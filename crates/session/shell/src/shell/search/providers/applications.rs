@@ -31,7 +31,7 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// enough to break a tie without dragging a better match below a worse one
 /// (every band in [`match_score`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
-const STORE_PACKAGE_ID: &str = "dev.tilo.store";
+const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// Product-owned ordering for the empty Applications palette. Search queries
 /// continue to rank purely by match quality; this only prevents a fresh system
@@ -40,39 +40,39 @@ const STORE_PACKAGE_ID: &str = "dev.tilo.store";
 /// tinkerers without assuming they are developers.
 fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
     match package_id {
-        "dev.tilo.browser" => ("Start here", 90),
-        "dev.tilo.file-explorer" => ("Start here", 89),
-        "dev.tilo.notes" => ("Start here", 88),
-        "dev.tilo.terminal" => ("Start here", 87),
-        "dev.tilo.settings" => ("Start here", 86),
-        "dev.tilo.store" => ("Start here", 85),
+        "so.tilo.browser" => ("Start here", 90),
+        "so.tilo.file-explorer" => ("Start here", 89),
+        "so.tilo.notes" => ("Start here", 88),
+        "so.tilo.terminal" => ("Start here", 87),
+        "so.tilo.settings" => ("Start here", 86),
+        "so.tilo.store" => ("Start here", 85),
 
-        "dev.tilo.calendar" => ("Everyday", 74),
-        "dev.tilo.mail" => ("Everyday", 73),
-        "dev.tilo.contacts" => ("Everyday", 72),
-        "dev.tilo.chat" => ("Everyday", 71),
-        "dev.tilo.calculator" => ("Everyday", 70),
+        "so.tilo.calendar" => ("Everyday", 74),
+        "so.tilo.mail" => ("Everyday", 73),
+        "so.tilo.contacts" => ("Everyday", 72),
+        "so.tilo.chat" => ("Everyday", 71),
+        "so.tilo.calculator" => ("Everyday", 70),
 
-        "dev.tilo.word-processor" => ("Work", 59),
-        "dev.tilo.sheets" => ("Work", 58),
-        "dev.tilo.slides" => ("Work", 57),
-        "dev.tilo.pdf-viewer" => ("Work", 56),
-        "dev.tilo.typst-editor" => ("Work", 55),
+        "so.tilo.word-processor" => ("Work", 59),
+        "so.tilo.sheets" => ("Work", 58),
+        "so.tilo.slides" => ("Work", 57),
+        "so.tilo.pdf-viewer" => ("Work", 56),
+        "so.tilo.typst-editor" => ("Work", 55),
 
-        "dev.tilo.music" => ("Media", 49),
-        "dev.tilo.tube" => ("Media", 48),
-        "dev.tilo.video-player" => ("Media", 47),
-        "dev.tilo.photos" => ("Media", 46),
-        "dev.tilo.camera" => ("Media", 45),
-        "dev.tilo.weather" => ("Everyday", 44),
-        "dev.tilo.maps" => ("Everyday", 43),
-        "dev.tilo.feeds" => ("Everyday", 42),
-        "dev.tilo.ebook" => ("Media", 41),
-        "dev.tilo.totp" => ("Everyday", 40),
+        "so.tilo.music" => ("Media", 49),
+        "so.tilo.tube" => ("Media", 48),
+        "so.tilo.video-player" => ("Media", 47),
+        "so.tilo.photos" => ("Media", 46),
+        "so.tilo.camera" => ("Media", 45),
+        "so.tilo.weather" => ("Everyday", 44),
+        "so.tilo.maps" => ("Everyday", 43),
+        "so.tilo.feeds" => ("Everyday", 42),
+        "so.tilo.ebook" => ("Media", 41),
+        "so.tilo.totp" => ("Everyday", 40),
 
-        "dev.tilo.monitor" | "dev.tilo.disks" | "dev.tilo.logs" | "dev.tilo.firewall"
-        | "dev.tilo.vpn" | "dev.tilo.remote" | "dev.tilo.backups" | "dev.tilo.imager"
-        | "dev.tilo.themes" => ("System tools", 25),
+        "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
+        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
+        | "so.tilo.themes" => ("System tools", 25),
         _ => ("More apps", 10),
     }
 }
@@ -738,7 +738,7 @@ fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
 }
 
 /// The package id of the file manager Tilo ships as a system app.
-pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.tilo.file-explorer";
+pub(crate) const SYSTEM_FILE_MANAGER: &str = "so.tilo.file-explorer";
 
 /// Give the system file manager the user's home before it starts. Every app
 /// otherwise gets `HOME` pointed at its own directory, wrong for one whose
@@ -1065,7 +1065,7 @@ impl ApplicationsProvider {
 /// description carry one word each. Empty needle matches everything at 0, so an empty palette
 /// lists installed apps. Category ranks below the id because it's a bucket,
 /// not an identity. Package ids score by how completely they were named,
-/// not flat "contains" — `hex-editor` typed for `dev.tilo.hex-editor` is the
+/// not flat "contains" — `hex-editor` typed for `so.tilo.hex-editor` is the
 /// app's identity in full and must outrank an incidental substring.
 pub(crate) fn match_score(
     needle: &str,
@@ -1190,7 +1190,7 @@ mod tests {
     #[serial_test::serial(launch_events)]
     fn repeated_activation_while_opening_is_idempotent() {
         let chrome = chrome_rc();
-        let package_id = "dev.tilo.repeated-open-fixture";
+        let package_id = "so.tilo.repeated-open-fixture";
         let notice = chrome
             .borrow_mut()
             .push_notification("Opening Fixture", "Loading…");
@@ -1210,16 +1210,16 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "hel",
-            vec![app("dev.tilo.hello", "Hello")],
+            vec![app("so.tilo.hello", "Hello")],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "Open Hello");
-        assert_eq!(out[0].id, "dev.tilo.hello");
+        assert_eq!(out[0].id, "so.tilo.hello");
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Tilo · dev.tilo.hello · 0.1.0"),
+            Some("Opens in rightmost space · Tilo · so.tilo.hello · 0.1.0"),
             "the row names the package it will launch"
         );
     }
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn available_apps_are_discoverable_by_description_and_cross_field_terms() {
         let p = ApplicationsProvider::new();
-        let mut candidate = offered("dev.tilo.ledger", "Ledger", Some("Office"));
+        let mut candidate = offered("so.tilo.ledger", "Ledger", Some("Office"));
         candidate.description = "Fast collaborative spreadsheet".to_string();
 
         let by_description = p.catalogue_results_for(
@@ -1238,7 +1238,7 @@ mod tests {
         );
         assert_eq!(
             by_description.first().map(|row| row.id.as_str()),
-            Some("app:dev.tilo.ledger")
+            Some("app:so.tilo.ledger")
         );
 
         let across_fields = p.catalogue_results_for(
@@ -1249,14 +1249,14 @@ mod tests {
         );
         assert_eq!(
             across_fields.first().map(|row| row.id.as_str()),
-            Some("app:dev.tilo.ledger")
+            Some("app:so.tilo.ledger")
         );
     }
 
     #[test]
     fn duplicate_registry_offers_produce_one_application_row() {
         let p = ApplicationsProvider::new();
-        let app = offered("dev.tilo.notes", "Notes", Some("Office"));
+        let app = offered("so.tilo.notes", "Notes", Some("Office"));
         let out = p.catalogue_results_for("notes", vec![app.clone(), app], &[], OpenTarget::Beside);
         assert_eq!(out.len(), 1, "registry mirrors must not duplicate an app");
     }
@@ -1265,16 +1265,16 @@ mod tests {
     fn an_exact_host_package_identity_hides_its_catalogue_alias() {
         let p = ApplicationsProvider::new();
         let hosts = vec![crate::shell::host_apps::HostApp {
-            desktop_id: "dev.tilo.notes".into(),
+            desktop_id: "so.tilo.notes".into(),
             name: "Notes".into(),
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
-            window_identities: vec!["dev.tilo.notes".into()],
+            window_identities: vec!["so.tilo.notes".into()],
         }];
         let out = p.catalogue_results_for_with_hosts(
             "notes",
-            vec![offered("dev.tilo.notes", "Notes", Some("Office"))],
+            vec![offered("so.tilo.notes", "Notes", Some("Office"))],
             &[],
             &hosts,
             OpenTarget::Beside,
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn gnome_calendar_does_not_hide_tilo_calendar() {
         let rows = catalogue_rows_with_host(
-            "dev.tilo.calendar",
+            "so.tilo.calendar",
             "Calendar",
             "org.gnome.Calendar",
             "Calendar",
@@ -1324,7 +1324,7 @@ mod tests {
     #[test]
     fn host_terminal_does_not_hide_tilo_terminal() {
         let rows = catalogue_rows_with_host(
-            "dev.tilo.terminal",
+            "so.tilo.terminal",
             "Terminal",
             "org.gnome.Console",
             "Terminal",
@@ -1335,7 +1335,7 @@ mod tests {
     #[test]
     fn a_generic_shared_name_is_not_cross_provider_identity() {
         let rows = catalogue_rows_with_host(
-            "dev.tilo.notes",
+            "so.tilo.notes",
             "Notes",
             "org.example.PrivateNotes",
             "Notes",
@@ -1349,17 +1349,17 @@ mod tests {
         let out = p.results_for(
             "office",
             vec![
-                app_in("dev.tilo.sheets", "Sheets", Some("Office")),
-                app_in("dev.tilo.calculator", "Calculator", Some("Utility")),
+                app_in("so.tilo.sheets", "Sheets", Some("Office")),
+                app_in("so.tilo.calculator", "Calculator", Some("Utility")),
             ],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
-        assert_eq!(out[0].id, "dev.tilo.sheets");
+        assert_eq!(out[0].id, "so.tilo.sheets");
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Tilo · Office · dev.tilo.sheets"),
+            Some("Opens in rightmost space · Tilo · Office · so.tilo.sheets"),
             "a declared category is the more useful second line than the version"
         );
     }
@@ -1372,24 +1372,24 @@ mod tests {
         let out = p.results_for(
             "system",
             vec![
-                app_in("dev.tilo.monitor", "Monitor", Some("System")),
-                app_in("dev.tilo.sysinfo", "System Info", Some("Utility")),
+                app_in("so.tilo.monitor", "Monitor", Some("System")),
+                app_in("so.tilo.sysinfo", "System Info", Some("Utility")),
             ],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 2);
         let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
-        assert_eq!(score("dev.tilo.sysinfo"), 100, "prefix on the display name");
-        assert_eq!(score("dev.tilo.monitor"), 20, "category-only match");
-        assert!(score("dev.tilo.sysinfo") > score("dev.tilo.monitor"));
+        assert_eq!(score("so.tilo.sysinfo"), 100, "prefix on the display name");
+        assert_eq!(score("so.tilo.monitor"), 20, "category-only match");
+        assert!(score("so.tilo.sysinfo") > score("so.tilo.monitor"));
     }
 
     #[test]
     fn package_id_matches_score_below_name_matches() {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
-            "dev.tilo",
-            vec![app("dev.tilo.hello", "Hello"), app("org.x.zed", "Zed")],
+            "so.tilo",
+            vec![app("so.tilo.hello", "Hello"), app("org.x.zed", "Zed")],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1, "only the matching package: {out:?}");
@@ -1398,7 +1398,7 @@ mod tests {
         assert_eq!(out[0].score, 60);
         let by_name = p.results_for(
             "hello",
-            vec![app("dev.tilo.hello", "Hello")],
+            vec![app("so.tilo.hello", "Hello")],
             OpenTarget::Beside,
         );
         assert!(
@@ -1413,7 +1413,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "hex-editor",
-            vec![app("dev.tilo.hex-editor", "Hex Editor")],
+            vec![app("so.tilo.hex-editor", "Hex Editor")],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1, "the app must match at all: {out:?}");
@@ -1423,8 +1423,8 @@ mod tests {
              naming the app does"
         );
         let full = p.results_for(
-            "dev.tilo.hex-editor",
-            vec![app("dev.tilo.hex-editor", "Hex Editor")],
+            "so.tilo.hex-editor",
+            vec![app("so.tilo.hex-editor", "Hex Editor")],
             OpenTarget::Beside,
         );
         assert_eq!(full[0].score, 100);
@@ -1435,7 +1435,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "zzzqqq",
-            vec![app("dev.tilo.hello", "Hello")],
+            vec![app("so.tilo.hello", "Hello")],
             OpenTarget::Beside,
         );
         assert!(out.is_empty());
@@ -1447,21 +1447,21 @@ mod tests {
         let out = p.results_for(
             "",
             vec![
-                app("dev.tilo.monitor", "System Monitor"),
-                app("dev.tilo.browser", "Browser"),
-                app("dev.tilo.notes", "Notes"),
-                app("dev.tilo.hello", "Hello"),
+                app("so.tilo.monitor", "System Monitor"),
+                app("so.tilo.browser", "Browser"),
+                app("so.tilo.notes", "Notes"),
+                app("so.tilo.hello", "Hello"),
             ],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 4);
         let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
-        assert!(score("dev.tilo.browser") > score("dev.tilo.notes"));
-        assert!(score("dev.tilo.notes") > score("dev.tilo.monitor"));
-        assert!(score("dev.tilo.monitor") > score("dev.tilo.hello"));
+        assert!(score("so.tilo.browser") > score("so.tilo.notes"));
+        assert!(score("so.tilo.notes") > score("so.tilo.monitor"));
+        assert!(score("so.tilo.monitor") > score("so.tilo.hello"));
         assert!(
             out.iter()
-                .find(|row| row.id == "dev.tilo.browser")
+                .find(|row| row.id == "so.tilo.browser")
                 .and_then(|row| row.subtitle.as_deref())
                 .is_some_and(|subtitle| subtitle.contains("Start here")),
             "the ordering must also be explained on screen"
@@ -1474,13 +1474,13 @@ mod tests {
         let out = p.results_for(
             "monitor",
             vec![
-                app("dev.tilo.browser", "Browser"),
-                app("dev.tilo.monitor", "System Monitor"),
+                app("so.tilo.browser", "Browser"),
+                app("so.tilo.monitor", "System Monitor"),
             ],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id, "dev.tilo.monitor");
+        assert_eq!(out[0].id, "so.tilo.monitor");
         assert_eq!(
             out[0].score, 100,
             "normal match scoring remains authoritative"
@@ -1525,7 +1525,7 @@ mod tests {
         // The registry does not actually contain this app, so launch refuses it.
         let out = p.results_for(
             "ghost",
-            vec![app("dev.tilo.ghost", "Ghost")],
+            vec![app("so.tilo.ghost", "Ghost")],
             OpenTarget::Beside,
         );
         let row = out.first().expect("a row for the ghost app");
@@ -1570,7 +1570,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "she",
-            vec![offered("dev.tilo.sheets", "Sheets", Some("Office"))],
+            vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
             &[],
             OpenTarget::Beside,
         );
@@ -1579,7 +1579,7 @@ mod tests {
             out[0].title, "View Sheets in App Store",
             "palette activation must present a reviewable Store detail, not install"
         );
-        assert_eq!(out[0].id, "app:dev.tilo.sheets");
+        assert_eq!(out[0].id, "app:so.tilo.sheets");
         assert_eq!(out[0].kind, ResourceKind::Application);
         assert!(
             out[0].subtitle.as_deref().is_some_and(
@@ -1599,7 +1599,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "",
-            vec![offered("dev.tilo.sheets", "Sheets", Some("Office"))],
+            vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
             &[],
             OpenTarget::Beside,
         );
@@ -1614,10 +1614,10 @@ mod tests {
             );
         }
         assert_eq!(
-            store_detail_uri("dev.tilo.sheets").unwrap(),
-            "tilo-store:app/dev.tilo.sheets"
+            store_detail_uri("so.tilo.sheets").unwrap(),
+            "tilo-store:app/so.tilo.sheets"
         );
-        assert!(store_detail_uri("dev.tilo.sheets?install=true").is_err());
+        assert!(store_detail_uri("so.tilo.sheets?install=true").is_err());
     }
 
     #[test]
@@ -1625,7 +1625,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let available = p.catalogue_results_for(
             "",
-            vec![offered("dev.tilo.sheets", "Sheets", Some("Office"))],
+            vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
             &[],
             OpenTarget::Beside,
         );
@@ -1643,7 +1643,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let mine = p.results_for(
             "notes",
-            vec![app("dev.tilo.notes", "Notes")],
+            vec![app("so.tilo.notes", "Notes")],
             OpenTarget::Beside,
         );
         let theirs = p.catalogue_results_for(
@@ -1664,12 +1664,12 @@ mod tests {
         // user actually named.
         let vague = p.results_for(
             "sheets",
-            vec![app("dev.tilo.shed", "Shed Helper Editor Extra Tool Set")],
+            vec![app("so.tilo.shed", "Shed Helper Editor Extra Tool Set")],
             OpenTarget::Beside,
         );
         let named = p.catalogue_results_for(
             "sheets",
-            vec![offered("dev.tilo.sheets", "Sheets", None)],
+            vec![offered("so.tilo.sheets", "Sheets", None)],
             &[],
             OpenTarget::Beside,
         );
@@ -1692,8 +1692,8 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "sheets",
-            vec![offered("dev.tilo.sheets", "Sheets", None)],
-            &["dev.tilo.sheets".to_string()],
+            vec![offered("so.tilo.sheets", "Sheets", None)],
+            &["so.tilo.sheets".to_string()],
             OpenTarget::Beside,
         );
         assert!(
@@ -1707,7 +1707,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "zzzqqq",
-            vec![offered("dev.tilo.sheets", "Sheets", None)],
+            vec![offered("so.tilo.sheets", "Sheets", None)],
             &[],
             OpenTarget::Beside,
         );
@@ -1724,7 +1724,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let out = p.catalogue_results_for(
             "sheets",
-            vec![offered("dev.tilo.sheets", "Sheets", None)],
+            vec![offered("so.tilo.sheets", "Sheets", None)],
             &[],
             OpenTarget::Beside,
         );
@@ -1756,7 +1756,7 @@ mod tests {
         let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
             Vec::new(),
             vec![offered(
-                "dev.tilo.uninstalled-sheets",
+                "so.tilo.uninstalled-sheets",
                 "Sheets",
                 Some("Office"),
             )],
@@ -1777,7 +1777,7 @@ mod tests {
         let results = p.query(ctx);
         let row = results
             .iter()
-            .find(|row| row.id == "app:dev.tilo.uninstalled-sheets")
+            .find(|row| row.id == "app:so.tilo.uninstalled-sheets")
             .expect("Win+K finds the uninstalled stable app identity");
         assert_eq!(row.title, "View Sheets in App Store");
         assert!(
@@ -1814,7 +1814,7 @@ mod tests {
         let entries = (0..100_001)
             .map(|index| {
                 ApplicationEntry::Installed(app_in(
-                    &format!("dev.tilo.fixture-{index}"),
+                    &format!("so.tilo.fixture-{index}"),
                     if index == 100_000 {
                         "unique-tail"
                     } else {
@@ -1890,7 +1890,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
-        source.replace_catalogue(vec![offered("dev.tilo.changed", "Changed", None)]);
+        source.replace_catalogue(vec![offered("so.tilo.changed", "Changed", None)]);
         provider.refresh_search_index(&ctx);
         assert!(provider.search_revision(&ctx).starts_with("indexing:"));
         refresh_until_ready(&provider, &ctx);
@@ -1904,7 +1904,7 @@ mod tests {
             Vec::new(),
             (0..100_001)
                 .map(|index| CatalogueApp {
-                    package_id: format!("dev.tilo.cold-fixture-{index}"),
+                    package_id: format!("so.tilo.cold-fixture-{index}"),
                     display_name: if index == 100_000 {
                         "unique-source-tail".into()
                     } else {
@@ -1998,7 +1998,7 @@ mod tests {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "she",
-            vec![app("dev.tilo.sheets", "Sheets")],
+            vec![app("so.tilo.sheets", "Sheets")],
             OpenTarget::Beside,
         );
         let row = out.first().expect("a row for the installed app");
@@ -2094,7 +2094,7 @@ impl SearchProvider for NativeApplicationsProvider {
                             })?;
                         let mut state = chrome.borrow_mut();
                         let destination = match state.open_target {
-                            OpenTarget::Beside => crate::shell::window_actions::Destination::Beside,
+                            OpenTarget::Beside => crate::shell::window_actions::Destination::Search,
                             OpenTarget::Here(_) => crate::shell::window_actions::Destination::Here,
                         };
                         crate::shell::window_actions::open_hosted(
@@ -2160,5 +2160,87 @@ mod native_application_tests {
         assert!(
             (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).is_err()
         );
+    }
+
+    #[test]
+    fn native_app_search_opens_at_the_rightmost_visible_space() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for title in ["second", "third", "fourth"] {
+            crate::compositor::tab_binding::open_hosted_app(
+                &mut tree,
+                AppKind::Terminal,
+                title,
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+        }
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let ids = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>();
+        tree.set_active_group(strip_id, ids[0]);
+
+        let chrome = ChromeState::new(tree);
+        {
+            let mut state = chrome.borrow_mut();
+            state.hosted_inputs = HostedTileInputs::for_host_directory(directory.path()).unwrap();
+            state.set_strip_viewport(Some(crate::shell::placement::StripViewport {
+                strip: strip_id,
+                groups: ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        let index = f64::from(u32::try_from(index).expect("fixture group index"));
+                        crate::shell::placement::GroupSpan {
+                            id: *id,
+                            x0: index * 100.0,
+                            x1: index.mul_add(100.0, 100.0),
+                        }
+                    })
+                    .collect(),
+                visible_x0: 0.0,
+                visible_x1: 350.0,
+            }));
+        }
+
+        let mut doc = automerge::AutoCommit::new();
+        let results = NativeApplicationsProvider.query(SearchContext {
+            needle: "Files",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let groups = &tree.active_workspace().unwrap().strips[0].window_groups;
+        let files_group = groups
+            .iter()
+            .find(|group| !ids.contains(&group.id))
+            .expect("Files search result created a group");
+        assert!(
+            files_group.tabs.iter().any(|tab| {
+                matches!(
+                    &tab.tile,
+                    crate::shell::state::TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        ..
+                    }
+                )
+            }),
+            "the new group contains the real hosted Files app",
+        );
+        let files_group = files_group.id;
+        assert_eq!(
+            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            vec![ids[0], ids[1], ids[2], files_group, ids[3]],
+            "the native search provider must use the same rightmost-visible placement as launched apps",
+        );
+        drop(tree);
+        drop(state);
     }
 }

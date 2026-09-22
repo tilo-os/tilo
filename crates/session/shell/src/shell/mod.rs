@@ -958,6 +958,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
 /// [`overlay_host::ShellOverlayHost`]'s per-revision resync.
 pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     match t {
+        ShellTile::WorkspaceActivity => UiKind::Settings,
         ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
         // No `AppKind` describes "arbitrary external client", so both a
         // foreign surface and a peer window wear the catch-all `Settings`
@@ -1021,6 +1022,14 @@ fn try_to_ui_tile_for_tab(
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
+        // The retained activity controller is painted into this ordinary
+        // tile by `ShellOverlayHost`, which also owns the workspace-history
+        // index. The neutral body exists only for the first reconciliation
+        // frame before that controller has its content rect.
+        ShellTile::WorkspaceActivity => UiTile::Notice {
+            title: "While you were away".into(),
+            detail: "Loading workspace activity…".into(),
+        },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),
@@ -1060,7 +1069,8 @@ fn try_to_ui_tile_for_tab(
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => {
-                let widget = if let Some(files) = &inputs.files {
+                let tab_files = tab.and_then(|tab| inputs.files_for_tab(tab));
+                let widget = if let Some(files) = tab_files.as_ref().or(inputs.files.as_ref()) {
                     if let Some(services) = inputs.file_services() {
                         FileExplorerWidget::with_startup_inputs_and_services(
                             files.clone(),

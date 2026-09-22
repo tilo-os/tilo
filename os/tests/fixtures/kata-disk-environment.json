@@ -222,7 +222,7 @@
           "ip": "10.72.9.63"
         }
       ],
-      "qosClass": "Guaranteed",
+      "tiloClass": "Guaranteed",
       "startTime": "2026-09-18T01:15:47Z"
     }
   },

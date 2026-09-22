@@ -182,7 +182,7 @@ if result="$(
   PATH="$tmp/bin:$PATH" \
   TILO_DISTROBOX='' \
   TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
-  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
   TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
   TILO_TEST_ARGS="$tmp/args" \
   TILO_TEST_AUTH_PATH="$tmp/auth-path" \
@@ -191,7 +191,7 @@ if result="$(
 )" \
   && [ "$result" = 1 ] \
   && ! grep -Fq 'do-not-leak-token' "$tmp/args" \
-  && grep -Fq 'registry.invalid/tilo/tilo' "$tmp/args" \
+  && grep -Fq 'registry.invalid/qos/qos' "$tmp/args" \
   && grep -Fq 'Y2ktdXNlcjpkby1ub3QtbGVhay10b2tlbg==' "$tmp/auth-copy" \
   && [ ! -e "$(cat "$tmp/auth-path")" ]; then
   ok 'generation lookup securely materializes and removes explicit credentials'
@@ -201,7 +201,7 @@ fi
 
 if ! PATH="$tmp/bin:$PATH" \
     TILO_DISTROBOX='' \
-    TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+    TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
     TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
     TILO_TEST_ARGS="$tmp/fail-args" \
     TILO_TEST_AUTH_PATH="$tmp/fail-auth-path" \
@@ -219,7 +219,7 @@ if result="$(
   PATH="$tmp/bin:$PATH" \
   TILO_DISTROBOX='' \
   TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
-  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
   TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
   TILO_ALLOW_EMPTY_SERIES=1 \
   TILO_TEST_ARGS="$tmp/bootstrap-args" \

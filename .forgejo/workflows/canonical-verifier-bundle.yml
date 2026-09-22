@@ -78,13 +78,13 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(uname -m)" = "$VERIFIER_ARCH"
-          cargo build --release --locked -p pkg-cli -p runtime-bundle
-          target/release/tilo-pkg --help >/dev/null
+          cargo build --release --locked -p tilo-app-package-cli -p runtime-bundle
+          target/release/tilo-app-package --help >/dev/null
           target/release/tilo-runtime-bundle --help >/dev/null
           mkdir -p target/verifier-bundle target/verifier-repeat
           for directory in target/verifier-bundle target/verifier-repeat; do
             python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce \
-              --pkg-binary target/release/tilo-pkg \
+              --pkg-binary target/release/tilo-app-package \
               --runtime-binary target/release/tilo-runtime-bundle \
               --builder-image "$BUILDER_IMAGE" --source-sha "$GITHUB_SHA" \
               --architecture "$VERIFIER_ARCH" --output "$directory/$VERIFIER_ARCH.tar.gz"

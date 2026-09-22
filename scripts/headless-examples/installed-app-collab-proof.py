@@ -33,7 +33,7 @@ this proves against.
     scripts/headless-examples/installed-app-collab-proof.py
 
     cargo build -p shell -p install -p launcher -p word-processor
-    cargo build -p app-catalogue --bins --examples
+    cargo build -p app-cli --bins --examples
 
 Exits non-zero if a step fails; a successful exit still means someone
 has to look at the pixels.
@@ -56,7 +56,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-APP = "dev.tilo.word-processor"
+APP = "so.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 APPLICATIONS = "applications"
 QUERY = "word processor"
@@ -145,7 +145,7 @@ class Session:
             env["TILO_STORE_CONFIG_DIR"] = store_config
             env["TILO_STORE_CACHE_DIR"] = os.path.join(self.dir, "store-cache")
             os.makedirs(env["TILO_STORE_CACHE_DIR"], exist_ok=True)
-        for var, binary in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+        for var, binary in (("TILO_APP_BIN", "app"),
                             ("TILO_INSTALL_BIN", "tilo-install"),
                             ("TILO_LAUNCHER_BIN", "tilo-launcher")):
             found = tool(binary)
@@ -239,7 +239,7 @@ class Session:
 
 
 class Registry:
-    """`serve-test-registry` on loopback, serving one real signed `.qpkg`.
+    """`serve-test-registry` on loopback, serving one real signed `.tapp`.
 
     It packs the manifest it finds beside the payload, so the package it
     serves is the package the payload belongs to — services and all.
@@ -422,13 +422,13 @@ def main() -> int:
                / "word-processor")
     missing = [what for what, path in (
         ("shell", shell), ("tilo-launcher", tool("tilo-launcher")),
-        ("tilo-install", tool("tilo-install")), ("tilo-catalogue", tool("tilo-catalogue")),
+        ("tilo-install", tool("tilo-install")), ("app", tool("app")),
         ("serve-test-registry", example), ("the word-processor payload", payload),
     ) if not path or not pathlib.Path(path).exists()]
     if missing:
         print("missing: " + ", ".join(missing))
         print("build:  cargo build -p shell -p install -p launcher -p word-processor && "
-              "cargo build -p app-catalogue --bins --examples")
+              "cargo build -p app-cli --bins --examples")
         return 2
 
     # Bob's copy has to be the same build alice installs, and that is not
