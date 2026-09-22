@@ -356,12 +356,12 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("dev.tilo.word-processor", "align-center"),
-            ("dev.tilo.word-processor", "delete"),
-            ("dev.tilo.word-processor", "insert-table"),
-            ("dev.tilo.word-processor", "place-image"),
-            ("dev.tilo.photos", "rotate-right"),
-            ("dev.tilo.photos", "export-edited-content"),
+            ("so.tilo.word-processor", "align-center"),
+            ("so.tilo.word-processor", "delete"),
+            ("so.tilo.word-processor", "insert-table"),
+            ("so.tilo.word-processor", "place-image"),
+            ("so.tilo.photos", "rotate-right"),
+            ("so.tilo.photos", "export-edited-content"),
         ],
     )
 }

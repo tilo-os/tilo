@@ -1706,7 +1706,8 @@ mod tests {
             );
         }
         for (index, rect) in overlay.row_action_rects().iter().enumerate() {
-            let row_top = overlay.panel_rect().y0 + 48.0 + row_count_as_f64(index) * ROW_H;
+            let row_top =
+                overlay.panel_rect().y0 + 48.0 + MY_STATUS_H + row_count_as_f64(index) * ROW_H;
             assert!(
                 (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
                 "row {index}'s button is centred in its row"

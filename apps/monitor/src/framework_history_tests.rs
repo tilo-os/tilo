@@ -92,7 +92,7 @@ fn production_root_declares_monitor_history() {
     let definition = crate::app_root()
         .document_history_definition()
         .expect("production Monitor root declares History");
-    assert_eq!(definition.app_id, "dev.tilo.monitor");
+    assert_eq!(definition.app_id, "so.tilo.monitor");
     assert!(std::ptr::eq(
         definition,
         std::ptr::addr_of!(crate::framework_history::HISTORY)

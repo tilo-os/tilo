@@ -585,6 +585,10 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+            self.clear_record_binding();
+            return;
+        }
         self.bind_record_intent(store, tab, false);
         self.install_declared_history();
     }
@@ -592,8 +596,22 @@ impl TileHost {
     /// Admit a newly created scratch resource owned by this caller. Creation
     /// applies only to this exact checkout, never to later record intents.
     pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+            self.clear_record_binding();
+            return;
+        }
         self.bind_record_intent(store, tab, true);
         self.install_declared_history();
+    }
+
+    fn clear_record_binding(&mut self) {
+        self.settle_outgoing_record();
+        self.binding = None;
+        self.pending_binding = None;
+        self.record_error = None;
+        self.record_creation_refused = false;
+        self.announced = None;
+        self.renew_history_lifetime();
     }
 
     /// Keep a failed fresh creation unavailable without attaching an existing
@@ -1063,6 +1081,55 @@ impl AudiencePresentationProvider for TileHost {
     }
 }
 
+impl crate::widget::NativeViewLifecycle for TileHost {
+    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let TileContent::App(live) = &mut self.content {
+            if self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            {
+                crate::widget::mount_native_views(live.as_mut(), host);
+            } else {
+                crate::widget::unmount_native_views(live.as_mut());
+            }
+        }
+    }
+
+    fn unmount_native_view(&mut self) {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::unmount_native_views(live.as_mut());
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+            && let TileContent::App(live) = &mut self.content
+        {
+            crate::widget::native_view_frame_start(live.as_mut());
+        }
+    }
+}
+
+impl crate::widget::Collaborative for TileHost {
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::take_collab_requests(live.as_mut())
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::handle_collab_event(live.as_mut(), event);
+        }
+    }
+}
+
 impl FullscreenProvider for TileHost {
     fn fullscreen_intent(&self) -> Option<bool> {
         match &self.content {
@@ -1164,45 +1231,30 @@ impl Widget for TileHost {
         }
     }
 
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        if let TileContent::App(live) = &mut self.content {
-            if self
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
+        (self.record_error.is_some()
+            || self
                 .history
                 .as_ref()
-                .is_none_or(|history| history.live_interactive())
-            {
-                live.mount_native_views(host);
-            } else {
-                live.unmount_native_views();
-            }
-        }
+                .is_some_and(|history| !history.live_interactive()))
+        .then_some(self)
     }
-    fn unmount_native_views(&mut self) {
-        if let TileContent::App(live) = &mut self.content {
-            live.unmount_native_views();
-        }
+
+    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
+        (self.record_error.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.live_interactive()))
+        .then_some(self)
     }
-    fn native_view_frame_start(&mut self) {
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-            && let TileContent::App(live) = &mut self.content
-        {
-            live.native_view_frame_start();
-        }
+
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
     }
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        if let TileContent::App(live) = &mut self.content {
-            live.take_collab_requests()
-        } else {
-            vec![]
-        }
-    }
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        if let TileContent::App(live) = &mut self.content {
-            live.handle_collab_event(event);
-        }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
     }
 
     fn continuable(&self) -> Option<&dyn Continuable> {
@@ -1393,10 +1445,10 @@ impl Widget for TileHost {
     fn checkpoint_components(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
         errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding {
-            if let Err(error) = binding.store.try_flush() {
-                errors.push(error);
-            }
+        if let Some(binding) = &self.binding
+            && let Err(error) = binding.store.try_flush()
+        {
+            errors.push(error);
         }
         if let TileContent::App(root) = &mut self.content {
             errors.extend(root.checkpoint_components());
@@ -2605,12 +2657,12 @@ mod tests {
         }
         let record_dir = app_state::DocStore::room_record_dir_at(
             &root,
-            "dev.tilo.tile-host-test",
+            "so.tilo.tile-host-test",
             "room",
             &checkout.id.storage_key(),
         )
         .unwrap();
-        let path = app_state::DocStore::open_canonical_at("dev.tilo.tile-host-test", &record_dir)
+        let path = app_state::DocStore::open_canonical_at("so.tilo.tile-host-test", &record_dir)
             .unwrap()
             .document_path()
             .to_path_buf();
@@ -2655,7 +2707,7 @@ mod tests {
     }
     static DECLARED_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.tilo.tile-host-test",
+            app_id: "so.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "body",
                 title: "Body",
@@ -2672,7 +2724,7 @@ mod tests {
         };
     static EXISTING_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.tilo.tile-host-test",
+            app_id: "so.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "external",
                 title: "External",
@@ -2829,7 +2881,7 @@ mod tests {
                 .unwrap();
             let path = app_state::DocStore::room_record_dir_at(
                 &root,
-                "dev.tilo.tile-host-test",
+                "so.tilo.tile-host-test",
                 "room",
                 &a.id.storage_key(),
             )

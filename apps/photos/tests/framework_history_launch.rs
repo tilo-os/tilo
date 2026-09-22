@@ -47,8 +47,8 @@ fn child(stage: &str, dir: &std::path::Path, kind: &str) {
             .env("QOS_PHOTOS_TEST_HOME", dir)
             .env("XDG_DATA_HOME", dir)
             .env("XDG_CONFIG_HOME", dir)
-            .env("QOS_BLOB_STORE", dir.join("blobs"))
-            .env("TILO_PACKAGE_ID", "dev.tilo.photos"),
+            .env("TILO_BLOB_STORE", dir.join("blobs"))
+            .env("TILO_PACKAGE_ID", "so.tilo.photos"),
     );
     assert!(
         out.status.success(),
@@ -62,8 +62,8 @@ fn binary(dir: &std::path::Path, actions: serde_json::Value, import: bool) {
     command
         .env("XDG_DATA_HOME", dir)
         .env("XDG_CONFIG_HOME", dir)
-        .env("QOS_BLOB_STORE", dir.join("blobs"))
-        .env("TILO_PACKAGE_ID", "dev.tilo.photos")
+        .env("TILO_BLOB_STORE", dir.join("blobs"))
+        .env("TILO_PACKAGE_ID", "so.tilo.photos")
         .args([
             "--headless-drive",
             &serde_json::json!({"actions":actions,"targets":dir.join("targets.json")}).to_string(),
@@ -93,7 +93,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
     if let Ok(stage) = std::env::var("QOS_PHOTOS_LAUNCH_STAGE") {
         let dir = std::path::PathBuf::from(std::env::var_os("QOS_PHOTOS_TEST_HOME").unwrap());
         let kind = std::env::var("QOS_PHOTOS_LAUNCH_KIND").unwrap();
-        let (mut state, mut saver) = ui::persist::try_open("dev.tilo.photos").unwrap();
+        let (mut state, mut saver) = ui::persist::try_open("so.tilo.photos").unwrap();
         let rgba = photos::shots_pattern(6, 4);
         let bytes = photos::pixels::encode_png(&rgba).unwrap();
         let hash = qdoc::blobstore::put(&bytes).unwrap();

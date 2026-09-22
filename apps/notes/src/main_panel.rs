@@ -2568,8 +2568,6 @@ mod tests {
 
         let title_top = PADDING_PX;
         let title_bottom = title_top + panel.title_height();
-        // The production band: the chip row the painter draws, from the same
-        // measured label line the renderer reports at this scale.
         let theme = Theme::dark();
         let label_line_h = ui::text_metrics::line_height_px(
             TagChipBand::label_size(),

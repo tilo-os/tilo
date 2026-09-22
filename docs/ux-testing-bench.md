@@ -2,6 +2,28 @@
 
 Start with a user goal, describe the visible route, set an interaction budget, and assert the resulting product state. Input dispatch alone never means success.
 
+Latest measured closure: [48-run repaired matrix](superpowers/audits/2026-09-15-fixed-ux-bench-results.md).
+
+## Goal-only agent trials and usability properties
+
+Measured results: [12 live trials and deterministic usability audit](superpowers/audits/2026-09-16-ux-evidence-results.md). All tasks completed, but only 7/12 met efficiency gates; the stronger tests expose failures despite the original 48-case matrix passing.
+
+The [evidence method](ux-evidence-method.md) explains what each test can establish and what remains unproven. The new runner adds keyboard entry, feedback, cancellation, recovery, state preservation, exact document outcomes, and semantic target geometry. It can also ask an OpenAI vision model to complete goals using screenshots alone, with private independent success checks.
+
+```sh
+python3 scripts/ux-bench/usability_test.py
+python3 scripts/ux-bench/usability.py --mode deterministic --out target/ux-bench/usability-check
+python3 scripts/ux-bench/usability.py --mode all --out target/ux-bench/usability-trials --key-prompt
+```
+
+Build `ux-bench` first. `--key-prompt` reads the key without echoing it; alternatively use `OPENAI_API_KEY`. Never put a key into a scenario or commit it. Default agent campaign: three goals, baseline and compact with 200% text, two fresh attempts each, 24 decisions per attempt. `--model`, `--tokens`, `--total-tokens`, and timeout flags control bounded API usage. Only synthetic fixture screenshots, task text and the agent's own actions are sent; hidden state, selectors and solution routes stay private.
+
+Each attempt keeps one real native widget-host session alive. `--interactive --scenario FILE --out NEW_DIRECTORY` exposes JSON-lines observe/click/key/type/wheel/finish operations. This is real application rendering and event dispatch in an isolated profile, not OS hardware input. Positive wheel dy moves toward content below. The supplied scenario config sets the display and fixture; its scripted route is ignored in interactive mode.
+
+The HTML/JSON report separates independently verified completion from efficient completion, records planned measurement denominators, preserves screenshots and replay inputs, and labels API errors. Nonzero exit means a required check, efficiency gate, coverage or execution failed; it does not mean the evaluator itself crashed. Reports retain failures instead of retrying until success. Run `--mode replay --replay-source ATTEMPT_DIRECTORY --out NEW_DIRECTORY` to reproduce recorded inputs without an API call.
+
+Semantic geometry is evidence about declared targets; unresolved overlaps need comparison with pixels. Clipped fragments and unsupported areas are counted explicitly. Missing semantics is a measurement/accessibility gap, not proof that no visual feedback exists.
+
 ## Run
 
 On macOS, from the repository root:

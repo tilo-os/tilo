@@ -10562,6 +10562,10 @@ fn ctrl_e_does_not_open_the_export_dialog_under_the_shortcut_sheet() {
 fn a_disabled_export_button_offers_no_pointer() {
     use winit::window::CursorIcon;
     let (mut app, _doc) = app_and_doc();
+    // Production has painted before this dialog can receive pointer input;
+    // seed the same theme/layout state before starting the deliberately
+    // unexportable job. Rendering afterwards would poll and clear that job.
+    render(&mut app);
     app.presentation.export_open = true;
     app.project = unexportable_project();
     let dest = scratch("cursor-export").join("never-written.mp4");
@@ -10570,9 +10574,9 @@ fn a_disabled_export_button_offers_no_pointer() {
         !app.export_is_offered(),
         "a render in flight disables Export"
     );
-    render(&mut app);
-    let mut tr = TextRenderer::new();
-    let l = app.export_layout(&mut tr, &Theme::dark());
+    let l = app
+        .with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
+        .expect("rendered dialog layout");
     assert_eq!(
         app.cursor_shape(l.confirm.center()),
         Some(CursorIcon::Default),

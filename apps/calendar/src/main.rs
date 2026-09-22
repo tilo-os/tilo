@@ -167,7 +167,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new_with_args("dev.tilo.calendar", live_root)
+    LaunchSpec::new_with_args("so.tilo.calendar", live_root)
         .max_positionals(1)
         .open_state(calendar::store::open_state)
         .shot_root(shot_root)

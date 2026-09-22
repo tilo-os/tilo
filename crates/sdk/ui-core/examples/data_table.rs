@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Offscreen shots for the `DataTable` primitive's built-in draggable
 //! scrollbar.
 //!

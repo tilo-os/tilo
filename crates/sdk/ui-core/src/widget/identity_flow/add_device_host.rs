@@ -548,7 +548,7 @@ impl Widget for AddDeviceHostScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         if let Some(qr) = &self.qr {
-            paint_qr(scene, transform, text_renderer, theme, qr, plan.qr)
+            paint_qr(scene, transform, text_renderer, theme, qr, plan.qr);
         } else {
             paint_cell(scene, transform, theme, plan.qr, false);
             paint_text(

@@ -1,0 +1,12 @@
+{
+  "name": "Tab context menu base: a Files window with a tab pill on screen",
+  "goal": "Base fixture for the --interactive right-click capture of the tab menu: the desktop is up with one hosted window whose tab pill can be right-clicked (the JSON action set has no secondary button, so the menu itself is driven over the interactive JSONL with the context_click op)",
+  "fixture": "files",
+  "viewport": [1280, 800],
+  "budget": {"clicks": 0, "keys": 0},
+  "steps": [{"op": "checkpoint", "name": "desktop", "checks": [
+    {"kind": "visible", "target": "semantic:topbar:overview"},
+    {"kind": "visible", "target": "semantic:wheel:workspace:0"},
+    {"kind": "absent", "target": "semantic:tabmenu:close"}
+  ]}]
+}

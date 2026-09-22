@@ -22,7 +22,7 @@ use vello::{
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.slides",
+    app_id: "so.tilo.slides",
     scopes: &[HistoryScopeDefinition {
         key: "deck",
         title: "Presentation deck",

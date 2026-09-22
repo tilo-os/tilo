@@ -10,7 +10,7 @@ use ui::history_mode::{
 use xattr::FileExt;
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.file-explorer",
+    app_id: "so.tilo.file-explorer",
     scopes: &[HistoryScopeDefinition {
         key: "selected-file",
         title: "Selected file",

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::needless_borrow,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Drives the responsive sidebar through the real `handle_event` path:
 //! a wide window keeps the page tree inline, a narrow window collapses
 //! it into a closed overlay drawer, the top-bar button toggles it, and

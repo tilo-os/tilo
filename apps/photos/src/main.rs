@@ -58,7 +58,7 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.photos", live_root)
+        &LaunchSpec::new_with_args("so.tilo.photos", live_root)
             .history(&photos::framework_history::HISTORY)
             .open_app_global_state_with_args(open_state)
             .shot_handler(render_shot)

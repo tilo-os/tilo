@@ -269,7 +269,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         || export.operation_kind != tilo_actions::OperationKind::Effect
         || export.contract.result
             != (tilo_actions::ResultSpec::Resource {
-                resource_kind: "qos.content".into(),
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
             })
     {
         return Err("edited export contract mismatch".into());

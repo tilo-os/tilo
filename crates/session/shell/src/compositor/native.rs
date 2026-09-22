@@ -2288,6 +2288,9 @@ fn execute_planned_action(
             );
             fb.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
         }
+        PlannedAction::SeedFilesDrag { paths } => {
+            file_explorer::external_drag::begin(paths.clone());
+        }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
@@ -2432,6 +2435,7 @@ fn execute_locked_action(
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
         | PlannedAction::SetGroupWidth { .. }
+        | PlannedAction::SeedFilesDrag { .. }
         | PlannedAction::InvokeAction { .. } => {}
     }
 }

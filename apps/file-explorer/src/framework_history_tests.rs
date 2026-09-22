@@ -190,7 +190,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     driver.click_named("history-restore").unwrap();
     confirm(&mut driver, "backend restore");
-    wait(&mut driver, "Restore acknowledgement is unavailable");
+    wait(&mut driver, "Refresh review");
     let submitted = transport.submitted.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(
@@ -325,7 +325,7 @@ fn framework_history_embedded_files_root_has_shared_entry_and_preserves_incident
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
     let store = owners
-        .open("dev.tilo.file-explorer", "embedded-history-test")
+        .open("so.tilo.file-explorer", "embedded-history-test")
         .unwrap();
     let checkout = ui::RecordCheckout::new(
         ui::RecordId::for_tab(501),
@@ -474,7 +474,7 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         &mut driver,
         "production initial restore after repeated open",
     );
-    wait(&mut driver, "Restore acknowledgement is unavailable");
+    wait(&mut driver, "Refresh review");
     driver.key("Escape");
     let original: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
@@ -482,6 +482,10 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
             .unwrap(),
     )
     .unwrap();
+    // Model the projection consuming the request. A retry must republish the
+    // controller's retained exact intent even when the transport no longer
+    // exposes the earlier write.
+    xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
     source.set_target(Some(
         crate::framework_history::target(&b, record_b, "B".into()).unwrap(),
     ));
@@ -492,9 +496,26 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     source.set_target(Some(
         crate::framework_history::target(&a, record_a, "A again".into()).unwrap(),
     ));
-    wait(&mut driver, "history-files-result");
-    driver.click_named("history-files-retry").unwrap();
-    wait(&mut driver, "Restore acknowledgement is unavailable");
+    // The result button survives target changes. Wait for A's immutable
+    // timeline entry instead so the A -> B -> A reconciliation has completed
+    // before the retry command is produced; commands from the superseded B
+    // presentation are deliberately discarded by the host.
+    wait(&mut driver, &select);
+    // This case exercises exact session routing across descriptor swaps, not
+    // button hit-testing. Activate the semantic control directly so the
+    // controller's two-second background poll cannot rebuild the toolbar
+    // between `click_named` resolving its rect and dispatching the pointer.
+    driver
+        .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
+        .unwrap();
+    assert!(
+        driver.wait_until(std::time::Duration::from_secs(5), |_| {
+            xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+                .unwrap()
+                .is_some()
+        }),
+        "retry did not rewrite the checked restore request",
+    );
     let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()

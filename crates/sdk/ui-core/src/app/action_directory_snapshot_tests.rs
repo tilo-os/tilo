@@ -212,7 +212,7 @@ fn directory_snapshot_unchanged_publish_stable_but_mutation_and_max_evict() {
         app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("declared:0", "inspect"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -597,7 +597,7 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
         .invoke_resource_action(
             &tilo_actions::ActionAddress::new("declared:0", "inspect"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -611,8 +611,8 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
 #[cfg(unix)]
 fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     let (mut app, calls) = declared_directory(1);
-    app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
-    assert!(app.collab_manager.is_connected());
+    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    assert!(app.collaboration.manager.is_connected());
     app.init_layout();
     // Join delivers an initial catalogue event. Drain it before measuring an
     // otherwise idle pump, so startup traffic cannot mask missing refresh.

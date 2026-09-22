@@ -1,3 +1,10 @@
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::redundant_field_names,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Quick Browser library root. The binary is a thin shim over the
 //! `BrowserWidget` exported here so the `--shots` mode can construct
 //! the whole chrome without booting an event loop.

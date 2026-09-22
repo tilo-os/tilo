@@ -1,3 +1,9 @@
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::redundant_field_names,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
@@ -82,7 +88,7 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
+        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
             .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
             .shot_handler(render_shot)
             .open_state_with_args(open_browser_state)
@@ -304,7 +310,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = open_browser_state("dev.tilo.browser", args);
+    let (state, autosave) = open_browser_state("so.tilo.browser", args);
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
     let mut app = if mode.is_private() {
         ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))

@@ -1150,7 +1150,7 @@ mod tests {
         // A dark preset, the pure-black preset (the hardest ground for a
         // hairline), a light preset and the demo custom theme.
         let specs = [
-            ("dark", pick("qos-dark")),
+            ("dark", pick("tilo-dark")),
             ("dark", pick("oled")),
             ("light", pick("beige")),
             ("dark", model::seed_custom()),

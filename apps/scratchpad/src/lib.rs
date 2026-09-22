@@ -194,7 +194,7 @@ impl Widget for Scratchpad {
             && scroll_rect.is_some_and(|[x0, y0, x1, y1]| x1 > x0 && y1 > y0);
         let (offset_x, offset_y) = self.scroll_offset.get();
         Some(serde_json::json!({
-            "app": "dev.tilo.scratchpad",
+            "app": "so.tilo.scratchpad",
             "editor_id": "note-editor",
             "editor_focused": editor_focused,
             "body_hash": iroh_blobs::Hash::new(body.as_bytes()).to_hex(),

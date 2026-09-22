@@ -514,6 +514,28 @@ impl WindowGroup {
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
+
+    /// Whether `point` is on the group's trailing new-tab control.
+    ///
+    /// The chip can remain visible at a clipped strip edge, where coarse
+    /// group bounds are an ambiguous owner for a coordinate-only button
+    /// event. GroupRow uses this exact painted target to route the press.
+    pub(crate) fn new_tab_hit(&self, point: Point) -> bool {
+        let rect = self.new_tab_rect();
+        rect.area() > 0.0 && rect.contains(point)
+    }
+
+    /// Publish the same host-level request as the tab bar's `+` control when
+    /// an ancestor has already resolved an otherwise ambiguous clipped-edge
+    /// hit. Mouse button events carry no coordinates, so this avoids asking a
+    /// stale child cursor cache to repeat `GroupRow`'s exact hit-test.
+    pub(crate) fn request_new_tab_if_hit(&mut self, point: Point) -> bool {
+        if !self.new_tab_hit(point) {
+            return false;
+        }
+        self.pending_new_tab = Some(self.id);
+        true
+    }
     /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
     /// host and by tests with no records at all, where an unbound tile
     /// keeps editing whatever document the parent pass carries.
@@ -530,6 +552,10 @@ impl WindowGroup {
     /// one tab has drawn even if a tab behind it is still starting (and
     /// still needs animation frames).
     pub fn any_tile_opening(&self) -> bool {
+        // `presented()` is also the latch that retires a newly arrived
+        // client's opening state. Evaluate every host before asking which are
+        // still opening, just as the group's ordinary presentation path does.
+        let _ = Widget::presented(self);
         self.hosts.iter().any(|(_, h)| Widget::opening(h))
     }
 
@@ -982,7 +1008,7 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize => {
+            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1944,8 +1970,8 @@ impl Widget for WindowGroup {
         let bar = self.bar.take_structure_dirty();
         #[allow(
             clippy::unnecessary_fold,
-            reason = "Every hosted widget must have its structure-dirty flag drained even when an earlier host is already dirty."
-        )] // see comment above: must not short-circuit
+            reason = "all host dirty flags must be drained without short-circuiting"
+        )]
         let hosts = self
             .hosts
             .iter_mut()

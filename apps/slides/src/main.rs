@@ -1,3 +1,12 @@
+#![allow(
+    clippy::many_single_char_names,
+    clippy::redundant_clone,
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 //! Slides — standard Tilo application entry point.
@@ -70,7 +79,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.slides", slides::app_root)
+        &LaunchSpec::new("so.tilo.slides", slides::app_root)
             .history(&slides::framework_history::HISTORY)
             .shot_handler(render_shot)
             .scenarios(&[

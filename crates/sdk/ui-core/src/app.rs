@@ -17,6 +17,7 @@ mod native_input_isolation;
 mod animation_schedule;
 
 mod action_directory_snapshot;
+mod bound_record_sync;
 mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
@@ -616,56 +617,9 @@ pub struct App {
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
-    /// `None` disables outbound broadcast (headless tests, `quick-ui`
-    /// examples).
-    presence_broadcast_scope: Option<PresenceKey>,
-    /// `None` is the ordinary case; the shell sets
-    /// [`crate::presence::PointerSpace::Desktop`] for its own chrome, whose
-    /// window *is* the desktop other surfaces resolve against. Set rather
-    /// than guessed â€” a wrong guess publishes a position in the wrong space
-    /// with nothing to detect it from outside.
-    pointer_space: Option<crate::presence::PointerSpace>,
-    /// The peer "followed" via a clicked presence indicator; `None` = not
-    /// following.
-    followed_peer: Option<String>,
-    last_pointer_broadcast: Option<Instant>,
-    /// Diffed against, to avoid re-sending unchanged presence every frame.
-    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_view_presence: Option<crate::view::ViewSubset>,
-    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
-    /// send. Invoked after the throttle gate.
-    presence_broadcast_sink: Option<PresenceBroadcastSink>,
-    /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-    frame_tick: Option<FrameTick>,
+    presence: PresenceRuntime,
 
     accessibility: AccessibilityRuntime,
-
-    window: WindowRuntime,
-
-    /// `None` makes every narration call site a no-op, so a reader-off
-    /// build is byte-for-byte unaffected.
-    screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
-    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
-    /// press/release is tracked here for the `Insert + <key>` command layer.
-    screen_reader_modifier_down: bool,
-    live_region_last: std::collections::HashMap<String, String>,
-
-    /// Tracked to detect the openâ†’close transition and restore focus.
-    focus_trap_active: bool,
-    focus_before_trap: Option<NodeId>,
-
-    /// Kept separate from the live [`Self::theme`] so disabling high
-    /// contrast restores it exactly.
-    base_theme: Theme,
-    a11y: crate::a11y::A11ySettings,
-    text_scale: f32,
-    /// Composes on top of the per-output device scale
-    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
-    /// fractional scale.
-    ui_scale: f32,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call â€”
@@ -674,11 +628,10 @@ pub struct App {
     /// To distinguish app-driven from compositor-driven transitions.
     fullscreen_active: bool,
 
-    autosave: Option<crate::persist::Autosave>,
-    autosave_generation: u64,
-    document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
+    autosave_generation: u64,
+    document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -963,8 +916,13 @@ impl App {
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
         let binding = component.callback_binding();
+        let inputs = construction(inputs, &binding);
+        if let Some(route) = inputs.collab_manager.primary_route()
+            && !binding.matches_broker_route(Some(route))
+        {
+            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+        }
         let history = component.history.take();
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
         if let Some(registration) = &history
@@ -1071,7 +1029,7 @@ impl App {
         action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
-        let author = self.local_author.clone();
+        let author = self.collaboration.local_author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_semantic_node(
@@ -1431,11 +1389,10 @@ impl App {
             ui_scale: 1.0,
             fullscreen_requested: false,
             fullscreen_active: false,
-            autosave: None,
-            autosave_generation: 0,
-            document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
             persistence: PersistenceRuntime::new(),
+            autosave_generation: 0,
+            document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
@@ -2463,7 +2420,7 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collab_manager.is_connected() {
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let route = self.bound_broker_route().cloned();
@@ -5858,10 +5815,10 @@ impl App {
         self.refresh_document_routes();
         self.drain_document_routes();
         self.publish_owned_documents();
-        for request in self.root_widget.take_collab_requests() {
-            self.collab_manager.send(request);
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
+            self.collaboration.manager.send(request);
         }
-        let events = self.collab_manager.poll();
+        let events = self.collaboration.manager.poll();
         let mut action_surface_may_have_changed = false;
         for event in events {
             any = true;
@@ -6020,7 +5977,7 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let published_snapshot_was_evicted = self.collab_manager.is_connected()
+        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
             && self.actions.last_published_actions.is_some()
             && self.actions.action_directory_snapshot.is_none();
         if action_surface_may_have_changed || published_snapshot_was_evicted {
@@ -6447,7 +6404,7 @@ impl App {
                 std::ptr::from_mut(self.root_widget.as_mut()),
                 &self.layout.node_map,
                 &self.bindings,
-                &self.local_author,
+                &self.collaboration.local_author,
                 &self.permission_ctx,
             )
         };
@@ -6479,7 +6436,7 @@ impl App {
                         &owner,
                         request,
                         &self.permission_ctx,
-                        &self.local_author,
+                        &self.collaboration.local_author,
                     )
                     .ok()
                     .flatten()
@@ -6499,8 +6456,12 @@ impl App {
             // history existed. Preserve that boundary without deriving labels.
             if binding.is_none()
                 && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-                && (self.state.can_undo_as(Some(&self.local_author))
-                    || self.state.can_redo_as(Some(&self.local_author)))
+                && (self
+                    .state
+                    .can_undo_as(Some(&self.collaboration.local_author))
+                    || self
+                        .state
+                        .can_redo_as(Some(&self.collaboration.local_author)))
             {
                 self.state.doc.get_heads();
             }
@@ -6509,14 +6470,19 @@ impl App {
             let bound_status = binding
                 .as_ref()
                 .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
-                .or_else(|| self.bindings.legacy_status(node, &self.local_author));
+                .or_else(|| {
+                    self.bindings
+                        .legacy_status(node, &self.collaboration.local_author)
+                });
             let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if embedded {
-                        self.state.undo_status_snapshot(Some(&self.local_author))
+                        self.state
+                            .undo_status_snapshot(Some(&self.collaboration.local_author))
                     } else {
-                        self.state.undo_status(Some(&self.local_author))
+                        self.state
+                            .undo_status(Some(&self.collaboration.local_author))
                     }
                 })
             };
@@ -6992,7 +6958,7 @@ impl App {
             let _ = self.open_action_palette_at(&address);
             return true;
         }
-        let actor = self.local_author.0.clone();
+        let actor = self.collaboration.local_author.0.clone();
         if self
             .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
             .is_ok()
@@ -7202,10 +7168,7 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
-        let mut tree = std::mem::replace(
-            &mut self.semantic_tree,
-            crate::a11y_tree::SemanticTree::new(),
-        );
+        let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
             .with_native_presentation(|root, nodes, focused, _| {
                 tree.refresh_components(root, nodes, focused, &resources, &components)
@@ -7479,11 +7442,7 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change
-            && !self.focus_trap_active
-            && self.history.is_none()
-            && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-        {
+        if self.autofocus_on_structure_change && !self.accessibility.focus_trap_active {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -7519,7 +7478,7 @@ impl App {
     /// previous session left plus its writer:
     ///
     /// ```ignore
-    /// let (state, autosave) = tilo_ui::persist::open("dev.tilo.my-app");
+    /// let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
     /// tilo_ui::App::from_factory(state, my_app::app_root)
     ///     .with_autosave(autosave)
     ///     .run();
@@ -7543,7 +7502,7 @@ impl App {
             history.invalidate_owner();
             self.layout.structure_dirty = true;
         }
-        self.autosave = Some(autosave);
+        self.persistence.autosave = Some(autosave);
         self
     }
     pub(crate) fn history_storage_generation(&self) -> u64 {
@@ -7553,12 +7512,12 @@ impl App {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.records.is_some() {
+        if self.persistence.records.is_some() {
             return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
         }
         let registration = crate::history_mode::HistoryRegistration::installed_app_state(
             definition,
-            self.autosave.as_ref(),
+            self.persistence.autosave.as_ref(),
             uuid::Uuid::new_v4(),
         )?;
         self.install_history(registration)
@@ -8040,6 +7999,7 @@ fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
 }
 
 #[cfg(test)]
+#[allow(dead_code, reason = "used by feature-gated render retry tests")]
 fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
     matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
         now.checked_add(Duration::from_nanos(16_666_667))
@@ -8388,7 +8348,7 @@ fn draw_frame_content(
         .is_none_or(|history| history.live_visible())
         && app.history_layout.is_none_or(|layout| layout.app_visible)
     {
-        app.root_widget.native_view_frame_start();
+        crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.root_widget.draw_with_presence(
             scene,
             transform,
@@ -8467,34 +8427,7 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    if let Some(dialog) = app.close_admission.dialog.as_mut() {
-        dialog.draw(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
-    }
-    app.tooltip_host.tick(Instant::now());
-    if let Some((text, anchor)) = app
-        .tooltip_host
-        .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let win_h = f64::from(height) / f64::from(scale_factor);
-        let viewport = KurboRect::new(0.0, 0.0, win_w, win_h);
-        crate::widget::tooltip::draw_hover_tooltip(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            anchor,
-            &text,
-            viewport,
-        );
-    }
+    draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
@@ -8790,7 +8723,7 @@ fn run_layout_pass(
         .as_ref()
         .is_some_and(|history| !history.live_interactive())
     {
-        app.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -10349,8 +10282,8 @@ impl AppHandler {
             _ => {}
         }
         // `CursorMoved` is measured in this window's own content,
-        // never the desktop â€” see the `pointer_space` field.
-        if app.presence_broadcast_scope.is_some() {
+        // never the desktop — see the `pointer_space` field.
+        if app.presence.broadcast_scope.is_some() {
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = Instant::now();
@@ -10488,13 +10421,15 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let owned_target = app
-                        .focused_node
-                        .is_some_and(|node| app.bindings.owns_document(node));
-                    let entry = if let Some(binding) = app
+                    let binding = app
                         .focused_node
                         .and_then(|node| app.bindings.binding_for(node))
-                    {
+                        .or_else(|| app.root_widget.callback_binding());
+                    let owned_target = binding.is_some()
+                        || app
+                            .focused_node
+                            .is_some_and(|node| app.bindings.owns_document(node));
+                    let entry = if let Some(binding) = binding {
                         binding
                             .history_request(&mut app.state.doc, request)
                             .ok()
@@ -10507,7 +10442,7 @@ impl AppHandler {
                             &owner,
                             request,
                             &app.permission_ctx,
-                            &app.local_author,
+                            &app.collaboration.local_author,
                         )
                         .ok()
                         .flatten()
@@ -10916,48 +10851,43 @@ impl AppHandler {
                     .audience_presentation
                     .as_ref()
                     .is_some_and(|audience| audience.window.id() == window_id);
-            if auxiliary_event && self.primary_retry.request_probe() {
-                if let Some(primary) = &self.window {
-                    primary.request_redraw();
-                }
+            if auxiliary_event
+                && self.primary_retry.request_probe()
+                && let Some(primary) = &self.window
+            {
+                primary.request_redraw();
             }
 
             if self
                 .window
                 .as_ref()
                 .is_some_and(|window| window.id() == window_id)
+                && self.primary_retry.request_probe()
+                && let Some(window) = &self.window
             {
-                if self.primary_retry.request_probe() {
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                }
+                window.request_redraw();
             }
             if let Some(surface) = self
                 .floating_windows
                 .iter_mut()
                 .find(|surface| surface.window.id() == window_id)
-            {
-                if surface
+                && surface
                     .render
                     .as_mut()
                     .is_some_and(|render| render.retry.request_probe())
-                {
-                    surface.window.request_redraw();
-                }
+            {
+                surface.window.request_redraw();
             }
             if let Some(audience) = self
                 .audience_presentation
                 .as_mut()
                 .filter(|audience| audience.window.id() == window_id)
-            {
-                if audience
+                && audience
                     .render
                     .as_mut()
                     .is_some_and(|render| render.retry.request_probe())
-                {
-                    audience.window.request_redraw();
-                }
+            {
+                audience.window.request_redraw();
             }
         }
 
@@ -11446,12 +11376,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
-        self.app
-            .root_widget
-            .mount_native_views(&crate::widget::NativeViewHost::live(
-                &window,
-                self.app.platform,
-            ));
+        crate::widget::mount_native_views(
+            self.app.root_widget.as_mut(),
+            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+        );
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
@@ -11641,10 +11569,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // frames are cheap but essential: the first real buffer should take
         // ownership as soon as it is ready, without waiting for fresh input.
         for surface in &self.floating_windows {
-            if !surface.suspended && !surface.adopted {
-                if auxiliary_redraw_allowed(surface.render.as_ref()) {
-                    surface.window.request_redraw();
-                }
+            if !surface.suspended
+                && !surface.adopted
+                && auxiliary_redraw_allowed(surface.render.as_ref())
+            {
+                surface.window.request_redraw();
             }
         }
         let awaiting_primary_first_present = primary_startup_pump_needed(
@@ -11781,8 +11710,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
 
         // A hover tooltip is not motion, so it reveals even under
-        // reduce-motion â€” requested independently of the animation pump.
-        let tooltip_pending = app.tooltip_host.needs_frame();
+        // reduce-motion — requested independently of the animation pump.
+        let tooltip_pending = app.input.tooltip_host.needs_frame();
         if tooltip_pending {
             request_primary_redraw();
         }
@@ -11805,10 +11734,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     surface.window.request_redraw();
                 }
             }
-            if let Some(audience) = self.audience_presentation.as_ref() {
-                if auxiliary_redraw_allowed(audience.render.as_ref()) {
-                    audience.window.request_redraw();
-                }
+            if let Some(audience) = self.audience_presentation.as_ref()
+                && auxiliary_redraw_allowed(audience.render.as_ref())
+            {
+                audience.window.request_redraw();
             }
         }
 
@@ -11838,7 +11767,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // be delayed by at most the 250ms probe cap; independent history, record,
         // autosave and collaboration work above continues on its existing doors.
         let demand = crate::render_thread::retry::WakeDemand {
-            model: app.collab_manager.is_connected(),
+            model: app.collaboration.manager.is_connected(),
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
@@ -13109,7 +13038,7 @@ mod focus_trap_tests {
             ));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
         let first = app.focusable_order[0];
@@ -18265,7 +18194,7 @@ mod bound_component_tests {
         }
     }
 
-    include!("app/action_directory_snapshot_bound_tests.rs");
+    include!("app/bound_record_sync_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
@@ -21549,24 +21478,6 @@ mod manual_composition_tests;
 mod number_input_layout_tests;
 
 #[cfg(test)]
-mod render_retry_tests {
-    use super::*;
-    #[test]
-    fn unavailable_surface_retries_wait_one_frame_instead_of_spinning() {
-        let now = Instant::now();
-        for outcome in [FrameOutcome::Skipped, FrameOutcome::Reconfigured] {
-            let deadline = render_retry_deadline(outcome, now).unwrap();
-            assert_eq!(
-                deadline.duration_since(now),
-                Duration::from_nanos(16_666_667)
-            );
-        }
-        assert!(render_retry_deadline(FrameOutcome::Presented, now).is_none());
-        assert!(render_retry_deadline(FrameOutcome::SurfaceGone, now).is_none());
-    }
-}
-
-#[cfg(test)]
 #[path = "app/history_tests.rs"]
 mod framework_history_tests;
 
@@ -21586,9 +21497,6 @@ mod local_privacy_tests;
 
 /// Finish the current writer and every retained outgoing-owner failure before
 /// reporting widget-owned durability. Reports remain owned by the runner.
-///
-/// # Errors
-/// Returns the current writer failure or a retained owner's unresolved failure.
 pub(crate) fn flush_widget_owned_persistence(
     root: &mut dyn Widget,
     reports: &mut Vec<crate::application::ComponentCloseReport>,
@@ -21600,8 +21508,6 @@ pub(crate) fn flush_widget_owned_persistence(
     reports.extend(root.take_component_close_reports());
     for report in reports.iter_mut() {
         if report.record_error.is_some() && report.record_retry.is_some() {
-            // The report retains the actual outgoing owner and exact legacy
-            // record target. Successful retry clears only that owner's error.
             let _ = report.retry_record();
         }
     }
@@ -21620,275 +21526,5 @@ pub(crate) fn flush_widget_owned_persistence(
 }
 
 #[cfg(test)]
-mod legacy_owner_routing_tests {
-    use super::*;
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::{collections::HashMap, rc::Rc};
-
-    struct OwnerProbe {
-        label: &'static str,
-        report: Option<crate::application::ComponentCloseReport>,
-        flushes: Rc<Cell<usize>>,
-    }
-
-    impl Widget for OwnerProbe {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-        fn build_layout(
-            &mut self,
-            tree: &mut taffy::TaffyTree<()>,
-            _: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &taffy::TaffyTree<()>,
-        ) {
-        }
-        fn name(&self) -> &'static str {
-            "LegacyOwnerProbe"
-        }
-        fn get_rect(&self) -> KurboRect {
-            KurboRect::ZERO
-        }
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            use crate::a11y::{AccessNode, AccessState, Role};
-            Some(AccessNode::new(Role::Generic).with_children(vec![
-                AccessNode::new(Role::Button).with_key(1)
-                    .with_name(format!("{} named", self.label))
-                    .with_action_target("owner:named")
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button).with_key(7)
-                    .with_name(format!("{} keyed", self.label))
-                    .with_action_target("tilo.key-action:owner:7"),
-            ]))
-        }
-        fn perform_semantic_action(
-            &mut self,
-            target: &str,
-            action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-        ) -> bool {
-            if target != "owner:named" {
-                return false;
-            }
-            match action {
-                crate::a11y::Action::Activate => {
-                    doc.put(ROOT, "selected", format!("{} named", self.label))
-                        .unwrap();
-                    true
-                }
-                crate::a11y::Action::Focus => true,
-                _ => false,
-            }
-        }
-        fn perform_action_at(
-            &mut self,
-            action: &crate::a11y::Action,
-            keys: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-        ) -> bool {
-            if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
-                return false;
-            }
-            doc.put(ROOT, "selected", format!("{} keyed", self.label))
-                .unwrap();
-            true
-        }
-        fn take_component_close_reports(
-            &mut self,
-        ) -> Vec<crate::application::ComponentCloseReport> {
-            self.report.take().into_iter().collect()
-        }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            assert!(
-                self.report.is_none(),
-                "the outgoing failure has moved into host custody"
-            );
-            self.flushes.set(self.flushes.get() + 1);
-            Some(Ok(()))
-        }
-    }
-    impl crate::widget::AppWidget for OwnerProbe {
-        fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Editor
-        }
-        fn app_title(&self) -> &str {
-            self.label
-        }
-        fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
-        }
-    }
-
-    fn tile(
-        store: &crate::record::RecordStore,
-        checkout: &crate::record::RecordCheckout,
-        label: &'static str,
-    ) -> crate::widget::TileHost {
-        let mut tile =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(OwnerProbe {
-                label,
-                report: None,
-                flushes: Rc::new(Cell::new(0)),
-            })));
-        tile.bind_record(store.clone(), checkout.clone());
-        tile
-    }
-
-    #[test]
-    fn semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots() {
-        let store = crate::record::RecordStore::in_memory();
-        let first = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9901),
-            crate::record::RecordKind::new("note"),
-        );
-        let second = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9902),
-            crate::record::RecordKind::new("note"),
-        );
-        store.create_record(&first).unwrap();
-        store.create_record(&second).unwrap();
-        let root = crate::widget::Column::new()
-            .push(Box::new(tile(&store, &first, "first")))
-            .push(Box::new(tile(&store, &second, "second")));
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        app.enable_document_history_chrome();
-        app.init_layout();
-        app.refresh_semantic_tree();
-        let named = app
-            .semantic_tree()
-            .find_by_name("first named")
-            .unwrap()
-            .clone();
-        let keyed = app
-            .semantic_tree()
-            .find_by_name("second keyed")
-            .unwrap()
-            .id
-            .clone();
-        let alias = named.widget_taffy_id.unwrap();
-        assert!(
-            alias >= (1 << 47),
-            "fixture must exercise a legacy lifetime alias"
-        );
-        assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
-        assert!(
-            app.invoke_semantic_action(&named.id, "activate", None)
-                .unwrap()
-        );
-        assert!(
-            app.invoke_semantic_action(&named.id, "focus", None)
-                .unwrap()
-        );
-        let focused = app
-            .focused_node
-            .expect("focus uses the actual admitted owner");
-        assert!(app.layout.node_map.contains_key(&focused));
-        assert_ne!(u64::from(focused), alias);
-        assert!(
-            app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
-            assert_eq!(
-                store
-                    .read_checked(&checkout.id, |doc| {
-                        doc.get(ROOT, "selected")
-                            .unwrap()
-                            .unwrap()
-                            .0
-                            .to_str()
-                            .unwrap()
-                            .to_owned()
-                    })
-                    .unwrap(),
-                expected
-            );
-        }
-        assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
-
-        // Retain the old semantic tree while replacing the owners. Current
-        // admission must refuse both stale targets instead of retargeting them.
-        app.close_components();
-        app.root_widget = Box::new(tile(&store, &first, "replacement"));
-        app.init_layout();
-        assert!(
-            !app.invoke_semantic_action(&named.id, "activate", None)
-                .unwrap()
-        );
-        assert!(
-            !app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .read_checked(&first.id, |doc| {
-                    doc.get(ROOT, "selected")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .to_str()
-                        .unwrap()
-                        .to_owned()
-                })
-                .unwrap(),
-            "first named"
-        );
-    }
-
-    #[test]
-    fn widget_owned_runner_rejects_outgoing_error_drained_before_final_flush() {
-        let flushes = Rc::new(Cell::new(0));
-        let probe = OwnerProbe {
-            label: "current owner",
-            flushes: Rc::clone(&flushes),
-            report: Some(crate::application::ComponentCloseReport {
-                recovery: None,
-                view_error: None,
-                view_retry: None,
-                record_error: Some("outgoing owner could not persist".into()),
-                record_retry: None,
-                record_retry_target: None,
-                teardown_error: None,
-            }),
-        };
-        let inputs = crate::launch::LegacyLaunchInputs::new(
-            State::new(),
-            Box::new(probe),
-            crate::persist::Autosave::disabled("fixture owns storage"),
-        )
-        .with_widget_owned_persistence();
-        assert_eq!(
-            crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-            3
-        );
-        assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
-    }
-}
+#[path = "app/notes_rich_controls_tests.rs"]
+mod notes_rich_controls_tests;

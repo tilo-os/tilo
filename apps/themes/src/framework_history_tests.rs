@@ -123,7 +123,7 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 #[test]
 fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
     if let Ok(stage) = std::env::var("QOS_SLICE5_THEMES_STAGE") {
-        let (mut state, mut saver) = ui::persist::try_open("dev.tilo.themes").unwrap();
+        let (mut state, mut saver) = ui::persist::try_open("so.tilo.themes").unwrap();
         let store = crate::store::store_path().unwrap();
         if stage == "write" {
             crate::store::save_to(&store, &crate::model::seed_custom()).unwrap();

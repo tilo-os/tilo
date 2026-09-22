@@ -220,7 +220,7 @@ pub enum PhotosOperation {
         resource_id: String,
     },
     /// Render the exact addressed source/edit snapshot into immutable PNG
-    /// content. The runtime returns the resulting `qos.content:<hash>` only
+    /// content. The runtime returns the resulting `tilo.content:<hash>` only
     /// after the configured content provider can retrieve those bytes.
     ExportEditedContent {
         resource_id: String,

@@ -72,7 +72,7 @@ fn production_root_type_declares_logs_history_without_querying_journal() {
     let definition = offline_root()
         .document_history_definition()
         .expect("production Logs root type declares History");
-    assert_eq!(definition.app_id, "dev.tilo.logs");
+    assert_eq!(definition.app_id, "so.tilo.logs");
     assert!(std::ptr::eq(
         definition,
         std::ptr::addr_of!(crate::framework_history::HISTORY)

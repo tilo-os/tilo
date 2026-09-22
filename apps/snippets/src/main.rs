@@ -64,7 +64,7 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.snippets", snippets::app_root)
+    LaunchSpec::new("so.tilo.snippets", snippets::app_root)
         .history(&snippets::framework_history::HISTORY)
         .shot_root(shot_root)
         .scenarios(&["narrow", "detail", "empty"])

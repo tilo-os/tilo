@@ -138,11 +138,11 @@ impl App {
                     .rev(),
             );
         }
-        self.focus_trap_active = self
+        self.accessibility.focus_trap_active = self
             .history
             .as_ref()
             .is_some_and(|history| history.review_is_open());
-        self.focus_before_trap = None;
+        self.accessibility.focus_before_trap = None;
     }
     pub(super) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         if unsafe {
@@ -232,7 +232,7 @@ impl App {
                         .iter()
                         .position(|candidate| *candidate == node)
                 });
-                let next = match (current, self.modifiers.state().shift_key()) {
+                let next = match (current, self.input.modifiers.state().shift_key()) {
                     (Some(0), true) => len.saturating_sub(1),
                     (Some(index), true) => index.saturating_sub(1),
                     (Some(index), false) => index.saturating_add(1).checked_rem(len).unwrap_or(0),
@@ -270,7 +270,7 @@ impl App {
         if matches!(event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
-            handled = self.focus_tab(self.modifiers.state().shift_key());
+            handled = self.focus_tab(self.input.modifiers.state().shift_key());
         } else if let Some(history) = &mut self.history {
             if history.captures_input()
                 && self
@@ -291,7 +291,7 @@ impl App {
                 self.root_widget.as_mut(),
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 &mut handled,
@@ -302,7 +302,7 @@ impl App {
             self.root_widget.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 &mut handled,
@@ -339,7 +339,7 @@ impl App {
                 self.root_widget.as_mut(),
                 &mut self.state,
                 &self.permission_ctx,
-                &self.local_author,
+                &self.collaboration.local_author,
             );
             if !restored.is_empty() {
                 self.needs_sync = true;
@@ -388,7 +388,7 @@ impl App {
                 &mut self.state,
                 self.root_widget.as_ref(),
                 &self.permission_ctx,
-                &self.local_author,
+                &self.collaboration.local_author,
             );
             let restored = history.take_restored_source();
             if changed {

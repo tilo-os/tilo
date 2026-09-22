@@ -1,3 +1,11 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! F3 composition/data-display fixtures: renders the immediate-mode data
 //! widgets through the shared `FrameHarness` at 1x and 2x text scale and
 //! checks the alignment contract each widget paints against, on the pixels
