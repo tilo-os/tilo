@@ -72,3 +72,8 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     app.seed_shot(f64::from(width), &scenario);
     Box::new(app)
 }
+
+#[cfg(test)]
+mod framework_history_tests;
+
+pub mod framework_history;

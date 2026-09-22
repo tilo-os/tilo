@@ -39,9 +39,17 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.themes", themes::app_root)
-            .shot_root(shot_root)
-            .configure_app(|app| themes::actions::register(app.action_registry_mut())),
-    );
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("dev.tilo.themes", themes::app_root)
+        .history(&themes::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .configure_app(|app| themes::actions::register(app.action_registry_mut()))
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
 }
