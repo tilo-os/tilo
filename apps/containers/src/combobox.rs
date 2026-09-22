@@ -77,7 +77,7 @@ mod tests {
             "docker.io/library/nginx:1.27-alpine".into(),
             "docker.io/library/postgres:16".into(),
             "docker.io/library/redis:7-alpine".into(),
-            "registry.tilo.local/api:2.4.1".into(),
+            "registry.example.test/api:2.4.1".into(),
         ]
     }
 
@@ -94,7 +94,7 @@ mod tests {
         // "ALPINE" matches nginx + redis (both alpine), in original order.
         assert_eq!(filter_options(&o, "ALPINE"), vec![0, 2]);
         // partial registry match
-        assert_eq!(filter_options(&o, "tilo.local"), vec![3]);
+        assert_eq!(filter_options(&o, "example.test"), vec![3]);
         // no match → empty
         assert!(filter_options(&o, "mariadb").is_empty());
     }

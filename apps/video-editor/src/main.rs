@@ -57,7 +57,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.video-editor", video_editor::app_root)
+        &LaunchSpec::new("so.tilo.video-editor", video_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--empty", "--narrow"])
             .allowed_options(&["--import"])

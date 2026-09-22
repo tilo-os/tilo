@@ -464,7 +464,7 @@ fn workspace_grants_unavailable_card() -> El {
         rows(vec![
             Box::new(
                 Text::new(
-                    "qOS could not load the current workspace access record, so it cannot verify whether any app has additional access.",
+                    "Tilo could not load the current workspace access record, so it cannot verify whether any app has additional access.",
                 )
                 .with_size(12.0),
             ),

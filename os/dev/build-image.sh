@@ -231,7 +231,8 @@ printf '%s' "$_tilo_rpms_provenance" | jq -e \
   --arg native_arch "$_tilo_registry_arch" '
     [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
     | any(
-        .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+          or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
         and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
         and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
         and .buildDefinition.externalParameters.packageSetSha256ByArchitecture[$native_arch] == $native_package_set_sha256
@@ -245,8 +246,8 @@ _tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
   || die "could not inspect the frozen RPM index"
 [ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
   || die "frozen RPM index does not contain exactly amd64 and arm64"
-[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]] \
-  || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/qos-kernel by sha256 digest"
+[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+  || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
 command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
 cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
   || die "Tilo kernel signature verification failed"
@@ -259,11 +260,12 @@ printf '%s' "$_tilo_kernel_provenance" | jq -e \
   --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
     [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
     | any(
-        .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
+          or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
         and .buildDefinition.externalParameters.architecture == $architecture
         and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
         and any(.buildDefinition.resolvedDependencies[]?;
-          .uri | test("^git\\+ssh://code\\.podesta\\.ai/tilo/tilo@[0-9a-f]{40}$"))
+          .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
         and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
         and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
       )

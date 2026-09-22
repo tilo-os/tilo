@@ -32,7 +32,10 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
-use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, VideoPlayer,
+    Widget,
+};
 
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
@@ -1389,7 +1392,7 @@ impl PlayerApp {
             title: self.title.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.video-player".into(),
+                app_id: "so.tilo.video-player".into(),
                 element_id: "video_surface".into(),
                 region,
             },
@@ -3323,7 +3326,43 @@ impl Default for PlayerApp {
     }
 }
 
+impl FloatingSurfaceProvider for PlayerApp {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+}
+
+impl FullscreenProvider for PlayerApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&self.player)
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&self.player)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut self.player, active);
+    }
+}
+
 impl Widget for PlayerApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
@@ -3691,12 +3730,6 @@ impl Widget for PlayerApp {
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_pip.take()
     }
 
     fn refresh_control_action_availability(
@@ -4154,18 +4187,6 @@ impl Widget for PlayerApp {
         // the host's incoming transport.
         self.collab.is_some()
     }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        self.player.fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.on_fullscreen_changed(active);
-    }
 }
 
 #[cfg(test)]
@@ -4607,7 +4628,8 @@ mod tests {
             .unwrap();
         app.apply_layout(&taffy, root, Point::ZERO);
         app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
-        let request = Widget::take_floating_surface_request(&mut app).expect("PiP request");
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("PiP request");
         assert_eq!(request.id, "video-player.current-video");
         assert_eq!(
             request.role,
@@ -4615,7 +4637,7 @@ mod tests {
         );
         assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
         assert!(
-            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.tilo.video-player" && element_id == "video_surface")
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "so.tilo.video-player" && element_id == "video_surface")
         );
     }
 

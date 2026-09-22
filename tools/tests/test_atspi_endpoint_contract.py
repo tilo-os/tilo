@@ -12,12 +12,12 @@ SPEC.loader.exec_module(contract)
 
 
 class AtspiEndpointContractTests(unittest.TestCase):
-    def audit_update(self, update):
+    def audit_update(self, update, *, host_source=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             files = {
                 "crates/sdk/ui-core/Cargo.toml": 'accesskit_winit = "0.34.0"',
-                "crates/sdk/ui-core/src/app.rs": "\n".join([
+                ("crates/sdk/ui-core/src/app/host.rs" if host_source else "crates/sdk/ui-core/src/app.rs"): "\n".join([
                     "accesskit_winit::Adapter::with_event_loop_proxy",
                     "self.app.dispatch_a11y_action(req.target_node, &action)",
                     "self.a11y_adapter = None;",
@@ -66,6 +66,16 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     f"crate::accesskit_bridge::native_tree_update({argument})\n"
                     "});"
                 ), [])
+
+    def test_native_host_extraction_preserves_endpoint_contract(self):
+        self.assertEqual(self.audit_update(
+            "adapter.update_if_active(|| {\n"
+            "crate::accesskit_bridge::native_tree_update(\n"
+            "    app_ref.build_a11y_tree_update(scale),\n"
+            ")\n"
+            "});",
+            host_source=True,
+        ), [])
 
     def test_disconnected_tree_build_does_not_satisfy_update_contract(self):
         self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(

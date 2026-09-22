@@ -10,7 +10,7 @@
 <network>
   <name>tilo-windows-hostonly</name>
   <metadata>
-    <tilo:windows-hostonly xmlns:tilo="https://tilo.dev/vm/1"/>
+    <tilo:windows-hostonly xmlns:tilo="https://tilo.sh/vm/1"/>
   </metadata>
   <forward mode="none"/>
   <bridge name="virbr-tilowin" stp="on" delay="0"/>

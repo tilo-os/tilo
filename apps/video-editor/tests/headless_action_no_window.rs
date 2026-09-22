@@ -15,7 +15,7 @@ use tilo_actions::{ActionRegistry, executor::LocalTransport};
 use video_editor::actions::{VideoResourceCtx, provide_resources};
 use video_editor::doc::VideoDoc;
 
-const APP_ID: &str = "dev.tilo.video-editor";
+const APP_ID: &str = "so.tilo.video-editor";
 
 /// Point the persistence layer at a private directory for one test.
 ///
