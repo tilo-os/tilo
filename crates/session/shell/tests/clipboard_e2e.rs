@@ -3434,7 +3434,11 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
 fn narrow_demo_group_for_files(compositor: &Compositor) {
     // Leave enough of Files visible to cross its drag threshold before the
     // resize seam, while still exposing a substantial client target beside it.
-    const NARROW_BY: f64 = 900.0;
+    // The demo group starts wider than the usable strip. A 900px reduction
+    // still leaves it oversized, so focus reframes it with only the six
+    // pixels between the sidebar and resize chrome visible. Drive the real
+    // handle to the group's supported minimum instead.
+    const NARROW_BY: f64 = 1_800.0;
     let seam = compositor.named_center("group_resize_handle[0]");
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
@@ -3576,11 +3580,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let photo = home.join("photo.png");
     std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
 
-    // At 900px high the viewport-driven sidebar reserve and the two resize
-    // zones leave Files exactly six visible pixels, while drag starts only
-    // after travelling strictly more than six. The supported 800px layout
-    // leaves a real source band and still keeps both windows on screen.
-    let compositor = Compositor::start_with(Some(&home), (2560, 800));
+    let compositor = Compositor::start_with(Some(&home), (2560, 900));
 
     compositor.place_next_window("org.tilo.test.dnd-target");
     let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
