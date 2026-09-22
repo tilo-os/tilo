@@ -155,24 +155,22 @@ fn settle(fb: &mut FrameBuilder) {
 /// the store: handing a placeholder to its window is a 180 ms cross-fade,
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
-fn quiesce(fb: &mut FrameBuilder) {
+fn quiesce(fb: &mut FrameBuilder, surface_id: SurfaceId) {
     let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
+        .checked_add(std::time::Duration::from_millis(260))
         .unwrap_or_else(std::time::Instant::now);
-    // `presented()` is evaluated through the opening-state walk. A freshly
-    // published frame otherwise remains labelled "awaiting first paint", so
-    // polling animation demand alone can never become quiet.
-    let animating = |fb: &mut FrameBuilder| {
+    // Latch the committed client as presented, then paint past the host's
+    // 180ms handover. Global animation demand is intentionally not the exit
+    // condition: another shell group may still be opening and is unrelated
+    // to whether this surface's dissolve has completed.
+    while std::time::Instant::now() < deadline {
         let _ = fb.any_tile_opening();
-        fb.needs_animation_frame()
-    };
-    while animating(fb) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(8));
         let _ = frame(fb);
+        std::thread::sleep(std::time::Duration::from_millis(8));
     }
     assert!(
-        !animating(fb),
-        "the tree never went quiet; an animation is stuck in flight"
+        !store().is_opening(surface_id),
+        "the committed foreign surface never became presented"
     );
 }
 
@@ -300,7 +298,7 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     );
 
     // The dissolve is 180 ms, so the very next frame is still mostly card.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
     let scene = frame(&mut fb);
     let after = shot("foreign-with-client-frame", &mut renderer, &scene);
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
@@ -385,7 +383,7 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
     assert!(store().snapshot(surface_id).is_some());
 
     // Sample after the 180 ms dissolve, or the fixture is still mostly card.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
     let mut renderer = OffscreenRenderer::new(W, H);
     let scene = frame(&mut fb);
     let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
@@ -469,7 +467,7 @@ fn painting_does_not_reimport_the_clients_buffer() {
 
     // That dissolve is a legitimate 180 ms animation, so "the client is idle"
     // is only answerable once it has finished.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
 
     // Paint repeatedly with no further commits, as the loop does while the
     // client sits idle.
@@ -551,7 +549,7 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     // placeholder painting a spinner, which correctly keeps the compositor
     // repainting for reasons unrelated to the background tab.
     store().publish_rgba(front, &solid(bw, bh, (0x40, 0x40, 0x40)), bw, bh);
-    quiesce(&mut fb);
+    quiesce(&mut fb, front);
 
     let rgba = solid(bw, bh, (0x11, 0x9E, 0xE0));
     store().publish_rgba(back, &rgba, bw, bh);

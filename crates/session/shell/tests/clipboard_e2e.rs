@@ -3501,7 +3501,11 @@ fn drag_file_row_onto_client(
     // the adjacent client. Moving left re-enters sidebar chrome before the
     // file view can cross its drag threshold; move toward the client so the
     // source can latch and immediately hand the drag off.
-    let latched = (row.0 + 24.0, row.1);
+    // Sixteen physical pixels clear the 6-logical-pixel threshold on the 2x
+    // test output while remaining just inside the source group. At 24px the
+    // pointer entered the adjacent Wayland client first, so its input router
+    // consumed the motion before Files could establish the chrome drag.
+    let latched = (row.0 + 16.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
