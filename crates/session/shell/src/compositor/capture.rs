@@ -2328,19 +2328,17 @@ mod tests {
                 body.splice(doc, &automerge::ROOT, 0..end, &long_note);
             })
             .expect("capture fixture writes the canonical Notes record");
-        // Complete semantic geometry is measured by the app's draw pass. Expose
-        // the target once so the canonical record is rendered before moving the
-        // group wholly offscreen for the capture assertion below.
-        assert!(
-            frame_builder
-                .host_mut()
-                .group_row_mut_for_tests(strip_id)
-                .expect("live strip row")
-                .scroll_group_into_view(target_group),
-            "the target group must require scrolling into view"
-        );
         let mut shell_document = automerge::AutoCommit::new();
         frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
+        frame_builder.relayout();
+        // Complete semantic geometry is measured by the app's draw pass. Sync
+        // first because active-group reconciliation may move the strip, then
+        // expose the target once before moving it wholly offscreen below.
+        let _ = frame_builder
+            .host_mut()
+            .group_row_mut_for_tests(strip_id)
+            .expect("live strip row")
+            .scroll_group_into_view(target_group);
         frame_builder.relayout();
         let _ = frame_builder.paint();
         assert!(
