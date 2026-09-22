@@ -1,7 +1,7 @@
-use ui::LocalState;
-use ui::tilo_actions;
-use ui::tokens::TextRole;
-use ui::widget::{Button, ModelView, QrWidget, Text, TextInput, Widget, labeled_field};
+use ui::prelude::{
+    Button, LocalState, ModelView, QrWidget, Text, TextInput, TextRole, Widget, labeled_field,
+    tilo_actions,
+};
 
 fn set_payload(payload: &LocalState<String>, value: String) {
     payload.set(value);
@@ -11,15 +11,14 @@ fn set_payload(payload: &LocalState<String>, value: String) {
 ///
 /// # Panics
 ///
-/// Panics if a generated input binding no longer matches the resource action
-/// declared by this template.
+/// Panics if the generated payload binding no longer matches its action.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"
 )]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
-    let payload = LocalState::new(String::from("https://tilo.so"));
+    let payload = LocalState::new(String::from("https://qos.dev"));
     let output = ModelView::from_state(&payload, |payload| {
         let alt =
             ui::i18n::I18nManager::format("qr-output-alt", &[("payload", payload.as_str().into())]);
@@ -57,7 +56,7 @@ pub fn app_root() -> Box<dyn Widget> {
     let reset_binding = tilo_actions::ActionBinding::static_json_for(
         &resource,
         "set-payload",
-        serde_json::Map::from_iter([("payload".into(), serde_json::json!("https://tilo.so"))]),
+        serde_json::Map::from_iter([("payload".into(), serde_json::json!("https://qos.dev"))]),
     )
     .expect("generated default payload matches the exported QR action");
     let reset = Button::new("qr-reset", "Reset QR code", None).on_action(reset_binding);

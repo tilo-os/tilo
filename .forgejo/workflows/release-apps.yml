@@ -309,30 +309,6 @@ jobs:
           done
           unset credential auth
           $connected || { printf 'cannot establish bounded release comparison\n' >&2; exit 1; }
-      - name: Authorize current main for publication planning
-        if: "(github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.publish == 'true'"
-        env:
-          SOURCE_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
-          origin=$(/usr/bin/git remote get-url origin)
-          [[ $origin == https://code.sandbox.example/qos/qos || \
-             $origin == https://code.sandbox.example/qos/qos.git ]]
-          token=$SOURCE_TOKEN
-          unset SOURCE_TOKEN
-          credential=$(printf 'x-access-token:%s' "$token" | \
-            /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
-          unset token
-          output=$(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.https://code.sandbox.example/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential" \
-            /usr/bin/git ls-remote --exit-code --refs origin refs/heads/main)
-          unset credential
-          mapfile -t rows <<<"$output"
-          [[ ${#rows[@]} -eq 1 ]]
-          read -r observed ref extra <<<"${rows[0]}"
-          [[ -z ${extra:-} && $ref == refs/heads/main && $observed == "$GITHUB_SHA" ]]
       - name: Validate prepared nonpublishing coordinator qualification
         env:
           COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
@@ -451,19 +427,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: needs.plan.outputs.publish == 'true'
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Authorize the exact current main source without release credentials
+      - name: Authorize the immutable main event source without release credentials
         if: needs.plan.outputs.publish == 'true'
         run: |
           set -euo pipefail
           [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
-          observed=$(git rev-parse HEAD)
-          [[ $observed == "$GITHUB_SHA" ]] || {
-            printf 'release source %s is not the current main tip %s\n' "$GITHUB_SHA" "$observed" >&2
-            exit 1
-          }
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+          [[ $GITHUB_REF == refs/heads/main ]]
+          [[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]
+          # Registry transitions enforce per-app/per-target version monotonicity.
+          # Advancing main must not invalidate an already-running immutable build.
 
   build:
     # PR compilation belongs to the focused CI lane. Packaging remains available
@@ -506,33 +482,11 @@ jobs:
         uses: ./.forgejo/actions/restore-cargo-downloads
       - name: Prepare compiler cache
         run: bash tools/ci/sccache.sh prepare
-      - name: Revalidate publication source immediately before signing
-        if: needs.plan.outputs.publish == 'true'
-        env:
-          SOURCE_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
-          origin=$(/usr/bin/git remote get-url origin)
-          [[ $origin == https://code.sandbox.example/qos/qos || \
-             $origin == https://code.sandbox.example/qos/qos.git ]]
-          token=$SOURCE_TOKEN
-          unset SOURCE_TOKEN
-          credential=$(printf 'x-access-token:%s' "$token" | \
-            /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
-          unset token
-          output=$(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.https://code.sandbox.example/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential" \
-            /usr/bin/git ls-remote --exit-code --refs origin refs/heads/main)
-          unset credential
-          mapfile -t rows <<<"$output"
-          [[ ${#rows[@]} -eq 1 ]]
-          read -r observed ref extra <<<"${rows[0]}"
-          [[ -z ${extra:-} && $ref == refs/heads/main && $observed == "$GITHUB_SHA" ]]
       - name: Build and verify selected tapps once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
+          TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}
+          TILO_APP_RELEASE_SEQUENCE: ${{ needs.plan.outputs.publish == 'true' && github.run_number || '' }}
           TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
         run: |
@@ -676,30 +630,9 @@ jobs:
             dist/qualified-apps/aarch64/assembly-provenance.json
           if-no-files-found: error
 
-  authorize-publish-final:
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
-    needs: [plan, authorize-publish, build]
-    runs-on: runner-quality
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Reauthorize the exact current main source before OIDC
-        run: |
-          set -euo pipefail
-          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
-          observed=$(git rev-parse HEAD)
-          [[ $observed == "$GITHUB_SHA" ]] || {
-            printf 'release source %s is not the current main tip %s\n' "$GITHUB_SHA" "$observed" >&2
-            exit 1
-          }
-
   publish:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
-    needs: [plan, authorize-publish, build, authorize-publish-final]
+    needs: [plan, authorize-publish, build]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
     runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
