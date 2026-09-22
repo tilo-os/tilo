@@ -3755,6 +3755,13 @@ mod tests {
 
         assert!(app.poll_background());
         assert_eq!(app.status, expected);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+        assert!(harness.a11y_node_named("Review Tilo setup").is_some());
+        assert!(
+            harness
+                .a11y_node_named("Tilo Desktop is installed")
+                .is_none()
+        );
     }
 
     #[test]
