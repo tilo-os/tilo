@@ -521,6 +521,16 @@ run_args=(--rm --privileged --pid=host
   --security-opt label=type:unconfined_t
   -v /var/lib/containers:/var/lib/containers
   -v /dev:/dev -v /:/run/host)
+# Older bootc resolves the loop backing device while test-mounting composefs.
+# A container-private udev database knows nothing about host loop devices even
+# though /dev itself is shared, producing "Can't lookup blockdev". Project only
+# the host's runtime udev metadata, read-only, when it actually contains a data
+# database. This is an install-harness compatibility seam, not image content.
+host_udev_dir="${TILO_DISK_HOST_UDEV_DIR:-/run/udev}"
+if [ -d "$host_udev_dir/data" ]; then
+  host_udev_dir="$(readlink -f "$host_udev_dir")"
+  run_args+=(-v "$host_udev_dir:/run/udev:ro")
+fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
