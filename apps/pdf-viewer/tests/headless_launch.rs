@@ -47,6 +47,17 @@ fn assert_default_main_stack() {
     );
 }
 
+/// The pdfium library the reader would find on this host, resolved before the
+/// child's environment is isolated.
+fn host_pdfium() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("TILO_PDFIUM_LIB").filter(|path| !path.is_empty()) {
+        return Some(path.into());
+    }
+    let home = std::env::var_os("HOME")?;
+    let path = Path::new(&home).join(".local/lib/pdfium/libpdfium.so");
+    path.exists().then_some(path)
+}
+
 fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Value) {
     let mut actions = vec![
         json!({"expect": {"target": "pdf_app", "semantic_target": "pdf.page:source-1", "name": "Page 1", "selected": true, "timeout_ms": 30000}}),
@@ -78,6 +89,11 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         let directory = root.join(key);
         std::fs::create_dir_all(&directory).unwrap();
         command.env(key, directory);
+    }
+    // The isolated HOME hides a per-user pdfium install, and opening a PDF
+    // requires the native engine, so hand the host's library over explicitly.
+    if let Some(pdfium) = host_pdfium() {
+        command.env("TILO_PDFIUM_LIB", pdfium);
     }
     command
         .current_dir(root)
