@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 authenticode = { version = "0.6", features = ["object", "std"] }
+base64.workspace = true
 cms = "0.2"
 const-oid = { version = "0.9", features = ["db"] }
 der = { version = "0.7", features = ["alloc", "pem"] }
@@ -36,8 +37,7 @@ rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
 sha-crypt = { version = "0.6", features = ["getrandom"] }
 sha2.workspace = true
 spki = "0.7"
-time = "0.3"
-x509-parser = "0.18"
+time = { version = "0.3", features = ["formatting", "macros"] }
 x509-cert = { version = "0.2", features = ["pem"] }
 zeroize.workspace = true
 

@@ -14874,6 +14874,7 @@ name = "tilo-crypto"
 version = "0.1.0"
 dependencies = [
  "authenticode",
+ "base64 0.22.1",
  "cms",
  "const-oid 0.9.6",
  "der 0.7.10",
@@ -14897,7 +14898,6 @@ dependencies = [
  "tempfile",
  "time",
  "x509-cert",
- "x509-parser 0.18.1",
  "zeroize",
 ]
 
