@@ -48,10 +48,14 @@ pub enum DaemonError {
         layer: String,
         vm: String,
     },
+    #[error("the VM has no {0}; production images do not ship it")]
+    ControlMissing(String),
     #[error("'{0}' has no session")]
     NoSession(String),
     #[error("{step} failed: {detail}")]
     Apply { step: String, detail: String },
+    #[error("slot '{slot}' session differs from a greetd session: {detail}")]
+    SessionParity { slot: String, detail: String },
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -72,7 +76,8 @@ impl DaemonError {
             Self::SlotNotFound(_)
             | Self::LayerNotFound(_)
             | Self::UploadNotFound(_)
-            | Self::GenerationNotFound { .. } => code::NOT_FOUND,
+            | Self::GenerationNotFound { .. }
+            | Self::ControlMissing(_) => code::NOT_FOUND,
             Self::SlotKindConflict { .. } | Self::SeatBusy { .. } | Self::Busy(_) => code::CONFLICT,
             Self::AbiMismatch { .. } => code::ABI,
             Self::ReservedName(_)
@@ -81,7 +86,7 @@ impl DaemonError {
             | Self::NoEarlierGeneration(_)
             | Self::NoSession(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
-            Self::Apply { .. } => code::APPLY,
+            Self::Apply { .. } | Self::SessionParity { .. } => code::APPLY,
             Self::Io { .. } => code::IO,
         }
     }
@@ -141,7 +146,15 @@ impl DaemonError {
                 "rebuild against this VM's base (tilo-dev vm upgrade first if the VM is older than your worktree)".into()
             }
             Self::NoSession(_) => "use a headful or headless slot: tilo-dev slot list".into(),
+            Self::ControlMissing(_) => {
+                "run a dev image, which adds tilo-control: tilo-dev vm upgrade --image code.podesta.ai/qos/tilo-dev:<tag>"
+                    .into()
+            }
             Self::Apply { .. } => "tilo-dev logs   (the unit journal usually names the cause)".into(),
+            Self::SessionParity { .. } => {
+                "slot session capabilities or SELinux domain differ from a greetd session; see tilo-dev guide troubleshooting"
+                    .into()
+            }
             Self::Io { .. } => "tilo-dev doctor   (checks the VM's disk and daemon state)".into(),
         }
     }
@@ -160,12 +173,13 @@ impl DaemonError {
             | Self::NoEarlierGeneration(_)
             | Self::ScopeMismatch { .. }
             | Self::AbiMismatch { .. } => Some("tilo-dev guide swapping"),
-            Self::SeatBusy { .. } => Some("tilo-dev guide driving"),
+            Self::SeatBusy { .. } | Self::ControlMissing(_) => Some("tilo-dev guide driving"),
             Self::VersionMismatch { .. }
             | Self::HelloRequired
             | Self::InvalidParams(_)
             | Self::Busy(_)
             | Self::Apply { .. }
+            | Self::SessionParity { .. }
             | Self::Io { .. } => Some("tilo-dev guide troubleshooting"),
         }
     }
@@ -240,9 +254,14 @@ mod tests {
                 vm: "b".into(),
             },
             DaemonError::NoSession("vm".into()),
+            DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
             DaemonError::Apply {
                 step: "s".into(),
                 detail: "d".into(),
+            },
+            DaemonError::SessionParity {
+                slot: "a".into(),
+                detail: "CapAmb 800000000".into(),
             },
             DaemonError::Io {
                 context: "c".into(),
@@ -268,7 +287,9 @@ mod tests {
                 | DaemonError::Busy(_)
                 | DaemonError::AbiMismatch { .. }
                 | DaemonError::NoSession(_)
+                | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }
+                | DaemonError::SessionParity { .. }
                 | DaemonError::Io { .. } => {}
             }
         }

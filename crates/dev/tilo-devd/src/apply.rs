@@ -64,8 +64,42 @@ pub trait Apply {
     ) -> Result<ControlResult, DaemonError>;
     /// PNG of the slot's live scene.
     fn shot(&mut self, slot: &str, user: &str) -> Result<Vec<u8>, DaemonError>;
+    /// Capabilities and `SELinux` domain of the slot's running session
+    /// process, or `None` when it is not running.
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
+}
+
+/// What makes a session equivalent to a greetd one, as read from `/proc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionProcess {
+    pub cap_amb: u64,
+    pub cap_eff: u64,
+    /// `/proc/<pid>/attr/current`; `None` without `SELinux`.
+    pub context: Option<String>,
+}
+
+/// Why `process` differs from a greetd session, if it does. A greetd
+/// session has no ambient or effective capabilities and runs in a user
+/// domain (`expected_domain`, the type field of the `SELinux` context).
+pub fn parity_problem(process: &SessionProcess, expected_domain: &str) -> Option<String> {
+    let mut problems = Vec::new();
+    if process.cap_amb != 0 {
+        problems.push(format!("CapAmb is {:016x}, expected 0", process.cap_amb));
+    }
+    if process.cap_eff != 0 {
+        problems.push(format!("CapEff is {:016x}, expected 0", process.cap_eff));
+    }
+    if let Some(context) = &process.context {
+        let domain = context.split(':').nth(2).unwrap_or(context);
+        if domain != expected_domain {
+            problems.push(format!(
+                "SELinux domain is {domain}, expected {expected_domain}"
+            ));
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 /// Refuse components whose scope does not fit the slot they are going into.
@@ -435,6 +469,17 @@ impl Apply for RecordingApply {
     fn disk_space(&mut self, _path: &std::path::Path) -> Option<(u64, u64)> {
         None
     }
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+        self.units
+            .get(&session_unit(slot))
+            .copied()
+            .unwrap_or(false)
+            .then(|| SessionProcess {
+                cap_amb: 0,
+                cap_eff: 0,
+                context: Some("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023".into()),
+            })
+    }
 }
 
 #[cfg(test)]
@@ -525,6 +570,37 @@ mod tests {
         let (p, units) = policy(&vm, &fs1, &fs2).unwrap();
         assert_eq!(p, Policy::VmRefresh);
         assert_eq!(units, ["fs.service", "greetd.service"]);
+    }
+
+    #[test]
+    fn parity_matches_a_greetd_session() {
+        let greetd = SessionProcess {
+            cap_amb: 0,
+            cap_eff: 0,
+            context: Some("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023".into()),
+        };
+        assert_eq!(parity_problem(&greetd, "unconfined_t"), None);
+        assert_eq!(
+            parity_problem(
+                &SessionProcess {
+                    context: None,
+                    ..greetd
+                },
+                "unconfined_t"
+            ),
+            None
+        );
+        let unit = SessionProcess {
+            cap_amb: 0x8_0000_0000,
+            cap_eff: 0,
+            context: Some("system_u:system_r:unconfined_service_t:s0".into()),
+        };
+        let problem = parity_problem(&unit, "unconfined_t").unwrap();
+        assert!(problem.contains("CapAmb is 0000000800000000"), "{problem}");
+        assert!(
+            problem.contains("domain is unconfined_service_t"),
+            "{problem}"
+        );
     }
 
     #[test]
