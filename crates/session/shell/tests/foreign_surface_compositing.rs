@@ -159,12 +159,19 @@ fn quiesce(fb: &mut FrameBuilder) {
     let deadline = std::time::Instant::now()
         .checked_add(std::time::Duration::from_secs(3))
         .unwrap_or_else(std::time::Instant::now);
-    while fb.needs_animation_frame() && std::time::Instant::now() < deadline {
+    // `presented()` is evaluated through the opening-state walk. A freshly
+    // published frame otherwise remains labelled "awaiting first paint", so
+    // polling animation demand alone can never become quiet.
+    let animating = |fb: &mut FrameBuilder| {
+        let _ = fb.any_tile_opening();
+        fb.needs_animation_frame()
+    };
+    while animating(fb) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(8));
         let _ = frame(fb);
     }
     assert!(
-        !fb.needs_animation_frame(),
+        !animating(fb),
         "the tree never went quiet; an animation is stuck in flight"
     );
 }

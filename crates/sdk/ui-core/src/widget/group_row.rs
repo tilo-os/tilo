@@ -2170,6 +2170,17 @@ impl GroupRow {
             let Some(&node_id) = self.node_ids.get(i) else {
                 break;
             };
+            // Button events carry no coordinates and each child remembers the
+            // last cursor position. Route them only to the group under that
+            // cursor (or the group holding a capture), otherwise an earlier
+            // off-target tile can consume a click before a later group's tab
+            // controls see it.
+            if matches!(event, WindowEvent::MouseInput { .. })
+                && !g.get_rect().contains(self.last_cursor)
+                && !g.wants_pointer_capture()
+            {
+                continue;
+            }
             g.handle_event(
                 event,
                 scale_factor,
