@@ -323,6 +323,11 @@ impl SetupApp {
         self.picker_rx.is_none() && self.pending_scans == 0
     }
 
+    fn on_review_for(&self, experience: Experience) -> bool {
+        let controller = self.controller();
+        controller.page() == SetupPage::Review && controller.plan().experience == experience
+    }
+
     fn setup_projection(&self) -> super::actions::SetupProjection {
         let controller = self.controller();
         let page = controller.page();
@@ -926,7 +931,7 @@ impl SetupApp {
             platform.desktop_session = self.desktop_flow.desktop_available();
             self.capabilities.platform = platform;
             self.controller.borrow_mut().set_capabilities(platform);
-            if self.controller.borrow().page() == SetupPage::Review {
+            if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
                         self.status =
@@ -945,11 +950,13 @@ impl SetupApp {
             changed = true;
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        let on_full_os_review = self.on_review_for(Experience::FullOs);
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(flow) = &mut self.internal_download_flow {
             changed |= flow.poll();
             if self.internal_download_revision != flow.revision() {
                 self.internal_download_revision = flow.revision();
-                if self.controller.borrow().page() == SetupPage::Review {
+                if on_full_os_review {
                     self.status.clone_from(&flow.presentation().title);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
