@@ -160,7 +160,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
             state,
             Box::new(wp),
             args.viewport.unwrap_or((1000, 700)),
-            args.text_scale,
+            ui::launch::shot_theme(args),
             out,
         )?;
         return Ok(());
@@ -200,7 +200,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         state,
         Box::new(wp),
         args.viewport.unwrap_or((1000, 700)),
-        args.text_scale,
+        ui::launch::shot_theme(args),
         out,
     )?;
     Ok(())
@@ -520,32 +520,10 @@ fn render_shot(
     mut state: State,
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-    let theme = theme.with_reduce_motion(reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
@@ -565,22 +543,20 @@ fn render_shot(
         },
         &[child],
     )?;
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, trr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut tr,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

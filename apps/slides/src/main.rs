@@ -58,19 +58,7 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or_else(|| shot_viewport(args));
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => ui::Theme::light(),
-        Some("high-contrast") => ui::Theme::high_contrast(),
-        _ => ui::Theme::dark(),
-    }
-    // The live launcher applies this from `LaunchArgs`; `--shots` owns a
-    // standalone harness, so forward it here too.  Without this seam Slides'
-    // 200% accessibility capture silently remained at 100%.
-    .with_text_scale(args.text_scale.unwrap_or(1.0))
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
+    let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
         .render_png(out);
     println!("so.tilo.slides: wrote shot to {}", out.display());
@@ -82,7 +70,8 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.slides", slides::app_root)
+        &LaunchSpec::new("dev.tilo.slides", slides::app_root)
+            .history(&slides::framework_history::HISTORY)
             .shot_handler(render_shot)
             .scenarios(&[
                 "overview",

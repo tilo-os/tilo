@@ -267,6 +267,11 @@ impl SlidesDoc {
 
     // --- low-level scalar readers ------------------------------------------
 
+    /// True only for a genuinely uninitialized resource, not an authored empty deck.
+    pub fn is_uninitialized(doc: &AutoCommit) -> bool {
+        matches!(doc.get(ROOT, "deck"), Ok(None))
+    }
+
     pub fn is_empty(doc: &AutoCommit) -> bool {
         match Self::slides_list_get(doc) {
             Some(list) => doc.length(&list) == 0,
@@ -677,9 +682,6 @@ impl SlidesDoc {
                 notes,
                 elements,
             });
-        }
-        if slides.is_empty() {
-            return None;
         }
         Some(Deck {
             title,
