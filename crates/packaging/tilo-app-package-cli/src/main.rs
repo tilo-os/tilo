@@ -851,6 +851,12 @@ fn registry_entry_for(
             }
             artifact_exists = true;
         }
+        if candidate_is_older_than_published(previous, &version) {
+            // A slower CI run may finish after a newer per-target release.
+            // Preserve the already-published entry instead of allowing stale
+            // package bytes or metadata to race the registry transition.
+            return Ok(previous.clone());
+        }
     }
 
     let mut versions = previous.map_or_else(Vec::new, |entry| entry.versions.clone());
@@ -920,6 +926,17 @@ fn same_artifact(
         && left.tapp_size_bytes == right.tapp_size_bytes
         && left.tapp_blake3_hex == right.tapp_blake3_hex
         && left.target == right.target
+}
+
+fn candidate_is_older_than_published(
+    previous: &registry_types::RegistryEntry,
+    candidate: &registry_types::RegistryVersion,
+) -> bool {
+    previous.versions.iter().any(|existing| {
+        existing.target.platform == candidate.target.platform
+            && existing.target.architecture == candidate.target.architecture
+            && tilo_app_package::version::compare(&candidate.version, &existing.version).is_lt()
+    })
 }
 
 fn compare_registry_versions(
@@ -1033,5 +1050,38 @@ mod version_identity_tests {
             compare_registry_versions(&version("0.1.1-dev.10+g111"), &version("0.1.1-dev.9+gzzz"))
                 .is_lt()
         );
+    }
+
+    #[test]
+    fn slower_release_is_stale_only_for_the_same_target() {
+        let current = version("0.1.42+gnew");
+        let entry = registry_types::RegistryEntry {
+            package_id: "so.tilo.browser".into(),
+            name: "Browser".into(),
+            description: "Browser".into(),
+            tagline: "Browse".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
+            categories: Vec::new(),
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: String::new(),
+            versions: vec![current],
+            updated_at_unix: 0,
+            signature_hex: String::new(),
+        };
+
+        assert!(candidate_is_older_than_published(
+            &entry,
+            &version("0.1.41+gold")
+        ));
+        assert!(!candidate_is_older_than_published(
+            &entry,
+            &version("0.1.43+gnext")
+        ));
+        let mut arm = version("0.1.1+gold");
+        arm.target.architecture = "aarch64".into();
+        arm.target.isa = "aarch64-v8.2".into();
+        assert!(!candidate_is_older_than_published(&entry, &arm));
     }
 }
