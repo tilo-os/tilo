@@ -445,7 +445,10 @@ mod tests {
             name: name.into(),
             description: "does a thing".into(),
             tagline: "Native Tilo OS app".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
             supported_languages: vec!["en".into()],
             categories: categories.into_iter().map(str::to_string).collect(),
             source_url: None,

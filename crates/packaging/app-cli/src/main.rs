@@ -9,7 +9,9 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "app",
-    about = "Install, update, remove, and discover Tilo apps"
+    about = "Install, update, remove, and discover Tilo apps",
+    long_about = "Install, update, remove, and discover apps from the signed Tilo Store. `store` is an exact alias when installed by Tilo OS.",
+    after_help = "Examples:\n  app search browser\n  app install browser\n  app u browser       Update Browser (`u` is short for `update`)\n  app update          Update every installed app\n  app repo list       Show configured repositories"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -258,10 +260,12 @@ fn update_from_listing(
 ) -> ExitCode {
     report_unreachable(&listing.unreachable);
     let mut failed = !listing.unreachable.is_empty();
+    let mut checked = 0_usize;
     for app in &listing.apps {
         let Some(version) = installed.get(&app.package_id) else {
             continue;
         };
+        checked = checked.saturating_add(1);
         if change_app(app, true, Some(version)) != ExitCode::SUCCESS {
             failed = true;
         }
@@ -269,7 +273,24 @@ fn update_from_listing(
     if failed {
         ExitCode::FAILURE
     } else {
+        println!("{}", bulk_update_summary(installed.len(), checked));
         ExitCode::SUCCESS
+    }
+}
+
+fn bulk_update_summary(installed: usize, checked: usize) -> String {
+    if installed == 0 {
+        "no apps are installed yet".into()
+    } else if checked == 0 {
+        format!(
+            "no updates are available for {installed} installed app{}",
+            if installed == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "checked {checked} installed app{}",
+            if checked == 1 { "" } else { "s" }
+        )
     }
 }
 
@@ -407,6 +428,20 @@ mod tests {
     fn concise_update_parses() {
         let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
         assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
+    }
+
+    #[test]
+    fn bulk_update_always_reports_what_it_checked() {
+        assert_eq!(bulk_update_summary(0, 0), "no apps are installed yet");
+        assert_eq!(
+            bulk_update_summary(1, 0),
+            "no updates are available for 1 installed app"
+        );
+        assert_eq!(
+            bulk_update_summary(3, 0),
+            "no updates are available for 3 installed apps"
+        );
+        assert_eq!(bulk_update_summary(2, 2), "checked 2 installed apps");
     }
 
     #[test]

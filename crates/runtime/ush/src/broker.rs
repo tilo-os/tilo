@@ -680,6 +680,21 @@ mod tests {
         let tilo = bin.join("tilo");
         std::fs::write(&tilo, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n").unwrap();
         std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = bin.join("app");
+        std::fs::write(&app, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 6\n").unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let response = state(dir.path()).handle(Request::AppUpdate {
+            package: Some("browser".into()),
+        });
+        assert_eq!(
+            response,
+            Response::Command {
+                code: 6,
+                stdout: "update\nbrowser\n".into(),
+                stderr: String::new(),
+            }
+        );
 
         let response = state(dir.path()).handle(Request::AllUpdates);
         assert_eq!(
@@ -702,9 +717,26 @@ mod tests {
         let tilo = bin.join("tilo");
         std::fs::write(&tilo, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
         std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = bin.join("app");
+        std::fs::write(&app, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
         let socket = dir.path().join("broker.sock");
         let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
 
+        assert_eq!(
+            ask(
+                &socket,
+                &Request::AppUpdate {
+                    package: Some("browser".into()),
+                }
+            )
+            .unwrap(),
+            Response::Command {
+                code: 0,
+                stdout: "host:update browser\n".into(),
+                stderr: String::new(),
+            }
+        );
         assert_eq!(
             ask(&socket, &Request::SystemUpdate).unwrap(),
             Response::Command {

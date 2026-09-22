@@ -22,8 +22,11 @@
     )
 )]
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use tracing::info;
@@ -32,13 +35,16 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
     PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    fetch_entry_bytes, inspect_bytes, inspect_entry, run_server,
+    fetch_version_bytes, inspect_bytes, inspect_entry, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
     CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, PublisherAuthorization,
     SNAPSHOT_PROTOCOL, SignedRegistrySnapshot, verify_change_request,
 };
+
+const DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM: usize = 4;
+const MAX_FIRST_PARTY_COLLECTION_PARALLELISM: usize = 8;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -144,6 +150,9 @@ enum Cmd {
         publisher_pubkey: String,
         #[arg(long, default_value_t = 50)]
         max_items: usize,
+        /// Maximum number of submissions fetched and inspected concurrently.
+        #[arg(long, default_value_t = DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM)]
+        parallelism: usize,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
     },
@@ -311,8 +320,15 @@ async fn main() -> anyhow::Result<()> {
         Cmd::CollectFirstParty {
             publisher_pubkey,
             max_items,
+            parallelism,
             allow_insecure_local,
-        } => cmd_collect_first_party(&storage, &publisher_pubkey, max_items, allow_insecure_local),
+        } => cmd_collect_first_party(
+            &storage,
+            &publisher_pubkey,
+            max_items,
+            parallelism,
+            allow_insecure_local,
+        ),
         Cmd::PublishStagedFirstParty {
             channel_key_file,
             reviewer,
@@ -434,11 +450,20 @@ fn cmd_collect_first_party(
     storage: &Storage,
     publisher_pubkey: &str,
     max_items: usize,
+    parallelism: usize,
     allow_insecure_local: bool,
 ) -> anyhow::Result<()> {
     if !(1..=100).contains(&max_items) {
         anyhow::bail!("--max-items must be between 1 and 100");
     }
+    if !(1..=MAX_FIRST_PARTY_COLLECTION_PARALLELISM).contains(&parallelism) {
+        anyhow::bail!(
+            "--parallelism must be between 1 and {MAX_FIRST_PARTY_COLLECTION_PARALLELISM}"
+        );
+    }
+    let Some(parallelism) = NonZeroUsize::new(parallelism) else {
+        anyhow::bail!("--parallelism must be non-zero");
+    };
     let publisher = parse_public_key(publisher_pubkey, "publisher")?;
     let publisher_hex = hex::encode(publisher);
     let allowlist = storage.load_allowlist()?;
@@ -474,38 +499,129 @@ fn cmd_collect_first_party(
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    let mut artifacts = Vec::new();
-    for pending in &submissions {
-        verify_change_request(&pending.change, &[publisher])
-            .map_err(|error| anyhow::anyhow!("verify {}: {error}", pending.submission_id))?;
-        if pending.change.action == EntryAction::Delete {
-            continue;
-        }
-        for (inspection, bytes) in fetch_entry_bytes(&pending.change.entry, policy)? {
-            let digest = blake3::hash(&bytes).to_hex().to_string();
-            storage.save_staged_artifact(&digest, &bytes)?;
-            artifacts.push(StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: inspection.version,
-                blake3_hex: digest,
-            });
-        }
-    }
-    artifacts.sort_by(|left, right| {
-        (&left.submission_id, &left.version).cmp(&(&right.submission_id, &right.version))
-    });
-    let staged = StagedPromotion {
-        publisher_pubkey_hex: publisher_hex,
-        collected_at_unix: now_unix(),
+    let persisted_digests = Mutex::new(BTreeSet::new());
+    let staged = stage_collected_promotion(
+        storage,
+        publisher_hex,
         submissions,
-        artifacts,
-    };
-    storage.save_staged_promotion(&staged)?;
+        parallelism,
+        |pending| {
+            collect_submission_artifacts(storage, pending, publisher, policy, &persisted_digests)
+        },
+    )?;
     println!(
         "{}",
         serde_json::json!({"status": "staged", "collected": staged.submissions.len()})
     );
     Ok(())
+}
+
+fn collect_submission_artifacts(
+    storage: &Storage,
+    pending: &registry_server::PendingSubmission,
+    publisher: [u8; 32],
+    policy: InspectionPolicy,
+    persisted_digests: &Mutex<BTreeSet<String>>,
+) -> anyhow::Result<Vec<StagedArtifact>> {
+    verify_change_request(&pending.change, &[publisher])
+        .map_err(|error| anyhow::anyhow!("verify {}: {error}", pending.submission_id))?;
+    if pending.change.action == EntryAction::Delete {
+        return Ok(Vec::new());
+    }
+    let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
+    for version in &pending.change.entry.versions {
+        let (inspection, bytes) = fetch_version_bytes(&pending.change.entry, version, policy)?;
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+        artifacts.push(StagedArtifact {
+            submission_id: pending.submission_id.clone(),
+            version: inspection.version,
+            target: Some(version.target.clone()),
+            blake3_hex: digest,
+        });
+    }
+    Ok(artifacts)
+}
+
+fn persist_distinct_artifact(
+    storage: &Storage,
+    persisted_digests: &Mutex<BTreeSet<String>>,
+    digest: &str,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    // Serialize only the short content-addressed write boundary. Fetch and
+    // inspection remain parallel, while duplicate digests cannot race the
+    // atomic path check/write sequence.
+    let mut persisted = persisted_digests
+        .lock()
+        .map_err(|_| anyhow::anyhow!("staged artifact digest lock is poisoned"))?;
+    if persisted.contains(digest) {
+        return Ok(());
+    }
+    storage.save_staged_artifact(digest, bytes)?;
+    persisted.insert(digest.to_owned());
+    drop(persisted);
+    Ok(())
+}
+
+fn stage_collected_promotion<F>(
+    storage: &Storage,
+    publisher_pubkey_hex: String,
+    submissions: Vec<registry_server::PendingSubmission>,
+    parallelism: NonZeroUsize,
+    collect: F,
+) -> anyhow::Result<StagedPromotion>
+where
+    F: Fn(&registry_server::PendingSubmission) -> anyhow::Result<Vec<StagedArtifact>> + Sync,
+{
+    // Invalidate any earlier batch before fallible network or storage work. A
+    // failed recollection may leave harmless content-addressed bytes behind,
+    // but never a manifest the networkless signer could publish.
+    let _deleted = storage.delete_staged_promotion()?;
+    let collected = bounded_parallel_map(&submissions, parallelism, collect)?;
+    let mut artifacts = collected.into_iter().flatten().collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| {
+        staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
+    });
+    let staged = StagedPromotion {
+        publisher_pubkey_hex,
+        collected_at_unix: now_unix(),
+        submissions,
+        artifacts,
+    };
+    storage.save_staged_promotion(&staged)?;
+    Ok(staged)
+}
+
+fn bounded_parallel_map<T, R, E, F>(
+    items: &[T],
+    parallelism: NonZeroUsize,
+    operation: F,
+) -> Result<Vec<R>, E>
+where
+    T: Sync,
+    R: Send,
+    E: Send,
+    F: Fn(&T) -> Result<R, E> + Sync,
+{
+    let mut output = Vec::with_capacity(items.len());
+    for batch in items.chunks(parallelism.get()) {
+        let results = std::thread::scope(|scope| {
+            let workers = batch
+                .iter()
+                .map(|item| scope.spawn(|| operation(item)))
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(std::thread::ScopedJoinHandle::join)
+                .collect::<Vec<_>>()
+        });
+        for result in results {
+            let result = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            output.push(result?);
+        }
+    }
+    Ok(output)
 }
 
 fn cmd_sign_delegated_snapshot(
@@ -656,13 +772,16 @@ fn cmd_publish_staged_first_party(
             let matching: Vec<_> = staged
                 .artifacts
                 .iter()
-                .filter(|artifact| {
-                    artifact.submission_id == pending.submission_id
-                        && artifact.version == version.version
-                })
+                .filter(|artifact| staged_artifact_matches(artifact, pending, version))
                 .collect();
             let [artifact] = matching.as_slice() else {
-                anyhow::bail!("staged artifact inventory is incomplete or ambiguous");
+                anyhow::bail!(
+                    "staged artifact inventory is incomplete or ambiguous for {}@{} ({}/{})",
+                    pending.submission_id,
+                    version.version,
+                    version.target.platform,
+                    version.target.architecture,
+                );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
             let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
@@ -747,6 +866,47 @@ fn cmd_publish_staged_first_party(
         })
     );
     Ok(())
+}
+
+type StagedTargetSortKey<'a> = Option<(&'a str, &'a str, &'a str, Option<&'a str>)>;
+type StagedArtifactSortKey<'a> = (&'a str, &'a str, StagedTargetSortKey<'a>);
+
+fn staged_artifact_sort_key(artifact: &StagedArtifact) -> StagedArtifactSortKey<'_> {
+    (
+        &artifact.submission_id,
+        &artifact.version,
+        artifact.target.as_ref().map(|target| {
+            (
+                target.platform.as_str(),
+                target.architecture.as_str(),
+                target.isa.as_str(),
+                target.runtime.as_deref(),
+            )
+        }),
+    )
+}
+
+fn staged_artifact_matches(
+    artifact: &StagedArtifact,
+    pending: &registry_server::PendingSubmission,
+    version: &registry_types::RegistryVersion,
+) -> bool {
+    if artifact.submission_id != pending.submission_id || artifact.version != version.version {
+        return false;
+    }
+    artifact.target.as_ref().map_or_else(
+        || {
+            pending
+                .change
+                .entry
+                .versions
+                .iter()
+                .filter(|candidate| candidate.version == version.version)
+                .count()
+                == 1
+        },
+        |target| target == &version.target,
+    )
 }
 
 fn apply_staged_changes(
@@ -1345,6 +1505,296 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn bounded_parallel_map_preserves_order_and_respects_the_bound() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let parallelism = NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
+        let barrier = Arc::new(Barrier::new(parallelism.get()));
+        let inputs = (0..8).collect::<Vec<_>>();
+        let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            barrier.wait();
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(value * 2)
+        })
+        .unwrap();
+
+        assert_eq!(
+            output,
+            inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
+        );
+        assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
+    }
+
+    #[test]
+    fn bounded_parallel_map_stops_before_the_next_batch_after_an_error() {
+        let calls = AtomicUsize::new(0);
+        let error = bounded_parallel_map(
+            &[0, 1, 2, 3, 4, 5],
+            NonZeroUsize::new(4).unwrap(),
+            |value| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if *value == 1 {
+                    Err("rejected")
+                } else {
+                    Ok(*value)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "rejected");
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn collected_artifacts_are_sorted_and_duplicate_bytes_are_safe() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(storage_dir.path()).unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        let target = |architecture: &str| RegistryTarget {
+            platform: registry_types::TILO_OS_PLATFORM.into(),
+            architecture: architecture.into(),
+            isa: architecture.into(),
+            runtime: None,
+        };
+        let shared_bytes = b"same verified tapp".to_vec();
+        let digest = blake3::hash(&shared_bytes).to_hex().to_string();
+        let submissions = ["so.tilo.zeta", "so.tilo.alpha"]
+            .into_iter()
+            .map(|package_id| {
+                let mut entry = publisher_entry(&publisher);
+                entry.package_id = package_id.into();
+                sign_entry(&mut entry, &publisher);
+                registry_server::PendingSubmission {
+                    submission_id: package_id.into(),
+                    submitted_at_unix: 1,
+                    change: registry_types::sign_change_request(
+                        EntryAction::Add,
+                        entry,
+                        &publisher,
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        let persisted = Mutex::new(BTreeSet::new());
+        let staged = stage_collected_promotion(
+            &storage,
+            publisher_hex,
+            submissions,
+            NonZeroUsize::new(2).unwrap(),
+            |pending| {
+                persist_distinct_artifact(&storage, &persisted, &digest, &shared_bytes)?;
+                let architecture = if pending.submission_id.ends_with("alpha") {
+                    "aarch64"
+                } else {
+                    "x86_64"
+                };
+                Ok(vec![StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(target(architecture)),
+                    blake3_hex: digest.clone(),
+                }])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            staged
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.submission_id.as_str())
+                .collect::<Vec<_>>(),
+            ["so.tilo.alpha", "so.tilo.zeta"]
+        );
+        assert!(
+            staged
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.blake3_hex == digest)
+        );
+        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
+    }
+
+    #[test]
+    fn failed_collection_leaves_written_bytes_but_no_publishable_manifest() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(storage_dir.path()).unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        let submissions = ["so.tilo.alpha", "so.tilo.beta"]
+            .into_iter()
+            .map(|package_id| {
+                let mut entry = publisher_entry(&publisher);
+                entry.package_id = package_id.into();
+                sign_entry(&mut entry, &publisher);
+                registry_server::PendingSubmission {
+                    submission_id: package_id.into(),
+                    submitted_at_unix: 1,
+                    change: registry_types::sign_change_request(
+                        EntryAction::Add,
+                        entry,
+                        &publisher,
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        storage
+            .save_staged_promotion(&StagedPromotion {
+                publisher_pubkey_hex: publisher_hex.clone(),
+                collected_at_unix: 1,
+                submissions: Vec::new(),
+                artifacts: Vec::new(),
+            })
+            .unwrap();
+        let bytes = b"verified first artifact".to_vec();
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        let persisted = Mutex::new(BTreeSet::new());
+
+        let error = stage_collected_promotion(
+            &storage,
+            publisher_hex,
+            submissions,
+            NonZeroUsize::new(1).unwrap(),
+            |pending| {
+                if pending.submission_id.ends_with("beta") {
+                    anyhow::bail!("second fetch failed");
+                }
+                persist_distinct_artifact(&storage, &persisted, &digest, &bytes)?;
+                Ok(vec![StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(pending.change.entry.versions[0].target.clone()),
+                    blake3_hex: digest.clone(),
+                }])
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("second fetch failed"));
+        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+        assert!(storage.load_staged_promotion().unwrap().is_none());
+
+        // A crash retry starts with a fresh in-memory digest set. Re-saving the
+        // same content-addressed bytes verifies and reuses the durable artifact.
+        persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes).unwrap();
+    }
+
+    #[test]
+    fn failed_collection_invalidates_an_older_staged_batch() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(storage_dir.path()).unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        storage
+            .save_allowlist(&PublisherAllowlist {
+                publishers: vec![PublisherRow {
+                    pubkey_hex: publisher_hex.clone(),
+                    can_add_new: true,
+                    note: "first party".into(),
+                }],
+            })
+            .unwrap();
+        storage
+            .save_staged_promotion(&StagedPromotion {
+                publisher_pubkey_hex: publisher_hex.clone(),
+                collected_at_unix: 1,
+                submissions: Vec::new(),
+                artifacts: Vec::new(),
+            })
+            .unwrap();
+
+        let mut entry = publisher_entry(&publisher);
+        entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
+        sign_entry(&mut entry, &publisher);
+        storage
+            .save_pending(&registry_server::PendingSubmission {
+                submission_id: entry.package_id.clone(),
+                submitted_at_unix: 2,
+                change: registry_types::sign_change_request(EntryAction::Add, entry, &publisher),
+            })
+            .unwrap();
+
+        assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
+        assert!(storage.load_staged_promotion().unwrap().is_none());
+    }
+
+    #[test]
+    fn staged_artifacts_are_selected_by_version_and_target() {
+        let target = |architecture: &str, isa: &str| RegistryTarget {
+            platform: registry_types::TILO_OS_PLATFORM.into(),
+            architecture: architecture.into(),
+            isa: isa.into(),
+            runtime: None,
+        };
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let mut entry = publisher_entry(&key);
+        let mut arm = entry.versions[0].clone();
+        arm.target = target("aarch64", "aarch64-v8.2");
+        entry.versions.push(arm);
+        sign_entry(&mut entry, &key);
+        let pending = registry_server::PendingSubmission {
+            submission_id: entry.package_id.clone(),
+            submitted_at_unix: 1,
+            change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
+        };
+        let artifacts = [
+            StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: Some(target("x86_64", "x86_64-v3")),
+                blake3_hex: "aa".repeat(32),
+            },
+            StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: Some(target("aarch64", "aarch64-v8.2")),
+                blake3_hex: "bb".repeat(32),
+            },
+        ];
+        for version in &pending.change.entry.versions {
+            let matches = artifacts
+                .iter()
+                .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
+                .count();
+            assert_eq!(
+                matches, 1,
+                "{} must select exactly one staged artifact",
+                version.target.architecture
+            );
+        }
+
+        let legacy = StagedArtifact {
+            submission_id: pending.submission_id.clone(),
+            version: "1.0.0".into(),
+            target: None,
+            blake3_hex: "cc".repeat(32),
+        };
+        assert!(
+            pending
+                .change
+                .entry
+                .versions
+                .iter()
+                .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
+            "a target-less artifact must fail closed when a version is multi-architecture"
+        );
+
+        let mut single = pending;
+        single.change.entry.versions.truncate(1);
+        assert!(staged_artifact_matches(
+            &legacy,
+            &single,
+            &single.change.entry.versions[0]
+        ));
+    }
 
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
         let mut entry = RegistryEntry {
@@ -1352,7 +1802,10 @@ mod tests {
             name: "Concurrent".into(),
             description: "publisher removal regression".into(),
             tagline: "Test concurrent publication".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
             supported_languages: vec!["en".into()],
             categories: Vec::new(),
             source_url: None,

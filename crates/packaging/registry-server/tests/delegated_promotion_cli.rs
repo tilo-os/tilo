@@ -204,7 +204,10 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         name: "Editor".into(),
         description: "Editor".into(),
         tagline: "Edit video on Tilo OS".into(),
-        images: registry_types::LocalizedImages::default(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
         supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
         source_url: None,
@@ -243,6 +246,12 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
             artifacts: vec![StagedArtifact {
                 submission_id: "so.tilo.editor".into(),
                 version: "1.0.0".into(),
+                target: Some(RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
                 blake3_hex: digest,
             }],
         })

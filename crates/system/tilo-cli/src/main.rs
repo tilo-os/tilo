@@ -56,7 +56,8 @@ fn helper() -> String {
     long_about = "App and system commands for a Tilo machine. Providers that are not installed are skipped by umbrella operations.\n\n\
                   What a rollback does and does not undo is in \
                   /usr/share/doc/tilo/recovery.md, and every command that changes \
-                  the next boot prints it before doing so."
+                  the next boot prints it before doing so.",
+    after_help = "Examples:\n  tilo app u browser     Update Browser\n  tilo store search pdf  Search the app store (`store` is an alias)\n  tilo system status     Inspect the booted Tilo OS image\n  tilo update            Update apps and every available system provider\n\nOn another Linux distribution, app commands still work when `app` is on PATH;\nTilo OS-only system commands explain that their provider is unavailable."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -66,16 +67,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// System image, boot, rollback, and repair commands.
+    #[command(
+        after_help = "Examples:\n  tilo system status\n  tilo system update\n  tilo system update --yes\n  tilo system rollback"
+    )]
     System {
         #[command(subcommand)]
         cmd: SystemCmd,
     },
     /// Install, update, remove, and discover apps.
+    #[command(disable_help_flag = true)]
     App {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
     /// Alias for `tilo app`.
+    #[command(disable_help_flag = true)]
     Store {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
@@ -108,21 +114,30 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum SystemCmd {
+    /// Show the booted, staged, and rollback system images.
     Status {
+        /// Print bootc's JSON without reformatting it.
         #[arg(long)]
         json: bool,
     },
+    /// Make the previous signed image the default for the next boot.
     Rollback {
+        /// Do not ask for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Fetch and stage the newest signed Tilo OS image.
     Update {
+        /// Do not ask for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Boot one deployment once, then return to the normal default.
     Boot {
+        /// Loader entry id shown by `tilo system status`.
         entry: String,
     },
+    /// Explain how to enter the isolated recovery environment.
     Repair,
 }
 
@@ -224,12 +239,19 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
 }
 
 fn run_app(args: &[OsString]) -> Result<ExitCode> {
-    if is_root() {
-        bail!("app management must run as the regular user, not as root");
+    if is_root() && !is_help_request(args) {
+        bail!(
+            "app management belongs to the signed-in user, not root; \
+             leave the root shell and run `tilo app {}`",
+            display_args(args)
+        );
     }
     let binary = app_binary();
     if !command_available(&binary) {
-        bail!("app management is not available on this installation");
+        bail!(
+            "app management is unavailable because `app` was not found on PATH; \
+             install the Tilo app tools, then try `tilo app --help`"
+        );
     }
     let status = Command::new(&binary)
         .args(args)
@@ -241,12 +263,28 @@ fn run_app(args: &[OsString]) -> Result<ExitCode> {
     Ok(exit_code(status.code()))
 }
 
+fn is_help_request(args: &[OsString]) -> bool {
+    args.iter()
+        .any(|arg| matches!(arg.to_str(), Some("--help" | "-h")))
+}
+
 fn app_binary() -> OsString {
     app_binary_from(std::env::var_os("TILO_APP_BIN"))
 }
 
 fn app_binary_from(configured: Option<OsString>) -> OsString {
-    configured.unwrap_or_else(|| OsString::from("/usr/bin/app"))
+    configured.unwrap_or_else(|| OsString::from("app"))
+}
+
+fn display_args(args: &[OsString]) -> String {
+    if args.is_empty() {
+        "--help".into()
+    } else {
+        args.iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 fn command_available(binary: &std::ffi::OsStr) -> bool {
@@ -289,7 +327,10 @@ fn require_system_provider() -> Result<()> {
     if system_available() {
         Ok(())
     } else {
-        bail!("system management is not available on this installation")
+        bail!(
+            "system image management is available only on Tilo OS, and its provider \
+             was not found here; app commands remain available through `tilo app`"
+        )
     }
 }
 
@@ -331,7 +372,7 @@ fn update_available_providers(
             }
         }
     } else {
-        eprintln!("tilo: app updates are unavailable here; skipping");
+        eprintln!("tilo: app updates skipped (`app` is not installed or not on PATH)");
     }
     if system_is_available {
         attempted = true;
@@ -343,7 +384,7 @@ fn update_available_providers(
             }
         }
     } else {
-        eprintln!("tilo: system updates are unavailable here; skipping");
+        eprintln!("tilo: system image update skipped (this is not Tilo OS)");
     }
     if !attempted {
         bail!("no update providers are available on this installation");
@@ -520,8 +561,28 @@ mod tests {
     }
 
     #[test]
-    fn app_provider_defaults_to_the_image_owned_binary() {
-        assert_eq!(app_binary_from(None), OsString::from("/usr/bin/app"));
+    fn app_provider_defaults_to_path_for_partial_non_tilo_installations() {
+        assert_eq!(app_binary_from(None), OsString::from("app"));
+        assert_eq!(
+            app_binary_from(Some(OsString::from("/custom/app"))),
+            OsString::from("/custom/app")
+        );
+    }
+
+    #[test]
+    fn app_help_is_forwarded_to_the_app_provider() {
+        let cli = Cli::try_parse_from(["tilo", "app", "--help"])
+            .expect("app help must be forwarded rather than consumed by the super-command");
+        assert!(matches!(cli.cmd, Cmd::App { args } if args == [OsString::from("--help")]));
+        assert!(is_help_request(&[OsString::from("--help")]));
+        assert!(is_help_request(&[
+            OsString::from("update"),
+            OsString::from("-h")
+        ]));
+        assert!(!is_help_request(&[
+            OsString::from("update"),
+            OsString::from("browser")
+        ]));
     }
 
     #[test]

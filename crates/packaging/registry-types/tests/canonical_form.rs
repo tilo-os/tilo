@@ -26,7 +26,10 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         tagline: "Edit together".into(),
-        images: registry_types::LocalizedImages::default(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
         supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into(), "Text".into()],
         source_url: None,
