@@ -26,13 +26,17 @@ containerfile="$repo/os/Containerfile"
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
-# into its loader, so the former systemd environment override is absent. Sorting
+# into its loader, so the former systemd environment override is absent.
+# Tilo build outputs are installed through os/components.toml, so their rows
+# name the manifest component and build output instead of a builder /out path;
+# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
+# explicit optional /usr/bin/browser entry it always carried. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=a35e3107b8ca6eb589a41787651c8e4e45680a8201a17e919f110d84c5fb3939
+expected_contract=a6d4f81db6a9e3bbe3fc02403cbeba82ebe948778befd52a8437b9909039e2b0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
