@@ -496,11 +496,20 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
 // ---------------------------------------------------------------------------
 
 /// Inspect a local image file the user picked (via the portal) and build a
-/// [`Source`] from real metadata: the on-disk size (via `stat`) and, for an
+/// [`Source`] from one opened file: its on-disk size, identity and, for an
 /// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
 /// if the path does not exist or cannot be read.
 pub fn inspect_source(path: &Path) -> Option<Source> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A selected path may be a FIFO (or replaced with one). Reach the
+        // held-file type check without waiting for a writer to open it.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -518,7 +527,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         .to_ascii_lowercase();
 
     // A real volume label beats the file name when we can read one.
-    let label = read_iso_label_from_file(&mut file)
+    let label = read_iso_label_file(&mut file)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             path.file_stem()
@@ -541,7 +550,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: false,
-        identity: SourceIdentity::from_file(&file),
+        identity: SourceIdentity::from_file(&file).ok()?,
         expected_sha256: None,
     })
 }
@@ -552,11 +561,11 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
 /// 40 (file offset 0x8028). Best-effort: any short/mismatched file yields
 /// `None` and the caller falls back to the file name.
 pub fn read_iso_label(path: &Path) -> Option<String> {
-    let mut f = std::fs::File::open(path).ok()?;
-    read_iso_label_from_file(&mut f)
+    let mut file = std::fs::File::open(path).ok()?;
+    read_iso_label_file(&mut file)
 }
 
-fn read_iso_label_from_file(f: &mut std::fs::File) -> Option<String> {
+fn read_iso_label_file(f: &mut std::fs::File) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     f.seek(SeekFrom::Start(0x8000)).ok()?;
     let mut hdr = [0u8; 72];
@@ -606,6 +615,7 @@ fn as_bool(v: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
     #[test]
@@ -778,6 +788,59 @@ mod tests {
         let src = inspect_source(f.path()).expect("inspect");
         assert_eq!(src.kind, SourceKind::IsoFile);
         assert!(!src.installable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{Duration, Instant};
+
+        const CHILD_FIFO: &str = "QOS_IMAGER_TEST_INSPECTION_FIFO";
+        if let Some(path) = std::env::var_os(CHILD_FIFO) {
+            assert!(inspect_source(Path::new(&path)).is_none());
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("selected.img");
+        let native = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is NUL-terminated and remains live through the call.
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+
+        // Isolate a regressed blocking open in a test subprocess, so timeout
+        // cleanup can always kill and reap it before removing the private FIFO.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "probe::tests::inspect_source_rejects_fifo_without_waiting_for_a_writer",
+            ])
+            .env(CHILD_FIFO, &fifo)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break None,
+            }
+        };
+        if status.is_none() {
+            let _ = child.kill();
+            child.wait().unwrap();
+        }
+        assert!(
+            status.is_some(),
+            "source inspection blocked on a FIFO with no writer"
+        );
+        assert!(
+            status.unwrap().success(),
+            "FIFO inspection must reject the source"
+        );
     }
 
     #[test]

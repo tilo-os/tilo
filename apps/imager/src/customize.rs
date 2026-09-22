@@ -31,12 +31,52 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::local_state::LocalState;
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Dropdown, TextInput, Widget};
+use ui::tokens::Metrics;
+use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
-use crate::model::{Filesystem, InstallProfile, installer_locales};
+use crate::model::{Filesystem, InstallProfile};
+use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
+
+// The panel's rhythm (HIG §7b) is the crate's (`crate::rhythm`): a caption
+// and its field `LABEL`; a section caption and its first field caption
+// `RELATED`; the input glyphs' inset in a field box `SIBLING`; between the
+// fields of one section and the two columns `SECTION`; before the next
+// section and before the Preview action `GROUP`.
+/// Form fields are the toolkit's 40 px control (the setup views' buttons).
+const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
+/// The Preview button is a small secondary action: the minimum pointer target.
+const BUTTON_H: f64 = Metrics::BASE.min_pointer_target as f64;
+const EXPORT_LABEL: &str = "Preview embedded setup";
+
+const LOCALES: &[&str] = &[
+    "ar_SA.UTF-8",
+    "cs_CZ.UTF-8",
+    "da_DK.UTF-8",
+    "de_DE.UTF-8",
+    "en_GB.UTF-8",
+    "en_US.UTF-8",
+    "es_ES.UTF-8",
+    "fi_FI.UTF-8",
+    "fr_FR.UTF-8",
+    "it_IT.UTF-8",
+    "ja_JP.UTF-8",
+    "ko_KR.UTF-8",
+    "nb_NO.UTF-8",
+    "nl_NL.UTF-8",
+    "pl_PL.UTF-8",
+    "pt_BR.UTF-8",
+    "pt_PT.UTF-8",
+    "ru_RU.UTF-8",
+    "sv_SE.UTF-8",
+    "tr_TR.UTF-8",
+    "uk_UA.UTF-8",
+    "zh_CN.UTF-8",
+    "zh_TW.UTF-8",
+];
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),
@@ -170,6 +210,30 @@ impl CzGeom {
     }
 }
 
+/// Vertical anchors the host measures for the panel: where it starts under
+/// the step heading, the caption line box, and the Preview button's width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CzAnchors {
+    top: f64,
+    label_h: f64,
+    export_w: f64,
+    /// The renderer's text scale, so the panel's compact decision is the
+    /// wizard's (`crate::compact_content`).
+    text_scale: f64,
+}
+
+impl Default for CzAnchors {
+    /// The unmeasured 1× estimate, replaced by the first measurement.
+    fn default() -> Self {
+        Self {
+            top: 44.0,
+            label_h: 14.0,
+            export_w: 190.0,
+            text_scale: 1.0,
+        }
+    }
+}
+
 /// What the host app should do after handing an event to the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct CzResponse {
@@ -197,6 +261,7 @@ pub struct CustomizePanel {
     focused: Option<CzField>,
     export_focused: bool,
     last_mouse: Point,
+    anchors: CzAnchors,
 }
 
 impl Default for CustomizePanel {
@@ -260,6 +325,7 @@ impl CustomizePanel {
             focused: None,
             export_focused: false,
             last_mouse: Point::ZERO,
+            anchors: CzAnchors::default(),
         }
     }
 
@@ -462,16 +528,44 @@ impl CustomizePanel {
 
     // ---- geometry ---------------------------------------------------------
 
-    /// Shared vertical rhythm so section labels, field labels and inputs never
-    /// overlap. Pure function of `content`, so draw + hit-test agree.
-    fn geom(content: Rect) -> CzGeom {
+    /// Refresh the anchors from the renderer that will paint the panel;
+    /// `top` is the host's measured heading band. Returns whether the
+    /// geometry moved.
+    pub fn measure(&mut self, tr: &mut TextRenderer, top: f64) -> bool {
+        let (export_w, _) = tr.measure_weighted(EXPORT_LABEL, 12.0, None, TextWeight::Semibold);
+        let next = CzAnchors {
+            top,
+            label_h: f64::from(tr.measure("Hg", 11.0, None).1),
+            export_w: f64::from(export_w) + 2.0 * GROUP,
+            text_scale: f64::from(tr.text_scale()),
+        };
+        let changed = next != self.anchors;
+        self.anchors = next;
+        changed
+    }
+
+    /// Height the panel needs below the content top.
+    pub fn extent(&self, content: Rect) -> f64 {
+        self.geom(content).export.y1 - content.y0 + SECTION
+    }
+
+    /// Shared vertical rhythm so section captions, field captions and inputs
+    /// never touch: a caption sits a `LABEL` above its field, fields of one
+    /// section follow each other a `SECTION` apart, the next section (and the
+    /// Preview action) a `GROUP` later. Pure function of `content` and the
+    /// measured anchors, so draw + hit-test agree.
+    fn geom(&self, content: Rect) -> CzGeom {
         let x0 = content.x0;
         let x1 = content.x1;
-        let compact = content.width() < 520.0;
-        let fh = 38.0;
-        let row_pitch = fh + if compact { 32.0 } else { 40.0 }; // input + label + gap
-        let identity_label_y = content.y0 + if compact { 72.0 } else { 52.0 };
-        let host_y = content.y0 + if compact { 104.0 } else { 92.0 };
+        let a = self.anchors;
+        // The host's breakpoint: the form stacks exactly when the wizard
+        // chrome is compact.
+        let compact = crate::compact_content(content.width(), a.text_scale);
+        let fh = FIELD_H;
+        let caption = a.label_h + LABEL;
+        let row_pitch = fh + SECTION + caption;
+        let identity_label_y = content.y0 + a.top;
+        let host_y = identity_label_y + a.label_h + RELATED + caption;
         let hostname = Rect::new(x0, host_y, x1, host_y + fh);
         let r2 = host_y + row_pitch;
         let (full_name, username, timezone, locale, final_row_y) = if compact {
@@ -486,18 +580,18 @@ impl CustomizePanel {
                 r5,
             )
         } else {
-            let fw = (content.width() - 16.0) / 2.0;
+            let fw = (content.width() - SECTION) / 2.0;
             let r3 = r2 + row_pitch;
             (
                 Rect::new(x0, r2, x0 + fw, r2 + fh),
-                Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh),
+                Rect::new(x0 + fw + SECTION, r2, x1, r2 + fh),
                 Rect::new(x0, r3, x0 + fw, r3 + fh),
-                Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh),
+                Rect::new(x0 + fw + SECTION, r3, x1, r3 + fh),
                 r3,
             )
         };
-        let region_label_y = final_row_y + fh + 26.0;
-        let kb_y = region_label_y + 40.0;
+        let region_label_y = final_row_y + fh + GROUP;
+        let kb_y = region_label_y + a.label_h + RELATED + caption;
         let (keyboard, filesystem, option_bottom) = if compact {
             let filesystem_y = kb_y + row_pitch;
             (
@@ -513,7 +607,12 @@ impl CustomizePanel {
                 kb_y + fh,
             )
         };
-        let export = Rect::new(x1 - 250.0, option_bottom + 30.0, x1, option_bottom + 62.0);
+        let export = Rect::new(
+            x1 - a.export_w,
+            option_bottom + GROUP,
+            x1,
+            option_bottom + GROUP + BUTTON_H,
+        );
         CzGeom {
             identity_label_y,
             hostname,
@@ -532,7 +631,7 @@ impl CustomizePanel {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "text drawing keeps the renderer, scene, style, position, width, and weight explicit at each call site"
+        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
     )]
     fn txt(
         tr: &mut TextRenderer,
@@ -565,13 +664,14 @@ impl CustomizePanel {
             &RoundedRect::from_rect(r, radius),
         );
     }
+    /// A crisp stroke on the outermost pixel row of `r` (HIG §9.5).
     fn stroke_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
         scene.stroke(
             &Stroke::new(w),
             t,
             c,
             None,
-            &RoundedRect::from_rect(r, radius),
+            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
         );
     }
 
@@ -599,7 +699,7 @@ impl CustomizePanel {
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
     #[allow(
         clippy::too_many_arguments,
-        reason = "one field draw forwards the shared render context plus its field identity and geometry"
+        reason = "Field painting combines render context and presence with field identity, bounds, and its caption."
     )]
     fn draw_field(
         &mut self,
@@ -614,6 +714,8 @@ impl CustomizePanel {
     ) {
         let c = &theme.tokens.colors;
         let choice_valid = !Self::is_choice(f) || self.choice_is_valid(f);
+        // The caption sits on its own line box a `LABEL` above the field.
+        let label_top = r.y0 - LABEL - self.anchors.label_h;
         Self::txt(
             tr,
             scene,
@@ -624,19 +726,20 @@ impl CustomizePanel {
             } else {
                 c.semantic.danger
             },
-            r.x0 + 2.0,
-            r.y0 - 17.0,
+            r.x0,
+            label_top,
             None,
             TextWeight::Semibold,
         );
         let focused = self.focused == Some(f);
+        let radius = theme.radius_standard;
         if Self::is_choice(f) {
             if let Some(choice) = self.choice(f) {
                 choice.apply_layout_external(r);
                 choice.draw(scene, t, tr, theme, presence);
             }
             if !choice_valid {
-                Self::stroke_rr(scene, t, r, 9.0, c.semantic.danger, 2.0);
+                Self::stroke_rr(scene, t, r, radius, c.semantic.danger, 2.0);
                 let message = "Choose a listed value";
                 let (width, _) = tr.measure(message, 10.0, None);
                 Self::txt(
@@ -645,29 +748,24 @@ impl CustomizePanel {
                     message,
                     10.0,
                     c.semantic.danger,
-                    r.x1 - f64::from(width) - 4.0,
-                    r.y0 - 16.0,
-                    Some((r.width() - 8.0).max(0.0) as f32),
+                    r.x1 - f64::from(width),
+                    label_top,
+                    Some((r.width() - 2.0 * LABEL).max(0.0) as f32),
                     TextWeight::Regular,
                 );
             }
             return;
         }
-        Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
-        Self::stroke_rr(
-            scene,
-            t,
-            r,
-            9.0,
-            if focused {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-            if focused { 1.6 } else { 1.0 },
-        );
+        // The field is the toolkit input's face: raised with its derived edge
+        // at rest, the active tint under a focus ring while editing.
+        if focused {
+            Self::fill_rr(scene, t, r, radius, theme.bg_active);
+            Self::stroke_rr(scene, t, r, radius, c.border_focus, 2.0);
+        } else {
+            surface::card(scene, t, r, radius, c.surfaces.raised);
+        }
         // The plain-chrome input paints its own glyphs + caret inside the box.
-        let inner = Rect::new(r.x0 + 12.0, r.y0, r.x1 - 12.0, r.y1);
+        let inner = Rect::new(r.x0 + SIBLING, r.y0, r.x1 - SIBLING, r.y1);
         let input = self.input(f);
         input.apply_layout_external(inner);
         Widget::draw(input, scene, t, tr, theme, presence);
@@ -676,7 +774,7 @@ impl CustomizePanel {
     /// Render the whole panel into `content` for the given profile snapshot.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the embedded panel receives the host render context and reviewed profile without owning duplicate state"
+        reason = "Panel painting combines render context and presence with content bounds, the profile snapshot, and target kind."
     )]
     pub fn draw(
         &mut self,
@@ -689,7 +787,7 @@ impl CustomizePanel {
         profile: &InstallProfile,
         target_removable: bool,
     ) {
-        let g = Self::geom(content);
+        let g = self.geom(content);
         self.draw_identity_fields(scene, tr, theme, t, presence, content.x0, &g);
         self.draw_region_and_options(
             scene,
@@ -720,7 +818,7 @@ impl CustomizePanel {
     /// The IDENTITY section: hostname, name, username and time zone.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the section renderer forwards one shared render context to each identity field"
+        reason = "Identity fields share render context and presence while their captions and input bounds come from panel geometry."
     )]
     fn draw_identity_fields(
         &mut self,
@@ -789,7 +887,7 @@ impl CustomizePanel {
     /// storage target and destructive choices are completed on the device.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the section renderer forwards one shared render context plus reviewed install context"
+        reason = "Region fields share render context and presence with the label origin and keyboard/filesystem geometry."
     )]
     fn draw_region_and_options(
         &mut self,
@@ -842,31 +940,23 @@ impl CustomizePanel {
         t: Affine,
         g: &CzGeom,
     ) {
-        let c = &theme.tokens.colors;
-        let hov = g.export.contains(self.last_mouse);
-        Self::fill_rr(
+        // The toolkit's neutral Button face — `Button::paint` shares
+        // `face_colors` with the retained widget, so this secondary action
+        // matches every other button: raised at rest, the hover tint under
+        // the pointer, the focus ring while keyboard-focused, its label
+        // centred on its measured line (the width `measure` reserved for it
+        // uses the same 12 px Semibold label).
+        Button::paint(
             scene,
             t,
-            g.export,
-            9.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
-        if self.export_focused {
-            Self::stroke_rr(scene, t, g.export, 9.0, c.border_focus, 2.0);
-        }
-        let (ew, _) =
-            tr.measure_weighted("Preview embedded setup", 12.0, None, TextWeight::Semibold);
-        Self::txt(
             tr,
-            scene,
-            "Preview embedded setup",
-            12.0,
-            c.accent[7],
-            f64::midpoint(g.export.x0, g.export.x1) - f64::from(ew) / 2.0,
-            g.export.y0 + 8.0,
-            None,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(g.export, EXPORT_LABEL)
+                .radius(theme.radius_standard)
+                .text_size(12.0)
+                .weight(TextWeight::Semibold)
+                .hovered(g.export.contains(self.last_mouse))
+                .focused(self.export_focused),
         );
     }
 
@@ -877,7 +967,7 @@ impl CustomizePanel {
     /// the host whether the event was consumed and whether export was asked for.
     #[allow(
         clippy::too_many_arguments,
-        reason = "widget event dispatch must forward the toolkit event context and the authoritative action host"
+        reason = "Panel event routing carries widget input/state/layout, action dispatch, profile data, and target/content context."
     )]
     pub fn handle_event(
         &mut self,
@@ -893,7 +983,7 @@ impl CustomizePanel {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
-        let g = Self::geom(content);
+        let g = self.geom(content);
         match event {
             WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
                 event, position.x, position.y, scale, *modifiers, doc, path, &g, node_id, taffy,
@@ -933,7 +1023,7 @@ impl CustomizePanel {
     /// tracks along.
     #[allow(
         clippy::too_many_arguments,
-        reason = "pointer routing keeps toolkit event state and action dispatch explicit"
+        reason = "Pointer routing needs physical coordinates and scale plus the focused field geometry and Widget event context."
     )]
     fn handle_cursor_moved(
         &mut self,
@@ -951,9 +1041,9 @@ impl CustomizePanel {
         self.last_mouse = Point::new(px / scale, py / scale);
         if let Some(f) = self.focused {
             let inner = Rect::new(
-                g.field(f).x0 + 12.0,
+                g.field(f).x0 + SIBLING,
                 g.field(f).y0,
-                g.field(f).x1 - 12.0,
+                g.field(f).x1 - SIBLING,
                 g.field(f).y1,
             );
             let (mut h, mut ft) = (false, None);
@@ -980,7 +1070,7 @@ impl CustomizePanel {
     /// dispatch a toggle, request export, or (on empty space) drop focus.
     #[allow(
         clippy::too_many_arguments,
-        reason = "click routing keeps geometry, toolkit event state, and action dispatch explicit"
+        reason = "Click routing combines Widget event context with field geometry, the profile snapshot, and action dispatch."
     )]
     fn handle_left_click(
         &mut self,
@@ -1069,7 +1159,7 @@ impl CustomizePanel {
     /// else routes to the input and dispatches its fresh value.
     #[allow(
         clippy::too_many_arguments,
-        reason = "keyboard routing keeps modifiers, toolkit event state, and action dispatch explicit"
+        reason = "Key routing uses the key and Widget event context, focused-field geometry, and action host to publish edited values."
     )]
     fn handle_key_event(
         &mut self,
@@ -1174,7 +1264,7 @@ impl CustomizePanel {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "focus transfer synchronizes the chosen field with toolkit state and the authoritative profile action"
+        reason = "Field focus forwards the triggering event with field identity/bounds and Widget CRDT/layout context for caret placement."
     )]
     fn focus_field(
         &mut self,
@@ -1287,8 +1377,8 @@ impl CustomizePanel {
         }
     }
 
-    pub(crate) fn keyboard_slot_rect(content: Rect, slot: usize) -> Option<Rect> {
-        let geom = Self::geom(content);
+    pub(crate) fn keyboard_slot_rect(&self, content: Rect, slot: usize) -> Option<Rect> {
+        let geom = self.geom(content);
         CzField::ALL
             .get(slot)
             .map(|field| geom.field(*field))
@@ -1300,7 +1390,7 @@ impl CustomizePanel {
     pub(crate) fn accessibility(&self, content: Rect) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let geom = Self::geom(content);
+        let geom = self.geom(content);
         let mut controls = CzField::ALL
             .into_iter()
             .map(|field| {
@@ -1414,7 +1504,7 @@ mod tests {
     #[test]
     fn compact_layout_stacks_fields_at_full_width_for_large_text() {
         let content = Rect::new(24.0, 10.0, 344.0, 900.0);
-        let geometry = CustomizePanel::geom(content);
+        let geometry = CustomizePanel::new().geom(content);
         for field in CzField::ALL {
             let rect = geometry.field(field);
             assert_eq!(rect.x0, content.x0);
@@ -1425,5 +1515,95 @@ mod tests {
         assert!(geometry.timezone.y1 < geometry.locale.y0);
         assert!(geometry.locale.y1 < geometry.keyboard.y0);
         assert!(geometry.keyboard.y1 < geometry.filesystem.y0);
+    }
+
+    /// Every caption keeps a `LABEL` step above its field, every field of a
+    /// section a `SECTION` step before the next caption, and the two sections
+    /// and the Preview action a `GROUP` — at a wide and a compact width, with
+    /// the unmeasured and a measured caption line.
+    #[test]
+    fn captions_fields_and_sections_keep_their_rhythm() {
+        let mut panel = CustomizePanel::new();
+        let mut tr = TextRenderer::new();
+        for measured in [false, true] {
+            if measured {
+                assert!(panel.measure(&mut tr, 61.0));
+            }
+            let label_h = panel.anchors.label_h;
+            for content in [
+                Rect::new(190.0, 90.0, 1090.0, 700.0),
+                Rect::new(16.0, 90.0, 304.0, 700.0),
+            ] {
+                let g = panel.geom(content);
+                // Section caption → first field caption → field.
+                assert!(
+                    (g.hostname.y0 - (g.identity_label_y + label_h + RELATED + label_h + LABEL))
+                        .abs()
+                        < 1e-6
+                );
+                // Fields of one section, top to bottom, a caption band plus a
+                // `SECTION` apart; two-column rows share a top.
+                let mut tops: Vec<f64> =
+                    [g.hostname, g.full_name, g.username, g.timezone, g.locale]
+                        .iter()
+                        .map(|r| r.y0)
+                        .collect();
+                tops.dedup();
+                for pair in tops.windows(2) {
+                    assert!(
+                        (pair[1] - (pair[0] + FIELD_H + SECTION + label_h + LABEL)).abs() < 1e-6
+                    );
+                }
+                assert!((g.region_label_y - (g.locale.y1 + GROUP)).abs() < 1e-6);
+                assert!(
+                    (g.keyboard.y0 - (g.region_label_y + label_h + RELATED + label_h + LABEL))
+                        .abs()
+                        < 1e-6
+                );
+                assert!((g.export.y0 - (g.keyboard.y1 + GROUP)).abs() < 1e-6);
+                // Independent of the formula: fields are the toolkit's bar
+                // control, the Preview action a pointer target, a caption band
+                // plus an `s1` step separates every field from the caption
+                // above it, and no two rows come closer than an `s4` step.
+                let s = ui::tokens::Spacing::BASE;
+                let fields = [
+                    g.hostname,
+                    g.full_name,
+                    g.username,
+                    g.timezone,
+                    g.locale,
+                    g.keyboard,
+                ];
+                assert!(
+                    fields
+                        .iter()
+                        .all(|f| (f.height() - f64::from(Metrics::BASE.bar_height)).abs() < 1e-6)
+                );
+                assert!(
+                    (g.export.height() - f64::from(Metrics::BASE.min_pointer_target)).abs() < 1e-6
+                );
+                assert!(
+                    g.hostname.y0 - (g.identity_label_y + label_h)
+                        >= label_h + f64::from(s.s1) - 1e-6
+                );
+                assert!(
+                    g.keyboard.y0 - (g.region_label_y + label_h)
+                        >= label_h + f64::from(s.s1) - 1e-6
+                );
+                let mut rows: Vec<Rect> = fields.iter().copied().chain([g.export]).collect();
+                rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+                for pair in rows.windows(2) {
+                    if pair[1].y0 > pair[0].y0 + 1e-6 {
+                        assert!(
+                            pair[1].y0 - pair[0].y1 >= f64::from(s.s4) - 1e-6,
+                            "rows never touch ({} → {})",
+                            pair[0].y1,
+                            pair[1].y0
+                        );
+                    }
+                }
+                assert!(g.export.x0 >= content.x0, "Preview fits the column");
+            }
+        }
     }
 }

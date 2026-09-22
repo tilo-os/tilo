@@ -5,6 +5,8 @@
 //!     with a real `lsblk` drive probe.
 //!   * `--demo` — run live but seed sample content (drives, a Tilo image,
 //!     recent history) for a walkthrough / review.
+//!   * `--setup` — run the capability-gated guided setup screens.
+//!   * `--import-folders` — run the durable later-folder import surface.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit.
 //!     `--scenario NAME` picks which wizard station (defaults to `source`);
 //!     `--viewport WxH` sizes it.
@@ -60,6 +62,13 @@ extern crate runtime_dylib;
 /// offscreen layout for a scenario, or writing its PNG to disk.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "linux")]
+    if let Some(code) = imager::setup::migration_native::maybe_run_command(&args)? {
+        std::process::exit(code);
+    }
+    if let Some(code) = imager::setup::desktop_worker::maybe_run_desktop_helper(&args)? {
+        std::process::exit(code);
+    }
     if let Some(code) = imager::write::maybe_run_write_helper(&args)? {
         std::process::exit(code);
     }
@@ -92,18 +101,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let text_scale = parse_value_arg(&args, "--text-scale")
             .as_deref()
             .and_then(parse_text_scale);
+        let environment_text_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
+        let theme = standalone_shot_theme(text_scale, environment_text_scale.as_deref());
         std::fs::create_dir_all(&dir).ok();
         for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
             let out = dir.join(format!("{:02}-{}.png", i + 1, scenario));
-            render_scenario(scenario, viewport, text_scale, &out)?;
+            render_scenario(scenario, viewport, &theme, &out)?;
         }
         return Ok(());
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("so.tilo.imager", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.imager", live_root)
+            .runtime_attachment(|_| !cfg!(target_os = "windows"))
             .shot_handler(render_shot)
-            .allowed_live_flags(&["--demo"])
+            .shot_root(shot_root)
+            .allowed_live_flags(&["--demo", "--setup", "--import-folders"])
             .scenarios(imager::SHOT_SCENARIOS)
             .open_state_with_args(open_state)
             .configure_app(|app| imager::actions::register(app.action_registry_mut())),
@@ -116,6 +129,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     reason = "signature is fixed by LaunchSpec::new_with_args"
 )]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    if args.has("--import-folders") {
+        return Ok(imager::setup::import_view::app_root());
+    }
+    if args.has("--setup") {
+        return Ok(imager::setup::app_root());
+    }
     if !args.has("--demo") {
         // Set once at startup, before the drive probe can start worker threads.
         unsafe { std::env::set_var("IMAGER_LIVE", "1") };
@@ -129,7 +148,37 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     }
 }
 
+/// The widget a `--headless-drive --scenario NAME` drive runs against: the
+/// same posed fixture `--shots --scenario NAME` renders, so a geometry dump
+/// describes the screenshot rather than a blank live app.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec::shot_root"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(imager::app_root_for_shot(
+        args.scenario.as_deref().unwrap_or("source"),
+    ))
+}
+
+/// The document every non-screenshot mode opens. `--demo` seeds the sample
+/// content into the persisted store, as before. A `--headless-drive
+/// --scenario NAME` fixture instead gets an in-memory document posed exactly
+/// as `render_scenario` poses it for `--shots --scenario NAME`, with
+/// persistence disabled: a geometry dump describes the screenshot and can
+/// never leave sample content behind in the user's store for the live app to
+/// load. The launcher hands the headless drive through this opener (with
+/// `args.scenario` set) since `ux1x/integration`; an older launcher drives the
+/// fixture over an unposed `State::new()` document.
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    if let Some(scenario) = args.scenario.as_deref() {
+        let mut state = ui::State::new();
+        imager::seed_scenario(&mut state.doc, scenario);
+        return (
+            state,
+            ui::persist::Autosave::disabled("screenshot fixture; nothing to persist"),
+        );
+    }
     let (mut state, autosave) = ui::persist::open(app_id);
     if args.has("--demo") {
         imager::doc::ImagerDoc::seed_demo(&mut state.doc);
@@ -142,7 +191,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_scenario(
         args.scenario.as_deref().unwrap_or("source"),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        args.text_scale,
+        &ui::launch::shot_theme(args),
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
@@ -173,23 +222,14 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    if let Some(scale) = text_scale {
-        theme = theme.with_text_scale(scale);
-    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -210,22 +250,20 @@ fn render_scenario(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -249,6 +287,29 @@ fn render_scenario(
     Ok(())
 }
 
+fn standalone_shot_theme(text_scale: Option<f32>, environment_text_scale: Option<&str>) -> Theme {
+    let theme = std::env::var("TILO_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark)
+        .with_text_scale(ui::launch::shot_text_scale(
+            text_scale,
+            environment_text_scale,
+        ));
+    let reduced = [
+        "TILO_SHOTS_REDUCE_MOTION",
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .any(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    });
+    theme.with_reduce_motion(reduced)
+}
+
 fn parse_text_scale(value: &str) -> Option<f32> {
     let scale: f32 = value.parse().ok()?;
     (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
@@ -264,5 +325,14 @@ mod tests {
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(parse_text_scale(value), None, "accepted {value}");
         }
+    }
+
+    #[test]
+    fn standalone_shot_scale_uses_environment_unless_cli_overrides_it() {
+        assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
+        assert_eq!(
+            standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
+            2.0
+        );
     }
 }
