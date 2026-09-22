@@ -497,11 +497,14 @@ mod tests {
             resizes: Arc::new(Mutex::new(Vec::new())),
             dpms: Arc::new(Mutex::new(Vec::new())),
         }));
-        assert!(pipe.submit_frame_with_input_age(
-            FramePaint::full(Scene::new()),
-            OutputId(0),
-            Some(Duration::from_secs(2)),
-        ));
+        assert!(
+            pipe.submit_frame_with_input_age(
+                FramePaint::full(Scene::new()),
+                OutputId(0),
+                Some(Duration::from_secs(2)),
+            )
+            .is_some()
+        );
         wait_until(|| pipe.presented() == 1, "the annotated frame to retire");
         assert_eq!(seen.load(Ordering::Acquire), 1);
         pipe.shutdown();
