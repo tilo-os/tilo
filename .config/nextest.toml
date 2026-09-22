@@ -81,9 +81,9 @@ threads-required = "num-cpus"
 # expensive. Running them beside the rest of a 10k-test shard saturates the
 # runner's memory/CPU budget and turns bounded animations into timeouts.
 [[profile.default.overrides]]
-filter = '(package(notes) and binary(it) and test(screenshot_critique::)) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
+filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
 
 [[profile.ci.overrides]]
-filter = '(package(notes) and binary(it) and test(screenshot_critique::)) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
+filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"

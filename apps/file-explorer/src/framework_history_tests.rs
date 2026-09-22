@@ -494,7 +494,10 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     ));
     wait(&mut driver, "history-files-result");
     driver.click_named("history-files-retry").unwrap();
-    wait(&mut driver, "Restore acknowledgement is unavailable");
+    wait(
+        &mut driver,
+        "Restore is pending. Check result or retry the same intent",
+    );
     let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()
