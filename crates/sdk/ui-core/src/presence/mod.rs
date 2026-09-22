@@ -1914,12 +1914,12 @@ mod string_id_wrapper_tests {
     /// consulting the other.
     #[test]
     fn one_content_pointer_reaches_two_surfaces_and_one_places_it() {
-        let frame = PresenceKey::surface_pointer("dev.tilo.word-processor");
+        let frame = PresenceKey::surface_pointer("so.tilo.word-processor");
 
         let mut word_processor = PresenceCtx::empty();
-        word_processor.set_surface_id("dev.tilo.word-processor");
+        word_processor.set_surface_id("so.tilo.word-processor");
         let mut file_manager = PresenceCtx::empty();
-        file_manager.set_surface_id("dev.tilo.files");
+        file_manager.set_surface_id("so.tilo.files");
 
         for ctx in [&mut word_processor, &mut file_manager] {
             ctx.apply_remote_presence(
@@ -1963,7 +1963,7 @@ mod string_id_wrapper_tests {
     #[test]
     fn a_session_that_has_not_named_its_surface_places_no_content_pointer() {
         let mut ctx = PresenceCtx::empty();
-        let key = PresenceKey::surface_pointer("dev.tilo.word-processor");
+        let key = PresenceKey::surface_pointer("so.tilo.word-processor");
         assert_eq!(ctx.pointer_owner_for(&key), PointerOwner::OtherSurface);
         ctx.apply_remote_presence(
             "peer@77".into(),
@@ -2390,9 +2390,9 @@ mod own_identity_tests {
         let mut ctx = PresenceCtx::empty();
         let me = UserId("peer@42".into());
         ctx.set_self_participant(me.clone(), "Xaver");
-        ctx.set_own_identity(["dev.tilo.chat"]);
+        ctx.set_own_identity(["so.tilo.chat"]);
         assert!(ctx.is_own_identity(&me.0));
-        assert!(ctx.is_own_identity("dev.tilo.chat"));
+        assert!(ctx.is_own_identity("so.tilo.chat"));
     }
 
     #[test]

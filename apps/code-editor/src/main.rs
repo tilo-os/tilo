@@ -73,7 +73,7 @@ extern crate runtime_dylib;
 /// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.code-editor", code_editor::app_root)
+        &LaunchSpec::new("so.tilo.code-editor", code_editor::app_root)
             .live_root_with_args(live_root)
             .shot_handler(render_shot)
             .allowed_flags(&["--sidebar-open"])

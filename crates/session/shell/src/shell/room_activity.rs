@@ -47,6 +47,23 @@ use crate::shell::workspace_history::{
     WorkspaceHistoryQuery, WorkspaceSeenFrontier,
 };
 
+const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
+const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
+
+fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
+    let departed_at = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(departed_at_secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    now.duration_since(departed_at)
+        .is_ok_and(|elapsed| elapsed >= AWAY_RECAP_AFTER)
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct WorkspaceDeparture {
+    departed_at_secs: u64,
+    frontier: WorkspaceSeenFrontier,
+}
+
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
 const SHEET_MAX_W: f64 = 560.0;
@@ -97,9 +114,9 @@ impl ActivityView {
 
     fn label(self) -> &'static str {
         match self {
-            Self::CatchUp => "Catch up",
+            Self::CatchUp => "Recap",
             Self::Tasks => "Tasks",
-            Self::Explore => "Explore",
+            Self::Explore => "Full history",
             Self::Replay => "Replay",
         }
     }
@@ -149,6 +166,13 @@ enum ActivityFocus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "work-session boundaries are constructed only by replay tests for now"
+    )
+)]
 enum BoundaryDirection {
     IntoNewer,
     IntoOlder,
@@ -710,6 +734,13 @@ pub struct RoomActivityPane {
     /// collaborative history, and timestamps cannot identify delayed or
     /// concurrent CRDT changes correctly.
     seen_frontiers: HashMap<u64, WorkspaceSeenFrontier>,
+    /// Private causal baseline captured when this device leaves a workspace.
+    /// Wall time gates the presentation; the frontier decides which changes
+    /// actually happened during the absence.
+    departures: HashMap<u64, WorkspaceDeparture>,
+    presence_workspace: Option<u64>,
+    away_digest: ActivityDigest,
+    prepared_away_workspace: Option<u64>,
     catchup_frontier: WorkspaceSeenFrontier,
     passive_digest: ActivityDigest,
     passive_unread: usize,
@@ -722,6 +753,7 @@ pub struct RoomActivityPane {
     brief_more_advance: usize,
     brief_offset: usize,
     expanded_brief: Option<usize>,
+    brief_expansion_started: Option<(usize, Instant)>,
     resume_rect: Rect,
     resume_target: Option<ui::HistoryResourceTarget>,
     tasks: Vec<WorkspaceTask>,
@@ -867,6 +899,10 @@ impl RoomActivityPane {
             last_active: None,
             now_override: None,
             seen_frontiers: HashMap::new(),
+            departures: HashMap::new(),
+            presence_workspace: None,
+            away_digest: ActivityDigest::default(),
+            prepared_away_workspace: None,
             catchup_frontier: WorkspaceSeenFrontier::default(),
             passive_digest: ActivityDigest::default(),
             passive_unread: 0,
@@ -879,6 +915,7 @@ impl RoomActivityPane {
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
+            brief_expansion_started: None,
             resume_rect: Rect::ZERO,
             resume_target: None,
             tasks: Vec::new(),
@@ -941,7 +978,50 @@ impl RoomActivityPane {
                 }
             }
         }
+        if let Some(departures) = section
+            .get("departures")
+            .and_then(|value| value.as_object())
+        {
+            for (workspace, value) in departures {
+                let Ok(id) = workspace.parse::<u64>() else {
+                    continue;
+                };
+                if let Ok(departure) = serde_json::from_value(value.clone()) {
+                    pane.departures.insert(id, departure);
+                }
+            }
+        }
         pane
+    }
+
+    /// Observe the active-workspace edge before refreshing the history index.
+    /// The previous index still describes the workspace being left, so its
+    /// exact causal frontier is the correct departure baseline.
+    pub fn observe_workspace(&mut self, workspace: u64) {
+        if self.presence_workspace == Some(workspace) {
+            return;
+        }
+        if let Some(previous) = self.presence_workspace {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            let departed_at_secs = self
+                .now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.departures.insert(
+                previous,
+                WorkspaceDeparture {
+                    departed_at_secs,
+                    frontier,
+                },
+            );
+            if self.persistent_frontiers {
+                self.persist_frontiers();
+            }
+        }
+        self.presence_workspace = Some(workspace);
+        self.away_digest = ActivityDigest::default();
     }
 
     /// Tests pin "now" so period windows don't depend on when the suite runs.
@@ -989,6 +1069,14 @@ impl RoomActivityPane {
     /// shown. It advances only when the surface closes, so opening it cannot
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
+        if self.prepared_away_workspace.take() == Some(workspace)
+            && let Some(departure) = self.departures.get(&workspace)
+        {
+            self.catchup_frontier = departure.frontier.clone();
+            self.digest = self.away_digest.clone();
+            self.reset_narrative();
+            return;
+        }
         self.catchup_frontier = self
             .seen_frontiers
             .get(&workspace)
@@ -996,6 +1084,24 @@ impl RoomActivityPane {
             .unwrap_or_default();
         self.digest = self.passive_digest.clone();
         self.reset_narrative();
+    }
+
+    pub fn prepare_away_view(&mut self, workspace: u64) {
+        self.prepared_away_workspace = Some(workspace);
+    }
+
+    pub fn away_change_count(&self, workspace: u64) -> usize {
+        if self.presence_workspace == Some(workspace) {
+            self.away_digest.total_changes
+        } else {
+            0
+        }
+    }
+
+    pub fn needs_animation_frame(&self, now: Instant) -> bool {
+        self.brief_expansion_started.is_some_and(|(_, started)| {
+            now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
+        })
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
@@ -1085,6 +1191,19 @@ impl RoomActivityPane {
         section.insert(
             "seen_frontiers".to_string(),
             serde_json::Value::Object(frontiers),
+        );
+        let departures = self
+            .departures
+            .iter()
+            .filter_map(|(workspace, departure)| {
+                serde_json::to_value(departure)
+                    .ok()
+                    .map(|value| (workspace.to_string(), value))
+            })
+            .collect();
+        section.insert(
+            "departures".to_string(),
+            serde_json::Value::Object(departures),
         );
         if let Err(error) = settings_store::update_section("history", section) {
             tracing::warn!(%error, "could not persist history seen frontier");
@@ -1330,14 +1449,21 @@ impl RoomActivityPane {
             return false;
         };
         let (new_left_end, new_right_start) = match boundary.direction {
-            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
-                older.entry_ids[older.entry_ids.len() - 2],
-                older.entry_ids[older.entry_ids.len() - 1],
-            ),
-            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
-                (newer.entry_ids[0], newer.entry_ids[1])
+            BoundaryDirection::IntoNewer => {
+                let Some((&new_right_start, preceding)) = older.entry_ids.split_last() else {
+                    return false;
+                };
+                let Some(&new_left_end) = preceding.last() else {
+                    return false;
+                };
+                (new_left_end, new_right_start)
             }
-            _ => return false,
+            BoundaryDirection::IntoOlder => {
+                let [new_left_end, new_right_start, ..] = newer.entry_ids.as_slice() else {
+                    return false;
+                };
+                (*new_left_end, *new_right_start)
+            }
         };
         if ui::history_groups::materialize_and_move_boundary(
             &mut tree.doc,
@@ -1369,6 +1495,42 @@ impl RoomActivityPane {
         }
         self.expanded_brief = Some(index);
         true
+    }
+
+    /// Focus the first recap outcome that the settled responsive layout
+    /// actually rendered. The following Enter still travels through the
+    /// production keyboard handler; this only avoids assuming whether a
+    /// compact layout ended with a paging control.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn focus_first_work_session_for_shots(&mut self) -> bool {
+        let Some((index, _)) = self.brief_rects.first().copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(ActivityFocus::Brief(index));
+        true
+    }
+
+    /// Give deterministic visual journeys a real, elapsed departure frontier
+    /// without reading or overwriting this device's persisted history state.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn prepare_away_recap_for_shots(&mut self, tree: &mut WorkspaceTree) {
+        let workspace = tree.active.raw();
+        let departed_at_secs = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(AWAY_RECAP_AFTER.as_secs().saturating_add(60));
+        self.departures.insert(
+            workspace,
+            WorkspaceDeparture {
+                departed_at_secs,
+                frontier: WorkspaceSeenFrontier::default(),
+            },
+        );
+        self.presence_workspace = Some(workspace);
+        self.refresh(tree);
+        self.prepare_away_view(workspace);
     }
 
     #[cfg(feature = "hosted-test-control")]
@@ -2161,6 +2323,23 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
+        self.away_digest = self
+            .departures
+            .get(&workspace)
+            .cloned()
+            .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()))
+            .map_or_else(ActivityDigest::default, |departure| {
+                let rows = unseen(&departure.frontier, tree)
+                    .into_iter()
+                    .map(WorkspaceHistoryEntry::timeline_entry)
+                    .collect::<Vec<_>>();
+                ActivityDigest::from_entries_with_ranges(
+                    &rows,
+                    SystemTime::UNIX_EPOCH,
+                    5,
+                    &self.named,
+                )
+            });
         let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
             .into_iter()
             .map(WorkspaceHistoryEntry::timeline_entry)
@@ -2356,12 +2535,39 @@ impl RoomActivityPane {
         ));
     }
 
+    /// Lay the retained activity surface into an ordinary tiled window.
+    /// Window chrome, clipping, sizing and movement remain owned by the
+    /// shared `WindowGroup`; this method only consumes its content viewport.
+    pub fn layout_window(&mut self, viewport: Rect) {
+        let inset = 2.0;
+        self.sheet = Rect::new(
+            viewport.x0 + inset,
+            viewport.y0 + inset,
+            (viewport.x1 - inset).max(viewport.x0 + inset),
+            (viewport.y1 - inset).max(viewport.y0 + inset),
+        );
+        let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
+        let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
+        let three_panel = self.view == ActivityView::Explore && self.sheet.width() >= 900.0;
+        let compact_tabs = self.view == ActivityView::Explore && !three_panel;
+        self.timeline.set_rect(Rect::new(
+            self.sheet.x0 + 8.0 + if three_panel { EXPLORER_LEFT_W } else { 0.0 },
+            rows_y0 + if compact_tabs { 34.0 } else { 0.0 },
+            (self.sheet.x1 - 8.0 - if three_panel { EXPLORER_DETAIL_W } else { 0.0 })
+                .max(self.sheet.x0 + 8.0),
+            rows_y1,
+        ));
+    }
+
     fn shows_chip_rows(&self) -> bool {
         self.view == ActivityView::Explore
             && self.sheet.height() > self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H + 140.0
     }
 
     fn chrome_height(&self) -> f64 {
+        if self.view == ActivityView::CatchUp {
+            return HEADER_H;
+        }
         if self.shows_chip_rows() {
             self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H
         } else {
@@ -3309,7 +3515,7 @@ impl RoomActivityPane {
                 Some(inner_w),
             );
             for (line, text) in lines.iter().enumerate() {
-                tr.draw_text(
+                tr.draw_text_weighted(
                     scene,
                     text,
                     body_size,
@@ -3328,46 +3534,28 @@ impl RoomActivityPane {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
-        let mut previous_index = None;
-        for index in self.brief_offset..self.digest.briefs.len() {
-            let brief = &self.digest.briefs[index];
+        for (index, brief) in self
+            .digest
+            .briefs
+            .iter()
+            .enumerate()
+            .skip(self.brief_offset)
+        {
+            let expansion = if self.expanded_brief == Some(index) {
+                self.brief_expansion_started
+                    .filter(|(animated, _)| *animated == index)
+                    .map_or(1.0, |(_, started)| {
+                        let linear = Instant::now()
+                            .saturating_duration_since(started)
+                            .as_secs_f64()
+                            / BRIEF_EXPANSION_DURATION.as_secs_f64();
+                        let linear = linear.clamp(0.0, 1.0);
+                        1.0 - (1.0 - linear).powi(3)
+                    })
+            } else {
+                0.0
+            };
             let expanded = self.expanded_brief == Some(index);
-            if let Some(newer) = previous_index
-                && (expanded || self.expanded_brief == Some(newer))
-            {
-                let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
-                draw_work_session_boundary(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    rail,
-                    brief.changes > 1,
-                    self.digest.briefs[newer].changes > 1,
-                );
-                let (into_newer, into_older) = work_session_boundary_button_rects(rail);
-                if self.digest.briefs[newer].changes > 1 {
-                    self.boundary_rects.push((
-                        WorkSessionBoundary {
-                            older: index,
-                            newer,
-                            direction: BoundaryDirection::IntoOlder,
-                        },
-                        into_older,
-                    ));
-                }
-                if brief.changes > 1 {
-                    self.boundary_rects.push((
-                        WorkSessionBoundary {
-                            older: index,
-                            newer,
-                            direction: BoundaryDirection::IntoNewer,
-                        },
-                        into_newer,
-                    ));
-                }
-                y += 26.0;
-            }
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
@@ -3385,11 +3573,23 @@ impl RoomActivityPane {
                 .checked_add(1)
                 .is_some_and(|next| next < self.digest.briefs.len())
                 || self.brief_offset > 0;
+            let available_height =
+                (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
+                    .max(112.0 + title_extra);
+            let height =
+                (112.0 + (expanded_height - 112.0) * expansion + title_extra).min(available_height);
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &rect,
+            );
             draw_brief_card(
                 scene,
                 transform,
@@ -3401,9 +3601,9 @@ impl RoomActivityPane {
                 expanded,
                 self.now(),
             );
+            scene.pop_layer();
             y += height + 8.0;
             shown = shown.saturating_add(1);
-            previous_index = Some(index);
         }
         let remaining = self
             .digest
@@ -3872,7 +4072,7 @@ impl RoomActivityPane {
         let colors = &tokens.colors;
         let title_size = type_size(tr, tokens.typography.scale.lg);
         let title = match self.view {
-            ActivityView::CatchUp => "Since you looked",
+            ActivityView::CatchUp => "While you were away",
             ActivityView::Tasks => "Task Center",
             ActivityView::Explore => "Workspace activity",
             ActivityView::Replay => "Replay workspace",
@@ -3967,6 +4167,41 @@ impl RoomActivityPane {
                     subtitle_y + f64::from(subtitle_h).max(self.sub_line_h()),
                 ),
                 None,
+            );
+            return;
+        }
+        if self.view == ActivityView::CatchUp {
+            let workspace = if self.room_name.is_empty() {
+                "This workspace"
+            } else {
+                self.room_name.as_str()
+            };
+            let mut names = self
+                .digest
+                .briefs
+                .iter()
+                .flat_map(|brief| brief.authors.iter().map(|author| author.name.clone()))
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            let subtitle = match names.as_slice() {
+                [] => format!("{workspace} · Nothing new needs your attention"),
+                [name] => format!("{workspace} · {name} kept things moving"),
+                [first, second] => format!("{workspace} · {first} and {second} kept things moving"),
+                [first, second, rest @ ..] => {
+                    format!(
+                        "{workspace} · {first}, {second} and {} others were active",
+                        rest.len()
+                    )
+                }
+            };
+            tr.draw_text(
+                scene,
+                &subtitle,
+                sub_size,
+                colors.text_dim,
+                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 38.0),
+                Some(text_width(self.sheet.width() - 32.0)),
             );
             return;
         }
@@ -4611,6 +4846,7 @@ impl RoomActivityPane {
                 self.open_brief_in_explorer(index);
             } else {
                 self.expanded_brief = Some(index);
+                self.brief_expansion_started = Some((index, Instant::now()));
             }
             return Some(handled_outcome());
         }
@@ -5177,6 +5413,7 @@ impl RoomActivityPane {
                     self.open_brief_in_explorer(index);
                 } else {
                     self.expanded_brief = Some(index);
+                    self.brief_expansion_started = Some((index, Instant::now()));
                 }
             }
             ActivityFocus::WorkSessionBoundary(boundary) => {
@@ -5561,7 +5798,7 @@ impl RoomActivityPane {
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let mut root = AccessNode::new(Role::Dialog)
+        let mut root = AccessNode::new(Role::Window)
             .with_name("Workspace activity")
             .with_description(match self.view {
                 ActivityView::CatchUp => {
@@ -6567,12 +6804,20 @@ fn draw_brief_card(
     expanded: bool,
     now: SystemTime,
 ) {
+    let rail_x = rect.x0 + 20.0;
+    scene.stroke(
+        &Stroke::new(2.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &Line::new((rail_x, rect.y0), (rail_x, rect.y1 + 8.0)),
+    );
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.lift(0.35),
+        theme.tokens.colors.surfaces.raised,
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &vello::kurbo::Circle::new((rail_x, rect.y0 + 18.0), 8.0),
     );
     let width = text_width(rect.width() - 24.0);
     let title_lines = tr.clamp_to_lines(
@@ -6612,7 +6857,7 @@ fn draw_brief_card(
         tr,
         theme,
         &brief.authors,
-        rect.x0 + 12.0,
+        content_x,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
@@ -6628,6 +6873,14 @@ fn draw_brief_card(
         theme.tokens.colors.text_dim,
         at(transform, byline_x, byline_y),
         None,
+    );
+    tr.draw_text(
+        scene,
+        &format_activity_range(brief.first_at, brief.last_at, now),
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(transform, content_x, rect.y0 + 56.0 + title_extra),
+        Some(width),
     );
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
@@ -6663,6 +6916,9 @@ fn draw_brief_card(
     if expanded {
         let mut action_y = rect.y0 + m.actions_top(title_count);
         for action in &brief.actions {
+            if action_y + 24.0 > rect.y1 - 28.0 {
+                break;
+            }
             let (r, g, b) = ui::widget::history::hue_to_rgb(action.author.avatar_hue);
             let initial = action
                 .author
@@ -6676,9 +6932,9 @@ fn draw_brief_card(
                 scene,
                 transform,
                 Rect::new(
-                    rect.x0 + 18.0,
+                    content_x + 8.0,
                     action_y - 2.0,
-                    rect.x0 + 34.0,
+                    content_x + 24.0,
                     action_y + 14.0,
                 ),
                 &initial,
@@ -6686,12 +6942,7 @@ fn draw_brief_card(
                 theme,
                 tr,
             );
-            let action_line = format!(
-                "{} · {} · {}",
-                action.author.name,
-                action.summary,
-                format_relative_time(action.timestamp, now)
-            );
+            let action_line = format!("{} · {}", action.author.name, action.summary);
             let action_line = tr.elide_to_width(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
@@ -6702,11 +6953,20 @@ fn draw_brief_card(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 40.0, action_y),
+                at(transform, content_x + 32.0, action_y),
                 None,
             );
             action_y += m.action_pitch();
         }
+        tr.draw_text(
+            scene,
+            "Open in full history  →",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.accent[4],
+            at(transform, content_x, (action_y + 6.0).min(rect.y1 - 12.0)),
+            Some(width),
+        );
+        return;
     }
     let affordance = if expanded {
         "Open this work session in Explorer →"
@@ -6952,13 +7212,54 @@ fn draw_work_session_boundary(
     }
 }
 
-fn work_session_boundary_button_rects(rect: Rect) -> (Rect, Rect) {
-    let center = rect.x0 + rect.width() / 2.0;
-    let button_width = 104.0_f64.min((rect.width() - 16.0).max(0.0) / 2.0);
-    (
-        Rect::new(center - 6.0 - button_width, rect.y0, center - 6.0, rect.y1),
-        Rect::new(center + 6.0, rect.y0, center + 6.0 + button_width, rect.y1),
+fn format_activity_timestamp(timestamp: SystemTime, now: SystemTime) -> String {
+    use chrono::{DateTime, Local};
+    let local: DateTime<Local> = timestamp.into();
+    format!(
+        "{}, {}",
+        activity_day_label(timestamp, now),
+        local.format("%H:%M")
     )
+}
+
+fn format_activity_range(first: SystemTime, last: SystemTime, now: SystemTime) -> String {
+    use chrono::{DateTime, Local};
+    if first == last {
+        return format_activity_timestamp(last, now);
+    }
+    let first_local: DateTime<Local> = first.into();
+    let last_local: DateTime<Local> = last.into();
+    let minutes = last
+        .duration_since(first)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(30)
+        / 60;
+    let duration = if minutes >= 60 {
+        let hours = minutes / 60;
+        let remainder = minutes % 60;
+        if remainder == 0 {
+            format!("{hours} hr")
+        } else {
+            format!("{hours} hr {remainder} min")
+        }
+    } else {
+        format!("{} min", minutes.max(1))
+    };
+    if first_local.date_naive() == last_local.date_naive() {
+        format!(
+            "{}, {} – {} ({duration})",
+            activity_day_label(first, now),
+            first_local.format("%H:%M"),
+            last_local.format("%H:%M")
+        )
+    } else {
+        format!(
+            "{} – {} ({duration})",
+            format_activity_timestamp(first, now),
+            format_activity_timestamp(last, now)
+        )
+    }
 }
 
 fn draw_brief_author_stack(
@@ -7962,6 +8263,80 @@ mod tests {
             tree.doc.get_heads(),
             before,
             "reading history is not a room edit"
+        );
+    }
+
+    #[test]
+    fn away_recap_requires_the_full_threshold_and_fails_closed_on_clock_rollback() {
+        let departed = 10_000;
+        assert!(!away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60 - 1)
+        ));
+        assert!(away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60)
+        ));
+        assert!(!away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed - 1)
+        ));
+    }
+
+    fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let records = RecordStore::in_memory();
+        let home = tree.active;
+        let elsewhere = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id != home)
+            .expect("demo has another workspace")
+            .id;
+        let departed_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut pane = RoomActivityPane::new();
+        pane.persistent_frontiers = false;
+        pane.set_now_for_test(departed_at);
+        pane.observe_workspace(home.raw());
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+
+        pane.observe_workspace(elsewhere.raw());
+        tree.active = elsewhere;
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        if changed {
+            tree.workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == home)
+                .expect("home workspace")
+                .name = "Board review".to_string();
+            tree.seed_doc_from_cache();
+        }
+
+        tree.active = home;
+        pane.set_now_for_test(departed_at + elapsed);
+        pane.observe_workspace(home.raw());
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        pane.away_change_count(home.raw())
+    }
+
+    #[test]
+    fn away_recap_requires_both_time_away_and_causal_changes() {
+        assert_eq!(
+            away_change_count_after(Duration::from_secs(45 * 60 - 1), true),
+            0,
+            "a changed workspace does not interrupt a short absence"
+        );
+        assert_eq!(
+            away_change_count_after(Duration::from_secs(45 * 60), false),
+            0,
+            "elapsed time alone never creates a recap"
+        );
+        assert!(
+            away_change_count_after(Duration::from_secs(45 * 60), true) > 0,
+            "the exact threshold plus causally new work produces a recap"
         );
     }
 
@@ -9672,15 +10047,14 @@ mod tests {
         );
 
         let snapshot = pane.accessibility_snapshot();
-        assert_eq!(snapshot.role, ui::a11y::Role::Dialog);
-        assert!(snapshot.state.modal);
+        assert_eq!(snapshot.role, ui::a11y::Role::Window);
+        assert!(!snapshot.state.modal);
         assert!(
-            snapshot.children.iter().any(|node| {
-                node.role == ui::a11y::Role::Tab
-                    && node.name.as_deref() == Some("Catch up")
-                    && node.state.selected
-            }),
-            "selected tab is announced"
+            !snapshot
+                .children
+                .iter()
+                .any(|node| node.role == ui::a11y::Role::Tab),
+            "the friendly recap does not expose full-history mode tabs"
         );
         let focused = snapshot
             .children

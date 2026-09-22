@@ -1,15 +1,15 @@
-//! `.qpkg` ingest.
+//! `.tapp` ingest.
 //!
-//! Accepts the bytes of a .qpkg tar archive (as produced by
-//! `tilo-pkg pack`), pulls every blob into the daemon's on-disk
+//! Accepts the bytes of a .tapp tar archive (as produced by
+//! `tilo-app-package pack`), pulls every blob into the daemon's on-disk
 //! `FsBlobStore`, unpacks the payload eagerly to
 //! `<store>/payloads/<pkg-id-hex>/`, then writes a `RegistryEntry`
 //! with the requested pinning and the manifest text.
 //!
-//! The .qpkg wire format is a tar with:
+//! The .tapp wire format is a tar with:
 //!
 //! ```text
-//! qpkg.toml                # tiny header naming the PackageId + format
+//! tapp.toml                # tiny header naming the PackageId + format
 //! signed-root              # the 173-byte signed-root blob
 //! manifest.toml            # the manifest (UTF-8 TOML)
 //! collection.qcl           # the encoded payload Collection (binary)
@@ -20,16 +20,16 @@
 //! `blobs/<hex>` too by the CLI packager, but we ingest generically —
 //! any entry whose bytes hash matches its content-address is welcome.
 
-use pkg::blobs::BlobStore;
-use pkg::id::PackageId;
 use thiserror::Error;
+use tilo_app_package::blobs::BlobStore;
+use tilo_app_package::id::PackageId;
 
 use crate::registry::{Pinning, RegistryEntry};
 use crate::store::{Store, StoreError};
 
 #[derive(Debug, Error)]
 pub enum InstallError {
-    #[error("parse .qpkg: {0}")]
+    #[error("parse .tapp: {0}")]
     Parse(String),
     #[error("verify signature: {0}")]
     Verify(String),
@@ -63,7 +63,7 @@ pub struct InstallExpectation {
 ///
 /// Returns an error when the bytes do not match the expected catalogue identity
 /// or cannot be installed into the host store.
-pub fn install_verified_qpkg(
+pub fn install_verified_tapp(
     store: &Store,
     bytes: &[u8],
     pinning: Pinning,
@@ -80,7 +80,7 @@ pub fn install_verified_qpkg(
     app_registry::verify_bytes(bytes, expected.package_root, expected.publisher)
         .map_err(|error| InstallError::Verify(error.to_string()))?;
     let meta =
-        app_registry::qpkg::load(bytes).map_err(|error| InstallError::Verify(error.to_string()))?;
+        app_registry::tapp::load(bytes).map_err(|error| InstallError::Verify(error.to_string()))?;
     if meta.manifest.package.id != expected.app_id
         || meta.manifest.package.version != expected.version
     {
@@ -92,10 +92,10 @@ pub fn install_verified_qpkg(
             meta.manifest.package.version
         )));
     }
-    install_qpkg(store, bytes, pinning)
+    install_tapp(store, bytes, pinning)
 }
 
-/// Ingest a .qpkg-shaped byte blob into `store`.
+/// Ingest a .tapp-shaped byte blob into `store`.
 ///
 /// - Verifies the signature (best-effort: self-signed is accepted; the
 ///   trust-set is currently empty pending publisher-trust integration).
@@ -107,12 +107,12 @@ pub fn install_verified_qpkg(
 /// # Errors
 ///
 /// Returns [`InstallError::Parse`] if the tar isn't a well-formed
-/// `.qpkg` (missing `qpkg.toml`, malformed TOML, or a bad blob),
+/// `.tapp` (missing `tapp.toml`, malformed TOML, or a bad blob),
 /// [`InstallError::Verify`] if the signature check fails outright,
 /// [`InstallError::Unpack`] if extracting the payload fails, or
 /// [`InstallError::Store`] / [`InstallError::Io`] if writing to the
 /// on-disk store fails.
-pub fn install_qpkg(
+pub fn install_tapp(
     store: &Store,
     bytes: &[u8],
     pinning: Pinning,
@@ -120,16 +120,16 @@ pub fn install_qpkg(
     // Parse every tar entry into a scratch store before touching durable
     // state. The shared parser is also the single authority for archive-layout
     // version checks.
-    let app_registry::qpkg::QpkgMeta {
+    let app_registry::tapp::TappMeta {
         package_id: id,
         store: mem,
         ..
-    } = app_registry::qpkg::load(bytes).map_err(|error| InstallError::Parse(error.to_string()))?;
+    } = app_registry::tapp::load(bytes).map_err(|error| InstallError::Parse(error.to_string()))?;
 
     // Verify — self-signed acceptable (empty trust set → UntrustedPublisher).
-    let manifest = match pkg::verify(id, &mem, &[]) {
-        pkg::Verification::Trusted { manifest }
-        | pkg::Verification::UntrustedPublisher { manifest, .. } => manifest,
+    let manifest = match tilo_app_package::verify(id, &mem, &[]) {
+        tilo_app_package::Verification::Trusted { manifest }
+        | tilo_app_package::Verification::UntrustedPublisher { manifest, .. } => manifest,
         other => {
             return Err(InstallError::Verify(format!("{other:?}")));
         }
@@ -156,9 +156,10 @@ pub fn install_qpkg(
     }
     std::fs::create_dir_all(&payload_root)?;
     // Unpack directly out of the scratch memory store — the fs store
-    // has the same content, but pkg::unpack takes `&impl BlobStore`
+    // has the same content, but tilo_app_package::unpack takes `&impl BlobStore`
     // and the memory store is Send + Sync-friendly.
-    pkg::unpack(id, &mem, &payload_root).map_err(|e| InstallError::Unpack(e.to_string()))?;
+    tilo_app_package::unpack(id, &mem, &payload_root)
+        .map_err(|e| InstallError::Unpack(e.to_string()))?;
 
     let manifest_text = manifest
         .to_toml_string()

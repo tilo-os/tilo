@@ -205,8 +205,68 @@ impl SearchProvider for NoteSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        let mut page = self
+            .catalog
+            .query_page(query, cursor, work_budget, result_limit);
+        // Context is derived only for this bounded page of hits. The retained
+        // catalogue still owns matching and continuation, including full bodies.
+        let snapshot = self
+            .snapshot
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for result in &mut page.results {
+            let Some(address) = result.action_address() else {
+                continue;
+            };
+            let Some((note, block)) = crate::actions::parse_block_resource_id(&address.resource)
+            else {
+                continue;
+            };
+            let Some(block) = snapshot
+                .blocks
+                .get(&note)
+                .and_then(|blocks| blocks.iter().find(|candidate| candidate.id == block))
+            else {
+                continue;
+            };
+            let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let lower = collapsed.to_lowercase();
+            let needle = query.to_lowercase();
+            let offset = lower
+                .find(needle.trim())
+                .or_else(|| needle.split_whitespace().find_map(|word| lower.find(word)))
+                .unwrap_or(0);
+            let desired_start = lower
+                .get(..offset)
+                .map_or(0, |prefix| prefix.chars().count())
+                .saturating_sub(8);
+            // Short blocks need no excerpt. For long blocks, start at a
+            // word boundary so context never opens with a chopped word.
+            let start = if collapsed.chars().count() <= 100 {
+                0
+            } else {
+                collapsed
+                    .chars()
+                    .take(desired_start)
+                    .enumerate()
+                    .filter_map(|(index, ch)| ch.is_whitespace().then_some(index.saturating_add(1)))
+                    .last()
+                    .unwrap_or(0)
+            };
+            let excerpt = collapsed.chars().skip(start).take(100).collect::<String>();
+            result.title = format!(
+                "{}{}{}",
+                if start > 0 { "…" } else { "" },
+                excerpt,
+                if collapsed.chars().count() > start.saturating_add(100) {
+                    "…"
+                } else {
+                    ""
+                }
+            );
+        }
+        drop(snapshot);
+        page
     }
 
     fn resolve_action_resource(
@@ -333,6 +393,50 @@ mod tests {
         assert_eq!(
             hit.action_address(),
             Some(crate::actions::open_block_address(page.id, "block-object"))
+        );
+    }
+
+    #[test]
+    fn contextual_body_snippets_preserve_short_blocks_and_word_boundaries() {
+        let ws = populated();
+        let page = ws.pages()[0].id;
+        let long = format!(
+            "{}Write the migration guide with the release team",
+            "Earlier context. ".repeat(12)
+        );
+        let provider = NoteSearchProvider::with_blocks(
+            &ws,
+            &HashMap::from([(
+                page,
+                vec![
+                    crate::actions::NoteBlockResource {
+                        id: "short".into(),
+                        text: "Write the migration guide".into(),
+                    },
+                    crate::actions::NoteBlockResource {
+                        id: "long".into(),
+                        text: long,
+                    },
+                ],
+            )]),
+        );
+        let hits = provider.search_page("migration", None, 512, 64).results;
+        let short = hits
+            .iter()
+            .find(|hit| {
+                hit.action_address() == Some(crate::actions::open_block_address(page, "short"))
+            })
+            .unwrap();
+        assert_eq!(short.title, "Write the migration guide");
+        let long = hits
+            .iter()
+            .find(|hit| {
+                hit.action_address() == Some(crate::actions::open_block_address(page, "long"))
+            })
+            .unwrap();
+        assert_eq!(
+            long.title,
+            "…Write the migration guide with the release team"
         );
     }
 
