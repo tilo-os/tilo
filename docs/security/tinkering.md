@@ -625,7 +625,7 @@ at any point:**
   they are strictly weaker than the design describes. `compile_tinker()` does not
   exist.
 - `netgate` integration; a layer's network is currently all-or-nothing.
-- `tinker adopt` — emitting a reproducible recipe (or a sysext, or a `.qpkg`)
+- `tinker adopt` — emitting a reproducible recipe (or a sysext, or a `.tapp`)
   from a layer. This is the loop-closer that nix has and containers do not, and
   it is unbuilt.
 - Compositor and UI integration: no terminal tint, no permissions-panel lease

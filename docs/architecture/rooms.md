@@ -16,7 +16,7 @@ workspace_uuid)` — see `auto_hello_env` in `crates/sdk/ui-core/src/collaborati
 consequences are concrete, and all three are current behaviour:
 
 - Two people editing two **different** `.odt` files in one workspace announce
-  the identical `(dev.tilo.word-processor, room)` pair and merge each other's
+  the identical `(so.tilo.word-processor, room)` pair and merge each other's
   whole document state.
 - Opening a second PDF **deletes your annotations on the first**
   (`apps/pdf-viewer/src/doc.rs`, commented there as a known cost — annotations

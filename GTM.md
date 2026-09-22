@@ -1,7 +1,7 @@
-# qOS Go-To-Market Strategy: The Engine-First Approach
+# Tilo Go-To-Market Strategy: The Engine-First Approach
 
 ## Executive Summary
-qOS is not just an operating system; it is a paradigm shift in how computing is collaborative, automated, and distributed. Rather than attempting a high-friction "OS Switch" launch, qOS will follow a **Tiered Expansion Strategy**. We will first win the **Developer Mindshare** via a robust framework, then the **Power User Mindshare** via Desktop Environments (DE), and finally the **Market Mindshare** via a full, immutable Operating System.
+Tilo is not just an operating system; it is a paradigm shift in how computing is collaborative, automated, and distributed. Rather than attempting a high-friction "OS Switch" launch, Tilo will follow a **Tiered Expansion Strategy**. We will first win the **Developer Mindshare** via a robust framework, then the **Power User Mindshare** via Desktop Environments (DE), and finally the **Market Mindshare** via a full, immutable Operating System.
 
 **The Core Principle:** The Framework is the "Source of Truth." The DE and the OS are simply different execution environments for that framework.
 
@@ -27,11 +27,11 @@ qOS is not just an operating system; it is a paradigm shift in how computing is 
 **Secondary Focus | The Bridge**
 *   **Product:** A `shell`-based session (Wayland compositor) packaged for existing distributions (Fedora, Debian).
 *   **Target Audience:** Linux enthusiasts, Tiling Window Manager (TWM) users, Power Users.
-*   **Value Proposition:** "Experience the qOS workspace—strips, collaborative filesystem, and seamless automation—on the OS you already trust."
+*   **Value Proposition:** "Experience the Tilo workspace—strips, collaborative filesystem, and seamless automation—on the OS you already trust."
 *   **GTM Channels:** Linux Subreddits, Arch/Fedora/Debian forums, Linux gaming/enthusiast communities.
 *   **Success Metrics:** Package manager installs, active sessions, community-contributed configurations.
 
-### Tier 3: The qOS Operating System (The "Full Stack")
+### Tier 3: The Tilo Operating System (The "Full Stack")
 **Long-Term Vision | The Destination**
 *   **Product:** A complete, immutable Fedora Bootc-based OS image.
 *   **Target Audience:** Security-conscious users, Enterprise/DevOps teams, "New Paradigm" seekers.
@@ -45,7 +45,7 @@ qOS is not just an operating system; it is a paradigm shift in how computing is 
 
 | Phase | Focus | Objective | Key Milestone |
 | :--- | :--- | :--- | :--- |
-| **Phase 1** | **Framework** | Build developer mindshare and prove the tech. | 10+ "non-qOS" apps using the toolkit. |
+| **Phase 1** | **Framework** | Build developer mindshare and prove the tech. | 10+ "non-Tilo" apps using the toolkit. |
 | **Phase 2** | **DE** | Lower the barrier to entry for end-users. | Successful installation on a standard Debian/Fedora install. |
 | **Phase 3** | **OS** | Achieve full-stack integration and scale. | The first "Bootc" image release. |
 

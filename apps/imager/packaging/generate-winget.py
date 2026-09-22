@@ -11,10 +11,10 @@ from urllib.parse import urlparse
 def manifests(root, version, base_url):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("WinGet requires a stable semantic version")
-    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "qos/releases")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo-os/releases")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("release repository must be OWNER/REPOSITORY")
-    server = urlparse(os.environ.get("GITHUB_SERVER_URL", "https://code.sandbox.example"))
+    server = urlparse(os.environ.get("TILO_RELEASE_SERVER", "https://github.com"))
     if server.scheme != "https" or not server.netloc or server.path not in ("", "/") or server.query or server.fragment:
         raise ValueError("release server must be an HTTPS origin")
     parsed = urlparse(base_url)
@@ -50,7 +50,8 @@ def manifests(root, version, base_url):
         "Tilo.Imager.locale.en-US.yaml": prefix + "PackageLocale: en-US\nPublisher: Tilo Project\n"
         "PackageName: Tilo Imager\nLicense: AGPL-3.0-only\n"
         "ShortDescription: Create and verify customised Tilo installation media.\n"
-        "PackageUrl: https://code.sandbox.example/qos/qos\nManifestType: defaultLocale\nManifestVersion: 1.9.0\n",
+        f"PackageUrl: {server.scheme}://{server.netloc}/{repository}\n"
+        "ManifestType: defaultLocale\nManifestVersion: 1.9.0\n",
     }
 
 

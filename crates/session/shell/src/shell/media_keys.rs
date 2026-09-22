@@ -102,7 +102,7 @@ fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge
     // Nudging the volume un-mutes: reaching for volume-up on a muted sink
     // means "let me hear it".
     let muted = if now.muted && delta > 0.0 {
-        let _ = actions.set_mute(false);
+        actions.set_mute(false).ok()?;
         false
     } else {
         now.muted
@@ -115,12 +115,15 @@ fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge
 }
 
 fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
+    // Read before actuating. When the status poller has not produced its
+    // first sample yet, `current_volume` falls back to `wpctl`; reading after
+    // the toggle would observe the new state and invert it a second time.
+    let now = current_volume(status)?;
     actions.toggle_mute().ok()?;
     // `wpctl set-mute toggle` reports nothing, so assume the inverse of
     // what we last knew rather than pay a second subprocess.
-    let now = current_volume(status);
-    let level = now.map_or(0.0, |v| v.level);
-    let muted = !now.is_some_and(|v| v.muted);
+    let level = now.level;
+    let muted = !now.muted;
     if let Some(s) = status {
         s.set_volume(os_actions::VolumeState { level, muted });
     }
@@ -156,7 +159,7 @@ fn transport(cmd: crate::shell::mpris::Command) -> Option<Osd> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     /// Build a `KeyboardInput` event for `key` via the zeroed-struct
     /// workaround (winit's `KeyEvent` has a private `platform_specific` field).
@@ -189,6 +192,8 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         calls: RefCell<Vec<String>>,
+        fail_unmute: Cell<bool>,
+        bridge_on_toggle: RefCell<Option<StatusBridge>>,
     }
 
     impl QsActions for Recorder {
@@ -214,10 +219,20 @@ mod tests {
         }
         fn set_mute(&self, muted: bool) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("mute={muted}"));
+            if !muted && self.fail_unmute.get() {
+                return Err("unmute failed".into());
+            }
             Ok(())
         }
         fn toggle_mute(&self) -> Result<(), String> {
             self.calls.borrow_mut().push("toggle_mute".to_string());
+            if let Some(bridge) = self.bridge_on_toggle.borrow().as_ref() {
+                let before = bridge.snapshot().volume.expect("seeded volume");
+                bridge.set_volume(os_actions::VolumeState {
+                    level: before.level,
+                    muted: !before.muted,
+                });
+            }
             Ok(())
         }
     }
@@ -318,6 +333,20 @@ mod tests {
     }
 
     #[test]
+    fn volume_up_does_not_claim_audio_when_unmute_fails() {
+        let rec = Recorder::default();
+        rec.fail_unmute.set(true);
+        let bridge = bridge_at(0.30, true);
+
+        assert!(apply(MediaKey::VolumeUp, &rec, Some(&bridge)).is_none());
+        assert_eq!(rec.calls.borrow().as_slice(), ["volume=35.0", "mute=false"]);
+        assert!(
+            bridge.snapshot().volume.unwrap().muted,
+            "a failed unmute must not publish an audible state"
+        );
+    }
+
+    #[test]
     fn turning_a_muted_sink_down_leaves_it_muted() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.30, true);
@@ -341,6 +370,21 @@ mod tests {
         let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(osd.caption(), "Volume 50%");
         assert!(!bridge.snapshot().volume.unwrap().muted);
+    }
+
+    #[test]
+    fn mute_uses_the_state_from_before_actuation() {
+        let bridge = bridge_at(0.50, false);
+        let rec = Recorder::default();
+        *rec.bridge_on_toggle.borrow_mut() = Some(bridge.clone());
+
+        let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+
+        assert_eq!(osd.caption(), "Muted");
+        assert!(
+            bridge.snapshot().volume.unwrap().muted,
+            "a post-toggle read must not be inverted a second time"
+        );
     }
 
     #[test]

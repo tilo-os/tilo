@@ -220,7 +220,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.persist-open-twice";
+        let pkg = "so.tilo.persist-open-twice";
 
         // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
@@ -266,7 +266,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn legacy_record_index_is_imported_by_one_room_only() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "dev.tilo.legacy-room-index";
+        let package = "so.tilo.legacy-room-index";
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("TILO_PACKAGE_ID");
@@ -298,7 +298,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.stale-file-open";
+        let pkg = "so.tilo.stale-file-open";
 
         // Old layout's leftover: a file where the new layout wants a directory.
         let path = tmp.path().join(pkg);

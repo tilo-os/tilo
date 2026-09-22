@@ -19,11 +19,13 @@
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use shell::shell::topbar_chrome::TopBarChrome;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -101,7 +103,10 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
 
 struct Layout {
     taffy: TaffyTree<()>,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "the fixture retains the complete Taffy tree even when a test inspects only child geometry"
+    )]
     root_node: NodeId,
     child_node: NodeId,
 }
@@ -165,6 +170,26 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         root_node,
         child_node: child,
     }
+}
+
+fn laid_out_topbar_height(chrome: Chrome) -> f64 {
+    let tree = chrome.borrow().tree().clone();
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+        )
+        .expect("compute top-bar layout");
+    bar.apply_layout(&taffy, node, Point::ORIGIN);
+    bar.get_rect().height()
 }
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
@@ -616,11 +641,10 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     );
 }
 
-/// Clicking a tab's Expand chip must go full screen: sidebar
-/// wheel and top bar both get out of the way, and the promoted group
-/// covers the whole output.
+/// Clicking a tab's Expand chip maximizes it inside the desktop work area:
+/// the top bar stays available while the sidebar wheel gets out of the way.
 #[test]
-fn expand_takes_the_group_genuinely_fullscreen() {
+fn expand_maximizes_beneath_the_top_bar() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
@@ -655,8 +679,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     );
     assert!(
         chrome.borrow().is_fullscreen(),
-        "an expanded window must hold the whole output, so the shell suppresses \
-         the wheel + top bar (both gate on ChromeState::is_fullscreen)",
+        "the promoted group must still suppress the sidebar wheel",
     );
 
     // The sidebar wheel must now be zero-area so nothing paints over the
@@ -670,6 +693,11 @@ fn expand_takes_the_group_genuinely_fullscreen() {
         0.0,
         "the radial workspace switcher must be collapsed to zero area while a \
          window is expanded; got {sidebar:?}",
+    );
+    let topbar_height = laid_out_topbar_height(chrome);
+    assert!(
+        topbar_height > 10.0,
+        "maximize must preserve the OS-owned top bar; got height {topbar_height}",
     );
     let _ = &layout2;
 }
@@ -1041,6 +1069,48 @@ fn wheel_over_strip_does_not_move_it() {
         after,
         before,
         "a bare wheel over the strip must not move it",
+    );
+}
+
+#[test]
+fn streamed_three_finger_pan_moves_the_live_strip_and_settles_overpull() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
+    let active_group = tree.active_group_for(strip_id);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    assert!(host.update_active_strip_pan(320.0, true));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        320.0,
+        "the live row must track total three-finger travel 1:1",
+    );
+    assert_eq!(
+        chrome.borrow().tree().active_group_for(strip_id),
+        active_group,
+        "panning the canvas must not silently change focused app",
+    );
+
+    let legal_end = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .pan_max_scroll_x();
+    assert!(host.update_active_strip_pan(legal_end + 500.0, false));
+    let held = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
+    assert!(
+        held > legal_end && held < legal_end + 500.0,
+        "overpull must keep moving with resistance: legal={legal_end}, held={held}"
+    );
+
+    let released = std::time::Instant::now();
+    assert!(host.end_active_strip_pan(released));
+    host.group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .tick_snap_at(released + std::time::Duration::from_millis(220));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        legal_end,
+        "release must settle the live strip to its legal trailing rest",
     );
 }
 

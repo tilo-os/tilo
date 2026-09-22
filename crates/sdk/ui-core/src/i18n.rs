@@ -218,6 +218,20 @@ fn format_from_bundle(
 }
 
 impl I18nManager {
+    /// Register shared widget labels without replacing an application's
+    /// catalogs or its selected language. Standalone widgets get the same
+    /// source-locale fallback as application-hosted widgets.
+    pub fn register_widget_messages() {
+        const ENGLISH: &str = include_str!("../locales/en-US.ftl");
+        const GERMAN: &str = include_str!("../locales/de-DE.ftl");
+        if Self::revision() == 0 {
+            let _ = Self::install_system("en-US", &[("en-US", ENGLISH), ("de-DE", GERMAN)]);
+        } else {
+            Self::add_resource("en-US", ENGLISH.to_owned());
+            Self::add_resource("de-DE", GERMAN.to_owned());
+        }
+    }
+
     pub fn init(locale: &str) {
         let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
         let locale = lang_id.clone();

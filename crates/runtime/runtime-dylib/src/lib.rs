@@ -38,7 +38,7 @@
 
 pub use accounts;
 pub use agent_provider_config;
-pub use app_catalogue;
+pub use app_cli;
 pub use app_host;
 pub use atomic_file;
 pub use chrono_tz;

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::LatestRequest;
-use ui::tilo_actions;
-use ui::widget::virtual_list::{ListModel, ListModelChange, ListRowState, VirtualList};
-use ui::widget::{Button, Container, Text, Widget};
+use ui::prelude::{
+    Button, Container, LatestRequest, ListModel, ListModelChange, ListRowState, Text, VirtualList,
+    Widget, tilo_actions,
+};
 
 const ITEM_COUNT: usize = 100_000_000;
 
@@ -154,6 +154,10 @@ impl ListModel for ActivityModel {
 /// Rows have stable keys and measured variable heights. Each delegate is an
 /// ordinary widget subtree, so its button remains independently focusable and
 /// accessible without turning a button press into a row-selection gesture.
+///
+/// # Panics
+///
+/// Panics if a generated row binding no longer matches the exported action.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

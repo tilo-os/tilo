@@ -1392,7 +1392,10 @@ impl DrmDispatchState {
     }
 
     /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "gesture events are consumed as protocol state-machine inputs"
+    )]
     fn handle_gesture(&mut self, ev: GestureEvent) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
@@ -1412,8 +1415,9 @@ impl DrmDispatchState {
                 None
             }
             GestureEvent::SwipeUpdate { dx, dy } => self.gestures.swipe_update(dx, dy),
-            GestureEvent::SwipeEnd { .. } | GestureEvent::HoldEnd { .. } => {
-                self.gestures.swipe_end();
+            GestureEvent::SwipeEnd { cancelled } => self.gestures.swipe_end_with_cancel(cancelled),
+            GestureEvent::HoldEnd { .. } => {
+                let _ = self.gestures.swipe_end();
                 None
             }
             GestureEvent::PinchBegin { fingers } => {
@@ -4755,6 +4759,49 @@ mod tests {
                 .any(|e| matches!(e, BackendEvent::Gesture(_))),
             "a gesture the shell acted on must not also be delivered to a \
              client — the app would scroll under the workspace switch"
+        );
+    }
+
+    #[test]
+    fn horizontal_three_finger_updates_stream_to_the_shell_until_end() {
+        let mut state = DrmDispatchState::default();
+        for event in [
+            GestureEvent::SwipeBegin { fingers: 3 },
+            GestureEvent::SwipeUpdate { dx: -12.0, dy: 0.0 },
+            GestureEvent::SwipeUpdate { dx: -28.0, dy: 2.0 },
+            GestureEvent::SwipeEnd { cancelled: false },
+        ] {
+            state.handle_gesture(event);
+        }
+
+        let shell: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::ShellGesture(action) => Some(*action),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shell,
+            vec![
+                GestureAction::StripPanUpdate {
+                    travel: 12.0,
+                    began: true,
+                },
+                GestureAction::StripPanUpdate {
+                    travel: 40.0,
+                    began: false,
+                },
+                GestureAction::StripPanEnd { cancelled: false },
+            ]
+        );
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Gesture(_))),
+            "no frame of a shell-owned direct pan may leak to the client"
         );
     }
 

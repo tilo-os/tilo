@@ -101,7 +101,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.imager", live_root)
+        &LaunchSpec::new_with_args("so.tilo.imager", live_root)
             .shot_handler(render_shot)
             .allowed_live_flags(&["--demo"])
             .scenarios(imager::SHOT_SCENARIOS)

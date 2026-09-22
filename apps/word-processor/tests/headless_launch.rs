@@ -58,7 +58,7 @@ impl Fixture {
             command.env(key, directory);
         }
         command
-            .env("TILO_PACKAGE_ID", "dev.tilo.word-processor")
+            .env("TILO_PACKAGE_ID", "so.tilo.word-processor")
             .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
             .env("TILO_WP_RECOVERY_DIR", self.0.join("recovery"));
         #[cfg(windows)]

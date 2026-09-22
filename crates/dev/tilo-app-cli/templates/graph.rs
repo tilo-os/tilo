@@ -1,7 +1,11 @@
-use ui::tilo_actions;
-use ui::widget::{Button, Text, TextInput, Widget, labeled_field};
-use ui::{LocalState, ModelView, Theme};
+use ui::prelude::{
+    Button, LocalState, ModelView, Text, TextInput, Theme, Widget, labeled_field, tilo_actions,
+};
 
+#[expect(
+    clippy::expect_used,
+    reason = "the generated JSON action argument is always serializable"
+)]
 fn project_resource() -> tilo_actions::Resource {
     let draft = tilo_actions::ActionSpec::typed_operation(
         "set-draft",
@@ -62,6 +66,10 @@ fn create_project(name: &str) -> tilo_actions::ActionOutput {
 }
 
 /// The graph is validated before any widget reaches the app tree.
+///
+/// # Panics
+///
+/// Panics if the generated input bindings no longer match their actions.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"
