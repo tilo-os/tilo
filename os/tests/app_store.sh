@@ -269,7 +269,7 @@ else
       else
         bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
       fi
-      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
         && ok "the image installs the compositor that owns 'collab'" \
         || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
       continue
@@ -295,7 +295,7 @@ sys.exit(0 if re.search(pattern, source) else 1)
       else
         bad "apps [$users] require 'tools', but its compositor-owned socket and workspace handler are not wired."
       fi
-      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
         && ok "the image installs the compositor that owns 'tools'" \
         || bad "os/Containerfile does not install the compositor-owned 'tools' service."
       continue
@@ -330,7 +330,7 @@ sys.exit(0 if re.search(pattern, source) else 1)
     if [ -z "$svc_bin" ]; then
       bad "$unit_rel has no ExecStart, so nothing checks that its binary ships"
     elif containerfile_copy_contract "$CONTAINERFILE" | \
-         awk -F '\t' -v d="$svc_bin" '$1 == "builder" && $3 == d { found=1 } END { exit !found }'; then
+         awk -F '\t' -v d="$svc_bin" '($1 == "builder" || $1 == "components.toml") && $3 == d { found=1 } END { exit !found }'; then
       ok "the image installs $svc_bin for '$svc'"
     else
       bad "os/Containerfile never copies $svc_bin into the image, so
