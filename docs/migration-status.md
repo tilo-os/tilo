@@ -1,6 +1,6 @@
 # Guided migration: current feature status
 
-Status reviewed: 2026-09-19 UTC.
+Status reviewed: 2026-09-22 UTC.
 
 **The complete Windows/Linux migration experience is not ready.** The guided
 setup screens and several underlying services exist, but USB-free Full Tilo
@@ -37,6 +37,23 @@ Before enabling the unfinished features, delivery still requires:
   default on every advertised configuration.
 - Completed synchronization orchestration and recovery, native filesystem
   qualification, and reviewed first-login copying across the Full-OS reboot.
+
+The [September 22 installer-release run](https://code.sandbox.example/qos/qos/actions/runs/17758)
+still refused to build installation media because it had no signed,
+digest-pinned multi-architecture OS image. The earlier
+[successful ARM development finalization](https://code.sandbox.example/qos/qos/actions/runs/12058)
+does not satisfy that release input or establish USB-free boot support.
+
+The pending Connected history implementation is also failing its maximum
+4,096-step Linux ext4 replay test. The real 4,095-step prehistory and its
+empty-log reopen pass, but replaying the terminal events consumes the existing
+60-second read lease before the mandatory final history closure. A diagnostic
+run saw the three events consume about 14 seconds each after an initial
+16-second closure; roughly 949 MiB of the 1 GiB read allowance was already
+charged. Experimental row and review caches did not solve the repeated
+physical baseline reads and were not accepted. Do not enable Connected until
+both maximum completion and step-limit cases pass replay, checkpoint, and
+reopen without changing the finite limits or weakening physical proof reads.
 
 The live availability gates are in
 [`setup/view.rs`](../apps/imager/src/setup/view.rs); Desktop qualification is in
