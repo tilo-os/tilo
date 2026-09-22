@@ -1,0 +1,49 @@
+name: Migration / native Windows tests
+
+# The release-imager Windows jobs depend on a signed installer image. Keep this
+# manually dispatched source-qualification lane independent of release media so
+# migration code can be checked while that image is still being produced.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: imager-windows-x86_64
+          - arch: aarch64
+            runner: imager-windows-aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      TILO_WINDOWS_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require native Windows architecture
+        shell: powershell
+        run: |
+          $Expected = if ($env:TILO_WINDOWS_ARCH -eq 'aarch64') { 12 } else { 9 }
+          $Processors = @(Get-CimInstance Win32_Processor)
+          if ($Processors.Count -eq 0 -or @($Processors | Where-Object { $_.Architecture -ne $Expected }).Count -ne 0) {
+            throw "Windows runner architecture does not match $env:TILO_WINDOWS_ARCH"
+          }
+      - name: Compile migration app and test targets
+        shell: powershell
+        run: |
+          cargo check -p imager --tests --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test guided setup and folder import
+        shell: powershell
+        run: |
+          cargo test -p imager --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test native copy journal and worker
+        shell: powershell
+        run: |
+          cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" migration_journal::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" migration_native::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
