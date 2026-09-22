@@ -41,6 +41,8 @@ param(
     [int]$QmpPort = 4444,
     [ValidateRange(1, 65535)]
     [int]$SerialTcpPort,
+    [ValidateRange(1, 65535)]
+    [int]$SshHostPort,
     [switch]$ResetVars,
     [switch]$CheckOnly,
     [switch]$WritableSourceDisk,
@@ -205,6 +207,17 @@ $serialEndpoint = if ($SerialTcpPort) {
     $serialProbe.Dispose()
     "file:$serialLog"
 }
+$networkEndpoint = 'user,id=net0'
+if ($SshHostPort) {
+    if ($SshHostPort -eq $QmpPort -or ($SerialTcpPort -and $SshHostPort -eq $SerialTcpPort)) {
+        throw 'SshHostPort must differ from QmpPort and SerialTcpPort.'
+    }
+    $sshListener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $SshHostPort -State Listen -ErrorAction SilentlyContinue
+    if ($sshListener) {
+        throw "SSH forwarding port 127.0.0.1:$SshHostPort is already in use by PID $($sshListener.OwningProcess)."
+    }
+    $networkEndpoint = "user,id=net0,hostfwd=tcp:127.0.0.1:$SshHostPort-:22"
+}
 
 $diskExists = Test-Path -LiteralPath $DiskPath -PathType Leaf
 $diskHasGpt = $false
@@ -258,6 +271,7 @@ if ($CheckOnly) {
         Write-Host 'Target:      none'
     }
     Write-Host "Serial:      $serialEndpoint"
+    if ($SshHostPort) { Write-Host "SSH:         127.0.0.1:$SshHostPort -> guest:22 [available]" }
     Write-Host "QMP:         tcp:127.0.0.1:$QmpPort [available]"
     return
 }
@@ -308,7 +322,7 @@ $qemuArgs = @(
     '-device', 'qemu-xhci'
     '-device', 'usb-kbd'
     '-device', 'usb-tablet'
-    '-netdev', 'user,id=net0'
+    '-netdev', $networkEndpoint
     '-device', 'virtio-net-pci,netdev=net0'
     '-serial', $serialEndpoint
     '-monitor', 'none'
@@ -329,6 +343,7 @@ if ($targetIsRequested) {
     Write-Host "Target:     $InstallTargetDisk (serial=tilo-install-target)"
 }
 Write-Host "Serial:     $serialEndpoint"
+if ($SshHostPort) { Write-Host "SSH:        127.0.0.1:$SshHostPort -> guest:22" }
 Write-Host "QMP:        tcp:127.0.0.1:$QmpPort"
 & $qemuExe @qemuArgs
 if ($LASTEXITCODE -ne 0) {

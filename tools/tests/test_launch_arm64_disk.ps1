@@ -34,6 +34,17 @@ foreach ($contract in @(
     }
 }
 
+$sshContracts = @(
+    '[int]$SshHostPort',
+    "'SshHostPort must differ from QmpPort and SerialTcpPort.'",
+    'hostfwd=tcp:127.0.0.1:$SshHostPort-:22'
+)
+foreach ($contract in $sshContracts) {
+    if (-not $source.Contains($contract)) {
+        throw "launch-arm64-disk.ps1 is missing SSH forwarding contract: $contract"
+    }
+}
+
 $qemuRoot = Join-Path $env:USERPROFILE 'msys64\clangarm64'
 $qemu = Join-Path $qemuRoot 'bin\qemu-system-aarch64.exe'
 if (-not (Test-Path -LiteralPath $qemu -PathType Leaf)) {
