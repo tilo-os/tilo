@@ -162,6 +162,27 @@ def partitions(document, loop):
     return [row['node'] for row in rows]
 
 
+def media_partitions(document, loop):
+    """Validate the exact systemd-repart layout emitted by disk-image.sh."""
+    table = document['partitiontable']
+    if table.get('label') != 'gpt' or table.get('device') != loop or table.get('sectorsize') != 512:
+        raise ValueError('expected a 512-byte-sector GPT on the allocated loop')
+    rows = table['partitions']
+    expected = [('esp', 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'),
+                ('Tilo root', '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab')]
+    if len(rows) != 2:
+        raise ValueError('expected only ESP and ARM64 root partitions')
+    for index, (row, (label, kind)) in enumerate(zip(rows, expected), 1):
+        if (row.get('node') != f'{loop}p{index}' or row.get('name') != label
+                or row.get('type', '').lower() != kind):
+            raise ValueError('media partition identity or type differs')
+    if rows[0]['size'] != 2 * 1024 * 1024 * 1024 // 512 or rows[0]['start'] < 2048:
+        raise ValueError('unexpected media ESP size/alignment')
+    if rows[1]['start'] < rows[0]['start'] + rows[0]['size'] or rows[1]['size'] <= 0:
+        raise ValueError('overlapping or empty media root partition')
+    return [row['node'] for row in rows]
+
+
 def config_lines(raw):
     result = {}
     for line in raw.decode('utf-8', 'strict').splitlines():
@@ -284,7 +305,7 @@ def preflight_disk(path):
                 if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
                     raise ValueError('loop is not read-only')
                 layout = json.loads(command(['/usr/sbin/sfdisk', '--json', loop]))
-                parts = partitions(layout, loop)
+                parts = media_partitions(layout, loop)
                 esp, root = scratch / 'esp', scratch / 'root'
                 for device, destination, kind, options in zip(
                         parts, (esp, root), ('vfat', 'btrfs'),
