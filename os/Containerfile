@@ -878,15 +878,16 @@ COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
-# service discovered by AccessKit providers at runtime. `harfbuzz-icu` owns
-# libharfbuzz-icu.so.0, which the copied shell binary links directly; keep both
-# explicit so compositor startup never depends on a build-stage dependency or
-# a transitive browser accessibility dependency.
+# service discovered by AccessKit providers at runtime. `harfbuzz-icu` and
+# `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
+# shell binary links directly; keep them explicit so compositor startup never
+# depends on build-stage or transitive browser dependencies.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
     harfbuzz-icu \
+    libatomic \
     at-spi2-core \
     google-noto-sans-fonts \
     plymouth \
