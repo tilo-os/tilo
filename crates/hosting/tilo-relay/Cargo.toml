@@ -112,7 +112,7 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-pkg = { path = "../../packaging/pkg" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 
 [[test]]

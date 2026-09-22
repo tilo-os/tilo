@@ -28,7 +28,7 @@ use uuid::Uuid;
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.tilo.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -232,7 +232,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.tilo.word-processor", "delete")],
+        &[("so.tilo.word-processor", "delete")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -313,7 +313,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.tilo.word-processor", "insert-table")],
+        &[("so.tilo.word-processor", "insert-table")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -397,7 +397,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
     )
     .unwrap();
     let wp_replica = seed_document_with_image(
-        "Scribe: rotate the photograph right, and then place the image in the document",
+        "Scribe: rotate the photograph right, then produce the edited image content, then place the image in the document",
     );
     (wp_peer, wp_replica)
 }
@@ -410,7 +410,7 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
     send(
         &mut photo_peer,
         &CollabRequest::Hello {
-            app_id: "dev.tilo.photos".into(),
+            app_id: "so.tilo.photos".into(),
             cluster_id: room,
             record: None,
             handle: Some("photos".into()),
@@ -455,7 +455,7 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
 
 /// Drive the photo peer's side of the exchange: publish its real contract and
 /// snapshot after the caller has observed the agent's cluster subscription,
-/// signal `photo_ready_tx`, and stop once the discovered rotate lands or the
+/// signal `photo_ready_tx`, and stop once the discovered export returns or the
 /// 15s deadline passes. This explicit seed keeps the proof about cross-app
 /// action dataflow rather than coupling it to late-join presence routing.
 fn drive_photo_peer(
@@ -467,7 +467,7 @@ fn drive_photo_peer(
     let deadline = Instant::now() + Duration::from_secs(15);
     typed_peer::publish_actions(
         &mut photo_peer,
-        "dev.tilo.photos",
+        "so.tilo.photos",
         &photos_resources(&photo_replica),
     );
     send(
@@ -476,6 +476,7 @@ fn drive_photo_peer(
     )
     .unwrap();
     let _ = photo_ready_tx.send(());
+    let mut exported = false;
     while Instant::now() < deadline {
         let Some(event) = recv(&mut photo_peer) else {
             continue;
@@ -497,23 +498,72 @@ fn drive_photo_peer(
                 ..
             } => {
                 let resources = photos_resources(&photo_replica);
-                let update = typed_peer::service_document_invocation(
-                    &mut photo_peer,
-                    &mut photo_replica,
-                    &resources,
-                    photos::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                );
+                let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
+                    let encoded = resources
+                        .iter()
+                        .find(|candidate| candidate.id.as_str() == resource)
+                        .and_then(|candidate| {
+                            candidate
+                                .actions
+                                .iter()
+                                .find(|candidate| candidate.id == action)
+                        })
+                        .and_then(|spec| match &spec.input {
+                            tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                            tilo_actions::ActionInput::Prompted { .. } => None,
+                        })
+                        .expect("the published export has one immediate operation payload");
+                    let result =
+                        photos::actions::decode_operation(&encoded.type_id, &encoded.payload)
+                            .and_then(|operation| match operation {
+                                Some(photos::actions::PhotosOperation::ExportEditedContent {
+                                    resource_id,
+                                    source_content,
+                                    edits,
+                                }) => photos::actions::export_edited_content(
+                                    &resource_id,
+                                    &source_content,
+                                    edits,
+                                    &photo_replica,
+                                ),
+                                _ => Err("the export descriptor did not encode an export".into()),
+                            });
+                    let invocation =
+                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+                    match result {
+                        Ok(output) => {
+                            exported = true;
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output }
+                        }
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.export_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    }
+                } else {
+                    typed_peer::service_document_invocation(
+                        &mut photo_peer,
+                        &mut photo_replica,
+                        &resources,
+                        photos::actions::register,
+                        id,
+                        resource,
+                        action,
+                        argument.as_deref(),
+                        &actor,
+                    )
+                };
                 send(
                     &mut photo_peer,
                     &CollabRequest::UpdateInvocation { id, update },
                 )
                 .unwrap();
-                if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
+                if exported {
                     break;
                 }
             }
@@ -522,9 +572,6 @@ fn drive_photo_peer(
                     continue;
                 };
                 let _ = photo_replica.load_incremental(&data);
-                if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
-                    break;
-                }
             }
             _ => {}
         }

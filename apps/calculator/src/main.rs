@@ -71,11 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let n = parse_bench_n(&args).unwrap_or(400);
         return run_clicks_bench(shots_viewport(), n);
     }
-    ui::launch::run(
-        &LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
-            .shot_handler(render_shot)
-            .configure_app(configure_app),
-    )?;
+    ui::launch::run(&launch_spec())?;
     Ok(())
 }
 
@@ -106,11 +102,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         Box::new(app)
     };
+    // The shared screenshot policy resolves `TILO_SHOTS_THEME`,
+    // `TILO_SHOTS_TEXT_SCALE` / `--text-scale` and the motion preference
+    // exactly as every other first-party renderer does, so a light-theme
+    // request cannot be honoured here and ignored there.
     render_shot_to_png(
         root,
         args.viewport.unwrap_or_else(shots_viewport),
         out,
-        args.text_scale,
+        ui::launch::shot_theme(args),
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
@@ -412,29 +412,9 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
-    text_scale: Option<f32>,
+    theme: Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    // The app has a custom shot handler, so it must apply the common launcher
-    // text-scale argument itself (the default handler does this for us). Keep
-    // the environment form too: it is useful for the per-app visual harness
-    // and matches the other first-party app renderers.
-    let shot_scale = text_scale.or_else(|| {
-        std::env::var("TILO_SHOTS_TEXT_SCALE")
-            .ok()
-            .and_then(|raw| raw.parse::<f32>().ok())
-            .filter(|scale| scale.is_finite())
-    });
-    if let Some(scale) = shot_scale {
-        theme = theme.with_text_scale(scale);
-    }
     let mut presence = PresenceCtx::empty();
     // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
     // frame shows a peer caret mapped into the active math field's 2D layout.
@@ -503,4 +483,16 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("calculator: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.calculator", calculator::app_root)
+        .history(&calculator::framework_history::HISTORY)
+        .shot_handler(render_shot)
+        .configure_app(configure_app)
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
 }

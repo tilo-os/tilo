@@ -108,72 +108,13 @@ pub enum RunError {
     InvalidCapturePlan,
 }
 
-/// Strict resource envelope for a short-lived captured sandbox worker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CapturedResourcePlan {
-    pub cpu_seconds: u64,
-    pub memory_bytes: u64,
-    pub output_bytes: usize,
-    pub wall_time: Duration,
-}
-
-impl CapturedResourcePlan {
-    pub const MAX_CPU_SECONDS: u64 = 300;
-    pub const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-    pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-    pub const MAX_WALL_TIME: Duration = Duration::from_secs(10 * 60);
-
-    /// Reject absent or excessively broad limits before a process exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RunError::InvalidCapturePlan`] when any limit is zero,
-    /// below the safe memory floor, or above the launcher's hard ceiling.
-    pub fn validate(self) -> Result<Self, RunError> {
-        if self.cpu_seconds == 0
-            || self.cpu_seconds > Self::MAX_CPU_SECONDS
-            || self.memory_bytes < 16 * 1024 * 1024
-            || self.memory_bytes > Self::MAX_MEMORY_BYTES
-            || self.output_bytes == 0
-            || self.output_bytes > Self::MAX_OUTPUT_BYTES
-            || self.wall_time.is_zero()
-            || self.wall_time > Self::MAX_WALL_TIME
-        {
-            return Err(RunError::InvalidCapturePlan);
-        }
-        Ok(self)
+pub use crate::capture::{
+    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+};
+impl From<crate::capture::InvalidCapturePlan> for RunError {
+    fn from(_: crate::capture::InvalidCapturePlan) -> Self {
+        Self::InvalidCapturePlan
     }
-}
-
-/// Cooperative cancellation shared with the trusted worker scheduler. The
-/// sandbox receives no token or descriptor and cannot cancel another job.
-#[derive(Clone, Debug, Default)]
-pub struct CaptureCancellation(Arc<AtomicBool>);
-
-impl CaptureCancellation {
-    pub fn cancel(&self) {
-        self.0.store(true, AtomicOrdering::Release);
-    }
-
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(AtomicOrdering::Acquire)
-    }
-}
-
-#[derive(Debug)]
-pub enum CapturedTermination {
-    Exited(ExitStatus),
-    Cancelled,
-    TimedOut,
-    OutputLimit,
-}
-
-#[derive(Debug)]
-pub struct CapturedRunOutput {
-    pub termination: CapturedTermination,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 impl RunError {
@@ -271,7 +212,7 @@ impl Default for RunOptions {
             bwrap_bin: None,
             sandbox_shim_bin: None,
             minimal_libs: false,
-            // qpkg applications are untrusted by default.  A caller using the
+            // tapp applications are untrusted by default.  A caller using the
             // convenience constructor must not accidentally remove one of the
             // kernel-enforced confinement layers.
             landlock_enforce: true,
@@ -378,7 +319,7 @@ mod resource_claim_tests {
 
     fn browser_manifest() -> MinimalManifest {
         toml::from_str(
-            "package_id = \"dev.tilo.browser\"\nversion = \"1\"\n\
+            "package_id = \"so.tilo.browser\"\nversion = \"1\"\n\
              [entrypoint]\nbin = \"bin/browser\"\n\
              [providers]\nschemes = [\"https\"]\n",
         )
@@ -413,7 +354,7 @@ mod resource_claim_tests {
     #[test]
     fn only_gui_game_packages_receive_the_scheduler_hint() {
         let game: MinimalManifest = toml::from_str(
-            "[package]\nid = \"dev.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+            "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
              [entrypoint]\nbin = \"bin/game\"\n",
         )
         .unwrap();
@@ -453,7 +394,7 @@ mod managed_service_tests {
 
     fn manifest(kind: &str, entrypoint_type: &str) -> MinimalManifest {
         toml::from_str(&format!(
-            "[package]\nid = \"dev.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
+            "[package]\nid = \"so.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"
         ))
         .unwrap()
@@ -500,7 +441,7 @@ mod managed_service_tests {
     #[test]
     fn managed_service_cannot_readdress_its_authenticated_identity() {
         let opts = RunOptions {
-            app_id: Some("dev.tilo.other".into()),
+            app_id: Some("so.tilo.other".into()),
             ..service_options()
         };
         assert!(matches!(
@@ -1035,7 +976,7 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
     Ok(())
 }
 
-/// Bound per-process resources inherited by bwrap and the qpkg. Core dumps may
+/// Bound per-process resources inherited by bwrap and the tapp. Core dumps may
 /// contain workspace content or broker responses; an untrusted app also does not
 /// need an unbounded descriptor table. Both soft and hard limits are set so the
 /// app cannot raise them again.
@@ -1220,7 +1161,7 @@ fn splice_trusted_identities(
     manifest: &MinimalManifest,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
-    if manifest.package_id == "dev.tilo.file-explorer"
+    if manifest.package_id == "so.tilo.file-explorer"
         && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
     {
         let entry = pop_entry(argv)?;
@@ -1445,7 +1386,10 @@ fn splice_sandbox_shim(
 /// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
 /// the parent for observability (the shim enforces Landlock; this only
 /// records intent).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
+)]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
@@ -2033,7 +1977,7 @@ mod captured_resource_tests {
         ] {
             assert!(matches!(
                 invalid.validate(),
-                Err(RunError::InvalidCapturePlan)
+                Err(crate::capture::InvalidCapturePlan)
             ));
         }
     }
@@ -2229,7 +2173,7 @@ type IdentityBrokerHandles = (
 
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
-/// identity, filesystem and egress decisions as a normal qpkg launch.
+/// identity, filesystem and egress decisions as a normal tapp launch.
 ///
 /// # Errors
 ///
@@ -2807,7 +2751,7 @@ mod app_dir_tests {
 
     #[test]
     fn workspace_launch_without_an_author_grant_is_read_only() {
-        let m = manifest("dev.tilo.fixture");
+        let m = manifest("so.tilo.fixture");
         let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
         assert_eq!(
             workspace.participation,
@@ -2831,7 +2775,7 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let m = manifest("dev.tilo.fixture");
+        let m = manifest("so.tilo.fixture");
         let a = resolve_app_dir(&m, &opts_in(Some("room-a"))).expect("room a");
         let b = resolve_app_dir(&m, &opts_in(Some("room-b"))).expect("room b");
         let personal = resolve_app_dir(&m, &opts_in(None)).expect("personal");
@@ -2869,8 +2813,8 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let mut m = manifest("dev.tilo.fixture");
-        let victim = data.path().join("dev.tilo.totp");
+        let mut m = manifest("so.tilo.fixture");
+        let victim = data.path().join("so.tilo.totp");
         m.sandbox.fs.write.push(victim.display().to_string());
         let refused = run_with(&m, Path::new("/nonexistent"), &opts_in(None));
 

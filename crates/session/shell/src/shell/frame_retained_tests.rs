@@ -348,7 +348,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["notes", "editor", "records"]
+        vec!["actions", "notes", "editor", "records"]
     );
 
     let chrome = fixture.chrome();
@@ -404,11 +404,6 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         ]
     );
     assert!(tree.workspaces[2].collaborators.is_empty());
-    let expected_records = group
-        .tabs
-        .iter()
-        .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
-        .collect::<std::collections::BTreeSet<_>>();
     drop(tree);
     let actual_records = chrome
         .records()
@@ -417,7 +412,10 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         .map(|record| record.id.to_string())
         .collect::<std::collections::BTreeSet<_>>();
     drop(chrome);
-    assert_eq!(actual_records, expected_records);
+    assert!(
+        actual_records.is_empty(),
+        "constructing a fixture tree must not fabricate document authority; owning actions create records explicitly"
+    );
 }
 
 fn assert_owned_files_fixture(fixture: &PopulatedShellFixture) {

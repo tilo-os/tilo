@@ -348,37 +348,6 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
     )
 }
 
-/// The photograph as its edits leave it: the file the document names,
-/// cropped and turned the way the document says, encoded as a PNG and put
-/// in this machine's blob store.
-///
-/// The bytes come from [`photos::doc::bytes_of`] — the path first, for the
-/// session that opened the picture, then the content hash — never a raw
-/// `std::fs::read` of the document's path directly. That path is true on
-/// exactly one machine: the same photograph is staged under a different
-/// absolute path in every session that receives it, and a participant with
-/// no window of its own is never the one whose path won. Reading it here
-/// would work by the accident of every session sharing a filesystem and
-/// fail on any real, separate ones.
-fn photos_product(_view: &View, doc: &AutoCommit) -> Option<Product> {
-    let image = photos::doc::PhotosDoc::image(doc)?;
-    let edits = photos::doc::PhotosDoc::edits(doc);
-    let bytes = photos::doc::bytes_of(&image).or_else(|| {
-        tracing::warn!(
-            path = %image.path, content = ?image.content,
-            "cannot get the photograph's bytes: neither the path in the \
-             document nor its content is available to this participant",
-        );
-        None
-    })?;
-    let decoded = photos::pixels::decode(&bytes)?;
-    let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
-    let png = photos::pixels::encode_png(&rendered)?;
-    Some(Product::Content {
-        hash: qdoc::blobstore::put(&png)?,
-    })
-}
-
 fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
     use tilo_actions::ResourceProvider;
     photos::actions::PhotosResources.resources(doc)
@@ -396,7 +365,7 @@ fn photos_document(doc: &AutoCommit) -> bool {
 /// where no peer snapshot exists to attribute — never has to index into
 /// [`CONTRACTS`] to get it.
 pub const WORD_PROCESSOR: AppContract = AppContract {
-    app_id: "dev.tilo.word-processor",
+    app_id: "so.tilo.word-processor",
     title: "the word processor",
     namespace: "word-processor",
     recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
@@ -420,7 +389,7 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
 pub static CONTRACTS: &[AppContract] = &[
     WORD_PROCESSOR,
     AppContract {
-        app_id: "dev.tilo.chat",
+        app_id: "so.tilo.chat",
         title: "the conversation",
         namespace: "chat",
         recognises: chat::doc::ChatDoc::is_seeded,
@@ -430,14 +399,14 @@ pub static CONTRACTS: &[AppContract] = &[
         product: nothing,
     },
     AppContract {
-        app_id: "dev.tilo.photos",
+        app_id: "so.tilo.photos",
         title: "the photo editor",
         namespace: "photos",
         recognises: photos_document,
         resources: photos_resources,
         register: photos::actions::register,
         fallback: false,
-        product: photos_product,
+        product: nothing,
     },
 ];
 
@@ -1386,57 +1355,28 @@ mod tests {
         }
     }
 
-    /// The picture a participant was asked to work on is one it can get the
-    /// bytes of, whoever opened it.
-    ///
-    /// A participant with no window has no staging directory of its own:
-    /// the path in the shared document belongs to whichever session opened
-    /// the photograph, and this one is not it. Reading that path is the
-    /// failure that ends the whole errand quietly — no bytes, no product,
-    /// nothing to hand to the document the picture was going into, and
-    /// every step still reporting that it applied. The content hash is the
-    /// same word in every session, so it is what this resolves through.
+    /// A shared Photos replica is mutable state, not the immutable output of
+    /// a particular action. Only Photos' explicit export lifecycle may mint
+    /// content for the next application step.
     #[test]
-    fn a_photograph_is_rendered_from_its_content_and_not_from_somebody_elses_path() {
-        // The bytes, as the room holds them: in the content store, addressed
-        // by their hash, exactly as they reach a participant that never
-        // touched the file.
-        let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32))
-            .expect("the fixture encodes");
-        let hash = qdoc::blobstore::put(&png).expect("test fixture fits blob quota");
-
-        // The document, as this participant receives it: a path under
-        // another session's runtime directory, which is not a path here.
-        let theirs = format!("/run/user/1000/qlvx-another-session/tilo-opened/{hash}.png");
-        assert!(
-            std::fs::read(&theirs).is_err(),
-            "the stand-in for another session's path is readable here, so it \
-             is not standing in for one"
-        );
+    fn photos_requires_an_explicit_export_result_for_cross_app_content() {
+        let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
+        let hash = qdoc::blobstore::put(&png).expect("blob fixture");
         let mut doc = automerge::AutoCommit::new();
         photos::doc::PhotosDoc::seed(&mut doc);
         photos::doc::PhotosDoc::set_image(
             &mut doc,
-            Some(&photos::OpenImage::from_path(&theirs, 64, 32).with_content(&hash)),
+            Some(&photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash)),
         );
-        // And an edit in force, because the product is the picture *as
-        // asked for* — a crop nobody can render is the same failure one
-        // step later.
         photos::doc::PhotosDoc::set_edits(&mut doc, &photos::Edits::default().rotated_right());
         doc.commit();
 
-        let product = photos_product(&View::default(), &doc)
-            .expect("a participant holding the content can render what it was asked for");
-        let Product::Content { hash: made } = product;
-        assert_ne!(
-            made, hash,
-            "the product has to be the edited picture, not the original \
-             handed straight back"
-        );
         assert!(
-            qdoc::blobstore::get(&made).is_some(),
-            "the product names content this participant does not hold, so \
-             the document it is placed into would reference a permanent hole"
+            (for_app_id("so.tilo.photos")
+                .expect("Photos contract")
+                .product)(&View::default(), &doc)
+            .is_none(),
+            "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
         );
     }
 
@@ -1646,7 +1586,7 @@ mod tests {
     fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
         let surface = |peer_id| ui::collaboration::BrokerActionSurface {
             peer_id,
-            app_id: "dev.tilo.calculator".into(),
+            app_id: "so.tilo.calculator".into(),
             cluster_id: "room".into(),
             record_id: format!("window-{peer_id}"),
             live: true,
@@ -1683,9 +1623,9 @@ mod tests {
 
     #[test]
     fn broker_prefixed_shell_launch_is_still_recognised_as_an_open() {
-        let address = ActionAddress::new("app.dev.tilo.diffmerge", OPEN_ACTION);
+        let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
         let offer = Offer {
-            app: "dev.tilo.diffmerge".into(),
+            app: "so.tilo.diffmerge".into(),
             broker_peer_id: Some(0),
             descriptor: ActionDescriptor {
                 address,
@@ -1701,6 +1641,6 @@ mod tests {
             },
         };
         let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
-        assert_eq!(opens(&decoded), Some("dev.tilo.diffmerge"));
+        assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
     }
 }

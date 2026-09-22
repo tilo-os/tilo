@@ -2287,10 +2287,10 @@ mod tests {
         assert_eq!(parse_bootc_staged(none), None);
 
         let image =
-            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
+            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/qos/qos:latest"}}}}}"#;
         assert_eq!(
             parse_bootc_staged(image).as_deref(),
-            Some("quay.io/tilo/tilo:latest")
+            Some("quay.io/qos/qos:latest")
         );
     }
 
@@ -2847,10 +2847,10 @@ mod tests {
 
     #[test]
     fn release_notes_only_accept_https_image_metadata() {
-        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.tilo.example/releases/42"}}}}}"#;
+        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
         assert_eq!(
             parse_bootc_release_notes(json).as_deref(),
-            Some("https://updates.tilo.example/releases/42")
+            Some("https://updates.example.test/releases/42")
         );
         let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
         assert_eq!(parse_bootc_release_notes(unsafe_url), None);

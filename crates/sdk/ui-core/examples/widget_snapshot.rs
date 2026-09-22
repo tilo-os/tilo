@@ -70,6 +70,23 @@ fn stamp(
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root = widget.build_layout(&mut taffy, theme, &mut node_map);
+    // A leaf that fills its slot with `flex_grow` (VideoPlayer, ImageViewer)
+    // has no flex parent here, so it would resolve to a zero rect and paint
+    // its chrome at the cell origin. Give such a root the cell itself, as a
+    // parent Row or Column would.
+    if let Ok(style) = taffy.style(root) {
+        let fills_slot = style.flex_grow > 0.0
+            && style.size.width.into_option().is_none()
+            && style.size.height.into_option().is_none();
+        if fills_slot {
+            let mut style = style.clone();
+            style.size = Size {
+                width: taffy::style_helpers::length(size.0),
+                height: taffy::style_helpers::length(size.1),
+            };
+            let _ = taffy.set_style(root, style);
+        }
+    }
 
     let _ = taffy.compute_layout_with_measure(
         root,
@@ -574,7 +591,20 @@ pub fn run(_args: &[String]) {
     let (canvas_w, canvas_h) = (1100u32, 1500u32);
 
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|dark|high-contrast` and `QOS_SHOTS_TEXT_SCALE`
+    // are the switches every other capture honours; default stays dark at
+    // 1×, and motion is reduced like a real capture so nothing mid-animation
+    // lands in the still.
+    let text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    let theme = std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark)
+        .with_text_scale(tilo_ui::launch::shot_text_scale(
+            None,
+            text_scale.as_deref(),
+        ))
+        .with_reduce_motion(true);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let mut doc = AutoCommit::new();

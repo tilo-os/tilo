@@ -9,7 +9,7 @@ use crate::app_host_capnp::{
     app_host,
 };
 use crate::install::InstallExpectation;
-use pkg::PackageId;
+use tilo_app_package::PackageId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlatpakAction {
@@ -80,7 +80,7 @@ impl BlockingClient {
         let mut request = self.client.install_request();
         {
             let mut p = request.get();
-            p.set_qpkg_bytes(bytes);
+            p.set_tapp_bytes(bytes);
             p.set_pinning(WirePinning::Tried);
             p.set_expected_root(expected.package_root.as_bytes());
             p.set_expected_publisher(&expected.publisher);
@@ -113,7 +113,7 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?
                 .to_string()
                 .map_err(|e| e.to_string())?;
-            let manifest = pkg::Manifest::from_toml_str(&manifest_text)
+            let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
                 .map_err(|e| format!("installed manifest: {e}"))?;
             out.push(InstalledPackage {
                 package_root: parse_id(entry.get_id().map_err(|e| e.to_string())?)?,

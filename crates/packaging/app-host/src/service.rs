@@ -19,10 +19,10 @@ use crate::app_host_capnp::{
     app_host,
 };
 use crate::gc;
-use crate::install::{InstallExpectation, install_verified_qpkg};
+use crate::install::{InstallExpectation, install_verified_tapp};
 use crate::registry::{Pinning, RegistryEntry};
 use crate::store::Store;
-use pkg::id::PackageId;
+use tilo_app_package::id::PackageId;
 
 const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
 const SYSTEM_PAYLOAD_DIR: &str = "/usr/lib/tilo-apps";
@@ -114,7 +114,7 @@ fn system_packages_from(root: &Path, payload_root: &Path) -> Result<Vec<SystemPa
                 row.manifest_path.display()
             ))
         })?;
-        let manifest = pkg::Manifest::from_toml_str(&manifest_text)
+        let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
             .map_err(|error| Error::failed(format!("system manifest {}: {error}", row.id)))?;
         if manifest.package.id != row.id {
             return Err(Error::failed(format!(
@@ -135,7 +135,7 @@ fn system_packages_from(root: &Path, payload_root: &Path) -> Result<Vec<SystemPa
 
 fn user_app_ids(rows: &[RegistryEntry]) -> HashSet<String> {
     rows.iter()
-        .filter_map(|row| pkg::Manifest::from_toml_str(&row.manifest_text).ok())
+        .filter_map(|row| tilo_app_package::Manifest::from_toml_str(&row.manifest_text).ok())
         .map(|manifest| manifest.package.id)
         .collect()
 }
@@ -509,8 +509,8 @@ impl app_host::Server for AppHostServer {
         let max_bytes = self.max_store_bytes;
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let qpkg_bytes = p
-                .get_qpkg_bytes()
+            let tapp_bytes = p
+                .get_tapp_bytes()
                 .map_err(|e| Error::failed(e.to_string()))?
                 .to_vec();
             let pinning = parse_pinning(p.get_pinning().map_err(|e| Error::failed(e.to_string()))?);
@@ -545,7 +545,7 @@ impl app_host::Server for AppHostServer {
                 size_bytes: p.get_expected_size_bytes(),
             };
             let id = tokio::task::spawn_blocking(move || {
-                let id = install_verified_qpkg(&store, &qpkg_bytes, pinning, &expected)
+                let id = install_verified_tapp(&store, &tapp_bytes, pinning, &expected)
                     .map_err(|e| e.to_string())?;
                 // Best-effort post-install sweep. Errors here should not
                 // fail the install — we already have the bytes on disk.
@@ -809,16 +809,16 @@ type = "gui"
     fn system_registry_reads_share_metadata_and_lib_payloads() {
         let root = tempfile::tempdir().unwrap();
         let payload_root = tempfile::tempdir().unwrap();
-        let payload = payload_root.path().join("payloads/dev.tilo.system");
+        let payload = payload_root.path().join("payloads/so.tilo.system");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin/app"), b"app").unwrap();
         let manifest_path = payload.join("manifest.toml");
-        std::fs::write(&manifest_path, system_manifest("dev.tilo.system")).unwrap();
+        std::fs::write(&manifest_path, system_manifest("so.tilo.system")).unwrap();
         let package_id = "ab".repeat(32);
         let mut registry = std::fs::File::create(root.path().join("registry.toml")).unwrap();
         writeln!(
             registry,
-            "[[entry]]\nid = \"dev.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"",
+            "[[entry]]\nid = \"so.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"",
             payload.display(),
             manifest_path.display()
         )
@@ -826,7 +826,7 @@ type = "gui"
 
         let entries = system_packages_from(root.path(), payload_root.path()).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].app_id, "dev.tilo.system");
+        assert_eq!(entries[0].app_id, "so.tilo.system");
         assert_eq!(entries[0].id.to_hex(), package_id);
         assert_eq!(entries[0].payload_root, payload);
     }
@@ -838,7 +838,7 @@ type = "gui"
         let outside = tempfile::NamedTempFile::new().unwrap();
         let package_id = "cd".repeat(32);
         std::fs::write(root.path().join("registry.toml"), format!(
-            "[[entry]]\nid = \"dev.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"\n",
+            "[[entry]]\nid = \"so.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"\n",
             outside.path().display(), outside.path().display()
         )).unwrap();
         let error = system_packages_from(root.path(), payload_root.path()).unwrap_err();
@@ -851,16 +851,16 @@ type = "gui"
         let user_id = PackageId::from_bytes([0xcd; 32]);
         let system = SystemPackage {
             id: system_id,
-            app_id: "dev.tilo.same".into(),
+            app_id: "so.tilo.same".into(),
             payload_root: "/usr/lib/tilo-apps/payloads/system".into(),
             manifest_path: "/usr/lib/tilo-apps/payloads/system/manifest.toml".into(),
-            manifest_text: system_manifest("dev.tilo.same"),
+            manifest_text: system_manifest("so.tilo.same"),
         };
         let user = RegistryEntry::new_now(
             user_id,
             Pinning::Tried,
             "/home/user/.local/share/tilo-app-host/payloads/user".into(),
-            system_manifest("dev.tilo.same"),
+            system_manifest("so.tilo.same"),
         );
         let visible = visible_entries(vec![user], vec![system]);
         assert_eq!(visible.len(), 1);

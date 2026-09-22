@@ -9,7 +9,7 @@
 
 
 [package]
-id       = "dev.tilo.browser"
+id       = "so.tilo.browser"
 name     = "Browser"
 category = "Network"
 version  = "0.1.0"

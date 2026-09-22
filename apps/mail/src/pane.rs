@@ -26,9 +26,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{EmptyState, TextInput, WebView};
+use ui::widget::{Button, ButtonFace, EmptyState, TextInput, WebView};
 
 use crate::account::AccountStore;
+use ui::surface::{card, edge_on, pill, separator};
+
 use crate::draw::{
     ACCOUNT_HEADER_H, AvatarPaintContext, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE,
     FOLDER_ROW_H, HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
@@ -85,19 +87,38 @@ fn list_zero_state(
 /// vertical centre). `chip_here` is whether the chip overlays this pane's
 /// header. Pure so the "title lines up with, and is spaced from, the collapse
 /// button" invariant is unit-testable.
-fn list_header_layout(rect: Rect, chip_here: bool, gap: f64, scale: f64) -> (f64, f64, f64) {
-    // The chip is a CHIP_SIZE square inset CHIP_INSET from the pane's top-left
-    // (mirrored from `ui`'s NavShell), so its centre line is:
-    let header_cy = rect.y0 + (CHIP_INSET + CHIP_SIZE / 2.0) * scale;
+fn list_header_layout(
+    rect: Rect,
+    chip: Rect,
+    chip_here: bool,
+    gap: f64,
+    title_h: f64,
+) -> (f64, f64, f64) {
+    // `chip` is the shell's collapse chip as laid out (or the 1x mirror,
+    // `mirrored_chip`, when the shell shows none); its centre line is:
+    let header_cy = chip.center().y;
     let title_x = if chip_here {
-        rect.x0 + (CHIP_INSET + CHIP_SIZE + gap) * scale
+        chip.x1 + gap
     } else {
-        rect.x0 + 20.0 * scale
+        rect.x0 + 20.0
     };
-    // Text is positioned by the top of its line box (`size * 1.25`), so drop the
-    // title top by half its own box to centre the glyphs on `header_cy`.
-    let title_y = header_cy - 18.0 * 1.25 * scale / 2.0;
+    // Text is positioned by the top of its line box, so drop the title top by
+    // half its *measured* box (`title_h`) to centre the glyphs on `header_cy`
+    // at every text scale.
+    let title_y = header_cy - title_h / 2.0;
     (title_x, title_y, header_cy)
+}
+
+/// The 1x mirror of the shell's collapse chip: a `CHIP_SIZE` square inset
+/// `CHIP_INSET` from the pane's top-left. Used only while the shell has not
+/// published its real chip (see `State::shell_chip`).
+fn mirrored_chip(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0 + CHIP_INSET,
+        rect.y0 + CHIP_INSET,
+        rect.x0 + CHIP_INSET + CHIP_SIZE,
+        rect.y0 + CHIP_INSET + CHIP_SIZE,
+    )
 }
 
 /// The per-account settings gear rect on the right edge of an account row.
@@ -164,6 +185,190 @@ struct CardHeaderArgs<'a> {
     width: f32,
 }
 
+/// Measured inputs for [`card_header_layout`]: the card's origin and width,
+/// the avatar radius, and the line boxes / widths measured with the styles
+/// the header paints with.
+#[derive(Clone, Copy, Debug)]
+struct CardHeaderMetrics {
+    x: f64,
+    y: f64,
+    width: f64,
+    avatar_r: f64,
+    name_h: f64,
+    email_h: f64,
+    date_w: f64,
+    to_w: f64,
+    gap: f64,
+}
+
+/// Where a message card's header pieces land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CardHeaderLayout {
+    avatar_c: Point,
+    /// Left edge of the name/email column.
+    text_x: f64,
+    name_y: f64,
+    name_h: f64,
+    email_y: f64,
+    email_h: f64,
+    /// Width the name and email may occupy before eliding: up to the start
+    /// of the right column minus a gap.
+    from_budget: f64,
+    /// Left edges of the right-aligned date and recipients lines.
+    date_x: f64,
+    to_x: f64,
+    /// Bottom of the header (where the body starts).
+    bottom: f64,
+}
+
+/// Lay out a message card header. The name+email block is centred on the
+/// avatar; the date and the "to …" line are both right-aligned to the card's
+/// right edge (one shared edge, not a fixed 150px column), and the name/email
+/// budget stops one gap before whichever of them reaches further left.
+fn card_header_layout(m: &CardHeaderMetrics) -> CardHeaderLayout {
+    let avatar_c = Point::new(m.x + m.avatar_r + 1.0, m.y + m.avatar_r + 1.0);
+    let text_x = m.x + 2.0 * m.avatar_r + 10.0;
+    let block_h = m.name_h + m.email_h;
+    let name_y = avatar_c.y - block_h / 2.0;
+    let email_y = name_y + m.name_h;
+    let right = m.x + m.width;
+    let date_x = right - m.date_w;
+    let to_x = right - m.to_w;
+    let from_budget = (date_x.min(to_x) - m.gap - text_x).max(0.0);
+    let block_bottom = (email_y + m.email_h).max(avatar_c.y + m.avatar_r);
+    // The 1× header keeps its authored 48px rhythm; taller text pushes the
+    // body down instead of painting the first paragraph over the email line.
+    let bottom = (block_bottom + m.gap).max(m.y + 48.0);
+    CardHeaderLayout {
+        avatar_c,
+        text_x,
+        name_y,
+        name_h: m.name_h,
+        email_y,
+        email_h: m.email_h,
+        from_budget,
+        date_x,
+        to_x,
+        bottom,
+    }
+}
+
+/// Vertical bands of one message-list row, measured from the styles the row
+/// paints with and shared by the hit list and the painter so the star the
+/// pointer hits is the star that was drawn, at every text scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ListRowMetrics {
+    row_h: f64,
+    /// Top of the sender line and its line box.
+    name_y: f64,
+    name_h: f64,
+    /// Top of the subject line and its line box.
+    subj_y: f64,
+    subj_h: f64,
+    /// Top of the snippet line and its line box.
+    snippet_y: f64,
+    snippet_h: f64,
+    /// Avatar centre: on the sender + subject block.
+    avatar_cy: f64,
+    /// Centre line of the star / paperclip glyphs: the snippet line.
+    icon_cy: f64,
+    /// Radius of the sender avatar. The shared `Avatar::draw_at` sizes the
+    /// initials at 0.4× the disc through the renderer, which applies the text
+    /// scale, so the disc follows the same scale to keep them inside.
+    avatar_r: f64,
+    /// Height of the header's search box and refresh button: the search
+    /// text's measured line box plus a pad each side, never shorter than the
+    /// 1× control.
+    ctl_h: f64,
+    /// Height of the list header band the rows start under: the controls
+    /// plus their inset above and below, never shorter than the 1× header.
+    header_h: f64,
+}
+
+/// 1× radius of the list-row sender avatar.
+const LIST_AVATAR_R: f64 = 17.0;
+/// 1× height of the header's search box and refresh button.
+const HEADER_CTL_H: f64 = 32.0;
+/// Inset of the header controls from the pane's top edge (`s3`).
+const HEADER_CTL_INSET: f64 = 12.0;
+/// Renderer-relative size of the search box's text and placeholder.
+const SEARCH_TEXT: f32 = 13.0;
+
+impl ListRowMetrics {
+    /// The 1× row before anything has been measured (and for the geometry
+    /// tests, which never paint): the same rule applied to the 1× line boxes.
+    fn fallback() -> Self {
+        Self::from_line_boxes(16.875, 15.625, 14.375, 4.0, 12.0)
+    }
+
+    /// Measure the three text lines with their paint styles, and the
+    /// header control / avatar sizes for the current text scale.
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Bold);
+        let (_, subj_h) = tr.measure_weighted("Ag", 12.5, None, TextWeight::Semibold);
+        let (_, snippet_h) = tr.measure("Ag", 11.5, None);
+        let (_, search_h) = tr.measure("Ag", SEARCH_TEXT, None);
+        let pad = f64::from(sp.s3);
+        let mut m = Self::from_line_boxes(
+            f64::from(name_h),
+            f64::from(subj_h),
+            f64::from(snippet_h),
+            f64::from(sp.s1),
+            pad,
+        );
+        m.avatar_r = LIST_AVATAR_R * f64::from(theme.text_scale).max(1.0);
+        m.row_h = m.row_h.max((2.0 * m.avatar_r + 2.0 * pad).ceil());
+        m.ctl_h = (f64::from(search_h) + 2.0 * f64::from(sp.s2)).max(HEADER_CTL_H);
+        m.header_h = (2.0 * HEADER_CTL_INSET + m.ctl_h).max(HEADER_H);
+        m
+    }
+
+    /// Stack sender, subject and snippet with the small related gap between
+    /// them and the row padding above and below; the row is never shorter
+    /// than the authored 1× row and is rounded up to whole pixels so its
+    /// hairline stays crisp.
+    fn from_line_boxes(name_h: f64, subj_h: f64, snippet_h: f64, gap: f64, pad: f64) -> Self {
+        let name_y = pad;
+        let subj_y = name_y + name_h + gap;
+        let snippet_y = subj_y + subj_h + gap;
+        let row_h = (snippet_y + snippet_h + pad).ceil().max(LIST_ROW_H);
+        Self {
+            row_h,
+            name_y,
+            name_h,
+            subj_y,
+            subj_h,
+            snippet_y,
+            snippet_h,
+            avatar_cy: (name_y + subj_y + subj_h) / 2.0,
+            icon_cy: snippet_y + snippet_h / 2.0,
+            avatar_r: LIST_AVATAR_R,
+            ctl_h: HEADER_CTL_H,
+            header_h: HEADER_H,
+        }
+    }
+
+    /// Centre x of the sender avatar in a row starting at `row_x0`.
+    fn avatar_cx(&self, row_x0: f64) -> f64 {
+        row_x0 + 25.0 + self.avatar_r
+    }
+
+    /// Left edge of the sender / subject / snippet column: one `s3` past the
+    /// disc, so all three lines start together whatever the disc's radius.
+    fn text_x(&self, row_x0: f64, s3: f64) -> f64 {
+        self.avatar_cx(row_x0) + self.avatar_r + s3
+    }
+
+    /// The star's hit rect for a row: a 24px target centred on the painted
+    /// glyph (`right - 24 .. right - 8` on the snippet line).
+    fn star_hit(&self, row: Rect) -> Rect {
+        let right = row.x1 - 14.0;
+        let cy = row.y0 + self.icon_cy;
+        Rect::new(right - 28.0, cy - 12.0, right - 4.0, cy + 12.0)
+    }
+}
+
 /// Everything [`Pane::draw_list_row`] needs about one row that
 /// [`Pane::draw_list`] has already resolved: the message, its slot rect, its
 /// thread size, and its selection/hover/swipe state.
@@ -224,6 +429,9 @@ pub struct Pane {
     hits: Vec<(Rect, Hit)>,
     /// List pane only: the search field.
     search_input: Option<TextInput>,
+    /// List pane only: the row bands measured on the last paint, read by the
+    /// hit list. `None` until the first paint, when the 1× rule stands in.
+    list_metrics: Option<ListRowMetrics>,
     // list swipe state
     swipe: Option<SwipeState>,
     mouse_down_row: Option<(MessageId, Point)>,
@@ -259,7 +467,13 @@ pub struct Pane {
 impl Pane {
     pub fn new(role: Role, shared: Shared) -> Self {
         let search_input = if role == Role::List {
-            let mut i = TextInput::local();
+            // The placeholder belongs to the shared field so the hint and the
+            // typed query share one font, gutter and centre line (the header
+            // used to paint its own "Search" over the box at a fixed offset).
+            // The shared field resolves the catalogue key itself, so the key
+            // is handed over rather than a resolved string (which it would
+            // translate a second time).
+            let mut i = TextInput::local().with_placeholder("mail-search-placeholder");
             i.set_plain_chrome(true);
             Some(i)
         } else {
@@ -272,6 +486,7 @@ impl Pane {
             layout_scale: 1.0,
             hits: Vec::new(),
             search_input,
+            list_metrics: None,
             swipe: None,
             mouse_down_row: None,
             reader_attachment_hits: Vec::new(),
@@ -293,12 +508,33 @@ impl Pane {
 
     // ---- geometry / hit-list, recomputed from the current rect + state ----
 
+    /// The list row bands from the last paint, or the 1× rule before it.
+    fn list_metrics(&self) -> ListRowMetrics {
+        self.list_metrics.unwrap_or_else(ListRowMetrics::fallback)
+    }
+
+    /// The shell's collapse chip in app coordinates, or the 1x mirror at
+    /// this pane's top-left while the shell shows none.
+    fn shell_chip(&self, rect: Rect) -> Rect {
+        self.shared
+            .borrow()
+            .shell_chip
+            .unwrap_or_else(|| mirrored_chip(rect))
+    }
+
+    /// Leading room the shell's chip needs in this pane's header: past the
+    /// chip's right edge by the same breath the 1x constant carried.
+    fn chip_clearance(&self) -> f64 {
+        let chip = self.shell_chip(self.rect);
+        (chip.x1 - self.rect.x0) + (CHIP_CLEARANCE - CHIP_INSET - CHIP_SIZE)
+    }
+
     fn scale(&self) -> f64 {
         self.layout_scale.clamp(0.5, 4.0)
     }
 
     fn header_h(&self) -> f64 {
-        HEADER_H * self.scale()
+        self.list_metrics().header_h
     }
 
     /// A local selection is a second, compact toolbar below the ordinary
@@ -311,20 +547,20 @@ impl Pane {
     }
 
     fn list_row_h(&self) -> f64 {
-        LIST_ROW_H * self.scale()
+        self.list_metrics().row_h
     }
 
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
         match self.role {
-            Role::Sidebar => CHIP_CLEARANCE,
+            Role::Sidebar => self.chip_clearance(),
             // The list is the leftmost content pane (so the shell's collapse /
             // hamburger toggle sits over its header) whenever the layout is
             // narrow OR the docked sidebar is collapsed. Reserve room so the
             // folder title never renders under the toggle chip.
             Role::List => {
                 if st.narrow || !st.sidebar_open {
-                    CHIP_CLEARANCE
+                    self.chip_clearance()
                 } else {
                     20.0
                 }
@@ -342,12 +578,14 @@ impl Pane {
     /// The manual sync / refresh button in the list header (right edge).
     fn refresh_box_rect(&self) -> Rect {
         let r = self.rect;
-        let s = self.scale();
+        // A square the height of the header controls (measured, so it grows
+        // with the search box at a larger text scale).
+        let h = self.list_metrics().ctl_h;
         Rect::new(
-            r.x1 - (16.0 + 32.0) * s,
-            r.y0 + 12.0 * s,
-            r.x1 - 16.0 * s,
-            r.y0 + (12.0 + 32.0) * s,
+            r.x1 - 16.0 - h,
+            r.y0 + HEADER_CTL_INSET,
+            r.x1 - 16.0,
+            r.y0 + HEADER_CTL_INSET + h,
         )
     }
 
@@ -425,25 +663,14 @@ impl Pane {
 
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
-        let s = self.scale();
         // Leave room for the refresh button on the far right.
         let x1 = self.refresh_box_rect().x0 - 10.0;
         // Adapt the search width to the (often narrow) list column, always
         // leaving room for the folder title on its left.
-        // On a 200% narrow screen preserve a readable folder title instead
-        // of letting an accessibility-sized search field consume the entire
-        // header. The field remains comfortably touch-sized (200 logical px)
-        // and can still be focused with `/`.
-        let narrow_large_text = r.width() < 600.0 && s > 1.0;
-        let (min_search_w, max_search_w) = if narrow_large_text {
-            (160.0, 200.0)
-        } else {
-            (140.0 * s, 230.0 * s)
-        };
-        let sw = (r.width() * 0.46).clamp(min_search_w, max_search_w);
-        let title_reserve = if narrow_large_text { 20.0 } else { 70.0 * s };
-        let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() * s + title_reserve);
-        Rect::new(x0, r.y0 + 12.0 * s, x1, r.y0 + (12.0 + 32.0) * s)
+        let sw = (r.width() * 0.46).clamp(140.0, 230.0);
+        let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
+        let h = self.list_metrics().ctl_h;
+        Rect::new(x0, r.y0 + HEADER_CTL_INSET, x1, r.y0 + HEADER_CTL_INSET + h)
     }
 
     fn rebuild_hits(&mut self) {
@@ -472,7 +699,7 @@ impl Pane {
         // band to clear anymore), so it aligns with the list column's first
         // row.
         let pad = 12.0;
-        let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
+        let mut y = self.shell_chip(sb).y1 + 8.0;
         hits.push((
             Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
             Hit::Compose,
@@ -519,6 +746,7 @@ impl Pane {
         search_rect: &mut Option<Rect>,
     ) {
         let r = self.rect;
+        let m = self.list_metrics();
         hits.push((self.refresh_box_rect(), Hit::Refresh));
         hits.push((self.bulk_mode_rect(), Hit::ToggleBulkSelection));
         if !st.bulk_selecting {
@@ -544,20 +772,12 @@ impl Pane {
             if ly >= r.y1 {
                 break;
             }
-            let row_h = self.list_row_h();
-            let row = Rect::new(r.x0, ly, r.x1, ly + row_h);
-            let s = self.scale();
-            let star = Rect::new(
-                row.x1 - 36.0 * s,
-                row.y0 + 8.0 * s,
-                row.x1 - 12.0 * s,
-                row.y0 + 32.0 * s,
-            );
-            if !st.bulk_selecting {
-                hits.push((star, Hit::RowStar(id)));
-            }
+            let row = Rect::new(r.x0, ly, r.x1, ly + m.row_h);
+            // The star target sits on the painted glyph (snippet line, right
+            // edge) — not on the date at the row's top.
+            hits.push((m.star_hit(row), Hit::RowStar(id)));
             hits.push((row, Hit::Row(id)));
-            ly += row_h;
+            ly += m.row_h;
         }
     }
 
@@ -649,7 +869,7 @@ impl Pane {
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
             let hov = rect.contains(st.last_mouse);
             let col = if hov { c.accent[4] } else { c.accent[5] };
-            fill_round(scene, t, *rect, 10.0, col);
+            pill(scene, t, *rect, col, None, Some(10.0));
             let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
             // Icon + label centred as a unit.
@@ -726,10 +946,13 @@ impl Pane {
         };
         let active = ai == st.accounts.active;
         let hov = rect.contains(st.last_mouse);
+        // The active account is a lifted card with its derived edge (HIG
+        // §9.3 / §9.5): selection is a lift, not an accent wash, and a bare
+        // wash on the sidebar had no edge at all on the dark preset.
         if active {
-            fill_round(scene, t, rect, 9.0, c.accent[5].with_alpha_factor(0.12));
+            card(scene, t, rect, 9.0, theme.bg_active);
         } else if hov {
-            fill_round(scene, t, rect, 9.0, c.lift(0.35));
+            card(scene, t, rect, 9.0, theme.bg_hover);
         }
         let chev = if account.collapsed {
             Icon::ChevronRight
@@ -800,7 +1023,7 @@ impl Pane {
         let gear = account_gear_rect(rect);
         let ghov = gear.contains(st.last_mouse);
         if ghov {
-            fill_round(scene, t, gear, 8.0, c.lift(0.72));
+            pill(scene, t, gear, theme.bg_hover, None, Some(8.0));
         }
         Icon::Settings.draw(
             scene,
@@ -823,7 +1046,7 @@ impl Pane {
         let c = &theme.tokens.colors;
         let hov = rect.contains(self.shared.borrow().last_mouse);
         if hov {
-            fill_round(scene, t, rect, 9.0, c.lift(0.35));
+            pill(scene, t, rect, theme.bg_hover, None, Some(9.0));
         }
         let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
         let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
@@ -858,8 +1081,10 @@ impl Pane {
         let active_account = ai == st.accounts.active;
         let selected = active_account && f == st.folder;
         let hov = rect.contains(st.last_mouse);
+        // Selection is a lift with the accent kept to the leading bar (HIG
+        // §9.3 / §9.4); hover is the shared hover tier.
         if selected {
-            fill_round(scene, t, rect, 8.0, c.accent[5].with_alpha_factor(0.20));
+            pill(scene, t, rect, theme.bg_active, None, Some(8.0));
             fill_rect(
                 scene,
                 t,
@@ -867,62 +1092,74 @@ impl Pane {
                 c.accent[5],
             );
         } else if hov {
-            fill_round(scene, t, rect, 8.0, c.lift(0.35));
+            pill(scene, t, rect, theme.bg_hover, None, Some(8.0));
         }
-        let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
+        let sp = &theme.tokens.spacing;
+        let cy = rect.y0 + FOLDER_ROW_H / 2.0;
         let label_col = if selected {
             c.text_primary
         } else {
             c.neutral[7]
         };
-        let icon_box = Rect::new(
-            rect.x0 + 12.0,
-            rect.y0 + FOLDER_ROW_H / 2.0 - 9.0,
-            rect.x0 + 30.0,
-            rect.y0 + FOLDER_ROW_H / 2.0 + 9.0,
-        );
+        let icon_box = Rect::new(rect.x0 + 12.0, cy - 9.0, rect.x0 + 30.0, cy + 9.0);
         let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
         f.icon().draw(scene, t, icon_box, icon_col);
+
+        // The unread badge is measured first so the title can be elided into
+        // the width that is actually left, instead of wrapping at a fixed
+        // budget onto the next row.
+        let unread = if active_account {
+            st.mailbox.unread_count(f)
+        } else {
+            0
+        };
+        let badge = (unread > 0).then(|| {
+            let txt = unread.to_string();
+            let (twd, th) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
+            let bw = (f64::from(twd) + 14.0).max(20.0);
+            let rect = Rect::new(
+                rect.x1 - bw - f64::from(sp.s2),
+                rect.y0 + 8.0,
+                rect.x1 - f64::from(sp.s2),
+                rect.y0 + 28.0,
+            );
+            (txt, f64::from(twd), f64::from(th), rect)
+        });
+
+        let text_x = rect.x0 + 40.0;
+        let label_right = badge
+            .as_ref()
+            .map_or(rect.x1 - f64::from(sp.s2), |(_, _, _, b)| {
+                b.x0 - f64::from(sp.s2)
+            });
+        let weight = if selected {
+            TextWeight::Semibold
+        } else {
+            TextWeight::Regular
+        };
+        let title = elide(tr, f.title(), 13.0, weight, label_right - text_x);
+        let (_, th) = tr.measure_weighted(&title, 13.0, None, weight);
         tr.draw_text_weighted(
             scene,
-            f.title(),
+            &title,
             13.0,
             label_col,
-            t * Affine::translate((rect.x0 + 40.0, ty)),
-            Some(120.0),
-            if selected {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            },
+            t * Affine::translate((text_x, cy - f64::from(th) / 2.0)),
+            None,
+            weight,
         );
-        if !active_account {
+
+        let Some((txt, twd, th, badge)) = badge else {
             return;
-        }
-        let unread = st.mailbox.unread_count(f);
-        if unread == 0 {
-            return;
-        }
-        let txt = unread.to_string();
-        let (twd, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
-        let bw = (f64::from(twd) + 14.0).max(20.0);
-        let badge = Rect::new(
-            rect.x1 - bw - 8.0,
-            rect.y0 + 8.0,
-            rect.x1 - 8.0,
-            rect.y0 + 28.0,
-        );
+        };
         let bg = if selected { c.accent[5] } else { c.neutral[3] };
-        fill_round(scene, t, badge, 10.0, bg);
+        pill(scene, t, badge, bg, None, Some(10.0));
         tr.draw_text_weighted(
             scene,
             &txt,
             11.0,
             Color::WHITE,
-            t * Affine::translate((
-                f64::midpoint(badge.x0, badge.x1) - f64::from(twd) / 2.0,
-                badge.y0 + 4.0,
-            )),
+            t * Affine::translate((badge.center().x - twd / 2.0, badge.center().y - th / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -947,7 +1184,13 @@ impl Pane {
         let chip_here = st.narrow || !st.sidebar_open;
         let s = self.scale();
         let gap = f64::from(theme.tokens.spacing.s3);
-        let (layout_title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap, s);
+        let (layout_title_x, title_y, header_cy) = list_header_layout(
+            r,
+            self.shell_chip(r),
+            chip_here,
+            gap,
+            f64::from(tr.measure_weighted("Ag", 18.0, None, TextWeight::Bold).1),
+        );
         let mode_rect = self.bulk_mode_rect();
         let title_x = (mode_rect.x1 + 10.0 * s).max(layout_title_x);
         // Selection mode is an action state, not a second search state. Hide
@@ -985,10 +1228,11 @@ impl Pane {
         };
         let count_x = title_x + f64::from(twd) + 10.0 * s;
         if f64::from(twd) <= title_budget && count_x + 26.0 * s < title_right {
-            let count_y = header_cy - 12.0 * 1.25 * s / 2.0;
+            let count_label = format!("{count}");
+            let count_y = header_cy - f64::from(tr.measure(&count_label, 12.0, None).1) / 2.0;
             tr.draw_text(
                 scene,
-                &format!("{count}"),
+                &count_label,
                 12.0,
                 c.text_dim,
                 t * Affine::translate((count_x, count_y)),
@@ -1069,19 +1313,17 @@ impl Pane {
         // Manual sync / refresh button.
         let rb = self.refresh_box_rect();
         let rb_hov = rb.contains(st.last_mouse);
-        fill_round(
+        // The shared Neutral button face (HIG §8) with no label; the glyph
+        // is drawn in the face's ink.
+        let face = ButtonFace::new(rb, "").radius(9.0).hovered(rb_hov);
+        Button::paint(scene, t, tr, theme, &face);
+        let icon = f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale);
+        Icon::Refresh.draw(
             scene,
             t,
-            rb,
-            9.0 * s,
-            if rb_hov {
-                c.lift(0.72)
-            } else {
-                c.surfaces.raised
-            },
+            rb.inset(-(rb.height() - icon) / 2.0),
+            face.colors(theme).2,
         );
-        stroke_round(scene, t, rb, 9.0 * s, 1.0, c.border_standard);
-        Icon::Refresh.draw(scene, t, rb.inset(-9.0 * s), c.neutral[7]);
 
         if st.bulk_selecting {
             self.draw_bulk_toolbar(scene, t, tr, theme, &st);
@@ -1290,7 +1532,7 @@ impl Pane {
                 c.accent[5],
             );
         } else if selected {
-            fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
+            fill_rect(scene, t, row, theme.bg_active);
             fill_rect(
                 scene,
                 t,
@@ -1300,11 +1542,16 @@ impl Pane {
         } else if hov && swipe_dx.abs() < 1.0 {
             fill_rect(scene, t, row, c.lift(0.35));
         }
-        fill_rect(
+        // The rule between rows is derived against the list's base and stops
+        // an `s3` short of both ends (HIG §9.5).
+        separator(
             scene,
             t,
-            Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1),
-            c.neutral[2],
+            row.x0,
+            row.x1,
+            row.y1 - 0.5,
+            f64::from(theme.tokens.spacing.s3),
+            c.surfaces.base,
         );
         row
     }
@@ -1341,6 +1588,7 @@ impl Pane {
         let tr = &mut *ctx.text;
         let theme = ctx.theme;
         let t = ctx.transform;
+        let m = self.list_metrics();
         let c = &theme.tokens.colors;
         if bulk_selected {
             scene.fill(
@@ -1382,6 +1630,11 @@ impl Pane {
                 ),
             );
         }
+        // The disc's radius is the row's measured `avatar_r` (text-scaled, so
+        // the initials stay inside it); the text column starts one `s3` past
+        // the disc instead of at a fixed 70 px — the same `text_x` the
+        // subject and snippet lines use.
+        let avatar_cx = m.avatar_cx(row.x0);
         draw_avatar(
             &mut AvatarPaintContext {
                 scene,
@@ -1390,43 +1643,50 @@ impl Pane {
                 theme,
                 images: &self.shared.borrow().images,
             },
-            Point::new(row.x0 + 42.0 * self.scale(), row.y0 + 26.0 * self.scale()),
-            17.0 * self.scale(),
+            Point::new(avatar_cx, row.y0 + m.avatar_cy),
+            m.avatar_r,
             &msg.from,
             0,
         );
 
-        let text_x = row.x0 + 70.0 * self.scale();
-        let right = row.x1 - 14.0 * self.scale();
+        let text_x = m.text_x(row.x0, f64::from(theme.tokens.spacing.s3));
+        let right = row.x1 - 14.0;
         let name_weight = if unread {
             TextWeight::Bold
         } else {
             TextWeight::Medium
         };
+        // The date is measured first so the name is elided into the width
+        // that is actually left of it.
+        let date = format_relative(msg.timestamp_min, now_min);
+        let (dw, dh) = tr.measure(&date, 11.5, None);
         let name = elide(
             tr,
             &msg.from.display(),
             13.5,
             name_weight,
-            right - text_x - 56.0 * self.scale(),
+            right - f64::from(dw) - f64::from(theme.tokens.spacing.s3) - text_x,
         );
         tr.draw_text_weighted(
             scene,
             &name,
             13.5,
             c.text_primary,
-            t * Affine::translate((text_x, row.y0 + 12.0 * self.scale())),
+            t * Affine::translate((text_x, row.y0 + m.name_y)),
             None,
             name_weight,
         );
-        let date = format_relative(msg.timestamp_min, now_min);
-        let (dw, _) = tr.measure(&date, 11.5, None);
+        // Bottom-align the date's line box to the name's so the baselines
+        // meet at every text scale.
         tr.draw_text(
             scene,
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((right - f64::from(dw), row.y0 + 13.0 * self.scale())),
+            t * Affine::translate((
+                right - f64::from(dw),
+                row.y0 + m.name_y + m.name_h - f64::from(dh),
+            )),
             None,
         );
     }
@@ -1445,18 +1705,20 @@ impl Pane {
         let tr = &mut *ctx.text;
         let theme = ctx.theme;
         let t = ctx.transform;
+        let m = self.list_metrics();
         let c = &theme.tokens.colors;
-        let s = self.scale();
-        let text_x = row.x0 + 70.0 * s;
-        let right = row.x1 - 14.0 * s;
+        // Same column as the sender line: one `s3` past the measured disc.
+        let text_x = m.text_x(row.x0, f64::from(theme.tokens.spacing.s3));
+        let right = row.x1 - 14.0;
 
-        let subj_y = row.y0 + 32.0 * s;
+        let subj_y = row.y0 + m.subj_y;
         let subj_col = if unread { c.text_primary } else { c.neutral[7] };
         let subj_weight = if unread {
             TextWeight::Semibold
         } else {
             TextWeight::Regular
         };
+        let s = self.scale();
         let subj_budget = right - text_x - if len > 1 { 48.0 * s } else { 16.0 * s };
         let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
         tr.draw_text_weighted(
@@ -1469,17 +1731,25 @@ impl Pane {
             subj_weight,
         );
         if len > 1 {
+            // Thread-size badge: a capsule centred on the subject line.
             let badge_txt = len.to_string();
-            let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
-            let bx = right - f64::from(bw) - 12.0 * s;
-            let badge = Rect::new(bx - 6.0 * s, subj_y - s, right, subj_y + 15.0 * s);
-            fill_round(scene, t, badge, 8.0 * s, c.neutral[3]);
+            let (bw, bh) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
+            let subj_cy = subj_y + m.subj_h / 2.0;
+            let badge_h = (f64::from(bh) + 2.0).max(16.0);
+            let bx = right - f64::from(bw) - 12.0;
+            let badge = Rect::new(
+                bx - 6.0,
+                subj_cy - badge_h / 2.0,
+                right,
+                subj_cy + badge_h / 2.0,
+            );
+            pill(scene, t, badge, c.neutral[3], None, None);
             tr.draw_text_weighted(
                 scene,
                 &badge_txt,
                 10.5,
                 c.neutral[8],
-                t * Affine::translate((bx, subj_y + s)),
+                t * Affine::translate((bx, subj_cy - f64::from(bh) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -1502,18 +1772,16 @@ impl Pane {
             &snippet,
             11.5,
             c.text_dim,
-            t * Affine::translate((text_x, row.y0 + 52.0 * s)),
+            t * Affine::translate((text_x, row.y0 + m.snippet_y)),
             None,
         );
 
+        // Star and paperclip sit on the snippet line's centre; the star's hit
+        // rect (`ListRowMetrics::star_hit`) is centred on this same glyph.
+        let icon_cy = row.y0 + m.icon_cy;
         // A favourited mail shows a solid, filled star; an unstarred one a
         // faint outline — the state reads at a glance, not just as a colour.
-        let star_box = Rect::new(
-            right - 24.0 * s,
-            row.y0 + 48.0 * s,
-            right - 8.0 * s,
-            row.y0 + 64.0 * s,
-        );
+        let star_box = Rect::new(right - 24.0, icon_cy - 8.0, right - 8.0, icon_cy + 8.0);
         if msg.starred {
             Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
         } else {
@@ -1523,12 +1791,7 @@ impl Pane {
             Icon::Paperclip.draw(
                 scene,
                 t,
-                Rect::new(
-                    right - 44.0 * s,
-                    row.y0 + 48.0 * s,
-                    right - 30.0 * s,
-                    row.y0 + 62.0 * s,
-                ),
+                Rect::new(right - 44.0, icon_cy - 7.0, right - 30.0, icon_cy + 7.0),
                 c.text_dim,
             );
         }
@@ -1558,25 +1821,19 @@ impl Pane {
                 _ => continue,
             };
             let hov = rect.contains(last_mouse);
-            let bg = if hov { c.lift(0.72) } else { c.lift(0.35) };
-            fill_round(scene, t, *rect, 8.0, bg);
-            stroke_round(
-                scene,
-                t,
-                *rect,
-                8.0,
-                1.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
+            // The shared button face (HIG §8): Neutral, or DangerOutline for
+            // the destructive action; glyph and label are drawn in the face's
+            // ink (the starred star keeps its warning fill).
+            let face = ButtonFace::new(*rect, "").radius(8.0).hovered(hov);
+            let face = if danger { face.danger_outline() } else { face };
+            Button::paint(scene, t, tr, theme, &face);
             // The Star action fills its glyph when the message is starred, so
             // the favourited state is a solid star, not merely a tinted outline.
             let is_star_on = matches!(hit, Hit::Star) && starred;
-            let col = if danger {
-                c.semantic.danger
-            } else if is_star_on {
+            let col = if is_star_on {
                 c.semantic.warning
             } else {
-                c.neutral[8]
+                face.colors(theme).2
             };
             let paint_icon = |scene: &mut Scene, ibox: Rect| {
                 if is_star_on {
@@ -1994,11 +2251,13 @@ impl Pane {
             head.read,
             st.inspection == Some(head.id),
         );
+        // The rule under the thread heading is derived against the reader's
+        // raised ground (HIG §9.5).
         fill_rect(
             scene,
             t,
             Rect::new(content_x, y, rr.x1 - 24.0, y + 1.0),
-            c.border_standard,
+            edge_on(c.surfaces.raised),
         );
         y += 16.0;
 
@@ -2107,7 +2366,14 @@ impl Pane {
             content_x + f64::from(label_w) + 34.0,
             y + 17.0,
         );
-        fill_round(scene, t, pill, 7.0, c.accent[5].with_alpha_factor(0.14));
+        ui::surface::pill(
+            scene,
+            t,
+            pill,
+            c.accent[5].with_alpha_factor(0.14),
+            None,
+            Some(7.0),
+        );
         Icon::Eye.draw(
             scene,
             t,
@@ -2236,20 +2502,12 @@ impl Pane {
         let (lw, _) = tr.measure(label, 11.5, None);
         let pill = Rect::new(body.x0, y, body.x0 + 30.0 + f64::from(lw) + 14.0, y + 28.0);
         let hov = pill.contains(self.shared.borrow().last_mouse);
-        fill_round(
+        card(
             scene,
             t,
             pill,
             8.0,
-            if hov { c.lift(0.72) } else { c.lift(0.35) },
-        );
-        stroke_round(
-            scene,
-            t,
-            pill,
-            8.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            if hov { theme.bg_hover } else { c.lift(0.35) },
         );
         icon.draw(
             scene,
@@ -2283,8 +2541,8 @@ impl Pane {
         plain: &str,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, t, body, 6.0, c.surfaces.base);
-        stroke_round(scene, t, body, 6.0, 1.0, c.border_standard);
+        // A base-filled box on the raised reader: fill + derived edge.
+        card(scene, t, body, 6.0, c.surfaces.base);
         let x = body.x0 + 18.0;
         let width = (body.width() - 36.0).max(80.0) as f32;
         let mut y = body.y0 + 18.0;
@@ -2374,62 +2632,15 @@ impl Pane {
             width,
         } = *args;
         let c = &theme.tokens.colors;
-        let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
-        draw_avatar(
-            &mut AvatarPaintContext {
-                scene,
-                text: tr,
-                transform: t,
-                theme,
-                images: &st.images,
-            },
-            Point::new(cx + 18.0, cy + 18.0),
-            17.0,
-            &msg.from,
-            0,
-        );
-        let from_name = elide(
-            tr,
-            &msg.from.display(),
-            13.5,
-            TextWeight::Semibold,
-            f64::from(width - 150.0),
-        );
-        tr.draw_text_weighted(
-            scene,
-            &from_name,
-            13.5,
-            c.text_primary,
-            t * Affine::translate((cx + 44.0, cy + 6.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let from_email = elide(
-            tr,
-            &msg.from.email,
-            11.5,
-            TextWeight::Regular,
-            f64::from(width - 150.0),
-        );
-        tr.draw_text(
-            scene,
-            &from_email,
-            11.5,
-            c.text_dim,
-            t * Affine::translate((cx + 44.0, cy + 24.0)),
-            None,
-        );
+        let width = f64::from(width);
+
+        // Measure every piece with the style it is painted with, then let one
+        // layout place them: the name/email block is centred on the avatar,
+        // and the right column (date over recipients) shares one right edge.
         let date = format_absolute(msg.timestamp_min);
-        let (dw, _) = tr.measure(&date, 11.5, None);
-        tr.draw_text(
-            scene,
-            &date,
-            11.5,
-            c.text_dim,
-            t * Affine::translate((card_x1 - f64::from(dw), cy + 8.0)),
-            None,
-        );
+        let (dw, dh) = tr.measure(&date, 11.5, None);
+        let to_budget = (width * 0.4).max(150.0).min(width - 60.0);
         let to_line = elide(
             tr,
             &format!(
@@ -2442,17 +2653,92 @@ impl Pane {
             ),
             11.0,
             TextWeight::Regular,
-            150.0,
+            to_budget,
+        );
+        let (tow, toh) = tr.measure(&to_line, 11.0, None);
+        let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Semibold);
+        let (_, email_h) = tr.measure("Ag", 11.5, None);
+        // The disc follows the text scale so the shared avatar's initials
+        // (0.4× the disc, through the renderer) stay inside it.
+        let avatar_r = LIST_AVATAR_R * f64::from(theme.text_scale).max(1.0);
+        let layout = card_header_layout(&CardHeaderMetrics {
+            x: cx,
+            y: cy,
+            width,
+            avatar_r,
+            name_h: f64::from(name_h),
+            email_h: f64::from(email_h),
+            date_w: f64::from(dw),
+            to_w: f64::from(tow),
+            gap: f64::from(theme.tokens.spacing.s3),
+        });
+
+        draw_avatar(
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
+            layout.avatar_c,
+            avatar_r,
+            &msg.from,
+            0,
+        );
+        let from_name = elide(
+            tr,
+            &msg.from.display(),
+            13.5,
+            TextWeight::Semibold,
+            layout.from_budget,
+        );
+        tr.draw_text_weighted(
+            scene,
+            &from_name,
+            13.5,
+            c.text_primary,
+            t * Affine::translate((layout.text_x, layout.name_y)),
+            None,
+            TextWeight::Semibold,
+        );
+        let from_email = elide(
+            tr,
+            &msg.from.email,
+            11.5,
+            TextWeight::Regular,
+            layout.from_budget,
+        );
+        tr.draw_text(
+            scene,
+            &from_email,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((layout.text_x, layout.email_y)),
+            None,
+        );
+        // Date and recipients bottom-align their line boxes to the name and
+        // email lines, so the two columns read as two rows.
+        tr.draw_text(
+            scene,
+            &date,
+            11.5,
+            c.text_dim,
+            t * Affine::translate((layout.date_x, layout.name_y + layout.name_h - f64::from(dh))),
+            None,
         );
         tr.draw_text(
             scene,
             &to_line,
             11.0,
             c.text_dim,
-            t * Affine::translate((card_x1 - 150.0, cy + 24.0)),
+            t * Affine::translate((
+                layout.to_x,
+                layout.email_y + layout.email_h - f64::from(toh),
+            )),
             None,
         );
-        cy + 48.0
+        layout.bottom
     }
 
     /// Draw the "N attachments" label and the wrapping row of attachment
@@ -2500,20 +2786,12 @@ impl Pane {
             }
             let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
             let hov = chip.contains(hov_mouse);
-            fill_round(
+            card(
                 scene,
                 t,
                 chip,
                 8.0,
-                if hov { c.lift(0.72) } else { c.lift(0.35) },
-            );
-            stroke_round(
-                scene,
-                t,
-                chip,
-                8.0,
-                1.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                if hov { theme.bg_hover } else { c.lift(0.35) },
             );
             a.icon().draw(
                 scene,
@@ -2552,7 +2830,8 @@ impl Pane {
                 col,
             );
             chip_hits.push((chip, msg.id, ai));
-            ax += chip_w + 10.0;
+            // Sibling chips sit an `s3` apart (HIG §7b).
+            ax += chip_w + f64::from(theme.tokens.spacing.s3);
         }
         yy + 30.0
     }
@@ -3013,6 +3292,9 @@ impl Widget for Pane {
             if req {
                 self.set_search_focus(true);
             }
+            // Measure the row bands for this text scale before the hit list
+            // is rebuilt from them, so hits and paint describe the same rows.
+            self.list_metrics = Some(ListRowMetrics::measure(tr, theme));
         }
         self.rebuild_hits();
         match self.role {
@@ -3462,16 +3744,109 @@ mod tests {
     }
 
     #[test]
+    fn list_header_and_avatar_keep_their_one_x_sizes_before_the_first_paint() {
+        // The pre-paint rules are the authored 1× header band, control
+        // height and avatar radius, so nothing moves at 1×.
+        let m = ListRowMetrics::fallback();
+        assert_eq!(m.header_h, HEADER_H);
+        assert_eq!(m.ctl_h, HEADER_CTL_H);
+        assert_eq!(m.avatar_r, LIST_AVATAR_R);
+        // A scaled control pushes the rows down instead of under the search
+        // box: the header is the controls plus their inset above and below.
+        let mut big = m;
+        big.ctl_h = 49.0;
+        big.header_h = (2.0 * HEADER_CTL_INSET + big.ctl_h).max(HEADER_H);
+        assert_eq!(big.header_h, 73.0);
+        assert!(big.header_h > HEADER_H);
+    }
+
+    #[test]
+    fn list_row_bands_stack_without_overlap_and_the_star_hit_covers_its_glyph() {
+        let m = ListRowMetrics::fallback();
+        // 1× keeps the authored row height (rounded up to a whole pixel).
+        assert_eq!(m.row_h, 79.0);
+        // Sender, subject and snippet are separate bands, top to bottom.
+        assert!(m.subj_y >= m.name_y + m.name_h);
+        assert!(m.snippet_y >= m.subj_y + m.subj_h);
+        assert!(m.snippet_y + m.snippet_h <= m.row_h);
+        // The star target contains the painted 16px glyph on the snippet line.
+        let row = Rect::new(0.0, 100.0, 340.0, 100.0 + m.row_h);
+        let hit = m.star_hit(row);
+        let right = row.x1 - 14.0;
+        let glyph = Rect::new(
+            right - 24.0,
+            row.y0 + m.icon_cy - 8.0,
+            right - 8.0,
+            row.y0 + m.icon_cy + 8.0,
+        );
+        assert_eq!(hit.union(glyph), hit, "star hit rect contains the glyph");
+        assert!(
+            hit.y0 > row.y0 + m.name_y,
+            "the target is not over the date line"
+        );
+
+        // Doubled line boxes (200% text) grow the row instead of overlapping.
+        let big = ListRowMetrics::from_line_boxes(33.75, 31.25, 28.75, 4.0, 12.0);
+        assert!(big.row_h > m.row_h);
+        assert!(big.subj_y >= big.name_y + big.name_h);
+        assert!(big.snippet_y >= big.subj_y + big.subj_h);
+        assert!(big.snippet_y + big.snippet_h + 12.0 <= big.row_h);
+    }
+
+    #[test]
+    fn card_header_right_column_shares_one_edge_and_centres_on_the_avatar() {
+        let m = CardHeaderMetrics {
+            x: 100.0,
+            y: 200.0,
+            width: 500.0,
+            avatar_r: 17.0,
+            name_h: 16.875,
+            email_h: 14.375,
+            date_w: 110.0,
+            to_w: 40.0,
+            gap: 12.0,
+        };
+        let l = card_header_layout(&m);
+        // Date and recipients end on the same right edge — the card's.
+        assert!((l.date_x + m.date_w - 600.0).abs() < 1e-6);
+        assert!((l.to_x + m.to_w - 600.0).abs() < 1e-6);
+        // Name + email block is centred on the avatar's centre line.
+        let block_mid = (l.name_y + l.email_y + l.email_h) / 2.0;
+        assert!((block_mid - l.avatar_c.y).abs() < 1e-6);
+        // The sender column stops one gap before the wider right-column line.
+        assert!((l.text_x + l.from_budget + m.gap - l.date_x).abs() < 1e-6);
+        // 1× keeps the authored 48px header rhythm.
+        assert!((l.bottom - (m.y + 48.0)).abs() < 1e-6);
+        // Larger text grows the header instead of overlapping the body.
+        let tall = CardHeaderMetrics {
+            name_h: 33.75,
+            email_h: 28.75,
+            ..m
+        };
+        let lt = card_header_layout(&tall);
+        assert!(lt.bottom >= lt.email_y + tall.email_h + tall.gap);
+    }
+
+    #[test]
     fn list_title_is_centered_on_and_spaced_from_the_collapse_chip() {
         // The folder title must line up vertically with the NavShell collapse
         // chip beside it and sit a consistent gap past it — not a few px off.
         let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
         let gap = 12.0;
-        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap, 1.0);
+        // The 1× line box of the 18 px bold title; the layout centres whatever
+        // box it is handed, so a 200% box (45) lands on the same centre.
+        let title_h = 22.5;
+        let (title_x, title_y, header_cy) =
+            list_header_layout(rect, mirrored_chip(rect), true, gap, title_h);
         let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
         let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
-        // Vertically centred on the chip's centre line (glyph box is size*1.25).
-        let title_center = title_y + 18.0 * 1.25 / 2.0;
+        // Vertically centred on the chip's centre line from the measured box.
+        let title_center = title_y + title_h / 2.0;
+        let (_, big_y, _) = list_header_layout(rect, mirrored_chip(rect), true, gap, 45.0);
+        assert!(
+            (big_y + 22.5 - chip_cy).abs() < 0.001,
+            "a scaled title box still centres on the chip"
+        );
         assert!(
             (title_center - chip_cy).abs() < 0.001,
             "title centre {title_center} != chip centre {chip_cy}"
@@ -3490,7 +3865,20 @@ mod tests {
             "title does not crowd the collapse button"
         );
         // With no chip over the header, the title returns to the plain inset.
-        let (nx, _, _) = list_header_layout(rect, false, gap, 1.0);
+        let (nx, _, _) = list_header_layout(rect, mirrored_chip(rect), false, gap, title_h);
+        // The shell's real chip at 2x is larger than the 1x mirror; the title
+        // follows it, centred on its centre line and spaced past its edge.
+        let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
+        let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
+        assert!(
+            (bcy - big_chip.center().y).abs() < 1e-9,
+            "centre line follows the real chip"
+        );
+        assert!(
+            (bx - (big_chip.x1 + gap)).abs() < 1e-9,
+            "title clears the real chip"
+        );
+        assert!((by + 22.5 - bcy).abs() < 1e-9);
         assert_eq!(nx, rect.x0 + 20.0);
     }
 
@@ -3502,7 +3890,7 @@ mod tests {
             crate::account::AccountStore::new(),
             crate::app::avatar_store_offline(),
         ));
-        let raw = b"From: Ada <ada@x.example>\r\nTo: you@tilo.example\r\n\
+        let raw = b"From: Ada <ada@x.example>\r\nTo: you@example.test\r\n\
 Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         let id = {
             let mut st = sh.borrow_mut();
@@ -3540,7 +3928,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.tilo.example")
+                .find(|m| m.from.email == "news@weekly.example.test")
                 .expect("the sample HTML newsletter is present")
                 .id
         };
@@ -3624,7 +4012,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.tilo.example")
+                .find(|m| m.from.email == "news@weekly.example.test")
                 .unwrap()
                 .id
         };

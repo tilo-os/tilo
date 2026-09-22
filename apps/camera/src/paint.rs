@@ -129,6 +129,15 @@ pub fn text_w(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
     tr.measure(s, size, None).0
 }
 
+/// Height of one line of `s` at `size`, measured with the renderer that will
+/// draw it — so it already includes the accessibility text scale. Every
+/// vertical centring and every capsule that must contain a label derives from
+/// this rather than from `size × k`, which stops tracking the glyphs the
+/// moment the renderer scales them.
+pub fn text_h(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
+    f64::from(tr.measure(s, size, None).1)
+}
+
 /// Draw left-aligned text with its top-left at (x, y).
 pub fn text(
     scene: &mut Scene,
@@ -185,6 +194,10 @@ pub fn text_right(
 }
 
 /// Vertically + horizontally center text in a rect.
+///
+/// Centres on the line height the renderer reports for this string, not on
+/// `size × k`: a fixed factor is only right at one text scale, and the mode
+/// labels drifted below their capsules at 200% because of exactly that.
 pub fn text_in(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -193,7 +206,7 @@ pub fn text_in(
     size: f32,
     color: Color,
 ) {
-    let y = rect.y0 + (rect.height() - f64::from(size) * 1.2) / 2.0;
+    let y = rect.y0 + (rect.height() - text_h(tr, s, size)) / 2.0;
     text_center(scene, tr, rect.center().x, y, s, size, color);
 }
 

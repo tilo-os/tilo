@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.clocks"
+id = "so.tilo.clocks"
 name = "Clocks"
 category = "Utility"
 version = "0.1.0"

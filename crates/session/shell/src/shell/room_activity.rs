@@ -47,6 +47,23 @@ use crate::shell::workspace_history::{
     WorkspaceHistoryQuery, WorkspaceSeenFrontier,
 };
 
+const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
+const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
+
+fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
+    let departed_at = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(departed_at_secs))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    now.duration_since(departed_at)
+        .is_ok_and(|elapsed| elapsed >= AWAY_RECAP_AFTER)
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct WorkspaceDeparture {
+    departed_at_secs: u64,
+    frontier: WorkspaceSeenFrontier,
+}
+
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
 const SHEET_MAX_W: f64 = 560.0;
@@ -56,9 +73,25 @@ const SHEET_MAX_W: f64 = 560.0;
 const SHEET_MIN_W: f64 = 360.0;
 const FULL_BLEED_UNDER: f64 = 720.0;
 const SHEET_INSET: f64 = 16.0;
+/// The header band at 100 % text: `HEADER_TOP` + a `lg` title line (20) +
+/// two `sm` lines (subtitle, "Latest") + `HEADER_BOTTOM`. The live band is
+/// [`RoomActivityPane::header_h`], which grows with the text scale and is
+/// never shorter than this.
 const HEADER_H: f64 = 76.0;
+/// Title top, from the sheet's top edge.
+const HEADER_TOP: f64 = 12.0;
+/// Air under the "Latest" line before the view tabs.
+const HEADER_BOTTOM: f64 = 14.0;
 const VIEW_ROW_H: f64 = 34.0;
-const CHIP_ROW_H: f64 = 30.0;
+/// A filter row is one pointer target tall (`MIN_TARGET`), with the 28 px
+/// Selector pill centred in it.
+const CHIP_ROW_H: f64 = 32.0;
+/// Selector height (HIG §9.6): every chip in this sheet — view tab, scope
+/// pill, period and author filter — is painted at this height.
+const SELECTOR_H: f64 = 28.0;
+/// Minimum pointer target (HIG §9.6). A chip's hit rect is at least this
+/// tall even where its painted pill is the 28 px Selector.
+const MIN_TARGET: f64 = 32.0;
 const EXPLORER_LEFT_W: f64 = 180.0;
 const EXPLORER_DETAIL_W: f64 = 240.0;
 
@@ -81,9 +114,9 @@ impl ActivityView {
 
     fn label(self) -> &'static str {
         match self {
-            Self::CatchUp => "Catch up",
+            Self::CatchUp => "Recap",
             Self::Tasks => "Tasks",
-            Self::Explore => "Explore",
+            Self::Explore => "Full history",
             Self::Replay => "Replay",
         }
     }
@@ -133,6 +166,13 @@ enum ActivityFocus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "work-session boundaries are constructed only by replay tests for now"
+    )
+)]
 enum BoundaryDirection {
     IntoNewer,
     IntoOlder,
@@ -489,6 +529,14 @@ fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
     clippy::cast_possible_truncation,
     reason = "finite viewport dimensions are well within f32's range"
 )]
+/// Theme typography tokens already carry the user's text scale, and the
+/// renderer scales every authored size again; this sheet is painted in a
+/// pass that does not reset the renderer, so divide once and the scale is
+/// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
+fn type_size(tr: &TextRenderer, resolved: f32) -> f32 {
+    resolved / tr.text_scale()
+}
+
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
 }
@@ -660,6 +708,13 @@ pub struct RoomActivityPane {
     /// name appears only if that person did something in this room.
     contributors: Vec<String>,
     sheet: Rect,
+    /// The viewport `layout` was last given, so `draw` can lay the sheet
+    /// out again when the theme's text scale changes the header's height.
+    viewport: Rect,
+    /// The user's text scale as of the last draw. The header band is sized
+    /// from it (`header_h`), so 200 % type has room instead of the title,
+    /// subtitle and "Latest" line stacking on top of one another.
+    text_scale: f32,
     /// Cleared whenever the pane isn't painted, so a stale click can't trip them.
     period_rects: Vec<(Period, Rect)>,
     author_rects: Vec<(Option<String>, Rect)>,
@@ -679,6 +734,13 @@ pub struct RoomActivityPane {
     /// collaborative history, and timestamps cannot identify delayed or
     /// concurrent CRDT changes correctly.
     seen_frontiers: HashMap<u64, WorkspaceSeenFrontier>,
+    /// Private causal baseline captured when this device leaves a workspace.
+    /// Wall time gates the presentation; the frontier decides which changes
+    /// actually happened during the absence.
+    departures: HashMap<u64, WorkspaceDeparture>,
+    presence_workspace: Option<u64>,
+    away_digest: ActivityDigest,
+    prepared_away_workspace: Option<u64>,
     catchup_frontier: WorkspaceSeenFrontier,
     passive_digest: ActivityDigest,
     passive_unread: usize,
@@ -691,6 +753,7 @@ pub struct RoomActivityPane {
     brief_more_advance: usize,
     brief_offset: usize,
     expanded_brief: Option<usize>,
+    brief_expansion_started: Option<(usize, Instant)>,
     resume_rect: Rect,
     resume_target: Option<ui::HistoryResourceTarget>,
     tasks: Vec<WorkspaceTask>,
@@ -823,6 +886,8 @@ impl RoomActivityPane {
             author: None,
             contributors: Vec::new(),
             sheet: Rect::ZERO,
+            viewport: Rect::ZERO,
+            text_scale: 1.0,
             period_rects: Vec::new(),
             author_rects: Vec::new(),
             author_more_rect: None,
@@ -834,6 +899,10 @@ impl RoomActivityPane {
             last_active: None,
             now_override: None,
             seen_frontiers: HashMap::new(),
+            departures: HashMap::new(),
+            presence_workspace: None,
+            away_digest: ActivityDigest::default(),
+            prepared_away_workspace: None,
             catchup_frontier: WorkspaceSeenFrontier::default(),
             passive_digest: ActivityDigest::default(),
             passive_unread: 0,
@@ -846,6 +915,7 @@ impl RoomActivityPane {
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
+            brief_expansion_started: None,
             resume_rect: Rect::ZERO,
             resume_target: None,
             tasks: Vec::new(),
@@ -908,7 +978,50 @@ impl RoomActivityPane {
                 }
             }
         }
+        if let Some(departures) = section
+            .get("departures")
+            .and_then(|value| value.as_object())
+        {
+            for (workspace, value) in departures {
+                let Ok(id) = workspace.parse::<u64>() else {
+                    continue;
+                };
+                if let Ok(departure) = serde_json::from_value(value.clone()) {
+                    pane.departures.insert(id, departure);
+                }
+            }
+        }
         pane
+    }
+
+    /// Observe the active-workspace edge before refreshing the history index.
+    /// The previous index still describes the workspace being left, so its
+    /// exact causal frontier is the correct departure baseline.
+    pub fn observe_workspace(&mut self, workspace: u64) {
+        if self.presence_workspace == Some(workspace) {
+            return;
+        }
+        if let Some(previous) = self.presence_workspace {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            let departed_at_secs = self
+                .now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.departures.insert(
+                previous,
+                WorkspaceDeparture {
+                    departed_at_secs,
+                    frontier,
+                },
+            );
+            if self.persistent_frontiers {
+                self.persist_frontiers();
+            }
+        }
+        self.presence_workspace = Some(workspace);
+        self.away_digest = ActivityDigest::default();
     }
 
     /// Tests pin "now" so period windows don't depend on when the suite runs.
@@ -956,6 +1069,14 @@ impl RoomActivityPane {
     /// shown. It advances only when the surface closes, so opening it cannot
     /// erase the very summary the user came to read.
     pub fn begin_view(&mut self, workspace: u64) {
+        if self.prepared_away_workspace.take() == Some(workspace)
+            && let Some(departure) = self.departures.get(&workspace)
+        {
+            self.catchup_frontier = departure.frontier.clone();
+            self.digest = self.away_digest.clone();
+            self.reset_narrative();
+            return;
+        }
         self.catchup_frontier = self
             .seen_frontiers
             .get(&workspace)
@@ -963,6 +1084,24 @@ impl RoomActivityPane {
             .unwrap_or_default();
         self.digest = self.passive_digest.clone();
         self.reset_narrative();
+    }
+
+    pub fn prepare_away_view(&mut self, workspace: u64) {
+        self.prepared_away_workspace = Some(workspace);
+    }
+
+    pub fn away_change_count(&self, workspace: u64) -> usize {
+        if self.presence_workspace == Some(workspace) {
+            self.away_digest.total_changes
+        } else {
+            0
+        }
+    }
+
+    pub fn needs_animation_frame(&self, now: Instant) -> bool {
+        self.brief_expansion_started.is_some_and(|(_, started)| {
+            now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
+        })
     }
 
     pub fn finish_view(&mut self, workspace: u64) {
@@ -1052,6 +1191,19 @@ impl RoomActivityPane {
         section.insert(
             "seen_frontiers".to_string(),
             serde_json::Value::Object(frontiers),
+        );
+        let departures = self
+            .departures
+            .iter()
+            .filter_map(|(workspace, departure)| {
+                serde_json::to_value(departure)
+                    .ok()
+                    .map(|value| (workspace.to_string(), value))
+            })
+            .collect();
+        section.insert(
+            "departures".to_string(),
+            serde_json::Value::Object(departures),
         );
         if let Err(error) = settings_store::update_section("history", section) {
             tracing::warn!(%error, "could not persist history seen frontier");
@@ -1297,14 +1449,21 @@ impl RoomActivityPane {
             return false;
         };
         let (new_left_end, new_right_start) = match boundary.direction {
-            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
-                older.entry_ids[older.entry_ids.len() - 2],
-                older.entry_ids[older.entry_ids.len() - 1],
-            ),
-            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
-                (newer.entry_ids[0], newer.entry_ids[1])
+            BoundaryDirection::IntoNewer => {
+                let Some((&new_right_start, preceding)) = older.entry_ids.split_last() else {
+                    return false;
+                };
+                let Some(&new_left_end) = preceding.last() else {
+                    return false;
+                };
+                (new_left_end, new_right_start)
             }
-            _ => return false,
+            BoundaryDirection::IntoOlder => {
+                let [new_left_end, new_right_start, ..] = newer.entry_ids.as_slice() else {
+                    return false;
+                };
+                (*new_left_end, *new_right_start)
+            }
         };
         if ui::history_groups::materialize_and_move_boundary(
             &mut tree.doc,
@@ -1336,6 +1495,42 @@ impl RoomActivityPane {
         }
         self.expanded_brief = Some(index);
         true
+    }
+
+    /// Focus the first recap outcome that the settled responsive layout
+    /// actually rendered. The following Enter still travels through the
+    /// production keyboard handler; this only avoids assuming whether a
+    /// compact layout ended with a paging control.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn focus_first_work_session_for_shots(&mut self) -> bool {
+        let Some((index, _)) = self.brief_rects.first().copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(ActivityFocus::Brief(index));
+        true
+    }
+
+    /// Give deterministic visual journeys a real, elapsed departure frontier
+    /// without reading or overwriting this device's persisted history state.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn prepare_away_recap_for_shots(&mut self, tree: &mut WorkspaceTree) {
+        let workspace = tree.active.raw();
+        let departed_at_secs = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(AWAY_RECAP_AFTER.as_secs().saturating_add(60));
+        self.departures.insert(
+            workspace,
+            WorkspaceDeparture {
+                departed_at_secs,
+                frontier: WorkspaceSeenFrontier::default(),
+            },
+        );
+        self.presence_workspace = Some(workspace);
+        self.refresh(tree);
+        self.prepare_away_view(workspace);
     }
 
     #[cfg(feature = "hosted-test-control")]
@@ -2014,7 +2209,10 @@ impl RoomActivityPane {
         self.refresh_records_inner(tree, records, Some(local));
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "record refresh keeps scoped history projection, origin mapping, agent runs and both unread digests on the same index refresh"
+    )]
     fn refresh_records_inner(
         &mut self,
         tree: &mut WorkspaceTree,
@@ -2125,6 +2323,23 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
+        self.away_digest = self
+            .departures
+            .get(&workspace)
+            .cloned()
+            .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()))
+            .map_or_else(ActivityDigest::default, |departure| {
+                let rows = unseen(&departure.frontier, tree)
+                    .into_iter()
+                    .map(WorkspaceHistoryEntry::timeline_entry)
+                    .collect::<Vec<_>>();
+                ActivityDigest::from_entries_with_ranges(
+                    &rows,
+                    SystemTime::UNIX_EPOCH,
+                    5,
+                    &self.named,
+                )
+            });
         let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
             .into_iter()
             .map(WorkspaceHistoryEntry::timeline_entry)
@@ -2289,6 +2504,7 @@ impl RoomActivityPane {
     /// Wide: right-anchored, so the room stays visible behind it. Narrow:
     /// full-bleed — a 360px sheet over a 600px desktop is two unusable halves.
     pub fn layout(&mut self, viewport: Rect) {
+        self.viewport = viewport;
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
             (vw - 2.0 * SHEET_INSET).max(0.0)
@@ -2319,17 +2535,66 @@ impl RoomActivityPane {
         ));
     }
 
+    /// Lay the retained activity surface into an ordinary tiled window.
+    /// Window chrome, clipping, sizing and movement remain owned by the
+    /// shared `WindowGroup`; this method only consumes its content viewport.
+    pub fn layout_window(&mut self, viewport: Rect) {
+        let inset = 2.0;
+        self.sheet = Rect::new(
+            viewport.x0 + inset,
+            viewport.y0 + inset,
+            (viewport.x1 - inset).max(viewport.x0 + inset),
+            (viewport.y1 - inset).max(viewport.y0 + inset),
+        );
+        let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
+        let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
+        let three_panel = self.view == ActivityView::Explore && self.sheet.width() >= 900.0;
+        let compact_tabs = self.view == ActivityView::Explore && !three_panel;
+        self.timeline.set_rect(Rect::new(
+            self.sheet.x0 + 8.0 + if three_panel { EXPLORER_LEFT_W } else { 0.0 },
+            rows_y0 + if compact_tabs { 34.0 } else { 0.0 },
+            (self.sheet.x1 - 8.0 - if three_panel { EXPLORER_DETAIL_W } else { 0.0 })
+                .max(self.sheet.x0 + 8.0),
+            rows_y1,
+        ));
+    }
+
     fn shows_chip_rows(&self) -> bool {
         self.view == ActivityView::Explore
-            && self.sheet.height() > HEADER_H + VIEW_ROW_H + 2.0 * CHIP_ROW_H + 140.0
+            && self.sheet.height() > self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H + 140.0
     }
 
     fn chrome_height(&self) -> f64 {
-        if self.shows_chip_rows() {
-            HEADER_H + VIEW_ROW_H + 2.0 * CHIP_ROW_H
-        } else {
-            HEADER_H + VIEW_ROW_H
+        if self.view == ActivityView::CatchUp {
+            return HEADER_H;
         }
+        if self.shows_chip_rows() {
+            self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H
+        } else {
+            self.header_h() + VIEW_ROW_H
+        }
+    }
+
+    /// Single-line height of a chrome type role at the user's text scale.
+    /// Geometry is resolved before a frame has a renderer, so the header
+    /// takes its minimum from the toolkit's own line metrics; the draw path
+    /// then places the lines it actually measured inside that band.
+    fn line_height(&self, base_px: f32) -> f64 {
+        f64::from(ui::text_render::TextStyle::new(base_px * self.text_scale).line_height_px())
+    }
+    /// The title line (`scale.lg`).
+    fn title_line_h(&self) -> f64 {
+        self.line_height(ui::tokens::TypeScale::default().lg)
+    }
+    /// A subtitle / "Latest" line (`scale.sm`).
+    fn sub_line_h(&self) -> f64 {
+        self.line_height(ui::tokens::TypeScale::default().sm)
+    }
+    /// The header band: title, subtitle and "Latest" lines at the user's
+    /// text scale inside `HEADER_TOP`/`HEADER_BOTTOM`, never shorter than the
+    /// authored `HEADER_H` — which it equals at 100 %.
+    fn header_h(&self) -> f64 {
+        HEADER_H.max(HEADER_TOP + self.title_line_h() + 2.0 * self.sub_line_h() + HEADER_BOTTOM)
     }
 
     fn timeline_is_visible(&self) -> bool {
@@ -2347,26 +2612,43 @@ impl RoomActivityPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(self.sheet, f64::from(tokens.radii.lg));
+        // The header is sized from the text scale (`header_h`), and `layout`
+        // has no theme: when the scale the last layout assumed is not this
+        // frame's, lay the sheet out again before anything is placed.
+        if (self.text_scale - theme.text_scale).abs() > f32::EPSILON {
+            self.text_scale = theme.text_scale;
+            if self.viewport.area() > 0.0 {
+                self.layout(self.viewport);
+            }
+        }
+        // Panel role (HIG §9.1/§9.2/§9.5): the sheet's corner is the Panel
+        // radius and its material is the same as every other floating
+        // Panel — `panel_ground` with the derived Panel border — rather than
+        // a raised fill under a declared border that vanishes on the dark
+        // preset.
+        let card = RoundedRect::from_rect(
+            self.sheet,
+            ui::chrome::ChromeRole::Panel.radius(theme, self.sheet.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
 
-        self.draw_title_and_subtitle(scene, transform, tr, theme);
+        // Scope pills first: the title is elided to the room left of them,
+        // so at 200 % the two never paint over each other.
         self.draw_scope_chips(scene, transform, tr, theme);
+        self.draw_title_and_subtitle(scene, transform, tr, theme);
         self.draw_view_tabs(scene, transform, tr, theme);
 
         self.period_rects.clear();
@@ -2437,7 +2719,12 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 30.0),
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y,
+                self.sheet.x1 - 12.0,
+                y + MIN_TARGET,
+            ),
             &items,
             |pane| *pane == selected,
         );
@@ -2530,7 +2817,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "Browse by",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
             None,
@@ -2570,7 +2857,7 @@ impl RoomActivityPane {
         theme: &Theme,
         bounds: Rect,
     ) {
-        let size = theme.tokens.typography.scale.sm;
+        let size = type_size(tr, theme.tokens.typography.scale.sm);
         tr.draw_text_weighted(
             scene,
             "Provenance",
@@ -2589,7 +2876,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &detail.title,
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 40.0),
                 Some(width),
@@ -2625,7 +2912,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "Select a work session or a range of actions",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
                 Some(width),
@@ -2657,13 +2944,13 @@ impl RoomActivityPane {
         indexed: &IndexedAgentRun,
     ) {
         let run = &indexed.run;
-        let size = theme.tokens.typography.scale.sm;
+        let size = type_size(tr, theme.tokens.typography.scale.sm);
         let x = bounds.x0 + 12.0;
         let mut y = bounds.y0 + 40.0;
         tr.draw_text_weighted(
             scene,
             "Agent task",
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.accent[4],
             at(transform, x, y),
             None,
@@ -2674,7 +2961,7 @@ impl RoomActivityPane {
         tr.draw_text(
             scene,
             instruction,
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.text_primary,
             at(transform, x, y),
             Some(width),
@@ -2821,7 +3108,10 @@ impl RoomActivityPane {
             }
             let label = self.detail_action_label(action);
             let button_width = f64::from(
-                (tr.measure(label, theme.tokens.typography.scale.sm, None).0 + 20.0).max(60.0),
+                (tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None)
+                    .0
+                    + 20.0)
+                    .max(60.0),
             );
             if x + button_width > bounds.x1 - 12.0 {
                 x = bounds.x0 + 12.0;
@@ -2829,38 +3119,21 @@ impl RoomActivityPane {
             }
             let rect = Rect::new(x, y, x + button_width, y + 28.0);
             let is_active = action == DetailAction::Compare && compared;
-            let shape = RoundedRect::from_rect(rect, 6.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if is_active {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.28)
-                } else {
-                    theme.tokens.colors.lift(0.35)
-                },
-                None,
-                &shape,
+            // Control role (HIG §9.1/§9.3): a chip at the Control radius. The
+            // one that is "on" (Compare, while a comparison shows) is a lift
+            // with the tier's hairline; idle chips rest on the lift floor with
+            // an edge derived from that floor — never an accent wash or a
+            // declared border.
+            let shape = RoundedRect::from_rect(
+                rect,
+                ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                if is_active {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                None,
-                &shape,
-            );
+            paint_control_chip(scene, transform, theme, &shape, is_active);
             tr.draw_text(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
-                if is_active {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.text_primary
-                },
+                type_size(tr, theme.tokens.typography.scale.sm),
+                theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
                 None,
             );
@@ -2924,7 +3197,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "What changed",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
             None,
@@ -2947,7 +3220,7 @@ impl RoomActivityPane {
                 comparison.entries.len(),
                 comparison.patches.len()
             ),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, card.x0 + 12.0, card.y0 + 32.0),
             Some(width - 24.0),
@@ -2956,7 +3229,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "No content differences in this selection",
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, card.x0 + 12.0, card.y0 + 52.0),
                 Some(width - 24.0),
@@ -2967,7 +3240,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &format!("• {label}"),
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -2981,7 +3254,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &format!("+{} more", labels.len().saturating_sub(visible)),
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(
                     transform,
@@ -3002,25 +3275,17 @@ impl RoomActivityPane {
         y: f64,
     ) {
         let card = Rect::new(bounds.x0 + 12.0, y, bounds.x1 - 12.0, y + 92.0);
-        let shape = RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            card,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.lift(0.35),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
         tr.draw_text_weighted(
             scene,
             "Preview unavailable",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
             None,
@@ -3029,7 +3294,7 @@ impl RoomActivityPane {
         tr.draw_text(
             scene,
             "This action has provenance, but no materialized before-and-after snapshot.",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, card.x0 + 12.0, card.y0 + 36.0),
             Some(text_width(card.width() - 24.0)),
@@ -3056,18 +3321,26 @@ impl RoomActivityPane {
         }
         let rect = Rect::new(bounds.x0 + 6.0, *y, bounds.x1 - 6.0, *y + 28.0);
         if self.lens == *lens {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &RoundedRect::from_rect(rect, 6.0),
-            );
+            // Selection is a lift (HIG §9.3), never an accent fill: the
+            // accent is reserved for live state (§9.4).
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
+            let shape = RoundedRect::from_rect(rect, radius);
+            let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
+            scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &ui::surface::edge_outline(rect, radius),
+                );
+            }
         }
         tr.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             if self.lens == *lens {
                 theme.tokens.colors.text_primary
             } else {
@@ -3141,7 +3414,8 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let y = self.sheet.y0 + HEADER_H + 4.0;
+        // One pointer target tall, centred in the 34 px view band.
+        let y = self.sheet.y0 + self.header_h() + (VIEW_ROW_H - MIN_TARGET) / 2.0;
         let items: Vec<(ActivityView, String)> = ActivityView::ALL
             .iter()
             .map(|view| (*view, view.label().to_string()))
@@ -3152,7 +3426,12 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 26.0),
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y,
+                self.sheet.x1 - 12.0,
+                y + MIN_TARGET,
+            ),
             &items,
             |view| *view == selected,
         );
@@ -3190,16 +3469,32 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "You're caught up",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 12.0),
                 Some(text_width(x1 - x0 - 8.0)),
             );
             return;
         }
+        let metrics = BriefCardMetrics::new(tr, theme);
         if let Some(narrative) = self.narrative.as_ref() {
             let generated = narrative.generator != "tilo-deterministic";
-            let card = Rect::new(x0, y, x1, y + 62.0);
+            // Section-header role for the label (HIG §9.6: `xs`) — the former
+            // `sm - 1` was an invented size — over up to two body lines, each
+            // seated on its measured line so 200 % type grows the card.
+            let label_size = type_size(tr, theme.tokens.typography.scale.xs);
+            let body_size = type_size(tr, theme.tokens.typography.scale.sm);
+            let label = if generated {
+                "On-device summary"
+            } else {
+                "At a glance"
+            };
+            let inner_w = text_width(x1 - x0 - 24.0);
+            let (_, label_h) = tr.measure(label, label_size, Some(inner_w));
+            let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
+            let body_top = metrics.pad + f64::from(label_h) + metrics.gap;
+            let card_h = body_top + 2.0 * metrics.line_lh + metrics.pad;
+            let card = Rect::new(x0, y, x1, y + card_h);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -3209,110 +3504,92 @@ impl RoomActivityPane {
                     0.07
                 }),
                 None,
-                &RoundedRect::from_rect(card, 8.0),
+                &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
             );
             tr.draw_text(
                 scene,
-                if generated {
-                    "On-device summary"
-                } else {
-                    "At a glance"
-                },
-                (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+                label,
+                label_size,
                 theme.tokens.colors.text_dim,
-                at(transform, card.x0 + 12.0, card.y0 + 7.0),
-                Some(text_width(card.width() - 24.0)),
-            );
-            let lines = tr.clamp_to_lines(
-                &narrative.text,
-                theme.tokens.typography.scale.sm,
-                text_width(card.width() - 24.0),
-                2,
+                at(transform, card.x0 + 12.0, card.y0 + metrics.pad),
+                Some(inner_w),
             );
             for (line, text) in lines.iter().enumerate() {
-                tr.draw_text(
+                tr.draw_text_weighted(
                     scene,
                     text,
-                    theme.tokens.typography.scale.sm,
+                    body_size,
                     theme.tokens.colors.text_primary,
                     at(
                         transform,
                         card.x0 + 12.0,
-                        card.y0 + 26.0 + line as f64 * 17.0,
+                        card.y0 + body_top + small_count_to_f64(line) * metrics.line_lh,
                     ),
-                    Some(text_width(card.width() - 24.0)),
+                    Some(inner_w),
                 );
             }
-            y += 70.0;
+            y += card_h + 8.0;
         }
         if self.brief_offset >= self.digest.briefs.len() {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
-        let mut previous_index = None;
-        for index in self.brief_offset..self.digest.briefs.len() {
-            let brief = &self.digest.briefs[index];
+        for (index, brief) in self
+            .digest
+            .briefs
+            .iter()
+            .enumerate()
+            .skip(self.brief_offset)
+        {
+            let expansion = if self.expanded_brief == Some(index) {
+                self.brief_expansion_started
+                    .filter(|(animated, _)| *animated == index)
+                    .map_or(1.0, |(_, started)| {
+                        let linear = Instant::now()
+                            .saturating_duration_since(started)
+                            .as_secs_f64()
+                            / BRIEF_EXPANSION_DURATION.as_secs_f64();
+                        let linear = linear.clamp(0.0, 1.0);
+                        1.0 - (1.0 - linear).powi(3)
+                    })
+            } else {
+                0.0
+            };
             let expanded = self.expanded_brief == Some(index);
-            if let Some(newer) = previous_index
-                && (expanded || self.expanded_brief == Some(newer))
-            {
-                let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
-                draw_work_session_boundary(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    rail,
-                    brief.changes > 1,
-                    self.digest.briefs[newer].changes > 1,
-                );
-                let (into_newer, into_older) = work_session_boundary_button_rects(rail);
-                if self.digest.briefs[newer].changes > 1 {
-                    self.boundary_rects.push((
-                        WorkSessionBoundary {
-                            older: index,
-                            newer,
-                            direction: BoundaryDirection::IntoOlder,
-                        },
-                        into_older,
-                    ));
-                }
-                if brief.changes > 1 {
-                    self.boundary_rects.push((
-                        WorkSessionBoundary {
-                            older: index,
-                            newer,
-                            direction: BoundaryDirection::IntoNewer,
-                        },
-                        into_newer,
-                    ));
-                }
-                y += 26.0;
-            }
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
                 &brief.title,
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 text_width(x1 - x0 - 24.0),
                 2,
             );
-            let title_extra = 18.0 * title_lines.len().saturating_sub(1) as f64;
-            let height = if expanded {
-                112.0 + 18.0 * brief.actions.len() as f64
-            } else {
-                88.0
-            } + title_extra;
+            let height = metrics.height(
+                title_lines.len(),
+                if expanded { brief.actions.len() } else { 0 },
+            );
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
                 .is_some_and(|next| next < self.digest.briefs.len())
                 || self.brief_offset > 0;
+            let available_height =
+                (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
+                    .max(112.0 + title_extra);
+            let height =
+                (112.0 + (expanded_height - 112.0) * expansion + title_extra).min(available_height);
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &rect,
+            );
             draw_brief_card(
                 scene,
                 transform,
@@ -3320,12 +3597,13 @@ impl RoomActivityPane {
                 theme,
                 brief,
                 rect,
+                metrics,
                 expanded,
                 self.now(),
             );
+            scene.pop_layer();
             y += height + 8.0;
             shown = shown.saturating_add(1);
-            previous_index = Some(index);
         }
         let remaining = self
             .digest
@@ -3369,7 +3647,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "No replayable workspace checkpoints yet",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -3410,6 +3688,11 @@ impl RoomActivityPane {
             self.replay_play_rect.x1 + 42.0,
             controls.y1,
         );
+        // Control role: transport chips at the Control radius. Playing is
+        // live state (HIG §9.4), so the accent stays on the active Pause
+        // chip; idle chips derive their edge from the lift floor (§9.5).
+        let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
+        let idle_edge = ui::surface::edge_on(floor);
         for (rect, label, active) in [
             (self.replay_back_rect, "←", false),
             (
@@ -3419,14 +3702,15 @@ impl RoomActivityPane {
             ),
             (self.replay_forward_rect, "→", false),
         ] {
-            let shape = RoundedRect::from_rect(rect, 7.0);
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
+            let shape = RoundedRect::from_rect(rect, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
                 if active {
                     theme.tokens.colors.accent[5].with_alpha_factor(0.28)
                 } else {
-                    theme.tokens.colors.lift(0.35)
+                    floor
                 },
                 None,
                 &shape,
@@ -3437,16 +3721,16 @@ impl RoomActivityPane {
                 if active {
                     theme.tokens.colors.accent[4]
                 } else {
-                    theme.tokens.colors.border_standard
+                    idle_edge
                 },
                 None,
-                &shape,
+                &ui::surface::edge_outline(rect, radius),
             );
-            let (tw, th) = tr.measure(label, theme.tokens.typography.scale.sm, None);
+            let (tw, th) = tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None);
             tr.draw_text(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -3464,7 +3748,7 @@ impl RoomActivityPane {
                 self.replay_frames.len(),
                 format_relative_time(frame.timestamp, self.now())
             ),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(
                 transform,
@@ -3481,19 +3765,14 @@ impl RoomActivityPane {
             self.sheet.x1 - 12.0,
             (self.sheet.y1 - info_h - 20.0).max(controls.y1 + 80.0),
         );
-        scene.fill(
-            Fill::NonZero,
+        // The replay canvas is a card on the sheet: `radii.lg` (10 was off
+        // the radius scale) with an edge derived from its base fill.
+        ui::surface::card(
+            scene,
             transform,
+            canvas,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(canvas, 10.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(canvas, 10.0),
         );
         draw_replay_layout(scene, transform, tr, theme, canvas, frame);
         draw_replay_pointers(scene, transform, tr, theme, canvas, frame, self.sheet);
@@ -3510,7 +3789,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             &format!("{} · {}", frame.author.name, frame.summary),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, info.x0 + 20.0, info.y0 + 4.0),
             Some(text_width(info.width() - 24.0)),
@@ -3554,7 +3833,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "WORKSPACE QUEUE",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, x0 + 4.0, y + 8.0),
             None,
@@ -3574,7 +3853,7 @@ impl RoomActivityPane {
             tr.draw_text_weighted(
                 scene,
                 "Create work without leaving the desktop",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, composer.x0 + 12.0, composer.y0 + 10.0),
                 None,
@@ -3600,7 +3879,7 @@ impl RoomActivityPane {
                 } else {
                     &self.task_draft
                 },
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 if self.task_draft.is_empty() {
                     theme.tokens.colors.text_dim
                 } else {
@@ -3644,13 +3923,13 @@ impl RoomActivityPane {
             };
             let executor = tr.elide_to_width(
                 &executor,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(composer.width() - 24.0),
             );
             tr.draw_text(
                 scene,
                 &executor,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, composer.x0 + 12.0, composer.y0 + 107.0),
                 None,
@@ -3667,13 +3946,13 @@ impl RoomActivityPane {
             );
             let attached = tr.elide_to_width(
                 &attached,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(composer.width() - 24.0),
             );
             tr.draw_text(
                 scene,
                 &attached,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, composer.x0 + 12.0, composer.y0 + 126.0),
                 None,
@@ -3709,7 +3988,7 @@ impl RoomActivityPane {
             tr.draw_text_weighted(
                 scene,
                 "No tasks yet",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, x0 + 4.0, y + 16.0),
                 None,
@@ -3718,7 +3997,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "Create one manually, or attach the resource selected in Explore.",
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 40.0),
                 Some(text_width(x1 - x0 - 8.0)),
@@ -3791,22 +4070,39 @@ impl RoomActivityPane {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let title_size = tokens.typography.scale.lg;
+        let title_size = type_size(tr, tokens.typography.scale.lg);
         let title = match self.view {
-            ActivityView::CatchUp => "Since you looked",
+            ActivityView::CatchUp => "While you were away",
             ActivityView::Tasks => "Task Center",
             ActivityView::Explore => "Workspace activity",
             ActivityView::Replay => "Replay workspace",
         };
+        // The title yields to the scope pills on its right (painted first):
+        // elided to the room left of them, so at 200 % the two never
+        // overprint. Its measured line, not the authored 20, seats the
+        // subtitle underneath.
+        let title_x = self.sheet.x0 + 16.0;
+        let pills_x0 = self
+            .scope_rects
+            .iter()
+            .map(|(_, rect)| rect.x0)
+            .fold(self.sheet.x1 - 16.0, f64::min);
+        let title_room = (pills_x0 - f64::from(tokens.spacing.s3) - title_x).max(1.0);
+        let title = tr.elide_to_width(title, title_size, text_width(title_room));
+        let (_, title_h) = tr.measure(&title, title_size, None);
+        let title_y = self.sheet.y0 + HEADER_TOP;
         tr.draw_text(
             scene,
-            title,
+            &title,
             title_size,
             colors.text_primary,
-            at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 12.0),
+            at(transform, title_x, title_y),
             None,
         );
-        let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
+        // Control sub-line scale (HIG §9.6). Shrinking `sm` by a pixel to
+        // buy room was hiding a fit problem rather than solving it.
+        let sub_size = type_size(tr, tokens.typography.scale.sm);
+        let subtitle_y = title_y + f64::from(title_h).max(self.title_line_h());
         let (change_count, contributor_count) = match self.view {
             ActivityView::CatchUp => (self.digest.total_changes, self.digest.people),
             ActivityView::Tasks => (
@@ -3840,20 +4136,71 @@ impl RoomActivityPane {
                     self.room_name.as_str()
                 }
             );
+            // Both lines are elided to one line each: the header band holds
+            // exactly one subtitle line and one line under it, so a wrapped
+            // subtitle would run into the tagline. The tagline follows the
+            // subtitle's measured height.
+            let wrap_width = text_width(self.sheet.width() - 32.0);
+            let subtitle = tr.elide_to_width(&subtitle, sub_size, wrap_width);
+            let (_, subtitle_h) = tr.measure(&subtitle, sub_size, None);
             tr.draw_text(
                 scene,
                 &subtitle,
                 sub_size,
                 colors.text_dim,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 36.0),
-                Some(text_width(self.sheet.width() - 32.0)),
+                at(transform, self.sheet.x0 + 16.0, subtitle_y),
+                None,
+            );
+            let tagline = tr.elide_to_width(
+                "Native workspace tasks · model optional · every action auditable",
+                sub_size,
+                wrap_width,
             );
             tr.draw_text(
                 scene,
-                "Native workspace tasks · model optional · every action auditable",
+                &tagline,
                 sub_size,
                 colors.text_primary,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 55.0),
+                at(
+                    transform,
+                    self.sheet.x0 + 16.0,
+                    subtitle_y + f64::from(subtitle_h).max(self.sub_line_h()),
+                ),
+                None,
+            );
+            return;
+        }
+        if self.view == ActivityView::CatchUp {
+            let workspace = if self.room_name.is_empty() {
+                "This workspace"
+            } else {
+                self.room_name.as_str()
+            };
+            let mut names = self
+                .digest
+                .briefs
+                .iter()
+                .flat_map(|brief| brief.authors.iter().map(|author| author.name.clone()))
+                .collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            let subtitle = match names.as_slice() {
+                [] => format!("{workspace} · Nothing new needs your attention"),
+                [name] => format!("{workspace} · {name} kept things moving"),
+                [first, second] => format!("{workspace} · {first} and {second} kept things moving"),
+                [first, second, rest @ ..] => {
+                    format!(
+                        "{workspace} · {first}, {second} and {} others were active",
+                        rest.len()
+                    )
+                }
+            };
+            tr.draw_text(
+                scene,
+                &subtitle,
+                sub_size,
+                colors.text_dim,
+                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 38.0),
                 Some(text_width(self.sheet.width() - 32.0)),
             );
             return;
@@ -3917,28 +4264,53 @@ impl RoomActivityPane {
             }
         }
         let wrap_width = text_width(self.sheet.width() - 32.0);
+        let latest = self
+            .narrative
+            .as_ref()
+            .map(|narrative| narrative.text.clone())
+            .or_else(|| self.digest.headline())
+            .map(|headline| format!("Latest \u{00b7} {headline}"));
+        // The subtitle may wrap, but the header band holds one subtitle line
+        // plus "Latest", which used to sit at an authored offset underneath,
+        // so a two-line subtitle painted straight through the headline.
+        // Measure the wrapped subtitle; if the stack cannot fit above the
+        // view tabs, fall back to one elided line rather than overlapping.
+        let stack_bottom = self.sheet.y0 + self.header_h();
+        let (_, latest_h) = latest
+            .as_deref()
+            .map_or((0.0, 0.0), |latest| tr.measure(latest, sub_size, None));
+        let (_, wrapped_h) = tr.measure(&subtitle, sub_size, Some(wrap_width));
+        let fits_wrapped = subtitle_y + f64::from(wrapped_h) + f64::from(latest_h) <= stack_bottom;
+        let (subtitle, subtitle_h) = if fits_wrapped {
+            (subtitle, wrapped_h)
+        } else {
+            let one_line = tr.elide_to_width(&subtitle, sub_size, wrap_width);
+            let (_, h) = tr.measure(&one_line, sub_size, None);
+            (one_line, h)
+        };
         tr.draw_text(
             scene,
             &subtitle,
             sub_size,
             colors.text_dim,
-            at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 32.0),
-            Some(wrap_width),
+            at(transform, self.sheet.x0 + 16.0, subtitle_y),
+            fits_wrapped.then_some(wrap_width),
         );
-        if let Some(headline) = self
-            .narrative
-            .as_ref()
-            .map(|narrative| narrative.text.clone())
-            .or_else(|| self.digest.headline())
-        {
-            let latest = format!("Latest \u{00b7} {headline}");
+        if let Some(latest) = latest {
             let latest = tr.elide_to_width(&latest, sub_size, wrap_width);
             tr.draw_text(
                 scene,
                 &latest,
                 sub_size,
                 colors.text_primary,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 51.0),
+                at(
+                    transform,
+                    self.sheet.x0 + 16.0,
+                    // Directly under the subtitle's measured stack — never
+                    // over it, and never higher than one sub-line below the
+                    // title, so a one-line subtitle keeps the authored seat.
+                    subtitle_y + f64::from(subtitle_h).max(self.sub_line_h()),
+                ),
                 None,
             );
         }
@@ -3957,9 +4329,11 @@ impl RoomActivityPane {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         self.scope_rects.clear();
-        let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let h = 22.0_f64;
-        let cy = self.sheet.y0 + 24.0;
+        let size = type_size(tr, tokens.typography.scale.sm);
+        // Selector pill, hit-tested through a full pointer target, centred
+        // on the title's line so the pair share a centre at every text scale.
+        let h = SELECTOR_H;
+        let cy = self.sheet.y0 + HEADER_TOP + self.title_line_h() / 2.0;
         let label_sets = [
             ["This workspace", "All workspaces"],
             ["Workspace", "All"],
@@ -3973,7 +4347,9 @@ impl RoomActivityPane {
             .map(|labels| {
                 let widths = labels
                     .iter()
-                    .map(|label| f64::from(tr.measure(label, size, None).0) + 16.0)
+                    .map(|label| {
+                        (f64::from(tr.measure(label, size, None).0) + 16.0).max(MIN_TARGET)
+                    })
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -3983,7 +4359,9 @@ impl RoomActivityPane {
                 let labels = &label_sets[2];
                 let widths = labels
                     .iter()
-                    .map(|label| f64::from(tr.measure(label, size, None).0) + 12.0)
+                    .map(|label| {
+                        (f64::from(tr.measure(label, size, None).0) + 12.0).max(MIN_TARGET)
+                    })
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -3993,20 +4371,13 @@ impl RoomActivityPane {
             let w = widths.get(i).copied().unwrap_or(0.0);
             let label = labels.get(i).copied().unwrap_or_else(|| sc.label());
             let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-            self.scope_rects.push((*sc, rect));
+            self.scope_rects.push((
+                *sc,
+                Rect::new(x, cy - MIN_TARGET / 2.0, x + w, cy + MIN_TARGET / 2.0),
+            ));
             let active = self.scope == *sc;
             let shape = RoundedRect::from_rect(rect, h / 2.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if active {
-                    colors.accent[5]
-                } else {
-                    colors.lift(0.35)
-                },
-                None,
-                &shape,
-            );
+            paint_selector_pill(scene, transform, theme, &shape, active);
             let (lw, lh) = tr.measure(label, size, None);
             tr.draw_text(
                 scene,
@@ -4036,7 +4407,7 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let y = self.sheet.y0 + HEADER_H + VIEW_ROW_H;
+        let y = self.sheet.y0 + self.header_h() + VIEW_ROW_H;
         let periods: Vec<(Period, String)> = Period::ALL
             .iter()
             .map(|p| (*p, p.label().to_string()))
@@ -4475,6 +4846,7 @@ impl RoomActivityPane {
                 self.open_brief_in_explorer(index);
             } else {
                 self.expanded_brief = Some(index);
+                self.brief_expansion_started = Some((index, Instant::now()));
             }
             return Some(handled_outcome());
         }
@@ -5041,6 +5413,7 @@ impl RoomActivityPane {
                     self.open_brief_in_explorer(index);
                 } else {
                     self.expanded_brief = Some(index);
+                    self.brief_expansion_started = Some((index, Instant::now()));
                 }
             }
             ActivityFocus::WorkSessionBoundary(boundary) => {
@@ -5404,13 +5777,17 @@ impl RoomActivityPane {
         if let Some(expanded) = control.expanded {
             state = state.expanded(expanded);
         }
-        Some(
-            AccessNode::new(control.role)
-                .with_name(label)
-                .with_description(control.description)
-                .with_state(state)
-                .with_position(index.saturating_add(1), set_size),
-        )
+        let node = AccessNode::new(control.role)
+            .with_name(label)
+            .with_description(control.description)
+            .with_state(state)
+            .with_position(index.saturating_add(1), set_size);
+        // The same rect the pointer hits, so assistive technology, the
+        // control socket and the UX bench can all address this control.
+        Some(match self.rect_for_focus(focus) {
+            Some(rect) if rect.area() > 0.0 => node.with_bounds(rect),
+            _ => node,
+        })
     }
 
     /// Semantic mirror of this immediate-mode overlay. Shell overlays are not
@@ -5421,7 +5798,7 @@ impl RoomActivityPane {
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let mut root = AccessNode::new(Role::Dialog)
+        let mut root = AccessNode::new(Role::Window)
             .with_name("Workspace activity")
             .with_description(match self.view {
                 ActivityView::CatchUp => {
@@ -5438,6 +5815,9 @@ impl RoomActivityPane {
                 }
             })
             .with_state(AccessState::new().modal(true));
+        if self.sheet.area() > 0.0 {
+            root = root.with_bounds(self.sheet);
+        }
         let order = self.focus_order();
         let set_size = order.len();
         root.children = order
@@ -5846,7 +6226,7 @@ fn draw_task_button(
         None,
         &RoundedRect::from_rect(rect, 6.0),
     );
-    let size = theme.tokens.typography.scale.sm;
+    let size = type_size(tr, theme.tokens.typography.scale.sm);
     let (width, height) = tr.measure(label, size, None);
     tr.draw_text_weighted(
         scene,
@@ -5899,7 +6279,7 @@ fn draw_task_card(
     tr.draw_text_weighted(
         scene,
         status,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
         } else {
@@ -5910,11 +6290,13 @@ fn draw_task_card(
         ui::text_render::TextWeight::Medium,
     );
     let route = task.route.label();
-    let route_width = tr.measure(route, theme.tokens.typography.scale.sm, None).0;
+    let route_width = tr
+        .measure(route, type_size(tr, theme.tokens.typography.scale.sm), None)
+        .0;
     tr.draw_text(
         scene,
         route,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(
             transform,
@@ -5925,13 +6307,13 @@ fn draw_task_card(
     );
     let title = tr.elide_to_width(
         &task.title,
-        theme.tokens.typography.scale.base,
+        type_size(tr, theme.tokens.typography.scale.base),
         text_width(rect.width() - 24.0),
     );
     tr.draw_text_weighted(
         scene,
         &title,
-        theme.tokens.typography.scale.base,
+        type_size(tr, theme.tokens.typography.scale.base),
         theme.tokens.colors.text_primary,
         at(transform, rect.x0 + 12.0, rect.y0 + 31.0),
         None,
@@ -5945,13 +6327,13 @@ fn draw_task_card(
         .unwrap_or_default();
     let byline = tr.elide_to_width(
         &format!("{assignee}{resource}"),
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         text_width(rect.width() - 24.0),
     );
     tr.draw_text(
         scene,
         &byline,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(transform, rect.x0 + 12.0, rect.y0 + 55.0),
         None,
@@ -5962,7 +6344,7 @@ fn draw_task_card(
             tr.draw_text(
                 scene,
                 notice,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.accent[4],
                 at(transform, rect.x0 + 12.0, audit_y),
                 Some(text_width(rect.width() - 24.0)),
@@ -5972,7 +6354,7 @@ fn draw_task_card(
         tr.draw_text_weighted(
             scene,
             "AUDIT TRAIL",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, rect.x0 + 12.0, audit_y),
             None,
@@ -5987,13 +6369,13 @@ fn draw_task_card(
             let line = task_audit_line(event, event_time, now);
             let line = tr.elide_to_width(
                 &line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(rect.width() - 32.0),
             );
             tr.draw_text(
                 scene,
                 &line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 20.0, audit_y),
                 None,
@@ -6172,7 +6554,7 @@ fn draw_replay_layout(
         tr.draw_text(
             scene,
             "The workspace did not exist at this checkpoint",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, bounds.x0 + 16.0, bounds.y0 + 16.0),
             Some(text_width(bounds.width() - 32.0)),
@@ -6193,7 +6575,7 @@ fn draw_replay_layout(
         tr.draw_text_weighted(
             scene,
             &workspace.name,
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, row.x0 + 6.0, row.y0 + 5.0),
             Some(text_width(row.width() - 12.0)),
@@ -6216,20 +6598,12 @@ fn draw_replay_layout(
             };
             let rect = Rect::new(x, groups.y0, x1 - 4.0, groups.y1);
             if rect.width() > 6.0 {
-                let group_card = RoundedRect::from_rect(rect, 6.0);
-                scene.fill(
-                    Fill::NonZero,
+                ui::surface::card(
+                    scene,
                     transform,
+                    rect,
+                    f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.lift(0.35),
-                    None,
-                    &group_card,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &group_card,
                 );
                 let title = group
                     .tabs
@@ -6239,7 +6613,7 @@ fn draw_replay_layout(
                 tr.draw_text(
                     scene,
                     title,
-                    theme.tokens.typography.scale.sm,
+                    type_size(tr, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.text_primary,
                     at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
                     Some(text_width(rect.width() - 16.0)),
@@ -6256,7 +6630,7 @@ fn draw_replay_layout(
                         let width = (f64::from(
                             tr.measure(
                                 &label,
-                                (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                                (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                                 None,
                             )
                             .0,
@@ -6283,7 +6657,7 @@ fn draw_replay_layout(
                         tr.draw_text(
                             scene,
                             &label,
-                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                             theme.tokens.colors.text_dim,
                             at(transform, tab_x + 6.0, tab_y + 4.0),
                             Some(text_width(width - 12.0)),
@@ -6294,7 +6668,7 @@ fn draw_replay_layout(
                         tr.draw_text(
                             scene,
                             &format!("+{}", group.tabs.len().saturating_sub(4)),
-                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                             theme.tokens.colors.text_dim,
                             at(transform, tab_x + 2.0, tab_y + 4.0),
                             None,
@@ -6324,7 +6698,7 @@ fn draw_presence_trail(
     tr.draw_text(
         scene,
         "Presence trail",
-        (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        (type_size(tr, theme.tokens.typography.scale.sm) - 1.0).max(10.0),
         theme.tokens.colors.text_dim,
         at(transform, bounds.x0, bounds.y0 + 2.0),
         None,
@@ -6405,7 +6779,7 @@ fn draw_replay_pointers(
         tr.draw_text(
             scene,
             &pointer.name,
-            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
             color,
             at(transform, point.x + 14.0, point.y + 4.0),
             Some(text_width(100.0)),
@@ -6426,58 +6800,87 @@ fn draw_brief_card(
     theme: &Theme,
     brief: &ActivityBrief,
     rect: Rect,
+    m: BriefCardMetrics,
     expanded: bool,
     now: SystemTime,
 ) {
+    let rail_x = rect.x0 + 20.0;
+    scene.stroke(
+        &Stroke::new(2.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &Line::new((rail_x, rect.y0), (rail_x, rect.y1 + 8.0)),
+    );
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.lift(0.35),
+        theme.tokens.colors.surfaces.raised,
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &vello::kurbo::Circle::new((rail_x, rect.y0 + 18.0), 8.0),
     );
     let width = text_width(rect.width() - 24.0);
-    let title_lines = tr.clamp_to_lines(&brief.title, theme.tokens.typography.scale.base, width, 2);
+    let title_lines = tr.clamp_to_lines(
+        &brief.title,
+        type_size(tr, theme.tokens.typography.scale.base),
+        width,
+        2,
+    );
+    // Every line sits where `BriefCardMetrics` says it does — the same
+    // arithmetic that sized the card in `draw_catch_up`, so the lines and
+    // the card they are in cannot disagree at any text scale.
     for (index, title) in title_lines.iter().enumerate() {
         tr.draw_text_weighted(
             scene,
             title,
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.text_primary,
             at(
                 transform,
                 rect.x0 + 12.0,
-                rect.y0 + 10.0 + index as f64 * 18.0,
+                rect.y0 + m.pad + small_count_to_f64(index) * m.title_lh,
             ),
             None,
             ui::text_render::TextWeight::Medium,
         );
     }
-    let title_extra = 18.0 * title_lines.len().saturating_sub(1) as f64;
+    let title_count = title_lines.len();
     let byline = format!(
         "{} \u{00b7} {}",
         brief.detail,
         format_relative_time(brief.last_at, now)
     );
-    let byline_y = rect.y0 + 34.0 + title_extra;
+    let byline_y = rect.y0 + m.byline_top(title_count);
     let byline_x = draw_brief_author_stack(
         scene,
         transform,
         tr,
         theme,
         &brief.authors,
-        rect.x0 + 12.0,
+        content_x,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
-    let byline = tr.elide_to_width(&byline, theme.tokens.typography.scale.sm, byline_width);
+    let byline = tr.elide_to_width(
+        &byline,
+        type_size(tr, theme.tokens.typography.scale.sm),
+        byline_width,
+    );
     tr.draw_text(
         scene,
         &byline,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(transform, byline_x, byline_y),
         None,
+    );
+    tr.draw_text(
+        scene,
+        &format_activity_range(brief.first_at, brief.last_at, now),
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(transform, content_x, rect.y0 + 56.0 + title_extra),
+        Some(width),
     );
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
@@ -6493,18 +6896,29 @@ fn draw_brief_card(
             format!("{} underlying actions", brief.changes)
         };
     }
-    let provenance = tr.elide_to_width(&provenance, theme.tokens.typography.scale.sm, width);
+    let provenance = tr.elide_to_width(
+        &provenance,
+        type_size(tr, theme.tokens.typography.scale.sm),
+        width,
+    );
     tr.draw_text(
         scene,
         &provenance,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 56.0 + title_extra),
+        at(
+            transform,
+            rect.x0 + 12.0,
+            rect.y0 + m.provenance_top(title_count),
+        ),
         None,
     );
     if expanded {
-        let mut action_y = rect.y0 + 78.0 + title_extra;
+        let mut action_y = rect.y0 + m.actions_top(title_count);
         for action in &brief.actions {
+            if action_y + 24.0 > rect.y1 - 28.0 {
+                break;
+            }
             let (r, g, b) = ui::widget::history::hue_to_rgb(action.author.avatar_hue);
             let initial = action
                 .author
@@ -6518,9 +6932,9 @@ fn draw_brief_card(
                 scene,
                 transform,
                 Rect::new(
-                    rect.x0 + 18.0,
+                    content_x + 8.0,
                     action_y - 2.0,
-                    rect.x0 + 34.0,
+                    content_x + 24.0,
                     action_y + 14.0,
                 ),
                 &initial,
@@ -6528,37 +6942,42 @@ fn draw_brief_card(
                 theme,
                 tr,
             );
-            let action_line = format!(
-                "{} · {} · {}",
-                action.author.name,
-                action.summary,
-                format_relative_time(action.timestamp, now)
-            );
+            let action_line = format!("{} · {}", action.author.name, action.summary);
             let action_line = tr.elide_to_width(
                 &action_line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(rect.width() - 58.0),
             );
             tr.draw_text(
                 scene,
                 &action_line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 40.0, action_y),
+                at(transform, content_x + 32.0, action_y),
                 None,
             );
-            action_y += 18.0;
+            action_y += m.action_pitch();
         }
+        tr.draw_text(
+            scene,
+            "Open in full history  →",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.accent[4],
+            at(transform, content_x, (action_y + 6.0).min(rect.y1 - 12.0)),
+            Some(width),
+        );
+        return;
     }
     let affordance = if expanded {
         "Open this work session in Explorer →"
     } else {
         "Show affected resources and actions ⌄"
     };
+    let action_count = if expanded { brief.actions.len() } else { 0 };
     tr.draw_text(
         scene,
         affordance,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         if expanded {
             theme.tokens.colors.accent[4]
         } else {
@@ -6567,14 +6986,145 @@ fn draw_brief_card(
         at(
             transform,
             rect.x0 + 12.0,
-            if expanded {
-                rect.y0 + 84.0 + 18.0 * brief.actions.len() as f64 + title_extra
-            } else {
-                rect.y0 + 72.0 + title_extra
-            },
+            rect.y0 + m.affordance_top(title_count, action_count),
         ),
         Some(width),
     );
+}
+
+/// Idle floor of a Selector pill in this sheet, on the `lift` ramp under
+/// the selection tier so the two states stay ordered on every palette.
+const PILL_FLOOR_LIFT_T: f32 = 0.35;
+
+/// Paint a Selector pill (view tab, scope pill, filter chip): the chosen one
+/// is the shared selection tier — a lift with its hairline (HIG §9.3), never
+/// an accent fill, which the accent's "live" meaning (§9.4) forbids — and an
+/// idle one sits on a quiet floor so the row reads as pills, not bare text.
+fn paint_selector_pill(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    active: bool,
+) {
+    paint_tiered(scene, transform, theme, shape, active, None);
+}
+
+/// A Control chip inside the sheet (detail actions): the chosen one is
+/// `selection_tier`; an idle one rests on the lift floor with an edge
+/// derived from that floor (HIG §9.5), so it registers on every palette.
+fn paint_control_chip(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    active: bool,
+) {
+    let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
+    let idle_edge = ui::surface::edge_on(floor);
+    paint_tiered(scene, transform, theme, shape, active, Some(idle_edge));
+}
+
+/// The one recipe behind both: the chosen state is `selection_tier`, an
+/// idle one rests on the lift floor, and whichever edge applies is stroked
+/// on the shape's outermost pixel row (`ui::surface::edge_outline`) so it
+/// lands on the same row as every `ui::surface::card` edge on the sheet.
+fn paint_tiered(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    active: bool,
+    idle_edge: Option<vello::peniko::Color>,
+) {
+    let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
+    let fill = if active {
+        tier.fill
+    } else {
+        theme.tokens.colors.lift(PILL_FLOOR_LIFT_T)
+    };
+    scene.fill(Fill::NonZero, transform, fill, None, shape);
+    let border = if active {
+        tier.border
+    } else {
+        tier.border.or(idle_edge)
+    };
+    if let Some(border) = border {
+        let outline = ui::surface::edge_outline(shape.rect(), shape.radii().top_left);
+        scene.stroke(&Stroke::new(1.0), transform, border, None, &outline);
+    }
+}
+
+/// The vertical rhythm of one catch-up card, from measured line heights so
+/// a 200 % card grows to hold its lines instead of stacking them on top of
+/// each other (the authored 10 / 34 / 56 / 72 offsets only fit 1× type).
+/// Padding `s2`, gaps `s1`.
+#[derive(Clone, Copy, Debug)]
+struct BriefCardMetrics {
+    /// One title line (`scale.base`, medium).
+    title_lh: f64,
+    /// One byline / provenance / action / affordance line (`scale.sm`).
+    line_lh: f64,
+    pad: f64,
+    gap: f64,
+}
+
+impl BriefCardMetrics {
+    fn new(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let (_, title_lh) = tr.measure_weighted(
+            "Ag",
+            type_size(tr, tokens.typography.scale.base),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        let (_, line_lh) = tr.measure("Ag", type_size(tr, tokens.typography.scale.sm), None);
+        Self {
+            title_lh: f64::from(title_lh),
+            line_lh: f64::from(line_lh),
+            pad: f64::from(tokens.spacing.s2),
+            gap: f64::from(tokens.spacing.s1),
+        }
+    }
+    /// Top of the byline, below `title_lines` title lines.
+    fn byline_top(self, title_lines: usize) -> f64 {
+        self.pad + small_count_to_f64(title_lines) * self.title_lh + self.gap
+    }
+    fn provenance_top(self, title_lines: usize) -> f64 {
+        self.byline_top(title_lines) + self.line_lh + self.gap
+    }
+    /// Top of the first expanded action line.
+    fn actions_top(self, title_lines: usize) -> f64 {
+        self.provenance_top(title_lines) + self.line_lh + self.gap
+    }
+    /// Pitch between expanded action lines.
+    fn action_pitch(self) -> f64 {
+        self.line_lh + self.gap
+    }
+    fn affordance_top(self, title_lines: usize, actions: usize) -> f64 {
+        let actions_h = if actions > 0 {
+            small_count_to_f64(actions) * self.action_pitch()
+        } else {
+            0.0
+        };
+        self.actions_top(title_lines) + actions_h
+    }
+    /// The whole card, `actions` being the expanded action lines (0 when
+    /// collapsed).
+    fn height(self, title_lines: usize, actions: usize) -> f64 {
+        self.affordance_top(title_lines, actions) + self.line_lh + self.pad
+    }
+}
+
+/// Widen a small count (title lines, action rows) for layout math.
+fn small_count_to_f64(n: usize) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a card holds at most a handful of lines — far under 2^53"
+    )]
+    {
+        n as f64
+    }
 }
 
 fn draw_work_session_boundary(
@@ -6662,13 +7212,54 @@ fn draw_work_session_boundary(
     }
 }
 
-fn work_session_boundary_button_rects(rect: Rect) -> (Rect, Rect) {
-    let center = rect.x0 + rect.width() / 2.0;
-    let button_width = 104.0_f64.min((rect.width() - 16.0).max(0.0) / 2.0);
-    (
-        Rect::new(center - 6.0 - button_width, rect.y0, center - 6.0, rect.y1),
-        Rect::new(center + 6.0, rect.y0, center + 6.0 + button_width, rect.y1),
+fn format_activity_timestamp(timestamp: SystemTime, now: SystemTime) -> String {
+    use chrono::{DateTime, Local};
+    let local: DateTime<Local> = timestamp.into();
+    format!(
+        "{}, {}",
+        activity_day_label(timestamp, now),
+        local.format("%H:%M")
     )
+}
+
+fn format_activity_range(first: SystemTime, last: SystemTime, now: SystemTime) -> String {
+    use chrono::{DateTime, Local};
+    if first == last {
+        return format_activity_timestamp(last, now);
+    }
+    let first_local: DateTime<Local> = first.into();
+    let last_local: DateTime<Local> = last.into();
+    let minutes = last
+        .duration_since(first)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(30)
+        / 60;
+    let duration = if minutes >= 60 {
+        let hours = minutes / 60;
+        let remainder = minutes % 60;
+        if remainder == 0 {
+            format!("{hours} hr")
+        } else {
+            format!("{hours} hr {remainder} min")
+        }
+    } else {
+        format!("{} min", minutes.max(1))
+    };
+    if first_local.date_naive() == last_local.date_naive() {
+        format!(
+            "{}, {} – {} ({duration})",
+            activity_day_label(first, now),
+            first_local.format("%H:%M"),
+            last_local.format("%H:%M")
+        )
+    } else {
+        format!(
+            "{} – {} ({duration})",
+            format_activity_timestamp(first, now),
+            format_activity_timestamp(last, now)
+        )
+    }
 }
 
 fn draw_brief_author_stack(
@@ -6734,8 +7325,12 @@ fn draw_chip_row<T: Clone>(
 ) -> Vec<(T, Rect)> {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-    let chip_h = (row.height() - 8.0).max(18.0);
+    // Control label scale (HIG §9.6); the previous `sm - 1` was an
+    // off-scale size invented to make more chips fit.
+    let size = type_size(tr, tokens.typography.scale.sm);
+    // Painted as a Selector pill; the returned hit rect is the whole row,
+    // so the pointer target is never smaller than the row it sits in.
+    let chip_h = row.height().min(SELECTOR_H);
     let cy = row.center().y;
     let mut out = Vec::with_capacity(items.len());
     let mut x = row.x0;
@@ -6743,25 +7338,17 @@ fn draw_chip_row<T: Clone>(
     for (value, label) in items {
         // Reserve room for a "+N" overflow marker so it never itself overflows.
         let (lw, lh) = tr.measure(label, size, None);
-        let w = f64::from(lw) + 16.0;
+        // A short label ("All") still gets a full pointer target.
+        let w = (f64::from(lw) + 16.0).max(MIN_TARGET);
         if x + w > row.x1 - 28.0 {
             dropped = dropped.saturating_add(1);
             continue;
         }
         let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
+        let hit = Rect::new(x, row.y0, x + w, row.y1);
         let active = is_active(value);
         let shape = RoundedRect::from_rect(rect, chip_h / 2.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if active {
-                colors.accent[5]
-            } else {
-                colors.lift(0.35)
-            },
-            None,
-            &shape,
-        );
+        paint_selector_pill(scene, transform, theme, &shape, active);
         tr.draw_text(
             scene,
             label,
@@ -6778,7 +7365,7 @@ fn draw_chip_row<T: Clone>(
             ),
             None,
         );
-        out.push((value.clone(), rect));
+        out.push((value.clone(), hit));
         x += w + 6.0;
     }
     if dropped > 0 {
@@ -6813,28 +7400,25 @@ fn draw_chip_row_paginated<T: Clone>(
 ) -> ChipPage<T> {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-    let chip_h = (row.height() - 8.0).max(18.0);
+    let size = type_size(tr, tokens.typography.scale.sm);
+    let chip_h = row.height().min(SELECTOR_H);
     let cy = row.center().y;
     let mut out = Vec::with_capacity(items.len());
     let mut x = row.x0;
     for (value, label) in items {
         let (lw, lh) = tr.measure(label, size, None);
-        let w = f64::from(lw) + 16.0;
+        let w = (f64::from(lw) + 16.0).max(MIN_TARGET);
         if x + w > row.x1 - 58.0 {
             break;
         }
         let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
-        scene.fill(
-            Fill::NonZero,
+        let hit = Rect::new(x, row.y0, x + w, row.y1);
+        paint_selector_pill(
+            scene,
             transform,
-            if is_active(value) {
-                colors.accent[5]
-            } else {
-                colors.lift(0.35)
-            },
-            None,
+            theme,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
+            is_active(value),
         );
         tr.draw_text(
             scene,
@@ -6852,7 +7436,7 @@ fn draw_chip_row_paginated<T: Clone>(
             ),
             None,
         );
-        out.push((value.clone(), rect));
+        out.push((value.clone(), hit));
         x += w + 6.0;
     }
     let shown = out.len();
@@ -6865,15 +7449,21 @@ fn draw_chip_row_paginated<T: Clone>(
             None,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
         );
+        let more = "More…";
+        let (mw, mh) = tr.measure(more, size, None);
         tr.draw_text(
             scene,
-            "More…",
+            more,
             size,
             colors.text_primary,
-            at(transform, rect.x0 + 8.0, rect.y0 + 5.0),
+            at(
+                transform,
+                rect.x0 + (rect.width() - f64::from(mw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(mh)) / 2.0,
+            ),
             None,
         );
-        Some(rect)
+        Some(Rect::new(rect.x0, row.y0, rect.x1, row.y1))
     } else {
         None
     };
@@ -6907,7 +7497,7 @@ fn draw_more_row(
     tr.draw_text(
         scene,
         label,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_primary,
         at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
         Some(text_width(rect.width() - 16.0)),
@@ -7336,6 +7926,43 @@ mod tests {
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ui::widget::op_class_is_revertible;
 
+    /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
+    /// and the derived edge of every card class the sheet paints (lift-floor
+    /// chips and group cards, the base-filled replay canvas) must register
+    /// on every shipped palette, measured as the composite over the fill.
+    #[test]
+    fn sheet_and_card_edges_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let probes = [
+                (
+                    "panel border",
+                    ui::chrome::shell::panel_border(&theme),
+                    ground,
+                ),
+                (
+                    "lift-floor chip",
+                    ui::surface::edge_on(colors.lift(PILL_FLOOR_LIFT_T)),
+                    colors.lift(PILL_FLOOR_LIFT_T),
+                ),
+                (
+                    "replay canvas",
+                    ui::surface::edge_on(colors.surfaces.base),
+                    colors.surfaces.base,
+                ),
+            ];
+            for (what, edge, fill) in probes {
+                let delta = ui::surface::edge_delta(edge, fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
     fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
@@ -7636,6 +8263,80 @@ mod tests {
             tree.doc.get_heads(),
             before,
             "reading history is not a room edit"
+        );
+    }
+
+    #[test]
+    fn away_recap_requires_the_full_threshold_and_fails_closed_on_clock_rollback() {
+        let departed = 10_000;
+        assert!(!away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60 - 1)
+        ));
+        assert!(away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60)
+        ));
+        assert!(!away_recap_is_due(
+            departed,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(departed - 1)
+        ));
+    }
+
+    fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let records = RecordStore::in_memory();
+        let home = tree.active;
+        let elsewhere = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id != home)
+            .expect("demo has another workspace")
+            .id;
+        let departed_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut pane = RoomActivityPane::new();
+        pane.persistent_frontiers = false;
+        pane.set_now_for_test(departed_at);
+        pane.observe_workspace(home.raw());
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+
+        pane.observe_workspace(elsewhere.raw());
+        tree.active = elsewhere;
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        if changed {
+            tree.workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == home)
+                .expect("home workspace")
+                .name = "Board review".to_string();
+            tree.seed_doc_from_cache();
+        }
+
+        tree.active = home;
+        pane.set_now_for_test(departed_at + elapsed);
+        pane.observe_workspace(home.raw());
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        pane.away_change_count(home.raw())
+    }
+
+    #[test]
+    fn away_recap_requires_both_time_away_and_causal_changes() {
+        assert_eq!(
+            away_change_count_after(Duration::from_secs(45 * 60 - 1), true),
+            0,
+            "a changed workspace does not interrupt a short absence"
+        );
+        assert_eq!(
+            away_change_count_after(Duration::from_secs(45 * 60), false),
+            0,
+            "elapsed time alone never creates a recap"
+        );
+        assert!(
+            away_change_count_after(Duration::from_secs(45 * 60), true) > 0,
+            "the exact threshold plus causally new work produces a recap"
         );
     }
 
@@ -9346,15 +10047,14 @@ mod tests {
         );
 
         let snapshot = pane.accessibility_snapshot();
-        assert_eq!(snapshot.role, ui::a11y::Role::Dialog);
-        assert!(snapshot.state.modal);
+        assert_eq!(snapshot.role, ui::a11y::Role::Window);
+        assert!(!snapshot.state.modal);
         assert!(
-            snapshot.children.iter().any(|node| {
-                node.role == ui::a11y::Role::Tab
-                    && node.name.as_deref() == Some("Catch up")
-                    && node.state.selected
-            }),
-            "selected tab is announced"
+            !snapshot
+                .children
+                .iter()
+                .any(|node| node.role == ui::a11y::Role::Tab),
+            "the friendly recap does not expose full-history mode tabs"
         );
         let focused = snapshot
             .children
@@ -9381,6 +10081,177 @@ mod tests {
         assert!(snapshot.children.iter().any(|node| {
             node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
         }));
+    }
+
+    /// The header band equals the authored 76 px at 100 % and grows with the
+    /// text scale so the title, subtitle and "Latest" lines have their own
+    /// room; every row under it moves down with it, and a `draw` at a new
+    /// scale lays the sheet out again before placing anything.
+    #[test]
+    fn header_band_follows_the_text_scale_and_relayouts_on_draw() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut pane = RoomActivityPane::new();
+        pane.layout(viewport);
+        assert!(
+            (pane.header_h() - HEADER_H).abs() < 1e-9,
+            "1× keeps the authored band"
+        );
+        let rows_at_1x = pane.timeline.get_rect().y0;
+
+        let large = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &large,
+            &PresenceCtx::default(),
+        );
+        let expected = HEADER_TOP + pane.title_line_h() + 2.0 * pane.sub_line_h() + HEADER_BOTTOM;
+        assert!(pane.header_h() > HEADER_H);
+        assert!((pane.header_h() - expected).abs() < 1e-9);
+        assert!(
+            pane.timeline.get_rect().y0 > rows_at_1x,
+            "the rows under the header moved down with it after the relayout"
+        );
+    }
+
+    /// HIG §9.3: a chosen pill is a lift with its hairline, never an accent
+    /// fill, and it moves further from the sheet's ground than an idle one
+    /// on every shipped palette — including high contrast, where `lift`
+    /// falls back to a derived step.
+    #[test]
+    fn selector_pills_are_lifted_and_ordered_on_every_palette() {
+        use ui::a11y::relative_luminance;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = relative_luminance(theme.tokens.colors.surfaces.base);
+            let active =
+                ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
+            let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
+            assert_ne!(
+                active.fill, theme.tokens.colors.accent[5],
+                "{}: not an accent wash",
+                theme.name
+            );
+            assert!(
+                active.border.is_some(),
+                "{}: the chosen pill carries its hairline",
+                theme.name
+            );
+            assert!(
+                (relative_luminance(active.fill) - ground).abs()
+                    > (relative_luminance(idle) - ground).abs(),
+                "{}: chosen must lift further than idle",
+                theme.name
+            );
+        }
+    }
+
+    /// The catch-up card's lines are placed by the same metrics that size
+    /// the card, so at 200 % each line starts below the previous one ends
+    /// and the affordance stays inside the card.
+    #[test]
+    fn brief_card_lines_never_overlap_at_large_text() {
+        let large = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let m = BriefCardMetrics::new(&mut tr, &large);
+        for (title_lines, actions) in [(1, 0), (2, 0), (1, 3), (2, 2)] {
+            let byline = m.byline_top(title_lines);
+            let provenance = m.provenance_top(title_lines);
+            let affordance = m.affordance_top(title_lines, actions);
+            assert!(byline >= m.pad + small_count_to_f64(title_lines) * m.title_lh);
+            assert!(provenance >= byline + m.line_lh);
+            assert!(affordance >= provenance + m.line_lh);
+            if actions > 0 {
+                assert!(
+                    affordance
+                        >= m.actions_top(title_lines) + small_count_to_f64(actions) * m.line_lh
+                );
+            }
+            assert!(m.height(title_lines, actions) >= affordance + m.line_lh);
+        }
+        let one = BriefCardMetrics::new(&mut TextRenderer::new(), &Theme::dark());
+        assert!(m.height(1, 0) > one.height(1, 0), "200 % grows the card");
+    }
+
+    #[test]
+    fn chips_are_full_pointer_targets_that_publish_their_bounds() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        assert!(
+            pane.shows_chip_rows(),
+            "the tall sheet shows period and author rows"
+        );
+        let targets: Vec<Rect> = pane
+            .view_rects
+            .iter()
+            .map(|(_, rect)| *rect)
+            .chain(pane.scope_rects.iter().map(|(_, rect)| *rect))
+            .chain(pane.period_rects.iter().map(|(_, rect)| *rect))
+            .chain(pane.author_rects.iter().map(|(_, rect)| *rect))
+            .collect();
+        assert!(
+            targets.len() >= 4 + 2 + 2,
+            "view, scope, period and author chips are laid out"
+        );
+        for rect in &targets {
+            assert!(
+                rect.height() >= MIN_TARGET - f64::EPSILON
+                    && rect.width() >= MIN_TARGET - f64::EPSILON,
+                "every chip is at least one pointer target: {rect:?}"
+            );
+        }
+        for (i, a) in targets.iter().enumerate() {
+            for b in &targets[..i] {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                    "{a:?} overlaps {b:?}"
+                );
+            }
+        }
+        let snapshot = pane.accessibility_snapshot();
+        assert_eq!(
+            snapshot.bounds.map(ui::AccessBounds::to_rect),
+            Some(pane.rect())
+        );
+        // The chip families laid out above, by the labels the tree speaks.
+        let chip_names: Vec<String> = ActivityView::ALL
+            .iter()
+            .map(|view| view.label().to_string())
+            .chain(RoomScope::ALL.iter().map(|scope| scope.label().to_string()))
+            .chain(Period::ALL.iter().map(|period| period.label().to_string()))
+            .collect();
+        // Only the chips are checked: the timeline list and controls the
+        // current view does not paint publish no rect, and rightly so.
+        let mut published = 0;
+        for node in snapshot.children.iter().take(pane.focus_order().len()) {
+            let Some(name) = node.name.as_deref() else {
+                continue;
+            };
+            if !chip_names.iter().any(|chip| chip == name) {
+                continue;
+            }
+            let rect = node
+                .bounds
+                .map(ui::AccessBounds::to_rect)
+                .unwrap_or_else(|| panic!("{name:?} publishes its hit rect"));
+            assert!(
+                targets.contains(&rect),
+                "{name:?} publishes the rect the pointer hits"
+            );
+            published += 1;
+        }
+        assert!(
+            published >= 4 + 2 + 2,
+            "every laid-out chip is in the tree with bounds"
+        );
     }
 
     #[test]

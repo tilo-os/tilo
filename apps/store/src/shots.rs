@@ -80,9 +80,11 @@ fn configure_settled_capture_renderer() {
 pub fn fixture_catalog() -> Vec<StoreItem> {
     let tilo =
         |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
-            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: desc.into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![cat.into()],
             icon_url: Some(format!("https://artwork.invalid/{name}.png")),
             screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -96,7 +98,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             versions: vec![StoreItemVersion {
                 version: ver.into(),
                 released_at_unix: 0,
-                download_url: Some(format!("https://apps.tilo.dev/{name}/{ver}.qpkg")),
+                download_url: Some(format!("https://apps.tilo.so/{name}/{ver}.tapp")),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 4 * 1024 * 1024,
             }],
@@ -107,6 +109,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         id: format!("org.example.{name}"),
         name: name.into(),
         description: desc.into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: vec![cat.into()],
         icon_url: Some(format!("https://artwork.invalid/{name}.png")),
         screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -215,40 +219,26 @@ pub fn render_scenario_to_path(
     out: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    render_scenario_to_path_with_preferences(
-        viewport,
-        out,
-        scenario,
-        Some(shot_text_scale()),
-        shot_reduce_motion(),
-    )
+    let theme = legacy_shot_theme();
+    render_scenario_to_path_with_theme(viewport, out, scenario, &theme)
 }
 
-/// Render a named state with the accessibility preferences parsed by the
-/// shared launcher. Store owns its screenshot loop, so these values must be
-/// carried explicitly instead of relying on the live `ui::App` setup path.
-///
-/// # Errors
-///
-/// Returns renderer, layout, or PNG-write failures from the native offscreen
-/// capture path.
-pub fn render_scenario_to_path_with_preferences(
+pub fn render_scenario_to_path_with_theme(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
-    text_scale: Option<f32>,
-    reduce_motion: bool,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
-        Some("detail") => app.focus_detail_for_shot("dev.tilo.notes"),
+        Some("detail") => app.focus_detail_for_shot("so.tilo.notes"),
         Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
             // Terminal is already installed and its offered action is Open,
             // so the visible busy card and masthead describe the same real
             // operation rather than claiming an install for an open-only row.
-            app.set_active_operation_for_shot("dev.tilo.terminal", crate::ActionKind::Open);
+            app.set_active_operation_for_shot("so.tilo.terminal", crate::ActionKind::Open);
             app.set_status_line("Starting Terminal · launching installed app…");
             app.set_worker_busy(true);
         }
@@ -293,7 +283,7 @@ pub fn render_scenario_to_path_with_preferences(
     // headless frame captures it (a still can't hover it).
     app.arm_status_bubble_for_shots();
     let mut widget: Box<dyn Widget> = Box::new(app);
-    render_widget_with_preferences(viewport, out, &mut widget, text_scale, reduce_motion)
+    render_widget(viewport, out, &mut widget, theme)
 }
 
 /// Guts of the render pass — mirrors what `ui::App` does for a
@@ -307,47 +297,20 @@ pub fn render_widget(
     viewport: (u32, u32),
     out: &Path,
     widget: &mut Box<dyn Widget>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_widget_with_preferences(
-        viewport,
-        out,
-        widget,
-        Some(shot_text_scale()),
-        shot_reduce_motion(),
-    )
-}
-
-fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    if let Some(scale) = text_scale {
-        theme = theme.with_text_scale(scale);
-    }
-    theme.with_reduce_motion(reduce_motion)
-}
-
-fn render_widget_with_preferences(
-    viewport: (u32, u32),
-    out: &Path,
-    widget: &mut Box<dyn Widget>,
-    text_scale: Option<f32>,
-    reduce_motion: bool,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = configured_shot_theme(text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -359,22 +322,20 @@ fn render_widget_with_preferences(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -384,7 +345,7 @@ fn render_widget_with_preferences(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
@@ -394,7 +355,7 @@ fn render_widget_with_preferences(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
     );
 
@@ -409,6 +370,10 @@ fn render_widget_with_preferences(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("store: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn legacy_shot_theme() -> Theme {
+    configured_shot_theme(Some(shot_text_scale()), shot_reduce_motion())
 }
 
 fn shot_reduce_motion() -> bool {
@@ -561,4 +526,16 @@ mod tests {
             );
         }
     }
+}
+
+fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    if let Some(scale) = text_scale {
+        theme = theme.with_text_scale(scale);
+    }
+    theme.with_reduce_motion(reduce_motion)
 }

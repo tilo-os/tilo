@@ -27,6 +27,31 @@ pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
     RecordCheckout::new(RecordId::for_tab(tab_id), RecordKind::new(TAB_RECORD_KIND))
 }
 
+/// Called only by the action that minted this new tab identity, before its
+/// first widget-tree rebuild. Never infer creation from an absent record.
+///
+/// # Errors
+/// Returns transient loan contention or a definite creation/storage refusal.
+pub fn create_scratch_tab_record(
+    store: &RecordStore,
+    tab_id: u64,
+) -> Result<(), ui::record::RecordOpenError> {
+    store.create_record(&scratch_tab_record(tab_id))
+}
+
+/// Failures belong to the exact fresh creation ticket, never to the saved
+/// resource globally. Apply before syncing the newly constructed group.
+pub(crate) fn apply_creation_failures(
+    group: &mut UiGroup,
+    failures: &std::collections::BTreeMap<u64, String>,
+) {
+    for (tab, reason) in failures {
+        if let Some(host) = group.host_for_tab_mut(*tab) {
+            host.refuse_record_binding(reason.clone());
+        }
+    }
+}
+
 /// Give every tab in `group` its own document. Called once per group as
 /// the shell (re)builds the widget tree. The binding travels with the
 /// tile, so a tab dragged into another group keeps its document.
@@ -67,6 +92,46 @@ mod tests {
     const TAB_A: u64 = 11;
     const TAB_B: u64 = 22;
 
+    #[test]
+    fn history_rebuilt_group_waits_for_missing_record_then_accepts_hydration() {
+        let store = RecordStore::in_memory();
+        let mut group = UiGroup::new(
+            1,
+            vec![(
+                ui::widget::TabDescriptor {
+                    id: TAB_A,
+                    title: "Saved note".into(),
+                    app_kind: None,
+                },
+                UiTile::App(Box::new(NotesApp::new())),
+            )],
+            TAB_A,
+            ui::widget::WindowWidth::Normal,
+        );
+        let mut parent = AutoCommit::new();
+        bind_group_records(&mut group, &store);
+        group.sync(&mut parent, &automerge::ROOT);
+        bind_group_records(&mut group, &store);
+        group.sync(&mut parent, &automerge::ROOT);
+        assert!(
+            store.open_records().is_empty(),
+            "rebuilds cannot create a missing saved record"
+        );
+        assert!(group.active_host().unwrap().history_owner().is_none());
+        // Simulate the existing record arriving from its storage/replication owner.
+        store.open_record(&scratch_tab_record(TAB_A));
+        store.with(&RecordId::for_tab(TAB_A), |doc| {
+            NotesApp::with_seed("hydrated content").sync(doc, &automerge::ROOT);
+        });
+        group.sync(&mut parent, &automerge::ROOT);
+        assert_eq!(
+            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+            Some("hydrated content")
+        );
+        assert!(group.active_host().unwrap().history_owner().is_some());
+        assert!(crate::shell::crdt_text::read_body(&parent, &automerge::ROOT, BODY_KEY).is_none());
+    }
+
     /// One hosted tile, laid out on its own taffy tree so keystrokes
     /// reach the app through `TileHost::handle_event` — the production
     /// dispatch, not a direct poke at the widget.
@@ -78,6 +143,7 @@ mod tests {
 
     impl Tile {
         fn notes(tab_id: u64, store: &RecordStore) -> Self {
+            store.open_record(&scratch_tab_record(tab_id));
             let mut host = TileHost::new(UiTile::App(Box::new(NotesApp::new())));
             host.bind_record(store.clone(), scratch_tab_record(tab_id));
             let mut taffy = TaffyTree::new();
@@ -206,7 +272,7 @@ mod tests {
         let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
         assert_eq!(
             ids,
-            vec![TAB_B.to_string()],
+            vec![ui::record::RecordId::for_tab(TAB_B).to_string()],
             "a word typed into one Notes tab must not be found in the other; \
              both tabs matching means both are showing one body",
         );
@@ -309,7 +375,7 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "dev.tilo.test-tab-documents";
+        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
@@ -321,6 +387,8 @@ mod tests {
 
         {
             let store = RecordStore::open(PACKAGE);
+            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
             let mut shared = AutoCommit::new();
             let mut a = Tile::notes(TAB_A, &store);
             let mut b = Tile::notes(TAB_B, &store);
@@ -359,7 +427,7 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "dev.tilo.test-frame-writeback";
+        const PACKAGE: &str = "so.tilo.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`.
@@ -369,6 +437,8 @@ mod tests {
         }
 
         let store = RecordStore::open(PACKAGE);
+        store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+        store.create_record(&scratch_tab_record(TAB_B)).unwrap();
         let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
             tree_with_two_note_tabs(),
             false,

@@ -199,7 +199,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.podesta.ai/qos/qos-kernel
+          images: code.podesta.ai/qos/tilo-kernel
           tags: |
             type=raw,value=latest-${{ matrix.arch }},enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=main-${{ matrix.arch }}-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -234,12 +234,12 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:${{ matrix.arch }}
+          cache-from: type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:${{ matrix.arch }}
           # The kernel builder's intermediate source tree is tens of GiB.
           # Export only final-stage dependencies: mode=max duplicated that
           # tree during export and exhausted the runner after a successful
           # compile.
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:${{ matrix.arch }},mode=min
+          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:${{ matrix.arch }},mode=min
           provenance: false
 
       - name: Report kernel build resource metrics
@@ -270,9 +270,9 @@ jobs:
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio "$apt_qemu"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm "$fedora_qemu"
           fi
 
       - name: Boot the packaged native kernel and verify module signatures
@@ -341,10 +341,10 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
-          ref="code.podesta.ai/qos/qos-kernel@${{ steps.build.outputs.digest }}"
+          ref="code.podesta.ai/qos/tilo-kernel@${{ steps.build.outputs.digest }}"
           digest='${{ steps.build.outputs.digest }}'
           jq -n \
-            --arg source "git+ssh://code.podesta.ai/qos/tilo@$GITHUB_SHA" \
+            --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
             --arg digest "$digest" \
             --arg architecture '${{ matrix.arch }}' \
             --arg base "$BASE_REF" \
@@ -352,7 +352,7 @@ jobs:
             --arg epoch "$SOURCE_DATE_EPOCH" '
               {
                 buildDefinition: {
-                  buildType: "https://tilo.dev/buildtypes/kernel-rpm/v1",
+                  buildType: "https://tilo.sh/buildtypes/kernel-rpm/v1",
                   externalParameters: {architecture: $architecture},
                   internalParameters: {
                     sourceDateEpoch: ($epoch | tonumber),
@@ -380,11 +380,11 @@ jobs:
             --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+                  .buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1"
                   and .buildDefinition.externalParameters.architecture == $architecture
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?;
-                    .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source))
+                    .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source))
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
                 )
@@ -393,7 +393,7 @@ jobs:
       - name: Report the new digest to commit
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         run: |
-          ref="code.podesta.ai/qos/qos-kernel@${{ steps.build.outputs.digest }}"
+          ref="code.podesta.ai/qos/tilo-kernel@${{ steps.build.outputs.digest }}"
           variable=KERNEL_RPMS_${{ matrix.arch }}_REF
           mkdir -p refs
           printf '%s=%s\n' "$variable" "$ref" > "refs/${{ matrix.arch }}.env"
@@ -447,7 +447,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$KERNEL_RPMS_X86_64_REF" "$KERNEL_RPMS_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]
           done
           [ "$KERNEL_RPMS_X86_64_REF" != "$KERNEL_RPMS_AARCH64_REF" ] || {
             printf 'native kernel builds unexpectedly produced one shared manifest\n' >&2

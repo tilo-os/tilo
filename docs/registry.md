@@ -1,24 +1,22 @@
 # Tilo App Registry
 
-The registry is Tilo's semi-federated marketplace for `.qpkg`
+The registry is Tilo's semi-federated marketplace for `.tapp`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
-their own registry. The Tilo org's alpha deployment is publicly reachable at
-`registry.podesta.ai` using the server under
-`crates/packaging/registry-server`. The separate `registry.tilo.dev` production
-hostname remains deferred.
+their own registry. The Tilo deployment is publicly reachable at `apps.tilo.so`
+using the server under `crates/packaging/registry-server`.
 
-Continuous app packaging currently publishes immutable qpkgs and collection
+Continuous app packaging currently publishes immutable tapps and collection
 bundles to Forgejo's generic package registry. That is the cross-workflow
 artifact channel used by app, desktop and OS jobs; it is distinct from the
 signed catalogue and moderation service described here. Main-branch app publication
-now submits newly built qpkgs to that service; separate collector and networkless
+now submits newly built tapps to that service; separate collector and networkless
 signer jobs independently verify accepted requests before advancing its signed
 snapshot. Production readiness still depends on the deployed owner/publisher trust,
 delegated-key rotation and backup path.
 
-The registry client is itself intended to ship as a `.qpkg` app so it can be
-swapped out or forked like any other Tilo app.
+The signed client logic ships in the host `app` command and powers the graphical
+Store's repository view.
 
 The registry architecture covers self-hosted bootstrap, publisher-allowlist
 workflow, TLS setup, backup/restore, and moderation hooks.
@@ -52,14 +50,14 @@ There are three layers:
  Registry owner offline key
             | signs a short-lived, publisher-scoped channel authorization
             v
- Delegated channel key (networkless) <--- independently verifies staged qpkg bytes
+ Delegated channel key (networkless) <--- independently verifies staged tapp bytes
             | signs exact policy + entries + expiry + moderation head
             v
  SignedRegistrySnapshot <--- publisher signs each RegistryEntry
             |
             | pinned owner verification + durable anti-rollback checkpoint
             v
-      verified .qpkg root ---> pkg::verify publisher identity again
+      verified .tapp root ---> tilo_app_package::verify publisher identity again
 ```
 
 The **owner** signs an index snapshot for federation
@@ -76,9 +74,9 @@ Trust flow on the client:
 - Client verifies each **entry signature** against the entry's
   declared `publisher_pubkey_hex`, then checks that pubkey
   against the allowlist snapshot the owner signed.
-- Client downloads the `.qpkg`, verifies the BLAKE3 root hash
-  matches the `qpkg_root_hash_hex` in the entry, then runs
-  `pkg::verify` (which itself checks the publisher's own
+- Client downloads the `.tapp`, verifies the BLAKE3 root hash
+  matches the `tapp_root_hash_hex` in the entry, then runs
+  `tilo_app_package::verify` (which itself checks the publisher's own
   signature over the manifest — a second, independent proof).
 
 ### Canonical signing form
@@ -108,8 +106,8 @@ whitespace are not deterministic across encoders — signatures
 generated on one host would refuse to verify after a re-encode
 on the other. Postcard fixes the byte order per struct field
 and the length prefix on collections. See
-`crates/packaging/pkg::trust` for the same pattern applied to
-`.qpkg` attestation signatures.
+`crates/packaging/tilo-app-package::trust` for the same pattern applied to
+`.tapp` attestation signatures.
 
 ## REST API
 
@@ -144,7 +142,7 @@ changes only after the offline signing step below.
 
 ### 1. Generate an owner keypair
 
-Use `pkg-cli genkey` (or any Ed25519 CLI). Keep the private key
+Use `tilo-app-package-cli genkey` (or any Ed25519 CLI). Keep the private key
 in a hardware token if you can; publish only the pubkey.
 
 ### 2. Init the data dir
@@ -203,33 +201,76 @@ Behind nginx / Caddy — see TLS below.
 Publishers build a `RegistryEntry`, sign it with `sign_entry`
 (from `registry-types`), then POST an `EntryChangeRequest` to
 `/entries`. Publisher tooling should derive the advertised root hash and
-size from the final locally-built `.qpkg`, never from an intermediate build.
+size from the final locally-built `.tapp`, never from an intermediate build.
 CI can generate the complete request from those final bytes with the same
 identity that signed the package:
 
 ```text
-tilo-pkg entry \
+tilo-app-package entry \
   --identity /run/secrets/app-publisher.json \
   --action update \
   --previous-entry current-entry.json \
-  --url https://packages.example/immutable/app.qpkg \
-  app.qpkg > request.json
+  --metadata registry-metadata.json \
+  --url https://apps.tilo.so/artifacts/immutable/app.tapp \
+  app.tapp > request.json
 curl --fail --header 'Content-Type: application/json' \
-  --data-binary @request.json https://apps.example/entries
+  --data-binary @request.json https://apps.tilo.so/entries
 ```
 
 Use `--action add` for the first version. The command refuses an identity that
-does not match the publisher embedded in the qpkg, so the registry submission
+does not match the publisher embedded in the tapp, so the registry submission
 cannot relabel artifacts signed by another key. Updates require the current
 signed entry and append to its immutable version history; re-running the same
 artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
 
+Presentation metadata is a signed part of the entry. Localized fields use one
+consistent language-tag map, and every non-empty localized map must contain an
+English (`en`) fallback. Language tags are canonical BCP 47 spellings (for
+example `en`, `de`, or `zh-Hant-TW`); empty values, malformed tags such as
+`en_US`, and unsorted or duplicate supported-language lists are rejected.
+`supported_languages` describes languages the app itself supports, not merely
+the locales supplied for its store listing. Example authoring input:
+
+```json
+{
+  "name": {"en": "Example", "de": "Beispiel"},
+  "description": {
+    "en": "A focused example app for Tilo OS.",
+    "de": "Eine fokussierte Beispiel-App für Tilo OS."
+  },
+  "tagline": {"en": "Learn by example", "de": "Am Beispiel lernen"},
+  "images": {
+    "en": [
+      {
+        "kind": "icon",
+        "url": "https://apps.tilo.so/images/example-icon.png",
+        "alt": "Example app icon"
+      },
+      {
+        "kind": "screenshot",
+        "url": "https://apps.tilo.so/images/example-main.png",
+        "alt": "Example app main screen"
+      }
+    ]
+  },
+  "supported_languages": ["de", "en"],
+  "source_url": "https://code.podesta.ai/example/example",
+  "homepage": "https://example.invalid"
+}
+```
+
+Clients resolve exact locale, then its base language, then English. Images use
+the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
+
 Each signed version binds the package root, exact final-file BLAKE3 and size,
-architecture, minimum ISA and runtime ABI. The official registry accepts
-`x86_64` and `aarch64` targets. Pass the qpkg's target with
-`tilo-pkg entry --arch`; do not publish a macOS package through this Linux qpkg
-lane.
+platform family, architecture, minimum ISA and runtime ABI. The schema can add
+future platform families without changing the signed entry shape, but the
+official registry currently accepts only `platform = "tilo-os"` with
+`architecture = "x86_64"` or `"aarch64"`. A release must publish a distinct
+native `.tapp` for both architectures. Pass each tapp's target with
+`tilo-app-package entry --arch`; generic Linux, macOS, and Windows builds do not
+belong in the Tilo OS app channel.
 
 ### 6. Moderator workflow
 
@@ -239,10 +280,10 @@ remotely callable approval endpoint.
 
 ```text
 tilo-registry-server review list --json
-tilo-registry-server review show dev.example.app --json
-tilo-registry-server review approve dev.example.app \
+tilo-registry-server review show so.tilo.example --json
+tilo-registry-server review approve so.tilo.example \
     --reviewer alice --reason "capabilities and core journeys verified"
-tilo-registry-server review reject dev.example.app \
+tilo-registry-server review reject so.tilo.example \
     --reviewer alice --reason "misleading subscription disclosure"
 ```
 
@@ -278,9 +319,9 @@ tilo-registry-server authorize-channel \
 ```
 
 Each recurring promotion has two security boundaries. A networked collector
-has no signing key and writes exact qpkg bytes under their BLAKE3 names. A
+has no signing key and writes exact tapp bytes under their BLAKE3 names. A
 separate networkless signer receives only the delegated key; it re-verifies the
-publisher request, live allowlist, staged-byte digest, qpkg root/signature,
+publisher request, live allowlist, staged-byte digest, tapp root/signature,
 manifest identity, target policy, delegation scope, predecessor, sequence and
 expiry before approving or signing anything:
 
@@ -342,7 +383,7 @@ For deployments, use a TLS-terminating reverse proxy in front:
 
 - Rotate certificates without restarting the registry.
 - Rate-limit and cache GETs at the edge.
-- Serve the `.qpkg` payloads themselves — the entries just point
+- Serve the `.tapp` payloads themselves — the entries just point
   at HTTPS URLs; the bytes can live on any CDN / object
   store.
 
@@ -361,7 +402,7 @@ server {
     }
 
     location /packages/ {
-        alias /srv/qpkg/;         # your .qpkg bytes served straight
+        alias /srv/tapp/;         # your .tapp bytes served straight
         autoindex off;
     }
 }
@@ -373,7 +414,7 @@ server {
 apps.acme.example {
     reverse_proxy /registry* /entries* /health 127.0.0.1:8443
     file_server /packages/* {
-        root /srv/qpkg
+        root /srv/tapp
     }
 }
 ```

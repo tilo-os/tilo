@@ -4,8 +4,8 @@
 set -euo pipefail
 
 release_tag="${TILO_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
-release_server="${GITHUB_SERVER_URL:-https://code.podesta.ai}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$release_server" =~ ^https://[^/]+$ ]] \

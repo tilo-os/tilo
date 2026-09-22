@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.hex-editor"
+id       = "so.tilo.hex-editor"
 name     = "Hex Editor"
 category = "Development"
 version  = "0.1.0"

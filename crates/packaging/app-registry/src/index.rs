@@ -1,7 +1,7 @@
 //! The signed registry index — the wire format a Tilo registry serves.
 //!
 //! Maps a reverse-DNS **app-id** to published versions, each naming its
-//! qpkg by content hash (blake3, same as iroh-blobs) plus the metadata
+//! tapp by content hash (blake3, same as iroh-blobs) plus the metadata
 //! a client needs to pick a build before downloading: target arch, ISA
 //! level, and runtime ABI.
 //!
@@ -9,16 +9,16 @@
 //! HTTPS: the **index signature** (registry operator's Ed25519 key
 //! over the whole document — pinned in `registries.toml`, so a MITM or
 //! compromised host can't add/drop/rewrite entries) and the **per-entry
-//! publisher signature** (binds `(app-id, version, qpkg-hash,
+//! publisher signature** (binds `(app-id, version, tapp-hash,
 //! package-id, arch, isa, runtime, size)` so the advertised metadata
 //! can't be relabelled by the registry).
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use pkg::PackageId;
-use pkg::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
-use pkg::pack::SigningIdentity;
+use tilo_app_package::PackageId;
+use tilo_app_package::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
+use tilo_app_package::pack::SigningIdentity;
 
 /// Version of the index wire format; bumped when the canonical signing bytes change shape.
 pub const INDEX_FORMAT: u32 = 1;
@@ -209,7 +209,10 @@ impl HostProfile {
                 runtimes: Vec::new(),
             };
         }
-        #[allow(unreachable_code)]
+        #[allow(
+            unreachable_code,
+            reason = "the fallback remains type-checked on architectures whose cfg branch returns above"
+        )]
         Self {
             arch: Arch::X86_64,
             isa: IsaLevel::X86_64(X86_64Level::Baseline),
@@ -228,15 +231,15 @@ impl HostProfile {
 /// One published version of one app.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexEntry {
-    /// Reverse-DNS app id, e.g. `dev.tilo.editor`.
+    /// Reverse-DNS app id, e.g. `so.tilo.editor`.
     pub app_id: String,
     /// Semver of this build.
     pub version: String,
-    /// `qpkg:<hex>` — blake3 of the signed-root (package identity).
+    /// `tapp:<hex>` — blake3 of the signed-root (package identity).
     pub package_id: String,
-    /// blake3 hex of the whole .qpkg tar — the iroh-blobs content hash used to fetch and verify-on-arrival.
-    pub qpkg_hash: String,
-    /// Size of the `.qpkg` in bytes (advisory; UI + quota).
+    /// blake3 hex of the whole .tapp tar — the iroh-blobs content hash used to fetch and verify-on-arrival.
+    pub tapp_hash: String,
+    /// Size of the `.tapp` in bytes (advisory; UI + quota).
     pub size_bytes: u64,
     /// Target architecture.
     pub arch: Arch,
@@ -249,21 +252,21 @@ pub struct IndexEntry {
     pub publisher_identity: String,
     /// Publisher's Ed25519 signature over [`Self::signing_bytes`].
     pub publisher_signature: String,
-    /// iroh `BlobTicket` (base32) naming the node + hash to fetch from; the hash inside MUST equal `qpkg_hash`.
+    /// iroh `BlobTicket` (base32) naming the node + hash to fetch from; the hash inside MUST equal `tapp_hash`.
     pub ticket: String,
 }
 
 impl IndexEntry {
-    /// The 32-byte qpkg content hash.
+    /// The 32-byte tapp content hash.
     ///
     /// # Errors
     ///
-    /// Returns an error if `qpkg_hash` isn't valid hex or isn't 32 bytes long.
-    pub fn qpkg_hash_bytes(&self) -> Result<[u8; 32], IndexError> {
-        let b = hex::decode(&self.qpkg_hash).map_err(|e| IndexError::Hex(e.to_string()))?;
+    /// Returns an error if `tapp_hash` isn't valid hex or isn't 32 bytes long.
+    pub fn tapp_hash_bytes(&self) -> Result<[u8; 32], IndexError> {
+        let b = hex::decode(&self.tapp_hash).map_err(|e| IndexError::Hex(e.to_string()))?;
         b.as_slice()
             .try_into()
-            .map_err(|_| IndexError::Hex("qpkg_hash is not 32 bytes".into()))
+            .map_err(|_| IndexError::Hex("tapp_hash is not 32 bytes".into()))
     }
 
     /// Parse the `package_id`.
@@ -296,7 +299,7 @@ impl IndexEntry {
     ///
     /// # Errors
     ///
-    /// Returns an error if `qpkg_hash` is malformed, or a field is too
+    /// Returns an error if `tapp_hash` is malformed, or a field is too
     /// long to fit the wire format's length prefix.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut out = Vec::new();
@@ -305,7 +308,7 @@ impl IndexEntry {
         put_str(&mut out, &self.app_id)?;
         put_str(&mut out, &self.version)?;
         put_str(&mut out, &self.package_id)?;
-        out.extend_from_slice(&self.qpkg_hash_bytes()?);
+        out.extend_from_slice(&self.tapp_hash_bytes()?);
         out.extend_from_slice(&self.size_bytes.to_le_bytes());
         put_str(&mut out, arch_wire(self.arch))?;
         put_str(&mut out, &self.isa)?;
@@ -548,8 +551,11 @@ impl RegistryIndex {
                 Some((cur, cur_ver)) => {
                     ver > *cur_ver
                         || (ver == *cur_ver
-                            && e.isa_level().map_or(0, pkg::manifest::IsaLevel::rank)
-                                > cur.isa_level().map_or(0, pkg::manifest::IsaLevel::rank))
+                            && e.isa_level()
+                                .map_or(0, tilo_app_package::manifest::IsaLevel::rank)
+                                > cur
+                                    .isa_level()
+                                    .map_or(0, tilo_app_package::manifest::IsaLevel::rank))
                 }
             };
             if better {
@@ -569,14 +575,14 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pkg::pack::SigningIdentity;
+    use tilo_app_package::pack::SigningIdentity;
 
     fn sample_entry(app: &str, ver: &str, isa: &str) -> IndexEntry {
         IndexEntry {
             app_id: app.into(),
             version: ver.into(),
-            package_id: format!("qpkg:{}", hex::encode([7u8; 32])),
-            qpkg_hash: hex::encode([9u8; 32]),
+            package_id: format!("tapp:{}", hex::encode([7u8; 32])),
+            tapp_hash: hex::encode([9u8; 32]),
             size_bytes: 1234,
             arch: Arch::X86_64,
             isa: isa.into(),
@@ -598,7 +604,7 @@ mod tests {
     #[test]
     fn entry_sign_verify_roundtrip() {
         let id = SigningIdentity::generate();
-        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&id).unwrap();
         e.verify_publisher().unwrap();
     }
@@ -606,10 +612,10 @@ mod tests {
     #[test]
     fn tampered_entry_fails_publisher_verify() {
         let id = SigningIdentity::generate();
-        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&id).unwrap();
         // Flip the advertised hash — signature must no longer verify.
-        e.qpkg_hash = hex::encode([1u8; 32]);
+        e.tapp_hash = hex::encode([1u8; 32]);
         assert!(e.verify_publisher().is_err());
     }
 
@@ -618,8 +624,8 @@ mod tests {
         let registry = SigningIdentity::generate();
         let other = SigningIdentity::generate();
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.tilo.central");
-        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
+        let mut idx = RegistryIndex::new("so.tilo.central");
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&publisher).unwrap();
         idx.upsert(e);
         idx.sign(&registry).unwrap();
@@ -631,42 +637,42 @@ mod tests {
     #[test]
     fn resolve_picks_highest_runnable_isa_then_semver() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.tilo.central");
+        let mut idx = RegistryIndex::new("so.tilo.central");
         for (ver, isa) in [
             ("1.0.0", "x86_64"),
             ("1.0.0", "x86_64-v3"),
             ("1.0.0", "x86_64-v4"),
             ("0.9.0", "x86_64-v3"),
         ] {
-            let mut e = sample_entry("dev.tilo.editor", ver, isa);
+            let mut e = sample_entry("so.tilo.editor", ver, isa);
             e.sign(&publisher).unwrap();
             idx.upsert(e);
         }
         // A v3 host cannot run the v4 build; must pick 1.0.0 / v3.
         let host = x86_host(X86_64Level::V3);
-        let best = idx.resolve_best("dev.tilo.editor", None, &host).unwrap();
+        let best = idx.resolve_best("so.tilo.editor", None, &host).unwrap();
         assert_eq!(best.version, "1.0.0");
         assert_eq!(best.isa, "x86_64-v3");
 
         // A v4 host prefers the v4 build.
         let host4 = x86_host(X86_64Level::V4);
-        let best4 = idx.resolve_best("dev.tilo.editor", None, &host4).unwrap();
+        let best4 = idx.resolve_best("so.tilo.editor", None, &host4).unwrap();
         assert_eq!(best4.isa, "x86_64-v4");
     }
 
     #[test]
     fn resolve_respects_version_req() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.tilo.central");
+        let mut idx = RegistryIndex::new("so.tilo.central");
         for ver in ["1.0.0", "1.2.0", "2.0.0"] {
-            let mut e = sample_entry("dev.tilo.editor", ver, "x86_64");
+            let mut e = sample_entry("so.tilo.editor", ver, "x86_64");
             e.sign(&publisher).unwrap();
             idx.upsert(e);
         }
         let host = x86_host(X86_64Level::Baseline);
         let req = semver::VersionReq::parse("^1").unwrap();
         let best = idx
-            .resolve_best("dev.tilo.editor", Some(&req), &host)
+            .resolve_best("so.tilo.editor", Some(&req), &host)
             .unwrap();
         assert_eq!(best.version, "1.2.0");
     }
@@ -674,32 +680,32 @@ mod tests {
     #[test]
     fn runtime_gate_blocks_missing_runtime() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.tilo.central");
-        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64");
+        let mut idx = RegistryIndex::new("so.tilo.central");
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64");
         e.runtime = Some("tilo-runtime/1.2.0".into());
         e.sign(&publisher).unwrap();
         idx.upsert(e);
 
         // No runtime installed → not selectable.
         let host = x86_host(X86_64Level::Baseline);
-        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_none());
+        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_none());
 
         // A compatible runtime present → selectable.
         let host = host.with_runtime(RuntimeRef::parse("tilo-runtime/1.5.0").unwrap());
-        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_some());
+        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_some());
 
         // A different-major runtime does NOT satisfy.
         let host = x86_host(X86_64Level::Baseline)
             .with_runtime(RuntimeRef::parse("tilo-runtime/2.0.0").unwrap());
-        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_none());
+        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_none());
     }
 
     #[test]
     fn json_roundtrip_preserves_signature() {
         let registry = SigningIdentity::generate();
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.tilo.central");
-        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
+        let mut idx = RegistryIndex::new("so.tilo.central");
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&publisher).unwrap();
         idx.upsert(e);
         idx.sign(&registry).unwrap();

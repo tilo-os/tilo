@@ -11,7 +11,7 @@ fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.speed-test", speed_test::app_root)
+        &LaunchSpec::new("so.tilo.speed-test", speed_test::app_root)
             .shot_root(shot)
             .scenarios(&[
                 "idle",

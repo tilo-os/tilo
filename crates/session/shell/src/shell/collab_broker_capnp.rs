@@ -1,7 +1,10 @@
 // `Promise::from_future(async move {..})` refines capnp-rpc's declared
 // `Promise<.., capnp::Error>` return type — the intended pattern, but it
 // trips `refining_impl_trait`.
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "Capnp server implementations return concrete Promise values from from_future to implement the generated async RPC contract."
+)]
 
 //! Native Cap'n Proto server for the Tilo collaboration broker.
 //!
@@ -71,7 +74,7 @@ const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
 const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
 const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
-const FILES_APP_ID: &str = "dev.tilo.file-explorer";
+const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
 #[derive(Clone)]
 struct NearbyTargetBinding {
@@ -1023,7 +1026,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Directory resolution identifies the actor, workspace cluster, peer, revision, resource, and action independently."
+    )]
     /// # Errors
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
@@ -1067,7 +1073,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Directory invocation carries actor and exact directory target fields plus the action argument and confirmation."
+    )]
     /// # Errors
     ///
     /// Returns an error when invocation inputs are invalid, the bounded broker
@@ -2981,7 +2990,11 @@ impl CapnpBrokerState {
     /// Atomically resolve and start a directory action on the broker
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
-    #[allow(clippy::too_many_arguments, clippy::future_not_send)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::future_not_send,
+        reason = "Admission carries actor, exact directory target, argument, and confirmation through Rc-backed capabilities on the broker LocalSet."
+    )]
     async fn start_action_directory_for_actor(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -3071,7 +3084,10 @@ impl CapnpBrokerState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Confirmation grants bind peer/resource/action/argument and actor identity to the action contract and supplied approval."
+    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
@@ -7755,7 +7771,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let route = self.route();
-        if route.app_id != "dev.tilo.settings" {
+        if route.app_id != "so.tilo.settings" {
             return Promise::err(capnp::Error::failed(
                 "Wi-Fi continuity is restricted to the certified Settings application".into(),
             ));
@@ -9502,7 +9518,7 @@ async fn drive_connection(
     clippy::similar_names,
     reason = "sk/pk and owner/editor pairings are the conventional, intentional names for a keypair and a two-role fixture"
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -9520,7 +9536,7 @@ mod tests {
         workspace: &str,
     ) -> crate::shell::realtime_session::VerifiedAppRegistration {
         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
-            "dev.tilo.chat",
+            "so.tilo.chat",
             workspace,
         )
         .expect("verified test app")
@@ -9712,7 +9728,7 @@ mod tests {
             None,
             None,
         );
-        let channel = "dev.tilo.notes#room:test#record:daily";
+        let channel = "so.tilo.notes#room:test#record:daily";
         let mut first = state.subscribe_context(channel, 7);
         let mut second = state.subscribe_context(channel, 9);
         let _requester = state.subscribe_context(channel, 12);
@@ -9730,7 +9746,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The two-peer production fixture follows offer, acceptance, media readiness, source stop, and target-live cutover end to end."
+    )]
     fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9769,7 +9788,7 @@ mod tests {
         let target =
             crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         let intent = RealtimeResumeIntent {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: Some("main-stage".into()),
@@ -9935,7 +9954,7 @@ mod tests {
         ));
         let (subscriber, _events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
@@ -10080,7 +10099,7 @@ mod tests {
         ));
         let (subscriber, mut events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
@@ -10180,11 +10199,11 @@ mod tests {
             "launcher test",
         );
         assert_eq!(
-            stage_launch_content("dev.tilo.photos", "", &mut workspace).expect("plain launch"),
+            stage_launch_content("so.tilo.photos", "", &mut workspace).expect("plain launch"),
             None
         );
-        assert!(stage_launch_content("dev.tilo.photos", "not-a-hash", &mut workspace).is_err());
-        assert!(stage_launch_content("dev.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", "not-a-hash", &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
     }
 
     #[cfg(unix)]
@@ -10206,12 +10225,12 @@ mod tests {
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
-        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
         std::fs::remove_file(&staged).expect("remove corrupt fixture");
         let target = runtime.path().join("outside");
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
         // SAFETY: paired with the guarded process-wide override above.
         unsafe {
             if let Some(previous) = previous {
@@ -10223,7 +10242,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum DirectoryResolveMode {
+    pub(crate) enum DirectoryResolveMode {
         Found,
         Stale,
         NotFound,
@@ -10232,16 +10251,19 @@ mod tests {
     /// A real `Cap'n Proto` directory endpoint retained by the `LocalSet` test
     /// below. It answers only bounded inert rows, but is deliberately a
     /// capability client rather than a mock of the shell bridge.
-    struct TestActionDirectory {
+    pub(crate) struct TestActionDirectory {
         revision: String,
-        resolve_mode: DirectoryResolveMode,
+        pub(crate) resolve_mode: DirectoryResolveMode,
+        result: tilo_actions::ResultSpec,
         confirmation_required: bool,
         query_count: usize,
+        resolve_count: usize,
     }
 
     impl TestActionDirectory {
         fn contract_json(&self) -> String {
             let mut contract = tilo_actions::ActionContract::view();
+            contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
@@ -10311,7 +10333,8 @@ mod tests {
             _params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
         ) -> Promise<(), capnp::Error> {
-            let state = self.state.borrow();
+            let mut state = self.state.borrow_mut();
+            state.resolve_count = state.resolve_count.saturating_add(1);
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
@@ -10324,12 +10347,12 @@ mod tests {
         }
     }
 
-    struct LocalDirectoryFixture {
+    pub(crate) struct LocalDirectoryFixture {
         state: Arc<CapnpBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         directory: action_directory::Client,
         directory_state: Rc<RefCell<TestActionDirectory>>,
-        broker: crate::shell::collab_broker::AppActionBroker,
+        pub(crate) broker: crate::shell::collab_broker::AppActionBroker,
         chrome: crate::shell::chrome_state::Chrome,
         cluster_id: String,
         route: CrdtRoute,
@@ -10337,19 +10360,104 @@ mod tests {
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
     }
 
+    impl LocalDirectoryFixture {
+        pub(crate) fn set_confirmation_required(&self, required: bool) {
+            self.directory_state.borrow_mut().confirmation_required = required;
+        }
+
+        pub(crate) fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
+            self.directory_state.borrow_mut().result = result;
+        }
+
+        /// Exercise the production peer-bound update RPC, including result-contract validation.
+        pub(crate) async fn complete_invocation(
+            &self,
+            id: u64,
+            update: &tilo_actions::InvocationUpdate,
+        ) -> Result<(), capnp::Error> {
+            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                state: Arc::clone(&self.state),
+                directories: Rc::clone(&self.directories),
+                channel_id: self.route.channel_key(),
+                peer_id: self.peer_id,
+                verified_identity: AdmittedJoinIdentity {
+                    verified: VerifiedJoinIdentity {
+                        user_public_key: [0; 32],
+                        device_public_key: [0; 32],
+                    },
+                    principal_id: "fixture-application".into(),
+                    display_handle: None,
+                    role: CapRole::Editor,
+                    agent_id: None,
+                },
+            });
+            let mut request = client.update_invocation_request();
+            request.get().set_id(id);
+            request
+                .get()
+                .set_update_json(&serde_json::to_string(update).expect("canonical update"));
+            request.send().promise.await?;
+            Ok(())
+        }
+
+        pub(crate) fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
+            self.directory_state.borrow_mut().resolve_mode = mode;
+        }
+
+        pub(crate) fn take_invocation_actor(&mut self) -> Option<String> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.actor)
+        }
+
+        pub(crate) fn take_invocation_argument(&mut self) -> Option<Option<String>> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.argument)
+        }
+
+        pub(crate) fn resolve_count(&self) -> usize {
+            self.directory_state.borrow().resolve_count
+        }
+    }
+
     fn local_directory_fixture() -> LocalDirectoryFixture {
-        const PEER_ID: u64 = 71;
         let mut tree = WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(71),
             "Directory test room",
         );
-        let cluster_id = workspace.room.to_string();
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
-        let membership = tree.shared();
-        let route = CrdtRoute::record("dev.tilo.atlas", cluster_id.clone(), "atlas");
+        local_directory_fixture_with_membership(tree.shared())
+    }
+
+    pub(crate) fn local_directory_fixture_with_membership(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_peer(membership, Some(71))
+    }
+
+    pub(crate) fn local_directory_fixture_with_first_allocated_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_peer(membership, None)
+    }
+
+    fn local_directory_fixture_with_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+        peer_id: Option<u64>,
+    ) -> LocalDirectoryFixture {
+        let cluster_id = membership
+            .read()
+            .active_workspace()
+            .expect("directory fixture requires an active workspace")
+            .room
+            .to_string();
+        let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -10358,19 +10466,22 @@ mod tests {
             Some(Arc::clone(&membership)),
             None,
         );
+        let peer_id = peer_id.unwrap_or_else(|| state.next_peer_id());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
+            result: tilo_actions::ResultSpec::None,
             confirmation_required: false,
             query_count: 0,
+            resolve_count: 0,
         }));
         let directory: action_directory::Client =
             capnp_rpc::new_client(TestActionDirectoryServer {
                 state: Rc::clone(&directory_state),
             });
         directories.directories.borrow_mut().insert(
-            PEER_ID,
+            peer_id,
             RegisteredActionDirectory {
                 app_id: route.app_id.clone(),
                 route: route.clone(),
@@ -10382,9 +10493,9 @@ mod tests {
             .lock()
             .expect("directory roots")
             .insert(
-                PEER_ID,
+                peer_id,
                 ActionDirectoryRoot {
-                    peer_id: PEER_ID,
+                    peer_id,
                     app_id: route.app_id.clone(),
                     cluster_id: cluster_id.clone(),
                     record_id: route.record_id.clone(),
@@ -10396,7 +10507,7 @@ mod tests {
             .invocation_subscribers
             .lock()
             .expect("invocation subscribers")
-            .insert(PEER_ID, invocation_tx);
+            .insert(peer_id, invocation_tx);
         LocalDirectoryFixture {
             broker: crate::shell::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(
                 &state,
@@ -10408,7 +10519,7 @@ mod tests {
             directory_state,
             cluster_id,
             route,
-            peer_id: PEER_ID,
+            peer_id,
             invocation_rx,
         }
     }
@@ -10417,7 +10528,7 @@ mod tests {
         clippy::future_not_send,
         reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
     )]
-    async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
+    pub(crate) async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         fixture
             .state
             .drain_action_directory_bridge(&fixture.directories);
@@ -10613,7 +10724,7 @@ mod tests {
                     peer_id,
                     ActionDirectoryRoot {
                         peer_id,
-                        app_id: "dev.tilo.test".into(),
+                        app_id: "so.tilo.test".into(),
                         cluster_id: fixture.cluster_id.clone(),
                         record_id: format!("root-{peer_id}"),
                     },
@@ -11243,7 +11354,7 @@ mod tests {
         else {
             panic!("the certified document was not published to the peer network");
         };
-        assert_eq!(app_id, "dev.tilo.notes");
+        assert_eq!(app_id, "so.tilo.notes");
         assert_eq!(cluster_id, &route.cluster_id);
         assert_eq!(record_id, "meeting-notes");
         assert_eq!(
@@ -11266,11 +11377,7 @@ mod tests {
             "Typed document room",
         );
         workspace.set_owner(&principal);
-        let route = CrdtRoute::record(
-            "dev.tilo.notes",
-            workspace.room.to_string(),
-            "meeting-notes",
-        );
+        let route = CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -11414,10 +11521,10 @@ mod tests {
         );
         fanout.attach_capnp(Arc::clone(&state));
 
-        let target = CrdtRoute::record("dev.tilo.notes", "room-1", "note-a");
-        let other_record = CrdtRoute::record("dev.tilo.notes", "room-1", "note-b");
-        let other_app = CrdtRoute::record("dev.tilo.files", "room-1", "note-a");
-        let other_room = CrdtRoute::record("dev.tilo.notes", "room-2", "note-a");
+        let target = CrdtRoute::record("so.tilo.notes", "room-1", "note-a");
+        let other_record = CrdtRoute::record("so.tilo.notes", "room-1", "note-b");
+        let other_app = CrdtRoute::record("so.tilo.files", "room-1", "note-a");
+        let other_room = CrdtRoute::record("so.tilo.notes", "room-2", "note-a");
         let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
         let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
         let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
@@ -11474,7 +11581,7 @@ mod tests {
             "Action room",
         );
         workspace.set_owner("owner");
-        let route = CrdtRoute::app("dev.tilo.files", workspace.room.to_string());
+        let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -11490,7 +11597,7 @@ mod tests {
             7,
             PublishedSurface {
                 peer_id: 7,
-                app_id: "dev.tilo.files".into(),
+                app_id: "so.tilo.files".into(),
                 route,
                 actions: vec![
                     PublishedAction {
@@ -11705,9 +11812,9 @@ mod tests {
 
         let launchable = PublishedSurface {
             peer_id: 99,
-            app_id: "dev.tilo.files".into(),
+            app_id: "so.tilo.files".into(),
             route: CrdtRoute::app(
-                "dev.tilo.files",
+                "so.tilo.files",
                 state
                     .surfaces
                     .lock()
@@ -11801,7 +11908,7 @@ mod tests {
 
         let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
-                app: "dev.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -11857,7 +11964,7 @@ mod tests {
         assert!(workspace.allows(
             &workspace.actor_for_person(&"alice".into()),
             &collab_types::ResourceRef::Action {
-                app: "dev.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -12213,7 +12320,7 @@ mod tests {
 
     fn continuation_route_for(room: crate::shell::state::RoomId, instance: u64) -> CrdtRoute {
         CrdtRoute::record(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             room.to_string(),
             format!("continuation:{instance}"),
         )
@@ -12231,7 +12338,7 @@ mod tests {
             &mut reports,
             continuation_policy(false),
             &route,
-            "dev.tilo.browser",
+            "so.tilo.browser",
             metadata.schema_version,
             metadata.bytes,
         );
@@ -12241,7 +12348,7 @@ mod tests {
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(11),
                 )
                 .is_none()
@@ -12264,7 +12371,7 @@ mod tests {
                 &mut reports,
                 continuation_policy(true),
                 route,
-                "dev.tilo.browser",
+                "so.tilo.browser",
                 metadata.schema_version,
                 metadata.bytes,
             )
@@ -12272,14 +12379,14 @@ mod tests {
         }
 
         assert!(
-            clear_continuation_for_route(&mut reports, &first, "dev.tilo.browser")
+            clear_continuation_for_route(&mut reports, &first, "so.tilo.browser")
                 .expect("exact clear")
         );
         assert!(
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(11),
                 )
                 .is_none()
@@ -12288,17 +12395,17 @@ mod tests {
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(22),
                 )
                 .is_some()
         );
-        assert!(clear_continuation_for_route(&mut reports, &second, "dev.tilo.editor").is_err());
+        assert!(clear_continuation_for_route(&mut reports, &second, "so.tilo.editor").is_err());
         assert!(
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(22),
                 )
                 .is_some()

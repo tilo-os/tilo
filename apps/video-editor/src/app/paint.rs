@@ -256,7 +256,10 @@ pub(super) fn text(
 ) {
     tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Weighted text painting combines scene/renderer/transform with content, size, color, origin, and weight."
+)]
 pub(super) fn text_w(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -463,12 +466,9 @@ pub(super) fn draw_segmented(
     selected: usize,
     cursor: Point,
 ) {
-    let hovered = segments.iter().position(|r| r.contains(cursor));
-    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
-        .hovered(hovered)
-        .radius(6.0)
-        .text_size(11.5);
-    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
+    draw_segmented_sized(
+        scene, tf, tr, theme, segments, labels, selected, cursor, 11.5,
+    );
 }
 
 /// Where each part of the transport's readout goes, or `None` for a part
@@ -557,9 +557,14 @@ pub(super) fn draw_key_control(
 ) {
     let c = &theme.tokens.colors;
     let ctr = rect.center();
-    if hovered {
-        fill_rrect(scene, tf, c.lift(0.72), rect, 5.0);
-    }
+    selection_row(
+        scene,
+        tf,
+        theme,
+        rect,
+        5.0,
+        ui::chrome::SelectionState::new(false, hovered, false),
+    );
     let (r, col, filled) = match state {
         KeyState::Off => (4.0, c.text_tertiary, false),
         KeyState::Between => (5.5, c.accent[5], false),
@@ -1060,4 +1065,155 @@ pub(super) fn nice_tick(px_per_sec: f64) -> f64 {
         }
     }
     600.0
+}
+
+pub(super) fn type_size(tr: &TextRenderer, px: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(px)).size
+}
+
+pub(super) fn dialog_type(tr: &TextRenderer, theme: &Theme) -> DialogType {
+    let scale = &theme.tokens.typography.scale;
+    DialogType {
+        sm: type_size(tr, scale.sm),
+        xs: type_size(tr, scale.xs),
+        xl: type_size(tr, scale.xl),
+    }
+}
+
+pub(super) fn line_height(tr: &mut TextRenderer, size: f32) -> f64 {
+    f64::from(tr.measure("Hg", size, None).1)
+}
+
+pub(super) fn modal_layout_with_stacking_actions(
+    viewport: Rect,
+    spec: &ModalSpec<'_>,
+    body_height: f64,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+) -> ModalLayout {
+    let spec = spec.clone().body_height(body_height);
+    let mut layout = ModalFrame::layout(viewport, &spec, tr, theme);
+    let overflows = layout.actions.iter().any(|r| r.x0 < layout.body.x0 - 0.5);
+    if !overflows || layout.actions.len() < 2 {
+        return layout;
+    }
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let n = layout.actions.len() as f64;
+    let height = layout.actions.first().map_or(0.0, Rect::height);
+    let extra = (height + gap) * (n - 1.0);
+    layout = ModalFrame::layout(
+        viewport,
+        &spec.body_height(body_height + extra / f64::from(theme.text_scale)),
+        tr,
+        theme,
+    );
+    let bottom = layout.actions.first().map_or(layout.card.y1, |r| r.y1);
+    // A grown card the viewport had to clamp shares what is left between
+    // the stacked actions rather than letting them consume the whole body.
+    let available = (bottom - layout.body.y0 - gap * (n - 1.0)).max(0.0);
+    let height = height.min(available / n);
+    let top = bottom - height * n - gap * (n - 1.0);
+    layout.body.y1 = (top - gap).max(layout.body.y0);
+    for (i, rect) in layout.actions.iter_mut().enumerate() {
+        let y = top + i as f64 * (height + gap);
+        *rect = Rect::new(layout.body.x0, y, layout.body.x1, y + height);
+    }
+    layout
+}
+
+pub(super) fn pane_hairline(theme: &Theme) -> Color {
+    ui::surface::edge_on(theme.tokens.colors.surfaces.raised)
+}
+
+pub(super) fn well(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
+    ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.lift(0.35));
+}
+
+pub(super) fn selection_row(
+    scene: &mut Scene,
+    tf: Affine,
+    theme: &Theme,
+    rect: Rect,
+    radius: f64,
+    state: ui::chrome::SelectionState,
+) {
+    let tier = ui::chrome::selection_tier(theme, state);
+    if tier.fill.components[3] > 0.0 {
+        fill_rrect(scene, tf, tier.fill, rect, radius);
+    }
+    if let Some(border) = tier.border {
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            border,
+            None,
+            &ui::surface::edge_outline(rect, radius),
+        );
+    }
+    if let Some(glow) = tier.inner_glow {
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            glow,
+            None,
+            &RoundedRect::from_rect(rect.inset(-1.5), (radius - 1.5).max(0.0)),
+        );
+    }
+}
+
+pub(super) fn paint_icon_toggle(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    open: bool,
+    hovered: bool,
+) -> Color {
+    let mut face = ui::widget::ButtonFace::new(rect, "")
+        .radius(7.0)
+        .hovered(hovered)
+        .pressed(open);
+    if open {
+        face = face.primary();
+    }
+    ui::widget::Button::paint(scene, tf, tr, theme, &face);
+    if open {
+        on_fill(theme, theme.accent_primary).1
+    } else {
+        theme.tokens.colors.text_primary
+    }
+}
+
+pub(super) fn draw_segmented_sized(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    segments: &[Rect],
+    labels: &[&str],
+    selected: usize,
+    cursor: Point,
+    text_size: f32,
+) {
+    let hovered = segments.iter().position(|r| r.contains(cursor));
+    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
+        .hovered(hovered)
+        .radius(6.0)
+        .text_size(text_size);
+    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
+}
+
+pub(super) fn tinted(base: Color, tint: Color, t: f64) -> Color {
+    Color::from_rgb8(
+        lerp_u8(base.r(), tint.r(), t),
+        lerp_u8(base.g(), tint.g(), t),
+        lerp_u8(base.b(), tint.b(), t),
+    )
+}
+pub(super) fn readout_tops(transport: Rect, cy: f64, heights: [f64; 4]) -> [f64; 4] {
+    let [big, total, motion, meta] = heights;
+    let big_top = (cy - big / 2.0).max(transport.y0 + 2.0);
+    let foot = big_top + big;
+    [big_top, foot - total, foot - motion, foot - meta]
 }

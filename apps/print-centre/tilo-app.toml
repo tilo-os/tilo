@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.print-centre"
+id = "so.tilo.print-centre"
 name = "Print Centre"
 category = "Utility"
 version = "0.1.0"

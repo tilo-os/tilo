@@ -426,12 +426,19 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
     let large_text = Theme::dark().with_text_scale(2.0);
     drive_frame_with_theme(&mut app, 1440, 900, &large_text);
     assert!(app.narrow, "large text reflows master/detail to one pane");
-    assert_eq!(app.toolbar_h(), TOOLBAR_H * 2.0);
+    assert!(
+        app.toolbar_h()
+            >= ui::text_metrics::line_height_px(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s3)
+    );
     assert_eq!(app.row_h(), ROW_H * 2.0);
-    assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
+    let field_h = at_least_whole(
+        FIELD_H,
+        line_h(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s2),
+    );
+    assert_eq!(app.hit.search.height(), field_h);
 
     app.shots_edit_contact();
-    drive_frame_with_theme(&mut app, 1440, 900, &large_text);
+    app.layout();
     let form = app.form.as_ref().expect("edit form");
     let first = form
         .inputs
@@ -446,7 +453,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         .expect("last name")
         .ti_rect();
     assert!(last.y0 > first.y1, "paired fields stack at large text");
-    assert_eq!(first.height(), FIELD_H * 2.0);
+    assert_eq!(first.height(), field_h);
     let notes = form
         .inputs
         .iter()
@@ -457,7 +464,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         "note text wraps instead of clipping"
     );
     assert!(
-        notes.ti_rect().height() >= FIELD_H * 4.0,
+        notes.ti_rect().height() >= field_h * 3.0,
         "notes reserve multiple large-text lines"
     );
 }
@@ -1211,12 +1218,7 @@ fn keyboard_focus_scrolls_a_below_the_fold_field_into_view() {
     h.press_named(NamedKey::Tab);
     assert_eq!(h.focused_slot(), Some(Slot::First));
     h.relayout();
-    let body_top = h.app.detail_rect.y0
-        + FORM_TITLE_TOP
-        + FORM_TITLE_H
-        + FORM_ROW_GAP
-        + 32.0
-        + h.app.detail_top_offset();
+    let body_top = h.app.form_body_top();
     assert!(
         rect_of(&h, Slot::First).y0 >= body_top - 24.0,
         "wrapping to the first field scrolled back to the top",
@@ -2821,7 +2823,7 @@ fn created_contact_persists_across_a_restart() {
     }
 
     // First launch.
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.load_or_new();
     let mut app = ContactsApp::new();
     app.sync(&mut doc, &ROOT);
@@ -2837,7 +2839,7 @@ fn created_contact_persists_across_a_restart() {
     drop((store, doc, app)); // the process exits here
 
     // Second launch ("reboot"): a new app over the reloaded document.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc2 = store2.load().unwrap().expect("the store has a document");
     let mut app2 = ContactsApp::new();
     app2.sync(&mut doc2, &ROOT);
@@ -2869,7 +2871,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
         std::env::set_var("XDG_DATA_HOME", home.path());
         std::env::remove_var("TILO_PACKAGE_ID");
     }
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
 
     // A shared ancestor: one contact both sides know about.
@@ -2898,7 +2900,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     drop((store, doc));
 
     // Restart, then merge the peer that diverged before the save.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut restored = store2.load().unwrap().expect("the saved document");
     restored
         .merge(&mut peer)
@@ -2943,7 +2945,7 @@ fn a_legacy_address_book_is_imported_into_the_store() {
     let book = sample_contacts();
     crate::storage::save(&legacy, &book).unwrap();
 
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     assert!(
         store.migrate_from(&legacy).unwrap(),
         "the legacy file is imported"
@@ -3541,7 +3543,7 @@ fn deleting_a_contact_persists_the_removal() {
     // Seed a book into the store, then delete one contact and restart.
     let book = sample_contacts();
     let removed = book[0].id;
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
     for c in &book {
         ContactsDoc::upsert_contact(&mut doc, c);
@@ -3557,7 +3559,7 @@ fn deleting_a_contact_persists_the_removal() {
     drop((store, doc, app));
 
     // Reload from the store: the deletion stuck.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let doc2 = store2.load().unwrap().expect("document after restart");
     let reloaded = ContactsDoc::list_contacts(&doc2);
     assert_eq!(
@@ -3754,7 +3756,7 @@ fn first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech() {
     assert!(app.empty_action_rect.width() >= 44.0);
     let first_run_area = Rect::new(
         app.rect.x0,
-        app.rect.y0 + TOOLBAR_H,
+        app.rect.y0 + app.toolbar_h(),
         app.rect.x1,
         app.rect.y1,
     );

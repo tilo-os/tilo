@@ -1304,12 +1304,12 @@ mod tests {
         let mut capabilities = Vec::new();
         add_mail_attachment_grants(
             &mut capabilities,
-            "dev.tilo.mail",
+            "so.tilo.mail",
             &[PathBuf::from("/run/user/1000/doc/abc/report.pdf")],
         );
         assert_eq!(capabilities.len(), 1);
         let grant = &capabilities[0];
-        assert_eq!(grant.subject, Subject::app("dev.tilo.mail"));
+        assert_eq!(grant.subject, Subject::app("so.tilo.mail"));
         assert_eq!(
             grant.scope,
             Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())

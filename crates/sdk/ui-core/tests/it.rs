@@ -28,6 +28,8 @@ mod app_widget;
 mod block_editor_markdown;
 #[path = "block_editor_slash_menu_integration.rs"]
 mod block_editor_slash_menu_integration;
+#[path = "block_editor_wrapping.rs"]
+mod block_editor_wrapping;
 #[cfg(unix)]
 #[path = "coedit_keystone.rs"]
 mod coedit_keystone;
@@ -51,6 +53,18 @@ mod design_token_audit;
 mod diagnostics_outlive_a_closed_log_pipe;
 #[path = "dnd_test.rs"]
 mod dnd_test;
+#[path = "f1_spacing_token_audit.rs"]
+mod f1_spacing_token_audit;
+#[path = "f2_control_row_alignment.rs"]
+mod f2_control_row_alignment;
+#[path = "f3_composition_fixtures.rs"]
+mod f3_composition_fixtures;
+#[path = "f4_menu_highlight_render.rs"]
+mod f4_menu_highlight_render;
+#[path = "f5_immersive_geometry.rs"]
+mod f5_immersive_geometry;
+#[path = "f6_identity_flow_layout.rs"]
+mod f6_identity_flow_layout;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
@@ -145,6 +159,8 @@ mod workspace_view_test;
 #[cfg(feature = "webview-wpe")]
 #[path = "wpe_engine.rs"]
 mod wpe_engine;
+#[path = "x1_text_scale_once.rs"]
+mod x1_text_scale_once;
 
 mod canonical_record_owner;
 

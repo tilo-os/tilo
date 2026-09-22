@@ -865,6 +865,7 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
     (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
     let Some(value) = hints.get("x-tilo-device-sharing") else {
         return NotificationSharing::Full;
@@ -1025,7 +1026,6 @@ fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
     (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
 }
 
-#[cfg(any(test, target_os = "linux"))]
 fn valid_notification_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
@@ -1103,7 +1103,10 @@ impl NotificationService {
     ///
     /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
     /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The D-Bus Notify method preserves the freedesktop argument signature and receives the message header to authenticate its sender."
+    )]
     async fn notify(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1163,7 +1166,7 @@ impl NotificationService {
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = self.resolve_caller(sender.as_ref()).await;
-        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.tilo.contacts") {
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("so.tilo.contacts") {
             return Err(zbus::fdo::Error::AccessDenied(
                 "only the verified Contacts provider may replace priority contacts".into(),
             ));
@@ -1347,7 +1350,7 @@ mod tests {
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
         ContinuityNotificationDraft {
             dbus_id: 7,
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "Private subject".into(),
             body: "Private body".into(),
@@ -1450,7 +1453,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [token; 16],
             },
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: title.into(),
             body: "Message".into(),

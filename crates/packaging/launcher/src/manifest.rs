@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// Minimal manifest needed by the launcher, lives in-tree pending full
-/// `tilo-pkg` integration. Accepts both the top-level `package_id =
-/// "..."` form and tilo-pkg's canonical `[package] id = "..."` nested
+/// `tilo-app-package` integration. Accepts both the top-level `package_id =
+/// "..."` form and tilo-app-package's canonical `[package] id = "..."` nested
 /// table, normalised into `MinimalManifest::package_id` (same for
 /// `version`).
 #[derive(Debug, Clone, Deserialize)]
@@ -108,9 +108,11 @@ struct RawManifest {
     continuity: ContinuityContract,
 }
 
-pub use pkg::manifest::{ContinuityContract, ContinuityFacet, ContinuitySemanticSchema};
+pub use tilo_app_package::manifest::{
+    ContinuityContract, ContinuityFacet, ContinuitySemanticSchema,
+};
 
-/// `[providers]` block, mirrors [`pkg::manifest::Providers`], decoded
+/// `[providers]` block, mirrors [`tilo_app_package::manifest::Providers`], decoded
 /// here to keep the launcher independent of the full pkg crate.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ProvidersBlock {
@@ -122,7 +124,7 @@ struct ProvidersBlock {
     schemes: Vec<String>,
 }
 
-/// `[cli]` block, mirrors [`pkg::manifest::Cli`], decoded independently
+/// `[cli]` block, mirrors [`tilo_app_package::manifest::Cli`], decoded independently
 /// of the pkg crate.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct CliBlock {
@@ -268,7 +270,7 @@ pub struct Entrypoint {
     /// verbatim for `"gui"`/`"cli"`; falls back for `"both"`.
     #[serde(default)]
     pub bin: String,
-    /// Which flavour of entrypoint. Mirrors [`pkg::manifest::EntrypointType`].
+    /// Which flavour of entrypoint. Mirrors [`tilo_app_package::manifest::EntrypointType`].
     #[serde(default, rename = "type")]
     pub r#type: EntrypointType,
     /// GUI-flavour binary path inside the payload. Only meaningful when
@@ -380,7 +382,7 @@ impl Sandbox {
 /// How the launcher should route a portal request. `pkg`'s type,
 /// re-exported not copied, so the launcher and packager can't disagree
 /// about what the field means.
-pub use pkg::manifest::PortalPolicy;
+pub use tilo_app_package::manifest::PortalPolicy;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Net {
@@ -588,7 +590,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let m: MinimalManifest =
             toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
-        assert_eq!(m.package_id, "dev.tilo.word-processor");
+        assert_eq!(m.package_id, "so.tilo.word-processor");
         for ext in ["odt", "docx", "md", "rtf"] {
             assert!(
                 m.opens_ext.iter().any(|e| e == ext),
@@ -696,7 +698,7 @@ collab = "required@1"
     #[test]
     fn parses_a_cli_manifest() {
         let toml_text = r#"
-package_id = "dev.tilo.notes-cli"
+package_id = "so.tilo.notes-cli"
 version    = "0.1.0"
 
 [entrypoint]
@@ -722,7 +724,7 @@ commands = ["notes", "notes-import"]
     #[test]
     fn parses_a_both_manifest_with_split_bins() {
         let toml_text = r#"
-package_id = "dev.tilo.notes"
+package_id = "so.tilo.notes"
 version    = "0.2.0"
 
 [entrypoint]
@@ -749,7 +751,7 @@ commands = ["notes"]
         // draws, but the shell decides when to show it), so it survives decoding.
         let service = r#"
 [package]
-id      = "dev.tilo.osk"
+id      = "so.tilo.osk"
 version = "0.1.0"
 kind    = "service"
 
@@ -776,7 +778,7 @@ type = "gui"
             ),
         ] {
             let toml_text = format!(
-                "[package]\nid = \"dev.tilo.x\"\nversion = \"0.1.0\"\n{src}\n\
+                "[package]\nid = \"so.tilo.x\"\nversion = \"0.1.0\"\n{src}\n\
                  [entrypoint]\nbin = \"bin/x\"\n"
             );
             let m: MinimalManifest = toml::from_str(&toml_text).expect("parse");
@@ -816,7 +818,7 @@ type = "gui"
         // TILO_APP_NAME / TILO_APP_ICON.
         let toml_text = r#"
 [package]
-id      = "dev.tilo.notes"
+id      = "so.tilo.notes"
 name    = "Notes"
 icon    = "assets/notes.png"
 version = "0.1.0"
@@ -835,7 +837,7 @@ bin = "bin/notes"
         // generated default.
         let without = r#"
 [package]
-id      = "dev.tilo.notes"
+id      = "so.tilo.notes"
 version = "0.1.0"
 
 [entrypoint]
@@ -846,7 +848,7 @@ bin = "bin/notes"
 
         let blank = r#"
 [package]
-id      = "dev.tilo.notes"
+id      = "so.tilo.notes"
 icon    = "   "
 version = "0.1.0"
 
@@ -861,7 +863,7 @@ bin = "bin/notes"
     fn parses_runtime_field_from_package_block() {
         let toml_text = r#"
 [package]
-id       = "dev.tilo.hello"
+id       = "so.tilo.hello"
 version  = "0.1.0"
 runtime  = "tilo-runtime/2026.07"
 
@@ -872,7 +874,7 @@ bin = "bin/tilo-hello"
 mode = "off"
 "#;
         let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
-        assert_eq!(m.package_id, "dev.tilo.hello");
+        assert_eq!(m.package_id, "so.tilo.hello");
         assert_eq!(m.runtime.as_deref(), Some("tilo-runtime/2026.07"));
         let (name, ver) = m.runtime_ref().expect("runtime ref");
         assert_eq!(name, "tilo-runtime");
@@ -952,8 +954,8 @@ bin = "bin/notes"
             "/",
             "~/.ssh",
             "~/../../etc",
-            "~/.local/share/dev.tilo.totp",
-            "$XDG_DATA_HOME/dev.tilo.totp",
+            "~/.local/share/so.tilo.totp",
+            "$XDG_DATA_HOME/so.tilo.totp",
         ] {
             let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
             let Err(err) = enforce_fs_policy(&m) else {

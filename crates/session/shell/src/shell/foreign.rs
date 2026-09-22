@@ -1394,7 +1394,12 @@ impl ForeignSurfaceWidget {
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
     fn refresh_cache(&mut self) -> bool {
         let seq = store().frame_seq(self.surface_id);
-        if seq == self.cached_seq {
+        // A cache can be empty at a non-zero sequence when an earlier paint
+        // observed the sequence edge before its snapshot became available.
+        // Retry that state instead of permanently pinning the fallback card;
+        // steady clients with a real cached image retain the zero-copy fast
+        // path below.
+        if seq == self.cached_seq && (seq == 0 || self.cached.is_some()) {
             return false;
         }
         self.cached_seq = seq;
@@ -1707,6 +1712,10 @@ impl Widget for ForeignSurfaceWidget {
 }
 
 impl AppWidget for ForeignSurfaceWidget {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
     fn app_kind(&self) -> AppKind {
         // No `AppKind` describes "arbitrary external client"; `Settings` is the catch-all `to_ui_kind` already uses for unknown kinds.
         AppKind::Settings
@@ -2273,14 +2282,14 @@ mod tests {
     /// What a person reads on a window's own card is the app's name, never the wayland app-id — a machine identifier the user never chose.
     #[test]
     fn a_card_in_a_windows_place_names_the_app_not_its_id() {
-        let w = ForeignSurfaceWidget::new(sid(53), "dev.tilo.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(sid(53), "so.tilo.never-launched-fixture".into());
         let name = w.display_name();
         assert_eq!(
             name, "Never Launched Fixture",
             "a window's card must carry the app's name; got {name:?}",
         );
         assert!(
-            !name.contains("dev.tilo."),
+            !name.contains("so.tilo."),
             "a reverse-DNS package id reached a card somebody is reading",
         );
     }
@@ -2295,7 +2304,7 @@ mod tests {
     fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
         let id = sid(54);
         store().forget(id);
-        let w = ForeignSurfaceWidget::new(id, "dev.tilo.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
 
         let (headline, detail) = w.unshowable_text();
         assert_eq!(headline, "Never Launched Fixture", "the app's own name");
@@ -2311,7 +2320,7 @@ mod tests {
             let lower = text.to_lowercase();
             for jargon in [
                 "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
-                "dev.tilo", "install",
+                "so.tilo", "install",
             ] {
                 assert!(
                     !lower.contains(jargon),
@@ -2464,6 +2473,26 @@ mod tests {
 
         // A non-draining read: a second snapshot still sees the frame.
         assert!(store().snapshot(id).is_some());
+        store().forget(id);
+    }
+
+    #[test]
+    fn an_empty_widget_cache_retries_the_current_nonzero_sequence() {
+        let id = sid(23);
+        store().forget(id);
+        store().publish_rgba(id, &[0xE0, 0x18, 0xA0, 0xFF], 1, 1);
+
+        let mut widget = ForeignSurfaceWidget::new(id, "org.example.retry".into());
+        // Model the interrupted observation that previously pinned the
+        // fallback card: the sequence was recorded but no image survived.
+        widget.cached_seq = store().frame_seq(id);
+        widget.cached = None;
+        assert!(widget.refresh_cache(), "the empty cache must retry");
+        assert!(
+            widget.cached.is_some(),
+            "the current frame must be restored"
+        );
+
         store().forget(id);
     }
 
@@ -2793,7 +2822,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.word-processor".into()),
+            Some("so.tilo.word-processor".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert_eq!(
@@ -2839,7 +2868,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
@@ -2883,7 +2912,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
@@ -2946,7 +2975,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         source.seed_doc_from_cache();
         let mut rendered = source.clone();
@@ -3401,10 +3430,10 @@ mod tests {
     /// The window itself has to answer with the same name its tab does.
     ///
     /// The tab title was fixed once already; the widget kept handing back
-    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `dev.tilo.chat`, an address nobody chose.
+    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
     #[test]
     fn a_foreign_window_answers_with_its_name_not_its_app_id() {
-        let w = ForeignSurfaceWidget::new(3, "dev.tilo.chat".into());
+        let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
         assert_eq!(
             w.app_title(),
             "Chat",
@@ -3412,7 +3441,7 @@ mod tests {
         );
 
         // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
-        let w = ForeignSurfaceWidget::new(4, "dev.tilo.word-processor".into());
+        let w = ForeignSurfaceWidget::new(4, "so.tilo.word-processor".into());
         assert_eq!(w.app_title(), "Word Processor");
     }
 

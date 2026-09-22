@@ -171,6 +171,23 @@ impl SemanticNode {
     pub fn action(&self, name: &str) -> Option<&SemanticAction> {
         self.actions.iter().find(|a| a.name == name)
     }
+
+    fn same_exported_content(&self, other: &Self) -> bool {
+        // `widget_taffy_id` is a frame-local routing address. A keyed widget can
+        // be rebound to a new layout node without changing anything exposed to
+        // semantic-tree consumers; the freshly stored node still carries the
+        // new address for action dispatch.
+        self.id == other.id
+            && self.durable_identity == other.durable_identity
+            && self.role == other.role
+            && self.name == other.name
+            && self.value == other.value
+            && self.state == other.state
+            && self.bounds == other.bounds
+            && self.actions == other.actions
+            && self.children == other.children
+            && self.semantic_target == other.semantic_target
+    }
 }
 
 /// What changed between two [`refresh`](SemanticTree::refresh)es. Ids that appear
@@ -386,7 +403,7 @@ impl SemanticTree {
         for (id, node) in next {
             match self.nodes.get(id) {
                 None => delta.added.push(id.clone()),
-                Some(prev) if prev != node => delta.updated.push(id.clone()),
+                Some(prev) if !prev.same_exported_content(node) => delta.updated.push(id.clone()),
                 Some(_) => {}
             }
         }
@@ -1086,6 +1103,20 @@ mod tests {
         tree.refresh(&first, &first_map, None, &[]);
         let alpha = tree.find_by_name("Alpha").expect("alpha").id.clone();
         let beta = tree.find_by_name("Beta").expect("beta").id.clone();
+        let alpha_before = tree.node(&alpha).expect("alpha").clone();
+        let mut rebound = alpha_before.clone();
+        rebound.widget_taffy_id = Some(
+            alpha_before
+                .widget_taffy_id
+                .expect("laid-out alpha")
+                .saturating_add(1),
+        );
+        let mut rebound_frame = tree.nodes.clone();
+        rebound_frame.insert(alpha.clone(), rebound);
+        assert!(
+            tree.diff(&rebound_frame).is_empty(),
+            "a frame-local routing address is not exported semantic content"
+        );
         assert!(alpha.as_str().contains("~k:alpha"));
 
         let mut rebuilt = Column::new()
@@ -1096,6 +1127,11 @@ mod tests {
         tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
         assert_eq!(tree.find_by_name("Alpha").expect("alpha").id, alpha);
         assert_eq!(tree.find_by_name("Beta").expect("beta").id, beta);
+        assert_ne!(
+            tree.node(&alpha).expect("alpha").widget_taffy_id,
+            alpha_before.widget_taffy_id,
+            "the rebuilt widget is routed through its new layout node"
+        );
         assert!(tree.duplicate_ids().is_empty());
     }
 

@@ -8,6 +8,7 @@
 //! for an app-owned durable mutation.
 
 use crate::color_compat::ColorCompat;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -532,7 +533,8 @@ impl ColorPicker {
         let (sv_border_w, sv_border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
-            (1.0, colors.border_standard)
+            // Derived from the raised square the tint sits on (HIG §9.5).
+            (1.0, crate::surface::edge_on(colors.surfaces.raised))
         };
         scene.stroke(
             &Stroke::new(sv_border_w),
@@ -577,10 +579,12 @@ impl ColorPicker {
             }
         }
         let hue_shape = RoundedRect::from_rect(self.hue_strip_rect, radius_sm);
+        // The strip is a rainbow with no one colour to derive from; its edge
+        // is measured against the raised picker surface around it.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::surface::edge_on(colors.surfaces.raised),
             None,
             &hue_shape,
         );
@@ -620,10 +624,11 @@ impl ColorPicker {
             None,
             &preview_shape,
         );
+        // Edge derived from the swatch itself, so it registers on any colour.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::surface::edge_on(self.color),
             None,
             &preview_shape,
         );
@@ -654,10 +659,12 @@ impl ColorPicker {
             let track_y1 = track_y0 + TRACK_HEIGHT;
             let track = Rect::new(slider.x0, track_y0, slider.x1, track_y1);
             let track_shape = RoundedRect::from_rect(track, radius_sm);
+            // Unfilled half is a lift off the ground (HIG §9.5 Slider row).
+            let unfilled = colors.lift(1.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.surfaces.raised,
+                unfilled,
                 None,
                 &track_shape,
             );
@@ -679,7 +686,7 @@ impl ColorPicker {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(unfilled),
                 None,
                 &track_shape,
             );
@@ -698,7 +705,7 @@ impl ColorPicker {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(colors.text_primary),
                 None,
                 &knob,
             );
@@ -747,6 +754,8 @@ impl Widget for ColorPicker {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(PICKER_HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -785,7 +794,7 @@ impl Widget for ColorPicker {
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);

@@ -1256,6 +1256,10 @@ fn insert_note_block(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "all note edit variants share one atomic CRDT mutation boundary"
+)]
 fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
     match op {
         BlockEditOp::Insert {
@@ -1287,8 +1291,53 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
             }
             let (_, block) = note_block_map(doc, list, block_id)
                 .ok_or_else(|| "note block no longer exists".to_string())?;
+            if kind.starts_with("bullet:")
+                || kind.starts_with("numbered:")
+                || kind.starts_with("checklist:")
+            {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())?;
+            }
+            if !kind.starts_with("code:") {
+                doc.delete(&block, "code_group")
+                    .map_err(|e| e.to_string())?;
+            }
             doc.put(&block, "kind", kind.as_str())
                 .map_err(|_| "note document no longer exists".into())
+        }
+        BlockEditOp::SetNesting { block_id, depth } => {
+            if *depth > 5 {
+                return Err("note nesting is too deep".into());
+            }
+            let (_, block) =
+                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
+            let kind = get_str(doc, &block, "kind");
+            if *depth > 0
+                && (kind.starts_with("bullet:")
+                    || kind.starts_with("numbered:")
+                    || kind.starts_with("checklist:"))
+            {
+                return Err("list depth belongs to its kind".into());
+            }
+            if *depth == 0 {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())
+            } else {
+                doc.put(&block, "nesting", u64::from(*depth))
+                    .map_err(|e| e.to_string())
+            }
+        }
+        BlockEditOp::SetCodeGroup { block_id, group_id } => {
+            let (_, block) =
+                note_block_map(doc, list, block_id).ok_or("note block no longer exists")?;
+            if let Some(group) = group_id {
+                let id = uuid::Uuid::parse_str(group).map_err(|_| "invalid code group UUID")?;
+                if id.is_nil() || !get_str(doc, &block, "kind").starts_with("code:") {
+                    return Err("invalid code group".into());
+                }
+                doc.put(&block, "code_group", group.as_str())
+                    .map_err(|e| e.to_string())
+            } else {
+                doc.delete(&block, "code_group").map_err(|e| e.to_string())
+            }
         }
         BlockEditOp::SetChecklist { block_id, done } => {
             let (_, block) = note_block_map(doc, list, block_id)
@@ -1336,6 +1385,13 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
             let (old_index, block) = note_block_map(doc, list, block_id)
                 .ok_or_else(|| "note block no longer exists".to_string())?;
             let kind = get_str(doc, &block, "kind");
+            let group = get_str(doc, &block, "code_group");
+            let nesting = doc
+                .get(&block, "nesting")
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.to_u64())
+                .unwrap_or(0) as u8;
             let text = match doc.get(&block, "text") {
                 Ok(Some((Value::Object(ObjType::Text), text))) => {
                     doc.text(&text).unwrap_or_default()
@@ -1350,7 +1406,28 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
                     .ok_or_else(|| "note predecessor no longer exists".to_string())?,
                 None => 0,
             };
-            insert_note_block(doc, list, index, block_id, &kind, &text)
+            insert_note_block(doc, list, index, block_id, &kind, &text)?;
+            if nesting > 0 {
+                apply_note_op(
+                    doc,
+                    list,
+                    &BlockEditOp::SetNesting {
+                        block_id: block_id.clone(),
+                        depth: nesting,
+                    },
+                )?;
+            }
+            if !group.is_empty() {
+                apply_note_op(
+                    doc,
+                    list,
+                    &BlockEditOp::SetCodeGroup {
+                        block_id: block_id.clone(),
+                        group_id: Some(group),
+                    },
+                )?;
+            }
+            Ok(())
         }
     }
 }

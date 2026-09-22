@@ -504,7 +504,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "app-catalogue"
+name = "app-cli"
 version = "0.1.0"
 dependencies = [
  "app-registry",
@@ -517,7 +517,6 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
- "pkg",
  "registry-types",
  "reqwest 0.12.28",
  "rustls",
@@ -525,6 +524,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "toml 0.8.23",
 ]
 
@@ -560,7 +560,6 @@ dependencies = [
  "hex",
  "libc",
  "parking_lot",
- "pkg",
  "rand 0.8.8",
  "runtime-portal",
  "sd-notify",
@@ -569,6 +568,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
@@ -590,7 +590,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "pkg",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -598,6 +597,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -1531,16 +1531,20 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "accesskit_consumer",
  "atomic-file",
  "automerge",
+ "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
+ "libc",
  "png 0.18.1",
  "pollster",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -1685,7 +1689,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tracing",
- "tracing-subscriber",
  "url",
  "uuid",
  "vello",
@@ -2552,7 +2555,6 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "pkg",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2561,6 +2563,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -6685,7 +6688,12 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "bounded-command",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
  "libc",
+ "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -6696,6 +6704,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zstd",
@@ -6818,7 +6827,6 @@ dependencies = [
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
- "pkg",
  "rand 0.8.8",
  "runtime-bundle",
  "semver",
@@ -6826,6 +6834,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tokio",
  "toml 0.8.23",
 ]
@@ -7613,7 +7622,6 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "landlock",
  "libc",
- "pkg",
  "runtime-bundle",
  "runtime-identity",
  "seccompiler",
@@ -7622,6 +7630,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tilo-desktop-entry",
  "toml 0.8.23",
  "tracing",
@@ -9169,6 +9178,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "blake3",
+ "chrono",
  "dirs 6.0.0",
  "runtime-dylib",
  "runtime-portal-xdg",
@@ -9567,6 +9577,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -10729,45 +10740,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pkg"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "blake3",
- "collab-types",
- "ed25519-dalek 2.2.0",
- "hex",
- "rand 0.8.8",
- "semver",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
- "threshold-identity",
- "toml 0.8.23",
- "walkdir",
-]
-
-[[package]]
-name = "pkg-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app-registry",
- "clap",
- "ed25519-dalek 2.2.0",
- "hex",
- "pkg",
- "rand 0.8.8",
- "registry-types",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "tokio",
- "toml 0.8.23",
-]
-
-[[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11470,6 +11442,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "qos-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11978,7 +11980,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "pkg",
  "rand 0.8.8",
  "registry-types",
  "reqwest 0.12.28",
@@ -11986,6 +11987,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -12345,12 +12347,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-connected"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tilo-connected-protocol",
+]
+
+[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
  "accounts",
  "agent-provider-config",
- "app-catalogue",
+ "app-cli",
  "app-host",
  "atomic-file",
  "chrono-tz",
@@ -13478,6 +13488,7 @@ dependencies = [
  "reis",
  "runtime-collab",
  "runtime-identity",
+ "runtime-portal",
  "rustls",
  "seccompiler",
  "serde",
@@ -13681,6 +13692,7 @@ dependencies = [
  "tilo-app",
  "uuid",
  "vello",
+ "vello_encoding",
  "winit",
  "zip 4.6.1",
 ]
@@ -14085,7 +14097,7 @@ dependencies = [
 name = "store"
 version = "0.1.2"
 dependencies = [
- "app-catalogue",
+ "app-cli",
  "app-host",
  "atomic-file",
  "automerge",
@@ -14803,13 +14815,52 @@ dependencies = [
  "image",
  "libc",
  "notify",
- "pkg",
  "serde",
  "serde_json",
  "syn 2.0.117",
  "tempfile",
+ "tilo-app-package",
  "tilo-headless-schema",
  "tilo-ui-graph",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "tilo-app-package"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "threshold-identity",
+ "toml 0.8.23",
+ "walkdir",
+]
+
+[[package]]
+name = "tilo-app-package-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app-registry",
+ "clap",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "rand 0.8.8",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tilo-app-package",
+ "tokio",
  "toml 0.8.23",
 ]
 
@@ -14849,6 +14900,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+]
+
+[[package]]
+name = "tilo-connected-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -14990,7 +15051,6 @@ dependencies = [
  "iroh-base",
  "launcher",
  "libc",
- "pkg",
  "postcard",
  "rand 0.8.8",
  "runtime-identity",
@@ -15001,6 +15061,7 @@ dependencies = [
  "socket2 0.6.3",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-app-package",
  "tilo-user-identity",
  "tokio",
  "toml 0.8.23",
@@ -15051,6 +15112,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "base64 0.22.1",
  "blake3",
  "capnp",
  "capnp-rpc",
@@ -15086,6 +15148,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustc-hash 2.1.1",
  "rustls",
  "serde",
  "serde_bytes",
@@ -15121,6 +15184,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",

@@ -1,5 +1,9 @@
 # Tilo installation: download to first login
 
+Guided migration is still under development. USB-free Full Tilo installation
+and Connected folders are unavailable; see [migration feature status](migration-status.md)
+for implemented paths, platform limits, and remaining validation.
+
 This is the user journey and the release acceptance checklist for Tilo Imager
 and the live installer. A release is not complete unless the walkthrough works
 on Linux, Windows, and macOS with a real removable drive, and then in a UEFI VM
@@ -135,6 +139,12 @@ on the target computer. Network and optional hardware-key setup remain
 available from the normal step trail. The Review screen shows the resulting
 choices before any destructive operation.
 
+Language and locale choices come from the same catalog compiled into both
+applications and installed on the live system. The target-side repair is a
+bounded chooser rather than free text, and the privileged installer checks the
+immutable catalog again before writing `locale.conf`; a plausible but
+unsupported locale cannot silently fall back to English after first boot.
+
 The current host bundles keep the Imager UI unprivileged. Only after the target
 and destructive warning are confirmed does the operating system authenticate a
 short-lived writer mode. Its request contains no profile secret, is bound to a
@@ -218,6 +228,29 @@ requires a strong ordinary boot passphrase instead; it never creates a PCR7-only
 or weak passphrase slot. FIDO2 can be enrolled as an additional convenience
 factor, never a replacement for recovery. Save the displayed recovery key away
 from the computer before rebooting.
+
+### What the automated dual-boot gate proves
+
+The native release VM runs both prepared and guided alongside installs against
+a GPT containing an NTFS filesystem, a Linux filesystem, and a foreign ESP. It
+checks their partition identities and bytes before the first target boot and
+again after desktop acceptance. In prepared mode, the foreign loader paths hold
+architecture-matched controlled EFI applications rather than text sentinels.
+The gate opens the installed systemd-boot menu with keyboard input, selects the
+displayed numeric entries, and requires distinct Windows-path and Linux-path
+markers on the firmware framebuffer. Entry-file presence alone cannot pass.
+
+That controlled execution proves that Tilo preserved executable EFI bytes and
+that its same-ESP shortcuts are selectable. It is not evidence that Windows or
+a complete foreign Linux distribution booted, and the evidence records both of
+those claims as false. The controlled applications are unsigned, so their menu
+execution is not treated as Secure Boot acceptance. Guided mode deliberately
+uses a separate Tilo ESP; the gate proves the foreign ESP is byte-identical and
+that no invalid cross-ESP shortcut was created, but does not invent a firmware
+entry for the synthetic fixture. A release or hardware acceptance still needs
+an installed, licensed Windows system and a real Linux installation, their
+native signed loaders, the machine's real firmware picker, and—where enabled—
+BitLocker/recovery and Secure Boot observations.
 
 ## Account setup and first boot
 

@@ -21,6 +21,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
+#[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
@@ -51,6 +52,9 @@ pub struct ShellDriver {
     /// Opt-in because screenshot/recording intents perform filesystem/GPU
     /// work; scenarios enable it only when they are explicitly verifying the
     /// production capture handoff.
+    /// Linux-only: the capture pipeline it drives is `compositor::capture`,
+    /// which does not exist on a macOS review build of `shots`.
+    #[cfg(target_os = "linux")]
     capture_executor: Option<CaptureExecutor>,
     lock_visual: Option<LockVisualState>,
 }
@@ -87,6 +91,7 @@ impl ShellDriver {
             modifiers: Modifiers::default(),
             focus: None,
             last_cursor: Point::ORIGIN,
+            #[cfg(target_os = "linux")]
             capture_executor: None,
             lock_visual: None,
         }
@@ -135,6 +140,59 @@ impl ShellDriver {
     /// into a specific overlay state before stepping frames.
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         self.fb.host_mut()
+    }
+
+    /// Move to the empty tab-bar space that owns whole-group dragging.
+    /// Resolving from live group geometry keeps held-drag visual scenarios
+    /// valid at both compact and normal viewport widths.
+    pub fn move_cursor_to_group_grab(&mut self, group_idx: usize) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let point = {
+            let Some(group) = self.host_mut().group_at_for_tests(strip_id, group_idx) else {
+                return false;
+            };
+            let bar = group.bar_rect();
+            let last = group.tab_rects().last().copied().unwrap_or(bar);
+            Point::new(
+                f64::midpoint(last.x1, bar.x1),
+                f64::midpoint(bar.y0, bar.y1),
+            )
+        };
+        self.move_cursor(point);
+        true
+    }
+
+    /// Carry the active whole-group drag past another group's midpoint.
+    /// The small over-travel makes the intended after-slot unambiguous while
+    /// retaining the source grab's y coordinate and pointer capture.
+    pub fn move_cursor_to_group_reorder_target(&mut self, group_idx: usize) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let x = {
+            let Some(group) = self.host_mut().group_at_for_tests(strip_id, group_idx) else {
+                return false;
+            };
+            group.get_rect().center().x + 24.0
+        };
+        self.move_cursor(Point::new(x, self.last_cursor.y));
+        true
     }
 
     /// Show the same reduced first-login ceremony used when Tilo is installed
@@ -393,11 +451,12 @@ impl ShellDriver {
             );
         }
         let mut scene = self.fb.paint();
+        #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
-        } else {
-            self.fb.draw_capture_overlays(&mut scene);
+            return scene;
         }
+        self.fb.draw_capture_overlays(&mut scene);
         scene
     }
 
@@ -406,7 +465,12 @@ impl ShellDriver {
     }
 
     pub fn set_capture_execution_enabled(&mut self, enabled: bool) {
-        self.capture_executor = enabled.then(CaptureExecutor::default);
+        #[cfg(target_os = "linux")]
+        {
+            self.capture_executor = enabled.then(CaptureExecutor::default);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = enabled;
     }
 
     pub fn set_capture_recording_active(&mut self, active: bool) {
@@ -1131,6 +1195,7 @@ impl ShellDriver {
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
+            "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
@@ -1146,6 +1211,12 @@ impl ShellDriver {
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
+            "ws-settings-agents" => self.scene_ws_settings_agents(),
+            "collaborators" => self.scene_collaborators(),
+            "launchpad" => self.scene_launchpad(),
+            "peer-sync" => self.scene_peer_sync(),
+            "projection" => self.scene_projection(),
+            "portal-permission" => self.scene_portal_permission(),
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -1263,6 +1334,19 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Open the production top-bar widget editor through its actual Ctrl+click
+    /// gesture. Keeping this as a named still makes the otherwise hidden
+    /// customization surface part of normal compact/wide visual review.
+    fn scene_topbar_edit(&mut self) {
+        // The centre-band hit rect is populated by draw, just as it is before
+        // the first real pointer event in the compositor frame loop.
+        let _ = self.paint();
+        let (width, _) = self.viewport();
+        self.set_modifiers(ModifiersState::CONTROL);
+        self.click_at(Point::new(width / 2.0, 24.0));
+        self.set_modifiers(ModifiersState::empty());
     }
 
     fn scene_quick_settings(&mut self) {
@@ -1463,6 +1547,106 @@ impl ShellDriver {
         self.fb.host_mut().force_ws_settings_settled();
     }
 
+    fn scene_ws_settings_agents(&mut self) {
+        self.seed_workspace_permissions();
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Agents;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    /// The People roster (`collaborators_overlay.rs`): two members present,
+    /// one invited, and — the local user owning the room — the Invite / Join
+    /// band and the Workspace activity footer row.
+    fn scene_collaborators(&mut self) {
+        self.seed_shared_room();
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.active_workspace_mut()
+                    && !ws.collaborators.iter().any(|person| person.id == "cy")
+                {
+                    ws.collaborators
+                        .push(shell::shell::state::Collaborator::new("cy", "Cy").as_invited());
+                }
+            }
+            // The Invite / Join band is offered only while peer sync is on,
+            // as it is on a booted desktop.
+            st.peer_sync_enabled = true;
+            st.overlays.collaborators = true;
+            st.bump();
+        });
+    }
+
+    /// The empty-workspace launchpad (`collaboration_launchpad.rs`): every
+    /// window group of the active workspace is closed, which is the state
+    /// that mounts the six cards (`shell::build_workspace_root`).
+    fn scene_launchpad(&mut self) {
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.active_workspace_mut() {
+                    for strip in &mut ws.strips {
+                        strip.window_groups.clear();
+                    }
+                }
+            }
+            st.bump();
+        });
+        self.relayout();
+    }
+
+    /// The invite card (`peer_sync_overlay.rs`), reached the way a person
+    /// reaches it — the roster's Invite button through the production event
+    /// path — so the host wires the invite context exactly as it would live.
+    fn scene_peer_sync(&mut self) {
+        self.scene_collaborators();
+        let _ = self.paint_settled();
+        let (invite, _) = self.host().collaborators_action_rects_for_tests();
+        // A missing Invite button (peer sync off, or the local user may not
+        // invite) fails the scene instead of quietly capturing the roster
+        // under the name `peer-sync`.
+        assert!(
+            invite.area() > 0.0,
+            "peer-sync scene: the roster offers no Invite button to open the invite card from"
+        );
+        self.click_at(invite.center());
+        self.step_frames(2);
+    }
+
+    /// The wireless-display picker (`projection_overlay.rs`, Win+P), settled
+    /// past its 220 ms slide-in by stepping the frames a live session would.
+    fn scene_projection(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.projection = true;
+            st.bump();
+        });
+        self.step_frames(20);
+    }
+
+    /// A portal permission sheet: a sandboxed app asks for the camera and the
+    /// request travels the production prompt queue into the compositor's
+    /// prompt (`PermissionPrompt`, hosted by `overlay_host`).
+    fn scene_portal_permission(&mut self) {
+        use shell::portal::{FilePickerQueue, PortalCaller, PromptQueueHandle, PromptResolver};
+        use shell::shell::state::{Capability, Expiry, WorkspaceId};
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        self.host_mut()
+            .set_portal_queues(prompts.clone(), FilePickerQueue::new());
+        // The reply receiver is dropped: a screenshot has nobody to hand the
+        // answer to, and the sheet does not care until it is answered.
+        let _rx = prompts.enqueue(
+            PortalCaller::new(WorkspaceId(1), "dev.qos.camera"),
+            Capability::Camera {
+                scope: Expiry::EndOfSession,
+            },
+        );
+        self.host_mut().drain_portal_prompts();
+        self.host_mut().pump_permission_prompt();
+        self.step_frames(2);
+    }
+
     /// Drives the room through the production mirrors, not a seeded
     /// `HistoryEntry` — these are the same calls the portal, permission
     /// prompt, drop handler and settings modal make.
@@ -1550,7 +1734,7 @@ impl ShellDriver {
                 let _ = tree.apply_changes(&changes);
             }
         }
-        self.with_chrome(|st| st.overlays.room_activity = true);
+        self.with_chrome(|st| st.open_room_activity(None));
         self.fb.host_mut().force_room_activity_settled();
     }
 
@@ -1629,6 +1813,10 @@ impl ShellDriver {
                     );
                 }
             }
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .prepare_away_recap_for_shots(&mut tree);
             drop(tree);
             drop(state);
         }
@@ -1696,10 +1884,7 @@ impl ShellDriver {
                 );
             }
         }
-        self.with_chrome(|state| {
-            state.overlays.room_activity = true;
-            state.bump();
-        });
+        self.with_chrome(|state| state.open_room_activity(None));
         self.fb
             .host_mut()
             .room_activity_mut()
@@ -1716,6 +1901,13 @@ impl ShellDriver {
             .expand_work_session_for_shots(0);
         let _ = self.fb.paint();
         expanded
+    }
+
+    pub fn focus_first_room_activity_work_session_for_shots(&mut self) -> bool {
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .focus_first_work_session_for_shots()
     }
 
     pub fn correct_automatic_work_session_for_shots(&mut self) -> bool {
@@ -2143,6 +2335,7 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "topbar-edit",
         "quick-settings",
         "qs-edit",
         "qs-edit-drag",
@@ -2159,6 +2352,12 @@ impl ShellDriver {
         "ws-settings-members",
         "ws-settings-permissions",
         "ws-settings-apps",
+        "ws-settings-agents",
+        "collaborators",
+        "launchpad",
+        "peer-sync",
+        "projection",
+        "portal-permission",
         "notifications",
         "notifications-one",
         "notifications-dnd",
@@ -2410,9 +2609,13 @@ mod tests {
             // Pill 1 (Files) — non-active source.
             let pill = rects[1];
             let from = pill.center();
-            // Release point: 100 px right of the source group's right
-            // edge, same y as the bar — squarely in the trailing gap.
-            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            // Release inside the generous right body-edge band. The bootstrap
+            // group fills the viewport, so an apparent gap beyond x1 is not a
+            // reachable pointer target.
+            let to = Point::new(
+                group_rect.x1 - 24.0,
+                f64::midpoint(group.bar_rect().y1, group_rect.y1),
+            );
             (from, to)
         };
 
@@ -2548,7 +2751,10 @@ mod tests {
             assert_eq!(rects.len(), 4, "bar must have 4 pills after layout");
             let files_pill = rects[1];
             let from = files_pill.center();
-            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            let to = Point::new(
+                group_rect.x1 - 24.0,
+                f64::midpoint(group.bar_rect().y1, group_rect.y1),
+            );
             (from, to)
         };
         d.drag(from, to, 16);

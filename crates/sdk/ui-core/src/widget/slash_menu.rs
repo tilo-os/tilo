@@ -44,6 +44,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -177,7 +178,7 @@ impl SlashMenu {
             MenuRow {
                 label: "Table",
                 keywords: &["table", "grid", "columns", "gfm"],
-                kind: BlockKind::Table { visual: false },
+                kind: BlockKind::Table { visual: true },
             },
             MenuRow {
                 label: "TeX formula",
@@ -471,6 +472,80 @@ impl SlashMenu {
         }
     }
 
+    fn draw_empty_hint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        font_size: f32,
+    ) {
+        let rect = self.rect();
+        let tokens = &theme.tokens;
+        // Empty-state hint when the filter matches nothing.
+        if self.visible.is_empty() {
+            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                "No matches",
+                font_size,
+                tokens.colors.text_dim,
+                translated(transform, rect.x0 + PADDING_X, y),
+                None,
+            );
+        }
+    }
+
+    /// The menu card and the filter field's box — the chrome under the
+    /// filter text and the rows.
+    fn draw_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        filter_rect: Rect,
+    ) {
+        let colors = &theme.tokens.colors;
+        let radius = 6.0;
+        // Panel role (HIG §9.1): the panel ground so the menu reads as
+        // floating above the document, with the derived panel edge as a
+        // crisp 1 px inset stroke — a declared `border_standard` was
+        // invisible against `raised` on the dark preset.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            crate::chrome::panel_ground(theme),
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::chrome::panel_border(theme),
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+        // A field reads as a field on every preset: its rest edge derives
+        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
+        // on the light preset `base` and the panel ground are a shade apart.
+        let filter_radius = 4.0;
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(filter_rect, filter_radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(colors.surfaces.base),
+            None,
+            &crate::surface::edge_outline(filter_rect, filter_radius),
+        );
+    }
+
     /// Paint the popover into `scene`. Called by the parent AFTER its
     /// main draw pass so the menu lands on top of everything else.
     pub fn draw_overlay(
@@ -485,38 +560,13 @@ impl SlashMenu {
         }
         let tokens = &theme.tokens;
         let rect = self.rect();
-        let shape = RoundedRect::from_rect(rect, 6.0);
-        // Drop a soft surface-raised body so the menu reads as
-        // floating above the document.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-
         let filter_rect = Rect::new(
             rect.x0 + 6.0,
             rect.y0 + PADDING_Y,
             rect.x1 - 6.0,
             rect.y0 + PADDING_Y + FILTER_HEIGHT,
         );
-        let filter_shape = RoundedRect::from_rect(filter_rect, 4.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &filter_shape,
-        );
+        Self::draw_chrome(scene, transform, theme, rect, filter_rect);
         self.filter_composition.draw(
             scene,
             transform,
@@ -533,50 +583,53 @@ impl SlashMenu {
             &TextStyle::new(tokens.typography.scale.sm),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
 
-        let font_size = tokens.typography.scale.sm;
+        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        // The armed row's ink is resolved against the accent it sits on, the
+        // same way `Popover` and `Dropdown` do; `text_primary` is only legible
+        // there on a dark theme.
+        let armed_ink = tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let Some(row) = self.rows.get(row_idx) else {
                 continue;
             };
             let y0 = self.rows_top() + px(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
-            if i == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, 4.0);
+            let armed = i == self.cursor;
+            if armed {
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
+            // Centre on the measured line, not the font size — the two differ
+            // by the face's ascent/descent and the label drifted low.
+            let (_, label_h) = text_renderer.measure(row.label, font_size, None);
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(label_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 row.label,
                 font_size,
-                tokens.colors.text_primary,
+                if armed {
+                    armed_ink
+                } else {
+                    tokens.colors.text_primary
+                },
                 translated(transform, row_rect.x0 + PADDING_X, text_y),
                 None,
             );
         }
-        // Empty-state hint when the filter matches nothing.
-        if self.visible.is_empty() {
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                "No matches",
-                font_size,
-                tokens.colors.text_dim,
-                translated(transform, rect.x0 + PADDING_X, y),
-                None,
-            );
-        }
+        self.draw_empty_hint(scene, transform, text_renderer, theme, font_size);
     }
 }
 

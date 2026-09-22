@@ -1,8 +1,9 @@
 //! Trusted Tilo release catalog and verified medium download/cache.
 //!
 //! The catalog is embedded into each platform-signed Imager package at build
-//! time.  A release therefore cannot substitute its URL or digest without also
-//! replacing the signed host application.  Both the compressed transport and
+//! time. In a genuinely signed distribution, changing catalog bytes requires
+//! replacing that signed application. Local development embedding alone is not
+//! cryptographic release evidence.  Both the compressed transport and
 //! expanded disk image are SHA-256 checked before the image becomes selectable.
 
 use std::fs::{self, File, OpenOptions};
@@ -20,6 +21,7 @@ use crate::model::{Source, TiloRelease};
 const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Catalog {
     schema: u32,
     tag: String,
@@ -27,7 +29,48 @@ struct Catalog {
 }
 
 #[derive(Debug, Deserialize)]
-struct CatalogRelease {
+#[serde(untagged)]
+enum CatalogRelease {
+    Media(MediaRelease),
+    Internal(InternalMetadata),
+}
+
+#[derive(Debug, Deserialize)]
+enum MediaPurpose {
+    #[serde(rename = "removable-media")]
+    RemovableMedia,
+}
+#[derive(Debug, Deserialize)]
+enum MediaLayout {
+    #[serde(rename = "whole-disk-image")]
+    WholeDiskImage,
+}
+#[derive(Debug, Deserialize)]
+enum InternalPurpose {
+    #[serde(rename = "qos-internal-installer")]
+    InternalInstaller,
+}
+#[derive(Debug, Deserialize)]
+enum InternalLayout {
+    #[serde(rename = "internal-bundle-v1")]
+    BundleV1,
+}
+
+fn present_tag<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MediaRelease {
+    #[serde(default, deserialize_with = "present_tag")]
+    purpose: Option<MediaPurpose>,
+    #[serde(default, deserialize_with = "present_tag")]
+    layout: Option<MediaLayout>,
     name: String,
     version: String,
     channel: String,
@@ -41,6 +84,18 @@ struct CatalogRelease {
     archive_size: u64,
     image_sha256: String,
     image_size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InternalMetadata {
+    purpose: InternalPurpose,
+    layout: InternalLayout,
+    release_id: String,
+    arch: String,
+    manifest_url: String,
+    manifest_sha256: String,
+    manifest_size: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,94 +175,199 @@ pub struct DownloadJob {
     pub control: DownloadControl,
 }
 
-/// Releases authenticated by the signature on this Imager build, filtered to
-/// media for the current host CPU architecture. Board compatibility still
-/// requires selecting the explicitly labeled target hardware profile.
-///
-/// # Errors
-///
-/// Returns an error when the embedded catalog is malformed or contains an
-/// unsupported schema, untrusted URL, invalid digest, or invalid size, or when
-/// the native host architecture cannot be detected.
-pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
-    releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
+/// A selection obtained only from this build's embedded catalog. Authentication
+/// depends on a genuinely signed build; development embedding is not a signature.
+/// This type cannot become a whole-disk `Source` or a media download request.
+#[derive(Debug)]
+pub struct InternalRelease {
+    metadata: InternalMetadata,
 }
 
-fn releases_for_host(
-    catalog_json: &str,
-    host_arch: Result<Option<&str>, String>,
-) -> Result<Vec<TiloRelease>, String> {
-    let host_arch = host_arch?;
-    let catalog: Catalog = serde_json::from_str(catalog_json)
-        .map_err(|error| format!("The bundled release catalog is invalid: {error}"))?;
+impl InternalRelease {
+    pub fn release_id(&self) -> &str {
+        &self.metadata.release_id
+    }
+    pub fn architecture(&self) -> &str {
+        &self.metadata.arch
+    }
+    pub fn manifest_url(&self) -> &str {
+        &self.metadata.manifest_url
+    }
+    pub fn manifest_sha256(&self) -> &str {
+        &self.metadata.manifest_sha256
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_fixture(bytes: &[u8], url: &str) -> Self {
+        Self {
+            metadata: InternalMetadata {
+                purpose: InternalPurpose::InternalInstaller,
+                layout: InternalLayout::BundleV1,
+                release_id: "fixture-only".into(),
+                arch: "x86_64".into(),
+                manifest_url: url.into(),
+                manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
+                manifest_size: bytes.len() as u64,
+            },
+        }
+    }
+
+    pub fn manifest_size(&self) -> u64 {
+        self.metadata.manifest_size
+    }
+
+    /// Bind the exact received bytes to the embedded selection before parsing.
+    /// A later downloader must retain existing origin/length rules; this method
+    /// performs no transport, staging, execution or device access.
+    /// # Errors
+    /// Rejects byte length/digest mismatch, invalid schema or selection mismatch.
+    pub fn verify_manifest(
+        &self,
+        bytes: &[u8],
+    ) -> Result<crate::setup::internal_bundle::InternalBundle, String> {
+        let expected = &self.metadata;
+        if bytes.len() as u64 != expected.manifest_size
+            || format!("{:x}", Sha256::digest(bytes)) != expected.manifest_sha256
+        {
+            return Err("Internal manifest does not match the embedded catalog bytes.".into());
+        }
+        let bundle = crate::setup::internal_bundle::validate_internal_bundle(bytes)?;
+        let (InternalPurpose::InternalInstaller, InternalLayout::BundleV1) =
+            (&expected.purpose, &expected.layout);
+        if bundle.release_id() != expected.release_id
+            || bundle.architecture() != expected.arch
+            || bundle.purpose() != "qos-internal-installer"
+        {
+            return Err("Internal manifest does not match the selected release.".into());
+        }
+        Ok(bundle)
+    }
+}
+
+fn trusted_catalog_url(value: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "Invalid catalog URL.".to_string())?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("code.podesta.ai")
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("The release catalog contains an untrusted download origin.".into());
+    }
+    Ok(())
+}
+
+fn parse_catalog(raw: &str) -> Result<Catalog, String> {
+    if raw.len() > 1024 * 1024 {
+        return Err("Release catalog exceeds size limit.".into());
+    }
+    // Derived record/enum deserializers admit sequence records and object
+    // unit-enum tags. Constrain the published JSON shapes before decoding the
+    // ORIGINAL bytes, preserving duplicate-key checks and authenticated input.
+    {
+        let shape: serde_json::Value =
+            serde_json::from_str(raw).map_err(|error| error.to_string())?;
+        let valid = shape.is_object()
+            && shape
+                .get("releases")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|entries| {
+                    entries.iter().all(|entry| {
+                        entry.is_object()
+                            && ["purpose", "layout"]
+                                .iter()
+                                .all(|key| entry.get(*key).is_none_or(serde_json::Value::is_string))
+                    })
+                });
+        if !valid {
+            return Err(
+                "Catalog records must be JSON objects with string purpose/layout tags.".into(),
+            );
+        }
+    }
+    let catalog: Catalog = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     if !matches!(catalog.schema, 1 | 2) {
-        return Err("The bundled release catalog uses an unsupported schema.".into());
+        return Err("Unsupported release catalog schema.".into());
     }
     if catalog.releases.is_empty() && catalog.tag == "unreleased" {
-        return Ok(Vec::new());
+        return Ok(catalog);
     }
-    if !catalog.tag.starts_with("imager-v") {
-        return Err("The bundled release catalog has an invalid release tag.".into());
+    if !catalog.tag.starts_with("imager-v") || catalog.releases.len() > 256 {
+        return Err("Invalid release catalog tag or entry count.".into());
     }
     let mut identities = std::collections::HashSet::new();
-    for release in &catalog.releases {
-        let profile = match (catalog.schema, release.hardware_profile.as_deref()) {
-            (1, None | Some("generic")) => "generic",
-            (2, Some(profile)) => profile,
-            _ => {
-                return Err(
-                    "The release catalog has an invalid hardware profile for its schema.".into(),
-                );
+    let mut internal_ids = std::collections::HashSet::new();
+    // Validate every entry before any architecture filtering.
+    for entry in &catalog.releases {
+        let arch = match entry {
+            CatalogRelease::Media(media) => {
+                let profile =
+                    match (catalog.schema, media.hardware_profile.as_deref()) {
+                        (1, None | Some("generic")) => "generic",
+                        (2, Some(profile)) => profile,
+                        _ => return Err(
+                            "The release catalog has an invalid hardware profile for its schema."
+                                .into(),
+                        ),
+                    };
+                if !valid_hardware_profile(profile)
+                    || !identities.insert((media.arch.as_str(), profile))
+                {
+                    return Err("Invalid or duplicate architecture and hardware profile.".into());
+                }
+                if profile != "generic" {
+                    media
+                        .provenance
+                        .as_ref()
+                        .ok_or_else(|| {
+                            "The release catalog is missing hardware media provenance.".to_string()
+                        })?
+                        .validate()?;
+                }
+                if media.purpose.is_some() != media.layout.is_some() {
+                    return Err("Incomplete media purpose/layout.".into());
+                }
+                validate_digest(&media.archive_sha256)?;
+                validate_digest(&media.image_sha256)?;
+                if media.archive_size == 0 || media.image_size == 0 {
+                    return Err("Invalid media size.".into());
+                }
+                trusted_catalog_url(&media.url)?;
+                &media.arch
+            }
+            CatalogRelease::Internal(internal) => {
+                use crate::setup::internal_bundle::{
+                    MAX_MANIFEST_BYTES, canonical_digest, identifier,
+                };
+                if !identifier(&internal.release_id)
+                    || !canonical_digest(&internal.manifest_sha256, 64)
+                    || internal.manifest_size == 0
+                    || internal.manifest_size > MAX_MANIFEST_BYTES as u64
+                    || !internal_ids.insert((&internal.release_id, &internal.arch))
+                {
+                    return Err("Invalid internal bundle metadata.".into());
+                }
+                trusted_catalog_url(&internal.manifest_url)?;
+                &internal.arch
             }
         };
-        if !matches!(release.arch.as_str(), "x86_64" | "aarch64")
-            || !valid_hardware_profile(profile)
-        {
-            return Err(
-                "The release catalog contains an unsupported architecture and hardware profile."
-                    .into(),
-            );
-        }
-        if !identities.insert((release.arch.as_str(), profile)) {
-            return Err(
-                "The release catalog contains duplicate architecture and hardware profiles.".into(),
-            );
+        if !matches!(arch.as_str(), "x86_64" | "aarch64") {
+            return Err("Unsupported release architecture.".into());
         }
     }
-    for release in &catalog.releases {
-        if release
-            .hardware_profile
-            .as_deref()
-            .is_some_and(|profile| profile != "generic")
-        {
-            release
-                .provenance
-                .as_ref()
-                .ok_or_else(|| {
-                    "The release catalog is missing hardware media provenance.".to_string()
-                })?
-                .validate()?;
-        }
-    }
-    let Some(host_arch) = host_arch else {
-        return Ok(Vec::new());
-    };
+    Ok(catalog)
+}
+
+fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
     catalog
         .releases
         .into_iter()
-        .filter(|release| release.arch == host_arch)
-        .map(|release| {
-            validate_digest(&release.archive_sha256)?;
-            validate_digest(&release.image_sha256)?;
-            if release.archive_size == 0 || release.image_size == 0 {
-                return Err("The release catalog contains an invalid installer size.".into());
-            }
-            let url = reqwest::Url::parse(&release.url)
-                .map_err(|_| "The release catalog contains an invalid URL.".to_string())?;
-            if url.scheme() != "https" || url.host_str() != Some("code.podesta.ai") {
-                return Err("The release catalog contains an untrusted download origin.".into());
-            }
-            Ok(TiloRelease {
+        .filter_map(|entry| {
+            let CatalogRelease::Media(release) = entry else {
+                return None;
+            };
+            (release.arch == host_arch).then(|| TiloRelease {
                 name: release.name,
                 version: release.version,
                 size: release.image_size,
@@ -222,6 +382,38 @@ fn releases_for_host(
             })
         })
         .collect()
+}
+
+/// Media selections only. Authentication depends on the signature of the build.
+/// # Errors
+/// Rejects invalid metadata in any entry, including foreign architectures.
+pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
+    releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
+}
+
+fn releases_for_host(
+    catalog_json: &str,
+    host_arch: Result<Option<&str>, String>,
+) -> Result<Vec<TiloRelease>, String> {
+    let catalog = parse_catalog(catalog_json)?;
+    Ok(host_arch?.map_or_else(Vec::new, |arch| media_releases(catalog, arch)))
+}
+
+/// Internal selections stay separate from the ordinary media downloader.
+/// No released entries exist until actual reviewed artifacts are published.
+/// # Errors
+/// Rejects any invalid embedded catalog entry before host filtering.
+pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
+    Ok(parse_catalog(BUNDLED_CATALOG)?
+        .releases
+        .into_iter()
+        .filter_map(|entry| match entry {
+            CatalogRelease::Internal(metadata) if metadata.arch == std::env::consts::ARCH => {
+                Some(InternalRelease { metadata })
+            }
+            _ => None,
+        })
+        .collect())
 }
 
 fn valid_hardware_profile(profile: &str) -> bool {
@@ -526,7 +718,7 @@ fn verified_image_observed(
     if image.is_file() {
         notify(DownloadEvent::Verifying);
         if sha256_controlled(&image, control)? == release.image_sha256 {
-            return Ok(source_for(release, &image));
+            return source_for(release, &image);
         }
         fs::remove_file(&image)
             .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
@@ -616,16 +808,17 @@ fn verified_image_observed(
     fs::rename(&image_part, &image)
         .map_err(|error| format!("Could not publish the verified installer cache: {error}"))?;
     let _ = fs::remove_file(&archive_part);
-    Ok(source_for(release, &image))
+    source_for(release, &image)
 }
 
-fn source_for(release: &TiloRelease, image: &Path) -> Source {
+fn source_for(release: &TiloRelease, image: &Path) -> Result<Source, String> {
+    let file = File::open(image)
+        .map_err(|error| format!("Could not open the verified installer: {error}"))?;
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
-    source.identity = fs::File::open(image)
-        .ok()
-        .and_then(|file| crate::model::SourceIdentity::from_file(&file));
-    source
+    source.identity = crate::model::SourceIdentity::from_file(&file)
+        .map_err(|error| format!("Could not identify the verified installer: {error}"))?;
+    Ok(source)
 }
 
 /// Download and verify without blocking the UI thread.
@@ -733,7 +926,7 @@ mod tests {
                 "version": "1.0.0",
                 "channel": "stable",
                 "arch": arch,
-                "url": format!("https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
+                "url": format!("https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
                 "archive_sha256": "a".repeat(64),
                 "archive_size": 32,
                 "image_sha256": "b".repeat(64),
@@ -937,17 +1130,23 @@ mod tests {
             hardware_profile: "generic".into(),
             local_path: String::new(),
             url:
-                "https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                "https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/tilo.img.zst"
                     .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,
             image_sha256: "b".repeat(64),
         };
 
-        let source = source_for(&release, image.path());
+        let source = source_for(&release, image.path()).unwrap();
         let expected = "b".repeat(64);
         assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
         assert!(source.identity.is_some());
+        assert_eq!(
+            source.identity,
+            crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
+        );
+        let missing = image.path().with_extension("missing");
+        assert!(source_for(&release, &missing).is_err());
     }
 
     #[test]
@@ -1166,5 +1365,243 @@ mod tests {
             &reqwest::Url::parse("http://code.podesta.ai/releases/file").unwrap(),
             &trusted
         ));
+    }
+}
+
+#[cfg(test)]
+mod internal_catalog_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    fn media() -> Value {
+        json!({"name":"qOS","version":"test","channel":"test","arch":"x86_64",
+            "url":"https://code.podesta.ai/test.img.zst","archive_sha256":"a".repeat(64),
+            "archive_size":42,"image_sha256":"b".repeat(64),"image_size":84})
+    }
+    fn catalog(entry: Value) -> String {
+        json!({"schema":1,"tag":"imager-vtest","releases":[entry]}).to_string()
+    }
+    #[test]
+    fn legacy_media_still_parses() {
+        assert!(parse_catalog(&catalog(media())).is_ok());
+    }
+    #[test]
+    fn explicit_internal_purpose_never_falls_through_as_media() {
+        let mut value = media();
+        value["purpose"] = json!("qos-internal-installer");
+        value["layout"] = json!("internal-bundle-v1");
+        assert!(parse_catalog(&catalog(value)).is_err());
+    }
+    #[test]
+    fn catalog_rejects_unknown_fields_and_bad_foreign_entries() {
+        let mut value = media();
+        value["unexpected"] = json!(true);
+        assert!(parse_catalog(&catalog(value)).is_err());
+        for (field, bad) in [
+            ("archive_sha256", json!("invalid")),
+            ("url", json!("https://evil.example/file")),
+            ("image_size", json!(0)),
+        ] {
+            let mut value = media();
+            value["arch"] = json!("aarch64");
+            value[field] = bad;
+            assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+        }
+    }
+    fn internal(manifest: &[u8]) -> Value {
+        json!({"purpose":"qos-internal-installer","layout":"internal-bundle-v1",
+            "release_id":"fixture-only","arch":"x86_64",
+            "manifest_url":"https://code.podesta.ai/fixture/manifest.json",
+            "manifest_sha256":format!("{:x}",Sha256::digest(manifest)),"manifest_size":manifest.len()})
+    }
+    fn selection(value: Value) -> InternalRelease {
+        match parse_catalog(&catalog(value))
+            .unwrap()
+            .releases
+            .pop()
+            .unwrap()
+        {
+            CatalogRelease::Internal(metadata) => InternalRelease { metadata },
+            _ => panic!("internal entry became media"),
+        }
+    }
+    #[test]
+    fn internal_entries_remain_separate_and_bind_exact_manifest_bytes() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        let value = internal(&bytes);
+        assert!(
+            media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64").is_empty()
+        );
+        let release = selection(value);
+        assert!(release.verify_manifest(&bytes).is_ok());
+        let mut longer = bytes.clone();
+        longer.push(b' ');
+        assert!(release.verify_manifest(&longer).is_err());
+        let mut changed_manifest = crate::setup::internal_bundle::tests::fixture();
+        changed_manifest["boot_binding"]["uki_sha256"] = json!("c".repeat(64));
+        let changed = crate::setup::internal_bundle::tests::bytes(&changed_manifest);
+        assert_eq!(changed.len(), bytes.len());
+        let valid = crate::setup::internal_bundle::validate_internal_bundle(&changed).unwrap();
+        assert_eq!(valid.release_id(), release.release_id());
+        assert_eq!(valid.architecture(), release.architecture());
+        assert!(release.verify_manifest(&changed).is_err());
+    }
+    #[test]
+    fn internal_selection_rejects_release_and_architecture_mismatch() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        for (key, value) in [
+            ("release_id", json!("other-release")),
+            ("arch", json!("aarch64")),
+        ] {
+            let mut entry = internal(&bytes);
+            entry[key] = value;
+            assert!(
+                selection(entry).verify_manifest(&bytes).is_err(),
+                "accepted {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_media_pair_and_internal_catalog_profiles_are_strict() {
+        let mut tagged = media();
+        tagged["purpose"] = json!("removable-media");
+        tagged["layout"] = json!("whole-disk-image");
+        assert_eq!(
+            media_releases(parse_catalog(&catalog(tagged.clone())).unwrap(), "x86_64").len(),
+            1
+        );
+        for bad in [Value::Null, json!("unknown"), json!(true)] {
+            let mut value = tagged.clone();
+            value["purpose"] = bad;
+            assert!(parse_catalog(&catalog(value)).is_err());
+        }
+        tagged.as_object_mut().unwrap().remove("layout");
+        assert!(parse_catalog(&catalog(tagged)).is_err());
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        for (field, bad) in [
+            ("layout", json!("whole-disk-image")),
+            ("manifest_size", json!(65537)),
+            ("manifest_sha256", json!("A".repeat(64))),
+            ("purpose", json!("removable-media")),
+            (
+                "manifest_url",
+                json!("https://code.podesta.ai:444/manifest"),
+            ),
+        ] {
+            let mut value = internal(&bytes);
+            value[field] = bad;
+            assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
+        }
+        assert!(bundled_internal_releases().unwrap().is_empty());
+        assert!(bundled_releases().unwrap().is_empty());
+        let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
+        assert!(parse_catalog(&raw).is_err());
+    }
+    fn positional_record(value: &Value, fields: &str) -> Value {
+        Value::Array(
+            fields
+                .split_whitespace()
+                .map(|key| value[key].clone())
+                .collect(),
+        )
+    }
+    #[test]
+    fn representation_catalog_must_be_an_object() {
+        let raw = catalog(media());
+        assert!(parse_catalog(&raw).is_ok());
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        let array = positional_record(&value, "schema tag releases");
+        assert!(parse_catalog(&array.to_string()).is_err());
+    }
+    #[test]
+    fn representation_media_entry_must_be_an_object() {
+        let mut value = media();
+        value["purpose"] = json!("removable-media");
+        value["layout"] = json!("whole-disk-image");
+        assert!(parse_catalog(&catalog(value.clone())).is_ok());
+        let array = positional_record(
+            &value,
+            "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
+        );
+        assert!(parse_catalog(&catalog(array)).is_err());
+    }
+    #[test]
+    fn representation_internal_entry_must_be_an_object() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        let value = internal(&bytes);
+        assert!(parse_catalog(&catalog(value.clone())).is_ok());
+        let array = positional_record(
+            &value,
+            "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
+        );
+        assert!(parse_catalog(&catalog(array)).is_err());
+    }
+    #[test]
+    fn representation_internal_purpose_and_layout_must_be_strings() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        let entry = internal(&bytes);
+        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
+        let accepted: Vec<_> = ["purpose", "layout"]
+            .into_iter()
+            .filter(|field| {
+                let mut value = entry.clone();
+                value[*field] = json!({entry[*field].as_str().unwrap():null});
+                parse_catalog(&catalog(value)).is_ok()
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "accepted object-shaped tags: {accepted:?}"
+        );
+    }
+    #[test]
+    fn representation_media_purpose_and_layout_must_be_strings() {
+        let mut entry = media();
+        entry["purpose"] = json!("removable-media");
+        entry["layout"] = json!("whole-disk-image");
+        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
+        let accepted: Vec<_> = ["purpose", "layout"]
+            .into_iter()
+            .filter(|field| {
+                let mut value = entry.clone();
+                value[*field] = json!({entry[*field].as_str().unwrap():null});
+                parse_catalog(&catalog(value)).is_ok()
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "accepted object-shaped tags: {accepted:?}"
+        );
+    }
+    #[test]
+    fn representation_checks_do_not_collapse_duplicate_catalog_keys() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        for entry in [media(), internal(&bytes)] {
+            let raw = catalog(entry);
+            assert!(parse_catalog(&raw).is_ok());
+            for (marker, replacement) in [
+                ("\"schema\":1", "\"schema\":1,\"schema\":1"),
+                (
+                    "\"arch\":\"x86_64\"",
+                    "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",
+                ),
+            ] {
+                let changed = raw.replacen(marker, replacement, 1);
+                assert_ne!(changed, raw);
+                assert!(parse_catalog(&changed).is_err());
+            }
+        }
     }
 }

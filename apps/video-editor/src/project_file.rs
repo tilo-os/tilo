@@ -47,11 +47,11 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic          b"QosVEPRJ"
-//! 8       2     version        u16 LE — what wrote this file
-//! 10      2     min_reader     u16 LE — the oldest reader that may open it
-//! 12      4     payload_len    u32 LE — length of the Automerge document
-//! 16      N     payload        Automerge document bytes
+//! 0       9     magic          b"TiloVEPRJ"
+//! 9       2     version        u16 LE — what wrote this file
+//! 11      2     min_reader     u16 LE — the oldest reader that may open it
+//! 13      4     payload_len    u32 LE — length of the Automerge document
+//! 17      N     payload        Automerge document bytes
 //! ```
 //!
 //! Two version numbers, because the two questions are different. `version`
@@ -76,11 +76,8 @@ use automerge::AutoCommit;
 use crate::doc::VideoDoc;
 use crate::model::Project;
 
-/// First eight bytes of every project file.
-///
-/// This persisted identifier predates the product rename and must remain stable so existing
-/// projects continue to open.
-pub const MAGIC: &[u8; 8] = b"QosVEPRJ";
+/// First nine bytes of every project file.
+pub const MAGIC: &[u8; 9] = b"TiloVEPRJ";
 
 /// The format version this build writes.
 pub const FORMAT_VERSION: u16 = 1;
@@ -91,7 +88,7 @@ pub const FORMAT_VERSION: u16 = 1;
 pub const MIN_READER_VERSION: u16 = 1;
 
 /// Bytes before the Automerge payload.
-pub const HEADER_LEN: usize = 16;
+pub const HEADER_LEN: usize = 17;
 
 /// The extension a project is saved under.
 pub const EXTENSION: &str = "qvp";
@@ -169,11 +166,11 @@ pub fn encode(project: &Project) -> Vec<u8> {
 
 /// The `version` / `min_reader` a file declares, without loading it.
 pub fn header_versions(bytes: &[u8]) -> Result<(u16, u16), ProjectFileError> {
-    if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
+    if bytes.len() < HEADER_LEN || &bytes[..MAGIC.len()] != MAGIC {
         return Err(ProjectFileError::NotAProject);
     }
-    let version = u16::from_le_bytes([bytes[8], bytes[9]]);
-    let min_reader = u16::from_le_bytes([bytes[10], bytes[11]]);
+    let version = u16::from_le_bytes([bytes[9], bytes[10]]);
+    let min_reader = u16::from_le_bytes([bytes[11], bytes[12]]);
     Ok((version, min_reader))
 }
 
@@ -186,7 +183,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
             this_reader: MIN_READER_VERSION,
         });
     }
-    let declared = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    let declared = u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
     let present = bytes.len() - HEADER_LEN;
     if present < declared {
         return Err(ProjectFileError::Truncated { declared, present });
@@ -295,7 +292,7 @@ pub mod recents {
         let id = std::env::var("TILO_PACKAGE_ID")
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "dev.tilo.video-editor".to_string());
+            .unwrap_or_else(|| "so.tilo.video-editor".to_string());
         // Reject an id that is not a plain directory name, exactly as the
         // store does: an id carrying a separator would escape the data home.
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
@@ -480,13 +477,13 @@ mod tests {
     #[test]
     fn the_header_is_the_documented_layout() {
         let bytes = encode(&Project::new("x"));
-        assert_eq!(&bytes[..8], b"QosVEPRJ");
-        assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), FORMAT_VERSION);
+        assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
+        assert_eq!(u16::from_le_bytes([bytes[9], bytes[10]]), FORMAT_VERSION);
         assert_eq!(
-            u16::from_le_bytes([bytes[10], bytes[11]]),
+            u16::from_le_bytes([bytes[11], bytes[12]]),
             MIN_READER_VERSION
         );
-        let declared = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        let declared = u32::from_le_bytes([bytes[13], bytes[14], bytes[15], bytes[16]]) as usize;
         assert_eq!(
             declared,
             bytes.len() - HEADER_LEN,
@@ -532,7 +529,7 @@ mod tests {
         // Refuse, never guess: an unknown layout read with today's rules
         // produces a project that looks fine and is wrong.
         let mut bytes = encode(&rich_project());
-        bytes[10..12].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
+        bytes[11..13].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
         match decode(&bytes) {
             Err(ProjectFileError::TooNew {
                 file_min_reader,
@@ -553,7 +550,7 @@ mod tests {
         // file, because the document layer already defaults what it cannot
         // see. Without this, every field addition would orphan old files.
         let mut bytes = encode(&rich_project());
-        bytes[8..10].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
+        bytes[9..11].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
         let back = decode(&bytes).expect("a compatible newer file still opens");
         assert_eq!(back.clips.len(), 1);
         assert_eq!(
@@ -660,7 +657,7 @@ mod tests {
         // Safety: single-threaded test mutation of process env.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.video-editor-test");
+            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
         }
 
         let present = tmp.join("Present.qvp");

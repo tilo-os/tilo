@@ -128,6 +128,11 @@ impl WeatherDoc {
                 .map(|location| location.id)
                 .collect::<Vec<_>>(),
         );
+        // A user may have changed the stable view choice while the authored
+        // places were still legacy-backed. Content migration must not reset it.
+        if doc.get(&ROOT, "selected_location").ok().flatten().is_some() {
+            return;
+        }
         let selected = match doc.get(&ROOT, "selected") {
             Ok(Some((Value::Scalar(value), _))) => {
                 legacy.get(value.to_i64().unwrap_or(0).max(0) as usize)

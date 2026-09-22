@@ -471,18 +471,13 @@ pub fn verify_channel_authorization(
 }
 
 fn entry_within_bounds(entry: &RegistryEntry) -> bool {
-    entry.package_id.len() <= 255
-        && entry.name.len() <= 256
-        && entry.description.len() <= 8_192
+    entry.validate().is_ok()
+        && entry.package_id.len() <= 255
         && entry.categories.len() <= 64
         && entry
             .categories
             .iter()
             .all(|category| category.len() <= 128)
-        && entry
-            .icon_url
-            .as_ref()
-            .is_none_or(|value| value.len() <= 4_096)
         && entry
             .source_url
             .as_ref()
@@ -496,25 +491,23 @@ fn entry_within_bounds(entry: &RegistryEntry) -> bool {
         && entry.versions.len() <= 128
         && entry.versions.iter().all(|version| {
             version.version.len() <= 128
-                && version.qpkg_url.len() <= 4_096
-                && version.qpkg_root_hash_hex.len() == 64
+                && version.tapp_url.len() <= 4_096
+                && version.tapp_root_hash_hex.len() == 64
                 && version
-                    .qpkg_root_hash_hex
+                    .tapp_root_hash_hex
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit())
-                && version.qpkg_blake3_hex.as_ref().is_none_or(|hash| {
-                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
-                && version.target.as_ref().is_none_or(|target| {
-                    matches!(target.architecture.as_str(), "x86_64" | "aarch64")
-                        && !target.isa.is_empty()
-                        && target.isa.len() <= 64
-                        && target
-                            .runtime
-                            .as_ref()
-                            .is_none_or(|runtime| runtime.len() <= 256)
-                })
-                && version.qpkg_blake3_hex.is_some() == version.target.is_some()
+                && version.tapp_blake3_hex.len() == 64
+                && version
+                    .tapp_blake3_hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                && version.target.isa.len() <= 64
+                && version
+                    .target
+                    .runtime
+                    .as_ref()
+                    .is_none_or(|runtime| runtime.len() <= 256)
         })
 }
 
@@ -528,22 +521,32 @@ mod tests {
         let publisher = SigningKey::from_bytes(&[7; 32]);
         let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             name: "Notes".into(),
             description: "Notes".into(),
+            tagline: "Write together".into(),
+            images: crate::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1".into(),
-                qpkg_url: "https://apps.tilo.dev/n.qpkg".into(),
-                qpkg_root_hash_hex: "ab".repeat(32),
-                qpkg_size_bytes: 1,
+                tapp_url: "https://apps.tilo.so/n.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                qpkg_blake3_hex: None,
-                target: None,
+                tapp_blake3_hex: "cd".repeat(32),
+                target: crate::RegistryTarget {
+                    platform: crate::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
@@ -577,7 +580,12 @@ mod tests {
             15,
         )
         .unwrap();
-        snapshot.entries[0].name.push_str(" hijacked");
+        snapshot.entries[0]
+            .name
+            .0
+            .get_mut("en")
+            .unwrap()
+            .push_str(" hijacked");
         assert_eq!(
             verify_snapshot(
                 &snapshot,

@@ -86,37 +86,23 @@ pub fn required_capability(
     }
 }
 
-/// The verb a chrome action requires, or `None` when it only opens a view.
-/// Overlay-opening entries are deliberately ungated: `settings.open`
-/// reveals a panel; the setting that changes something is gated where it lives.
+/// The verb a chrome action requires, derived from the same canonical
+/// contract exported to discovery. Dynamic ownership actions retain the
+/// contract attached to their workspace resource and always require Admin.
 fn chrome_action_verb(id: &str) -> Option<Verb> {
-    match id {
-        // Showing: reveals a view, mutates nothing.
-        "shortcut-help.toggle"
-        | "overview.toggle"
-        | "settings.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open" => None,
-
-        // Membership: admitting a peer or agent, or joining a room — all
-        // decide who is in this room, so all gate on the same verb.
-        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => Some(Verb::Invite),
-
-        // Everything else is `Write`, same as spawning a tab:
-        // - "record.bring" changes what the room holds — seeing which
-        //   records a room holds stays ungated; adding one is an act.
-        // - "text.insert" — reading a note is showing and free; changing
-        //   what it says is an act.
-        // - "notifications.dnd.toggle" changes a session-wide setting.
-        // - everything else ("tab.new.terminal.here", "window.new.terminal",
-        //   "tab.duplicate") and any unknown chrome action fails closed to
-        //   this same gate.
-        _ => Some(Verb::Write),
+    let permission = if id.contains("#ownership.") {
+        tilo_actions::PermissionRequirement::Admin
+    } else {
+        super::providers::actions::shell_action_contract(id).permission
+    };
+    match permission {
+        tilo_actions::PermissionRequirement::None | tilo_actions::PermissionRequirement::Read => {
+            None
+        }
+        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
@@ -182,6 +168,8 @@ mod tests {
             "projection.open",
             "collaborators.open",
             "room.activity.open",
+            "peer.invite",
+            "peer.connect",
         ] {
             assert_eq!(
                 required_capability(&resource("actions", id), &ResourceKind::Action),
@@ -206,12 +194,7 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in [
-            "peer.invite",
-            "peer.invite.named",
-            "peer.connect",
-            "agent.invite",
-        ] {
+        for id in ["peer.invite.named", "agent.invite"] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
@@ -291,12 +274,12 @@ mod tests {
     #[test]
     fn launching_an_app_is_gated_on_that_app() {
         let (cap, verb) = required_capability(
-            &resource("applications", "dev.tilo.terminal"),
+            &resource("applications", "so.tilo.terminal"),
             &ResourceKind::Application,
         )
         .expect("launching must be gated");
         assert_eq!(verb, Verb::Write);
-        assert_eq!(cap, CapResource::App("dev.tilo.terminal".to_string()));
+        assert_eq!(cap, CapResource::App("so.tilo.terminal".to_string()));
     }
 
     /// End-to-end: an owner sees gated actions, a member holding nothing
@@ -343,7 +326,10 @@ mod tests {
             "granting Write must make the act visible"
         );
         assert!(
-            !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
+            !granted_view.can_see(
+                &resource("actions", "peer.invite.named"),
+                &ResourceKind::Action
+            ),
             "Write must not confer Invite"
         );
     }

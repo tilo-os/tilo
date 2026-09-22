@@ -333,7 +333,7 @@ fn available_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let info = unsafe { info.assume_init() };
-    info.f_bavail.checked_mul(info.f_frsize)
+    (info.f_bavail as u64).checked_mul(info.f_frsize as u64)
 }
 
 struct IncomingPersonalMediaTransfer {
@@ -3207,7 +3207,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transfer command carries the authenticated target plus its complete resumable-content contract"
+        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
     )]
     pub(crate) fn start_nearby_transfer(
         &self,
@@ -5316,7 +5316,7 @@ impl ShellNetwork {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "identity redemption keeps certificate, invitation, room, and persistence validation in one atomic admission path"
+        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
     )]
     fn redeem_invited_identity(
         &self,
@@ -6146,8 +6146,8 @@ mod tests {
         net.send_personal_fabric_action(
             &target,
             crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-                session_id: "dev.tilo.music:1".into(),
-                app_id: "dev.tilo.music".into(),
+                session_id: "so.tilo.music:1".into(),
+                app_id: "so.tilo.music".into(),
                 workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                 title: "Song".into(),
                 locator: crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
@@ -6404,13 +6404,13 @@ mod tests {
             .upsert(snapshot)
             .expect("stage checkpoint");
         let tab = crate::shell::personal_continuity::AppInstanceId(0xA6A6);
-        let launch = crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser")
+        let launch = crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser")
             .expect("valid launch");
         {
             let registry = crate::shell::personal_continuity_registry::global_registry();
             let mut registry = registry.lock().expect("continuation registry");
             registry.clear_remote();
-            registry.store_remote_record(room, tab, "dev.tilo.browser".into(), tab);
+            registry.store_remote_record(room, tab, "so.tilo.browser".into(), tab);
             assert_eq!(
                 registry.record_instance_for_tab(room, tab, &launch),
                 Some(tab)
@@ -6747,7 +6747,7 @@ mod tests {
                 &target,
                 crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
-                    app_id: "dev.tilo.music".into(),
+                    app_id: "so.tilo.music".into(),
                     workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
@@ -7344,7 +7344,7 @@ mod tests {
                     id: browser_tab,
                     title: "Browser".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.tilo.browser".into(),
+                        app_id: "so.tilo.browser".into(),
                         surface_id: 101,
                     },
                 },
@@ -7352,7 +7352,7 @@ mod tests {
                     id: ebook_tab,
                     title: "Ebook".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.tilo.ebook".into(),
+                        app_id: "so.tilo.ebook".into(),
                         surface_id: 102,
                     },
                 },
@@ -7360,7 +7360,7 @@ mod tests {
                     id: music_tab,
                     title: "Music".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.tilo.music".into(),
+                        app_id: "so.tilo.music".into(),
                         surface_id: 103,
                     },
                 },
@@ -7389,17 +7389,17 @@ mod tests {
             for (tab, app_id, metadata) in [
                 (
                     browser_tab,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
-                    "dev.tilo.ebook",
+                    "so.tilo.ebook",
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
-                    "dev.tilo.music",
+                    "so.tilo.music",
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
@@ -7500,7 +7500,7 @@ mod tests {
         // Model the exact peer-window -> launcher staging used before the
         // restored toplevel adopts its remote tab. This verifies metadata and
         // source CRDT record identity travel together without starting a GUI.
-        let browser_launch = LaunchIntent::app("dev.tilo.browser").expect("known app id");
+        let browser_launch = LaunchIntent::app("so.tilo.browser").expect("known app id");
         let browser_resume = registry
             .lock()
             .expect("continuation registry")
@@ -7508,7 +7508,7 @@ mod tests {
             .expect("remote placeholder retains the app report");
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             crate::shell::tab_binding::Placement::IntoTab(browser_tab),
         );
         crate::shell::launcher::stage_continuation_resume(
@@ -7519,7 +7519,7 @@ mod tests {
             browser_resume.record_instance.0,
         );
         assert_eq!(
-            crate::shell::launcher::take_staged_resume_for_package("dev.tilo.browser", room),
+            crate::shell::launcher::take_staged_resume_for_package("so.tilo.browser", room),
             Some((
                 Some((
                     browser_resume.resume.schema_version(),
@@ -8231,7 +8231,7 @@ mod tests {
         );
 
         let route = crate::shell::collab_broker::CrdtRoute::record(
-            "dev.tilo.notes",
+            "so.tilo.notes",
             room.to_string(),
             "meeting-notes",
         );
@@ -9057,7 +9057,7 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        let app_id = "dev.tilo.notes";
+        let app_id = "so.tilo.notes";
         let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])

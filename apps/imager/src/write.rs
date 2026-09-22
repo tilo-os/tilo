@@ -452,7 +452,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_identity
-        && SourceIdentity::from_file(&reader) != Some(expected)
+        && SourceIdentity::from_file(&reader)? != Some(expected)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -770,12 +770,18 @@ fn run_job_file_bound(
     };
     if !metadata.is_file()
         || metadata.len() != req.source.size
-        || req
-            .source
-            .identity
-            .is_some_and(|expected| SourceIdentity::from_file(&source) != Some(expected))
+        || req.source.identity.is_some_and(|expected| {
+            SourceIdentity::from_file(&source).ok().flatten() != Some(expected)
+        })
     {
         return JobResult::WriteFailed("source image changed after review".into());
+    }
+    if let Some(expected) = req.source.identity {
+        match SourceIdentity::from_file(&source) {
+            Ok(Some(actual)) if actual == expected => {}
+            Ok(_) => return JobResult::WriteFailed("source image changed after review".into()),
+            Err(error) => return JobResult::WriteFailed(error.to_string()),
+        }
     }
     if let Some(expected) = req.source.expected_sha256.as_deref() {
         let actual = match hash_source_exact(&mut source, req.source.size, should_cancel) {
@@ -1223,7 +1229,10 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
         Path::new(progress_path),
         Path::new(cancel_path),
     )?;
-    let request_bytes = std::fs::read(request_path)?;
+    #[cfg(target_os = "linux")]
+    let (request_bytes, caller_uid) = read_linux_helper_request(Path::new(request_path))?;
+    #[cfg(not(target_os = "linux"))]
+    let request_bytes = read_helper_request(Path::new(request_path))?;
     if request_bytes.len() > 1024 * 1024 {
         return Err("write helper request is unexpectedly large".into());
     }
@@ -1238,6 +1247,12 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     if begin_job(&request, &request.target.dev_path()) != JobStart::Started {
         return Err("write helper rejected an invalid or unsafe request".into());
     }
+    #[cfg(target_os = "linux")]
+    let request = {
+        let mut request = request;
+        bind_linux_helper_source(&mut request, caller_uid)?;
+        request
+    };
     // The privileged process creates the progress inode itself. `create_new`
     // refuses a pre-planted symlink instead of letting a user-writable path
     // redirect root's append into an arbitrary file.
@@ -1262,6 +1277,78 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
         progress_file.flush()?;
     }
     Ok(Some(i32::from(!result.is_success())))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u32)> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let caller_uid = std::env::var("PKEXEC_UID")
+        .map_err(|_| io::Error::other("write helper is missing PKEXEC_UID"))?
+        .parse::<u32>()
+        .map_err(|_| io::Error::other("write helper received an invalid PKEXEC_UID"))?;
+    let directory = request_path
+        .parent()
+        .ok_or_else(|| io::Error::other("write helper request has no parent directory"))?;
+    let directory_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory)?;
+    let directory_metadata = directory_file.metadata()?;
+    if !directory_metadata.is_dir()
+        || directory_metadata.uid() != caller_uid
+        || directory_metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "write helper job directory is not private to the authenticated user",
+        ));
+    }
+    let name = CString::new("request.json").expect("fixed request filename has no NUL");
+    // SAFETY: the held directory descriptor remains live for this call, the
+    // filename is a valid C string, and a successful descriptor is moved into
+    // exactly one `File` owner below.
+    let request_fd = unsafe {
+        libc::openat(
+            directory_file.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if request_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `openat` returned a new owned descriptor and ownership is
+    // transferred once to this `File`.
+    let mut request_file = unsafe { std::fs::File::from_raw_fd(request_fd) };
+    let request_metadata = request_file.metadata()?;
+    if !request_metadata.is_file()
+        || request_metadata.uid() != caller_uid
+        || request_metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "write helper request is not owned safely by the authenticated user",
+        ));
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut request_file)
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes, caller_uid))
 }
 
 fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::Result<()> {
@@ -1291,6 +1378,39 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
     Ok(())
 }
 
+/// Bind a root helper to authority the authenticated desktop process already
+/// possessed. `pkexec` preserves stdin, which the unprivileged process opens
+/// on the reviewed image before elevation. The helper therefore never opens a
+/// caller-named source path with root authority.
+#[cfg(target_os = "linux")]
+fn bind_linux_helper_source(request: &mut WriteRequest, _caller_uid: u32) -> io::Result<()> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "write helper must run through pkexec",
+        ));
+    }
+    let expected_identity = request.source.identity.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "write helper source has no reviewed file identity",
+        )
+    })?;
+    let inherited_source = std::fs::File::open("/proc/self/fd/0")?;
+    let metadata = inherited_source.metadata()?;
+    if !metadata.is_file()
+        || metadata.len() != request.source.size
+        || SourceIdentity::from_file(&inherited_source)? != Some(expected_identity)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "inherited source image does not match the reviewed file",
+        ));
+    }
+    request.source.path = "/proc/self/fd/0".into();
+    Ok(())
+}
+
 fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
@@ -1313,6 +1433,23 @@ fn run_privileged_helper(
     control: &JobControl,
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
+    let source_file = OpenOptions::new().read(true).open(&req.source.path)?;
+    let source_metadata = source_file.metadata()?;
+    let expected_identity = req.source.identity.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reviewed source has no stable file identity",
+        )
+    })?;
+    if !source_metadata.is_file()
+        || source_metadata.len() != req.source.size
+        || SourceIdentity::from_file(&source_file)? != Some(expected_identity)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source image changed after review",
+        ));
+    }
     let work = tempfile::Builder::new()
         .prefix("tilo-imager-write-")
         .tempdir()?;
@@ -1336,6 +1473,7 @@ fn run_privileged_helper(
         &progress_path,
         &request_digest,
         &cancel_path,
+        source_file,
     )?
     .spawn()?;
     relay_helper_progress(&mut child, &progress_path, &cancel_path, control, tx)
@@ -1480,6 +1618,7 @@ fn elevated_helper_command(
     progress: &Path,
     digest: &str,
     cancel: &Path,
+    source: std::fs::File,
 ) -> io::Result<Command> {
     let mut command = Command::new("pkexec");
     command
@@ -1489,7 +1628,7 @@ fn elevated_helper_command(
         .arg(progress)
         .arg(digest)
         .arg(cancel)
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(source))
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     Ok(command)
@@ -1506,7 +1645,9 @@ fn elevated_helper_command(
     progress: &Path,
     digest: &str,
     cancel: &Path,
+    source: std::fs::File,
 ) -> io::Result<Command> {
+    drop(source);
     const SCRIPT: &str = r#"on run argv
 set helperCommand to quoted form of item 1 of argv & " --tilo-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
 do shell script helperCommand with administrator privileges
@@ -1537,7 +1678,9 @@ fn elevated_helper_command(
     progress: &Path,
     digest: &str,
     cancel: &Path,
+    source: std::fs::File,
 ) -> io::Result<Command> {
+    drop(source);
     // Values are positional PowerShell arguments, never interpolated into the
     // script. ArgumentList receives individually quoted native arguments.
     let mut command = Command::new("powershell.exe");
@@ -1566,6 +1709,7 @@ fn elevated_helper_command(
     _progress: &Path,
     _digest: &str,
     _cancel: &Path,
+    _source: std::fs::File,
 ) -> io::Result<Command> {
     Err(io::Error::other(
         "raw media writing is unsupported on this platform",
@@ -1938,6 +2082,15 @@ mod tests {
 
     #[test]
     fn helper_rejects_a_request_changed_after_authorization() {
+        #[cfg(target_os = "linux")]
+        use std::os::unix::fs::PermissionsExt;
+
+        #[cfg(target_os = "linux")]
+        let _g = ENV_LOCK.lock().unwrap();
+        #[cfg(target_os = "linux")]
+        unsafe {
+            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
+        }
         let work = tempfile::Builder::new()
             .prefix("tilo-imager-write-")
             .tempdir()
@@ -1947,6 +2100,12 @@ mod tests {
         let cancel_path = work.path().join("cancel");
         std::fs::write(&request_path, serde_json::to_vec(&req()).unwrap()).unwrap();
         std::fs::write(&progress_path, []).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&request_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
         let args = vec![
             "imager".into(),
             WRITE_HELPER_ARG.into(),
@@ -1956,8 +2115,63 @@ mod tests {
             cancel_path.display().to_string(),
         ];
         let error = maybe_run_write_helper(&args).unwrap_err();
+        #[cfg(target_os = "linux")]
+        unsafe {
+            std::env::remove_var("PKEXEC_UID");
+        }
         assert!(error.to_string().contains("changed after authorization"));
         assert!(std::fs::read(progress_path).unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn helper_rejects_a_non_private_job_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _g = ENV_LOCK.lock().unwrap();
+        let work = tempfile::Builder::new()
+            .prefix("tilo-imager-write-")
+            .tempdir()
+            .unwrap();
+        let request_path = work.path().join("request.json");
+        std::fs::write(&request_path, b"{}").unwrap();
+        std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        unsafe {
+            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
+        }
+
+        let error = read_linux_helper_request(&request_path).unwrap_err();
+
+        unsafe {
+            std::env::remove_var("PKEXEC_UID");
+        }
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not private"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn helper_request_reader_never_follows_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::symlink;
+
+        let _g = ENV_LOCK.lock().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let outside = work.path().join("outside");
+        let request = work.path().join("request.json");
+        std::fs::write(&outside, b"root-only payload").unwrap();
+        symlink(&outside, &request).unwrap();
+        std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        unsafe {
+            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
+        }
+
+        let error = read_linux_helper_request(&request).unwrap_err();
+
+        unsafe {
+            std::env::remove_var("PKEXEC_UID");
+        }
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
     }
 
     #[test]
@@ -2080,12 +2294,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_elevates_only_the_hidden_helper_mode() {
+        let source = tempfile::tempfile().unwrap();
         let command = elevated_helper_command(
             Path::new("/opt/tilo-imager-bin"),
             Path::new("/tmp/request"),
             Path::new("/tmp/progress"),
             &"a".repeat(64),
             Path::new("/tmp/cancel"),
+            source,
         )
         .unwrap();
         assert_eq!(command.get_program(), "pkexec");
@@ -2364,7 +2580,7 @@ mod tests {
         let mut request = req();
         request.source.path = source.path().to_string_lossy().into_owned();
         request.source.size = data.len() as u64;
-        request.source.identity = SourceIdentity::from_file(source.as_file());
+        request.source.identity = SourceIdentity::from_file(source.as_file()).unwrap();
         request.source.installable = true;
         request.source.expected_sha256 = None;
         request.target.size = target_size;
@@ -2503,26 +2719,86 @@ mod tests {
     #[test]
     fn replaced_source_is_rejected_before_destination_is_opened() {
         let data = sample_bytes(4096);
-        let src = tmp_with(&data);
-        let mut wrong_identity =
-            SourceIdentity::from_file(src.as_file()).expect("test platform exposes file identity");
-        wrong_identity.file = wrong_identity.file.wrapping_add(1);
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected.img");
+        std::fs::write(&selected, &data).unwrap();
+        let held = std::fs::File::open(&selected).unwrap();
+        let identity = SourceIdentity::from_file(&held)
+            .unwrap()
+            .expect("test platform exposes file identity");
+        std::fs::rename(&selected, root.path().join("reviewed.img")).unwrap();
+        std::fs::write(&selected, &data).unwrap();
         let dst = tmp_with(b"leave destination untouched");
 
         let result = run_job_paths_bound(
-            src.path(),
+            &selected,
             dst.path(),
             data.len() as u64,
-            Some(wrong_identity),
+            Some(identity),
             None,
             &|| false,
-            |_| {},
+            |_| panic!("a replaced source must not produce write progress"),
         );
         assert!(
             matches!(result, JobResult::WriteFailed(ref message) if message.contains("replaced"))
         );
         assert_eq!(
             std::fs::read(dst.path()).unwrap(),
+            b"leave destination untouched"
+        );
+
+        let absent_destination = root.path().join("not-created.img");
+        let result = run_job_paths_bound(
+            &selected,
+            &absent_destination,
+            data.len() as u64,
+            Some(identity),
+            None,
+            &|| false,
+            |_| panic!("a replaced source must not produce write progress"),
+        );
+        assert!(matches!(result, JobResult::WriteFailed(_)));
+        assert!(!absent_destination.exists());
+
+        // The held identity still authorizes the original file at its new path.
+        let result = run_job_paths_bound(
+            &root.path().join("reviewed.img"),
+            dst.path(),
+            data.len() as u64,
+            Some(identity),
+            None,
+            &|| false,
+            |_| {},
+        );
+        assert_eq!(result, JobResult::Verified);
+        assert_eq!(std::fs::read(dst.path()).unwrap(), data);
+    }
+
+    #[test]
+    fn descriptor_writer_rejects_another_file_with_identical_bytes_before_mutation() {
+        let data = sample_bytes(4096);
+        let reviewed = tmp_with(&data);
+        let replacement = tmp_with(&data);
+        let mut target = tmp_with(b"leave destination untouched");
+        target.as_file_mut().seek(SeekFrom::Start(7)).unwrap();
+        let mut request = req();
+        request.source.path = replacement.path().to_string_lossy().into_owned();
+        request.source.size = data.len() as u64;
+        request.source.identity = Some(
+            SourceIdentity::from_file(reviewed.as_file())
+                .unwrap()
+                .expect("test platform exposes file identity"),
+        );
+        request.source.installable = false;
+
+        let result = run_job_file_bound(&request, target.as_file_mut(), &|| false, |_| {
+            panic!("a replaced source must not produce write progress");
+        });
+
+        assert!(matches!(result, JobResult::WriteFailed(_)));
+        assert_eq!(target.as_file_mut().stream_position().unwrap(), 7);
+        assert_eq!(
+            std::fs::read(target.path()).unwrap(),
             b"leave destination untouched"
         );
     }
@@ -2538,7 +2814,7 @@ mod tests {
             src.path(),
             dst.path(),
             data.len() as u64,
-            SourceIdentity::from_file(src.as_file()),
+            SourceIdentity::from_file(src.as_file()).unwrap(),
             Some(&wrong_digest),
             &|| false,
             |_| {},

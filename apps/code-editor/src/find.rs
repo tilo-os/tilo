@@ -635,11 +635,11 @@ impl Widget for FindBar {
             None,
             &self.rect,
         );
-        // Hairline seam under the bar, matching the tab bar's seams.
+        // Hairline seam under the bar, derived against the raised bar.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1),
         );
@@ -661,7 +661,10 @@ impl Widget for FindBar {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Widget event contract supplies input, CRDT state, handled/focus outputs, and layout routing to the find controls."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -950,9 +953,9 @@ impl FindBar {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(menu, 7.0),
         );
         for (index, button) in [Btn::Case, Btn::Word].into_iter().enumerate() {
             let rect = Rect::new(

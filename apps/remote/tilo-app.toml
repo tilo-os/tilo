@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.remote"
+id       = "so.tilo.remote"
 name     = "Remote Desktop"
 category = "Network"
 version  = "0.1.0"

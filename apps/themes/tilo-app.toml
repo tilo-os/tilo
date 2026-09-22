@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.themes"
+id       = "so.tilo.themes"
 name     = "Theme Studio"
 category = "System"
 version  = "0.1.0"

@@ -324,9 +324,15 @@ pub fn program_exists(program: &str) -> bool {
         .any(|dir| is_executable(&Path::new(dir).join(program)))
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
 #[cfg(test)]

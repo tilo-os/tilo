@@ -39,8 +39,8 @@ pub fn open_location_address(id: LocationId) -> ActionAddress {
 /// external cache effects and intentionally do not appear here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WeatherAction {
-    /// Create the empty keyed schema. Used on a first launch with no saved
-    /// places, so widget synchronisation never needs to mutate the document.
+    /// Explicitly create the keyed schema. Adding the first saved place also
+    /// creates it; ordinary live synchronisation leaves blank records intact.
     Initialize,
     AddLocation {
         location: SavedLocation,
@@ -66,7 +66,9 @@ impl Action for WeatherAction {
         // A pre-action document from the first Weather schema has an ordered
         // `locations` list. Promote it before adding/removing so an upgrade
         // cannot hide a user's existing saved places.
-        WeatherDoc::migrate_legacy_locations(doc);
+        if !matches!(self, Self::SelectLocation { .. }) {
+            WeatherDoc::migrate_legacy_locations(doc);
+        }
         match self {
             Self::Initialize => WeatherDoc::ensure_schema(doc),
             Self::AddLocation { location } => {

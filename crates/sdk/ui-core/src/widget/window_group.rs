@@ -1,11 +1,14 @@
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
-use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
+use crate::widget::{
+    FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
+};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -74,6 +77,13 @@ const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
 /// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
 /// shrink chains onto the final pill fade.
 const GROUP_CLOSE_FADE_MS: u64 = 180;
+/// The lifted handle remains readable while exposing the drop target; the app
+/// pixels beneath it recede further so the target never disappears.
+const DRAG_CONTENT_ALPHA: f32 = 0.42;
+const DRAG_SOURCE_CONTENT_ALPHA: f32 = 0.18;
+/// End scale of the fast lift curve. The content tucks under the full-size tab
+/// handle instead of turning into a second opaque window under the pointer.
+const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 
 /// [`SPAWN_ANIM_MS`] in seconds, as an `f64` divisor for the eased-progress
 /// calculation.
@@ -228,6 +238,26 @@ pub struct WindowGroup {
     closing_at: Option<Instant>,
 }
 
+/// Height of the floating maximized-chrome chips. Off the 4 px grid, and
+/// short of HIG §9.6's 28 px Selector: the row overlays app content, so it
+/// is kept as slim as its `scale.xs` label allows. Recorded rather than
+/// rounded — the row's geometry is what the maximize tests pin.
+const MAXIMIZED_CHIP_H: f64 = 22.0;
+/// Narrowest the `[app title]` chip is drawn, so a one-letter title still
+/// reads as a chip rather than a dot.
+const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
+/// Width of the `[Restore]` chip: icon slot, gap, label, end pads.
+const MAXIMIZED_RESTORE_CHIP_W: f64 = 76.0;
+/// Side of the lucide glyph slot inside the maximized chips — the same
+/// 14 px the tab pills' app glyphs and action chips use.
+const MAXIMIZED_ICON_PX: f64 = 14.0;
+/// The per-group right-edge resize grip: two bars, each this wide, filling
+/// the `RESIZE_HANDLE_PX` band between them.
+const GRIP_BAR_PX: f64 = 2.0;
+/// The grip runs a quarter of the group's height, clamped to
+/// `spacing.s6 ..= spacing.s16 + spacing.s4`.
+const GRIP_HEIGHT_SHARE: f64 = 0.25;
+
 /// Shared layout numbers for the maximized-chrome pill row, computed once in
 /// [`WindowGroup::draw_maximized_chrome`] and threaded through its two child
 /// painters — keeps both well under clippy's argument-count limit.
@@ -239,6 +269,55 @@ struct ChromePillLayout {
 }
 
 impl WindowGroup {
+    /// Paint a whole group while its window handle is being reordered. The
+    /// handle remains half-transparent and the app pixels recede further,
+    /// matching the tab-drag visual without duplicating layout state.
+    pub(crate) fn draw_group_drag_visual(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.rect,
+            f64::from(theme.tokens.radii.xl),
+            &theme.tokens.elevation.e4,
+        );
+        if !self.maximized {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                TabBar::GHOST_PILL_ALPHA,
+                transform,
+                &self.bar_rect().inflate(32.0, 32.0),
+            );
+            self.bar.draw(scene, transform, tr, theme, presence);
+            scene.pop_layer();
+        }
+        if let Some((_, host)) = self
+            .hosts
+            .iter_mut()
+            .find(|(id, _)| *id == self.bar.active_id())
+        {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                DRAG_CONTENT_ALPHA,
+                transform,
+                &host.get_rect().inflate(160.0, 160.0),
+            );
+            let was_focused = host.focused;
+            host.set_focused(false);
+            host.draw(scene, transform, tr, theme, presence);
+            host.set_focused(was_focused);
+            scene.pop_layer();
+        }
+    }
+
     pub fn new(
         id: u64,
         tabs_with_content: Vec<(TabDescriptor, TileContent)>,
@@ -250,9 +329,11 @@ impl WindowGroup {
             .into_iter()
             .map(|(d, c)| (d.id, TileHost::new(c)))
             .collect();
+        let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
+        bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
-            bar: TabBar::new(&format!("g{id}"), descs, active_id),
+            bar,
             hosts,
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
@@ -433,6 +514,28 @@ impl WindowGroup {
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
+
+    /// Whether `point` is on the group's trailing new-tab control.
+    ///
+    /// The chip can remain visible at a clipped strip edge, where coarse
+    /// group bounds are an ambiguous owner for a coordinate-only button
+    /// event. GroupRow uses this exact painted target to route the press.
+    pub(crate) fn new_tab_hit(&self, point: Point) -> bool {
+        let rect = self.new_tab_rect();
+        rect.area() > 0.0 && rect.contains(point)
+    }
+
+    /// Publish the same host-level request as the tab bar's `+` control when
+    /// an ancestor has already resolved an otherwise ambiguous clipped-edge
+    /// hit. Mouse button events carry no coordinates, so this avoids asking a
+    /// stale child cursor cache to repeat `GroupRow`'s exact hit-test.
+    pub(crate) fn request_new_tab_if_hit(&mut self, point: Point) -> bool {
+        if !self.new_tab_hit(point) {
+            return false;
+        }
+        self.pending_new_tab = Some(self.id);
+        true
+    }
     /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
     /// host and by tests with no records at all, where an unbound tile
     /// keeps editing whatever document the parent pass carries.
@@ -449,6 +552,10 @@ impl WindowGroup {
     /// one tab has drawn even if a tab behind it is still starting (and
     /// still needs animation frames).
     pub fn any_tile_opening(&self) -> bool {
+        // `presented()` is also the latch that retires a newly arrived
+        // client's opening state. Evaluate every host before asking which are
+        // still opening, just as the group's ordinary presentation path does.
+        let _ = Widget::presented(self);
         self.hosts.iter().any(|(_, h)| Widget::opening(h))
     }
 
@@ -581,9 +688,11 @@ impl WindowGroup {
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
+        let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
+        bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
-            bar: TabBar::new(&format!("g{id}"), vec![desc], active_id),
+            bar,
             hosts: vec![(tab_id, host)],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
@@ -794,6 +903,16 @@ impl WindowGroup {
             .map(|(_, h)| h)
     }
 
+    /// Laid-out content bounds for a tab. Shell-owned system windows use
+    /// this as their ordinary tile viewport instead of inventing separate
+    /// floating geometry.
+    pub fn content_rect_for_tab(&self, tab_id: u64) -> Option<Rect> {
+        self.hosts
+            .iter()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, host)| host.get_rect())
+    }
+
     #[cfg(test)]
     pub fn has_host(&self, id: u64) -> bool {
         self.hosts.iter().any(|(i, _)| *i == id)
@@ -820,30 +939,6 @@ impl WindowGroup {
     #[cfg(test)]
     pub(crate) fn set_close_hover_for_tests(&mut self, hover: bool) {
         self.close_hover = hover;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn maximized_close_chip_color_for_tests(
-        &self,
-        theme: &Theme,
-    ) -> vello::peniko::Color {
-        if self.close_hover {
-            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
-        } else {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 38)
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn maximized_close_glyph_color_for_tests(
-        &self,
-        theme: &Theme,
-    ) -> vello::peniko::Color {
-        if self.close_hover {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
-        } else {
-            theme.tokens.colors.text_primary
-        }
     }
 
     /// The event kinds a group's own resize handle, maximized-chrome
@@ -913,7 +1008,7 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize => {
+            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1149,33 +1244,41 @@ impl WindowGroup {
             theme.tokens.colors.text_dim.with_alpha_factor(0.55)
         };
         let total_h = self.rect.height();
-        let grip_h = (total_h * 0.25).clamp(24.0, 80.0);
-        let grip_cx = self.rect.x1 - 3.0;
+        let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
+            f64::from(theme.tokens.spacing.s6),
+            f64::from(theme.tokens.spacing.s16) + f64::from(theme.tokens.spacing.s4),
+        );
+        // Two bars, each `GRIP_BAR_PX` wide, that together fill the
+        // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
+        // one on either side of it, so the painted grip and the pointer
+        // zone are the same thing.
+        let grip_cx = self.rect.x1 - RESIZE_HANDLE_PX / 2.0;
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {
             vello::kurbo::RoundedRect::from_rect(
                 Rect::new(
-                    grip_cx + dx - 1.0,
+                    grip_cx + dx - GRIP_BAR_PX / 2.0,
                     grip_cy - grip_h / 2.0,
-                    grip_cx + dx + 1.0,
+                    grip_cx + dx + GRIP_BAR_PX / 2.0,
                     grip_cy + grip_h / 2.0,
                 ),
-                1.0,
+                GRIP_BAR_PX / 2.0,
             )
         };
+        let offset = RESIZE_HANDLE_PX / 2.0 - GRIP_BAR_PX / 2.0;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             grip_col,
             None,
-            &bar(-2.0),
+            &bar(-offset),
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             grip_col,
             None,
-            &bar(2.0),
+            &bar(offset),
         );
     }
 
@@ -1193,10 +1296,13 @@ impl WindowGroup {
         if !self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
             return;
         }
-        let pad = 6.0_f64;
+        // `[app title]  …  [Restore][×]`, matching the concept layout. The
+        // row floats `TAB_PILL_INSET_Y` in from the card's top and sides —
+        // the same inset the tab pills it stands in for keep from the bar.
+        let pad = crate::widget::tabs::TAB_PILL_INSET_Y;
         let layout = ChromePillLayout {
             pad,
-            pill_h: 22.0_f64,
+            pill_h: MAXIMIZED_CHIP_H,
             y0: self.rect.y0 + pad,
         };
         self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
@@ -1220,9 +1326,11 @@ impl WindowGroup {
             .find(|t| t.id == self.bar.active_id())
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        let title_size = theme.tokens.typography.scale.xs;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         let (tw, th) = tr.measure(&active_title, title_size, None);
-        let title_pill_w = (f64::from(tw) + 24.0).max(80.0);
+        // The label sits `spacing.s3` in from either end of its chip.
+        let chip_pad = f64::from(theme.tokens.spacing.s3);
+        let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
         let title_pill = Rect::new(
             self.rect.x0 + pad,
             y0,
@@ -1272,12 +1380,14 @@ impl WindowGroup {
         layout: ChromePillLayout,
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_size = theme.tokens.typography.scale.xs;
-        let close_w = 22.0_f64;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        // The close chip is a square of the row's height, so its × sits on
+        // the same centre the title chip's text does.
+        let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-        let restore_w = 76.0_f64;
-        let restore_x0 = close_x0 - restore_w - 4.0;
+        let restore_w = MAXIMIZED_RESTORE_CHIP_W;
+        let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
         crate::surface::shadow(
@@ -1296,13 +1406,18 @@ impl WindowGroup {
             restore_border,
             None,
         );
-        // Text label kept (for screen readers/i18n) and offset past
-        // a 14px icon slot for the lucide `Minimize2` glyph.
+        // Text label kept (for screen readers/i18n), after a square icon
+        // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
+        // chip's edge, `MAXIMIZED_ICON_PX` a side and centred on the chip's
+        // centre line, with the label one `spacing.s2` after it — the same
+        // icon → gap → label rhythm a tab pill uses.
+        let icon_inset = f64::from(theme.tokens.spacing.s2);
+        let icon_x0 = self.restore_rect.x0 + icon_inset;
         let icon_slot = Rect::new(
-            self.restore_rect.x0 + 8.0,
-            self.restore_rect.y0 + 4.0,
-            self.restore_rect.x0 + 22.0,
-            self.restore_rect.y1 - 4.0,
+            icon_x0,
+            self.restore_rect.center().y - MAXIMIZED_ICON_PX / 2.0,
+            icon_x0 + MAXIMIZED_ICON_PX,
+            self.restore_rect.center().y + MAXIMIZED_ICON_PX / 2.0,
         );
         icons::draw_icon(
             scene,
@@ -1310,11 +1425,11 @@ impl WindowGroup {
             icon_slot,
             icons::Icon::Minimize2,
             theme.tokens.colors.text_primary,
-            1.5,
+            icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let label = "Restore";
         let (_lw, lh) = tr.measure(label, title_size, None);
-        let lx = self.restore_rect.x0 + 28.0;
+        let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
         let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
         // Affine composition is floating-point matrix multiply — it
         // cannot overflow or panic the way integer arithmetic can.
@@ -1364,9 +1479,10 @@ impl WindowGroup {
             close_border,
             None,
         );
-        // On hover the glyph promotes to full white (`hover:text-white`).
+        // On hover the glyph takes the ink that reads on the danger face —
+        // derived, so it stays legible on a light theme's danger red too.
         let glyph_color = if self.close_hover {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
+            theme.on_surface(theme.tokens.colors.semantic.danger).ink
         } else {
             theme.tokens.colors.text_primary
         };
@@ -1378,6 +1494,146 @@ impl WindowGroup {
             glyph_color,
             1.5,
         );
+    }
+
+    /// Paint the app being carried as one lifted object: real app pixels tucked
+    /// under the translucent tab handle. This runs in the floating-surface pass
+    /// so the preview can cross group and strip clips without changing hit-test
+    /// geometry or client configure sizes.
+    fn draw_tab_drag_visual(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(visual) = self.bar.drag_visual(theme) else {
+            return;
+        };
+        let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
+            return;
+        };
+        let source = host.get_rect();
+        if source.width() <= 0.0 || source.height() <= 0.0 {
+            return;
+        }
+
+        let scale = 1.0 - (1.0 - DRAG_CONTENT_SCALE_END) * visual.lift_progress.clamp(0.0, 1.0);
+        let destination_top_center = Point::new(
+            visual.lifted_handle.center().x,
+            visual.lifted_handle.y1 + f64::from(theme.tokens.spacing.s1),
+        );
+        let source_top_center = Point::new(source.center().x, source.y0);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication composes finite floating-point transforms and cannot integer-overflow"
+        )]
+        let preview_transform = transform
+            * Affine::translate((destination_top_center.x, destination_top_center.y))
+            * Affine::scale(scale)
+            * Affine::translate((-source_top_center.x, -source_top_center.y));
+
+        // Dragging is elevation, not selection: use the Object role's e4 lift
+        // before the deliberately translucent content layer.
+        crate::surface::shadow(
+            scene,
+            preview_transform,
+            source,
+            f64::from(theme.tokens.radii.xl),
+            &theme.tokens.elevation.e4,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            DRAG_CONTENT_ALPHA,
+            preview_transform,
+            &source.inflate(160.0, 160.0),
+        );
+        let was_focused = host.focused;
+        host.set_focused(false);
+        host.draw(scene, preview_transform, tr, theme, presence);
+        host.set_focused(was_focused);
+        scene.pop_layer();
+
+        // The handle stays full-size while the content settles beneath it.
+        self.bar
+            .draw_drag_ghost(scene, transform, tr, theme, presence);
+    }
+}
+
+impl FloatingSurfaceProvider for WindowGroup {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.active_host_mut()
+            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.active_host_mut()
+            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| {
+                FloatingSurfaceProvider::take_floating_surface_source_updates(host)
+            })
+            .collect()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                host,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+        self.draw_tab_drag_visual(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::set_floating_surface_bounds(host, bounds);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(host))
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(host))
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_host_message(host, message);
+        }
     }
 }
 
@@ -1549,12 +1805,26 @@ impl Widget for WindowGroup {
         // Scoping search *is* aiming the keyboard at this group, so it
         // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
+        let dragged_tab = self.bar.drag_visual(theme).map(|visual| visual.tab_id);
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
             }
             h.set_focused(focused);
+            let source_is_lifted = dragged_tab == Some(active_id);
+            if source_is_lifted {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    DRAG_SOURCE_CONTENT_ALPHA,
+                    transform,
+                    &h.get_rect().inflate(160.0, 160.0),
+                );
+            }
             h.draw(scene, transform, tr, theme, presence);
+            if source_is_lifted {
+                scene.pop_layer();
+            }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
         if !self.maximized {
@@ -1665,60 +1935,13 @@ impl Widget for WindowGroup {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.active_host_mut()
-            .and_then(Widget::take_floating_surface_request)
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
     }
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
-        self.active_host_mut()
-            .and_then(Widget::take_capture_studio_request)
-    }
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.take_floating_surface_source_updates())
-            .collect()
-    }
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        for (_, host) in &mut self.hosts {
-            host.set_floating_surface_bounds(bounds);
-        }
-    }
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.floating_surface_presentations())
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.active_floating_surface_ids())
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.on_floating_surface_host_message(message);
-        }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
     }
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
@@ -1745,7 +1968,10 @@ impl Widget for WindowGroup {
         // `fold`, not `any`: every child's flag must be drained even if
         // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "all host dirty flags must be drained without short-circuiting"
+        )]
         let hosts = self
             .hosts
             .iter_mut()
@@ -1838,17 +2064,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -1955,7 +2174,7 @@ mod tests {
         );
     }
 
-    /// A card reading `dev.tilo.file-explorer` is the failure this guards:
+    /// A card reading `so.tilo.file-explorer` is the failure this guards:
     /// the person asked for Files, and a package id is not an answer.
     #[test]
     fn the_card_takes_the_apps_name_from_its_tab() {
@@ -2050,17 +2269,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -3458,61 +3670,192 @@ mod tests {
         );
     }
 
+    /// Lays `g` out at `w`×`h`, draws it through the production
+    /// [`Widget::draw`] and composites the scene on the theme's app ground —
+    /// the frame a person sees, not a helper that restates the paint code.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "small fixed test-canvas dimensions, exactly representable in f32"
+    )]
+    fn production_frame(g: &mut WindowGroup, theme: &Theme, w: u32, h: u32) -> Vec<u8> {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = g.build_layout(&mut taffy, theme, &mut node_map);
+        // A maximized group is `width: auto, flex_grow: 1e6`: it fills the
+        // strip it sits in. Give it one — a sized flex parent, as the strip
+        // is — or as a taffy root it collapses to 0 px and its chrome lands
+        // off-canvas.
+        let root = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Style::default()
+            },
+            &[node],
+        );
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(w as f32),
+                    height: taffy::AvailableSpace::Definite(h as f32),
+                },
+                |k, a, id, _, _| {
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
+                },
+            )
+            .unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+        let mut scene = Scene::new();
+        g.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, theme.bg_app)
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// Writes an RGBA frame as a PNG — the by-eye half of the evidence.
+    fn write_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) {
+        let file = std::fs::File::create(path).expect("create evidence png");
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(rgba).expect("png data");
+    }
+
+    /// The composited colour at (`x`, `y`) of a `w`-wide RGBA frame.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test canvas"
+    )]
+    fn pixel(rgba: &[u8], w: u32, x: f64, y: f64) -> vello::peniko::Color {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        vello::peniko::Color::from_rgb8(r, g, b)
+    }
+
+    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
+    /// alpha — sampled from the **production paint path** on both presets.
+    /// At rest the × chip is the quiet chip face (`chip_colors`: the raised
+    /// surface under a rest edge that registers against it), not a literal
+    /// white tint; on hover it turns to the danger token and the × glyph
+    /// stays legible on that face, where the old opaque white only happened
+    /// to on the dark preset's red.
     #[test]
     fn maximized_close_chip_uses_danger_token_on_hover() {
-        let mut g = make_group();
-        g.maximized = true;
-        let theme = Theme::dark();
+        use crate::a11y::{contrast_ratio, relative_luminance};
+        const EDGE_MIN: f64 = 0.008;
+        let (w, h) = (620u32, 200u32);
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut g = make_group();
+            g.maximized = true;
+            // The chrome paints while the cursor is in the top band.
+            g.last_cursor = Point::new(600.0, 10.0);
 
-        g.set_close_hover_for_tests(false);
-        let idle_chip = g.maximized_close_chip_color_for_tests(&theme);
-        assert_eq!(
-            (idle_chip.r(), idle_chip.g(), idle_chip.b(), idle_chip.a()),
-            (255, 255, 255, 38),
-            "idle maximized close chip stays as the chrome white tint",
-        );
-        let idle_glyph = g.maximized_close_glyph_color_for_tests(&theme);
-        let expected = theme.tokens.colors.text_primary;
-        assert_eq!(
-            (
-                idle_glyph.r(),
-                idle_glyph.g(),
-                idle_glyph.b(),
-                idle_glyph.a()
-            ),
-            (expected.r(), expected.g(), expected.b(), expected.a()),
-            "idle glyph uses theme text_primary",
-        );
+            g.set_close_hover_for_tests(false);
+            let idle = production_frame(&mut g, &theme, w, h);
+            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_idle.png") {
+                write_png(&idle, w, h, &png);
+            }
+            let chip = g.close_rect;
+            assert!(
+                chip.width() > 0.0
+                    && chip.x0 >= 0.0
+                    && chip.y0 >= 0.0
+                    && chip.x1 <= f64::from(w)
+                    && chip.y1 <= f64::from(h),
+                "{}: the maximized × chip was laid out on the canvas: {chip:?} in {:?}",
+                theme.name,
+                g.rect
+            );
+            // Interior, on the chip's centre column just under its top edge —
+            // inside the capsule and above the × glyph's box.
+            let (cx, top) = (chip.center().x, chip.y0);
+            let face = pixel(&idle, w, cx, top + 3.0);
+            let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+            assert!(
+                contrast_ratio(face, quiet_fill) < 1.02,
+                "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
+                theme.name,
+                g.rect
+            );
+            assert!(
+                quiet_edge.is_some(),
+                "{}: the quiet chip declares a rest edge",
+                theme.name
+            );
+            let edge = pixel(&idle, w, cx, top);
+            let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
+            assert!(
+                moved >= EDGE_MIN,
+                "{}: the × chip's rest edge {edge:?} moved only {moved:.4} against its face {face:?}",
+                theme.name
+            );
 
-        g.set_close_hover_for_tests(true);
-        let hover_chip = g.maximized_close_chip_color_for_tests(&theme);
-        let expected_chip = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
-        assert_eq!(
-            (
-                hover_chip.r(),
-                hover_chip.g(),
-                hover_chip.b(),
-                hover_chip.a()
-            ),
-            (
-                expected_chip.r(),
-                expected_chip.g(),
-                expected_chip.b(),
-                expected_chip.a()
-            ),
-            "hover maximized close chip paints the theme danger token at 80% alpha",
-        );
-        let hover_glyph = g.maximized_close_glyph_color_for_tests(&theme);
-        assert_eq!(
-            (
-                hover_glyph.r(),
-                hover_glyph.g(),
-                hover_glyph.b(),
-                hover_glyph.a()
-            ),
-            (255, 255, 255, 255),
-            "hover glyph promotes to opaque white",
-        );
+            g.set_close_hover_for_tests(true);
+            let hover = production_frame(&mut g, &theme, w, h);
+            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_hover.png") {
+                write_png(&hover, w, h, &png);
+            }
+            let hot = pixel(&hover, w, cx, top + 3.0);
+            let danger = theme.tokens.colors.semantic.danger;
+            assert!(
+                contrast_ratio(hot, face) >= 1.5,
+                "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
+                theme.name
+            );
+            // The face is the danger token at 80 % over the card: red-led on
+            // every preset, and nearer the token than the rest face was.
+            assert!(
+                hot.r() > hot.g() && hot.r() > hot.b(),
+                "{}: hovered × chip {hot:?} is not the danger red",
+                theme.name
+            );
+            assert!(
+                contrast_ratio(hot, danger) < contrast_ratio(face, danger),
+                "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                theme.name
+            );
+            // The × glyph stays readable on the hot face: the darkest or
+            // lightest pixel in the glyph's central 5×5 block clears the
+            // non-text minimum against the face beside it.
+            let c = chip.center();
+            let mut best = 1.0_f64;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let px = pixel(&hover, w, c.x + f64::from(dx), c.y + f64::from(dy));
+                    best = best.max(contrast_ratio(px, hot));
+                }
+            }
+            assert!(
+                best >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "{}: the × glyph reads {best:.2}:1 on the hovered face {hot:?}",
+                theme.name
+            );
+        }
     }
 
     #[test]
@@ -3534,6 +3877,38 @@ mod tests {
         assert!(!g.should_show_maximized_chrome(Some(20.0)));
         assert!(!g.should_show_maximized_chrome(Some(80.0)));
         assert!(!g.should_show_maximized_chrome(None));
+    }
+
+    /// The floating `[Restore][×]` row: both chips one row tall, the close
+    /// chip square, the pair one `spacing.s1` apart, and the row inset from
+    /// the card by the same `TAB_PILL_INSET_Y` the tab pills keep.
+    #[test]
+    fn maximized_chrome_chips_share_one_row_and_a_token_gap() {
+        let mut g = make_group();
+        g.maximized = true;
+        g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
+        g.last_cursor = Point::new(600.0, 10.0);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
+        assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
+        assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
+        assert_eq!(
+            g.close_rect.width(),
+            g.close_rect.height(),
+            "the × chip is square"
+        );
+        assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
+        assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
+        assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
+        assert!(
+            (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
+            "restore and close sit one s1 apart"
+        );
+        assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
     }
 
     /// Parallel-vec invariant: drift between `bar.tabs()` and `hosts`

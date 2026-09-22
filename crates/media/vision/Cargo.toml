@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Bounded, capability-gated local visual analysis for qOS media apps."
+description = "Bounded, capability-gated local visual analysis for Tilo media apps."
 
 [dependencies]
 agent-provider-config = { path = "../../agent/provider-config" }

@@ -12,7 +12,7 @@
 
 
 [package]
-id       = "dev.tilo.music"
+id       = "so.tilo.music"
 name     = "Music"
 category = "Multimedia"
 version  = "0.1.0"

@@ -28,7 +28,7 @@ uuid.workspace = true
 qdoc = { path = "../../crates/doc/qdoc" }
 vello.workspace = true
 # The image picker accepts these four raster formats.  Keeping the list
-# explicit matters for the one-Cargo-graph qpkg build: `default-features`
+# explicit matters for the one-Cargo-graph tapp build: `default-features`
 # would enable every codec for every app that shares `image`, including Files;
 # the workspace lockfile therefore intentionally excludes those codec crates.
 image = { workspace = true, default-features = false, features = ["jpeg", "png", "gif", "webp"] }
@@ -46,3 +46,6 @@ quick-xml.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+vello_encoding.workspace = true

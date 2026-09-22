@@ -1697,9 +1697,10 @@ mod tests {
             .expect("a fresh FrameBuilder has an active workspace");
         let (reply, _parked) = tokio::sync::oneshot::channel();
         queue.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(workspace, "dev.tilo.tests"),
+            caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
             title: "Insert image".into(),
             save: false,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,

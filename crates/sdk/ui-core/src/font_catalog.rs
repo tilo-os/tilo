@@ -36,7 +36,7 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
         }
     });
     database.as_ref().map(|db| {
-        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::QosFallback)
+        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
     })
 }
 
@@ -63,7 +63,10 @@ pub struct FontCatalogError {
 }
 
 impl FontCatalogError {
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The error constructor accepts owned diagnostics and string literals and stores their formatted message."
+    )]
     fn at(path: impl Into<PathBuf>, problem: impl ToString) -> Self {
         Self {
             path: path.into(),
@@ -100,7 +103,7 @@ pub fn catalog_manifest_sha256() -> String {
     hex::encode(Sha256::digest(MANIFEST.as_bytes()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
     FontCatalog::controlled_fixture(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
@@ -115,7 +118,7 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("checked-in canonical font fixture")
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("checked-in canonical renderer fixture")
@@ -158,7 +161,10 @@ impl FontCatalog {
     }
 
     // Injection is private, synchronous, and per-call: no test changes a global.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Catalog loading keeps manifest/hash/face validation, system-font filtering, and canonical-family checks in one sequence."
+    )]
     fn load_with_system(
         &self,
         discover: impl FnOnce(&mut fontdb::Database),
@@ -294,7 +300,7 @@ impl FontCatalog {
         Ok(FontSystem::new_with_locale_and_db_and_fallback(
             self.locale.clone(),
             db,
-            fallback::QosFallback,
+            fallback::TiloFallback,
         ))
     }
 }
@@ -308,7 +314,10 @@ fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
 }
 
 #[cfg(not(windows))]
-#[allow(clippy::large_stack_arrays)]
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."
+)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
     let mut hash = Sha256::new();

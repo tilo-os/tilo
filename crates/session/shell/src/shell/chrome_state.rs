@@ -23,11 +23,89 @@ use crate::shell::state::{
 };
 pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 
+/// An action-owned request to initialize only this freshly minted scratch tab.
+/// It is intentionally session-local; reopening a saved tab never recreates it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TabRecordCreationIdentity {
+    tab: u64,
+    workspace: WorkspaceId,
+    room: crate::shell::state::RoomId,
+    tile: Vec<u8>,
+    document: Option<crate::shell::state::NativeDocumentReference>,
+}
+impl TabRecordCreationIdentity {
+    fn capture(tree: &WorkspaceTree, tab: u64) -> Option<Self> {
+        for workspace in &tree.workspaces {
+            let current = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|candidate| candidate.id == tab);
+            if let Some(current) = current {
+                return Some(Self {
+                    tab,
+                    workspace: workspace.id,
+                    room: workspace.room,
+                    tile: serde_json::to_vec(&current.tile).ok()?,
+                    document: tree.native_document_tabs.get(&tab).cloned(),
+                });
+            }
+        }
+        None
+    }
+}
+#[derive(Debug)]
+struct PendingTabRecordCreation {
+    identity: TabRecordCreationIdentity,
+    store: RecordStore,
+}
+
 fn visual_notification_alerts_enabled() -> bool {
     settings_store::load_section("accessibility")
         .get("visual_alerts")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod dropped_content_startup_tests {
+    use super::ChromeState;
+    use crate::shell::hosted_inputs::{HostedDocumentState, HostedTileInputs};
+    use crate::shell::state::WorkspaceTree;
+    use crate::shell::tab_binding::Placement;
+
+    #[test]
+    fn dropped_plain_text_is_bound_to_the_exact_hosted_editor_tab() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("carried.txt");
+        std::fs::write(&document, "carried words\n").unwrap();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let tab = chrome
+            .borrow_mut()
+            .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+            .unwrap();
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+                    && opened.text == "carried words\n"
+        ));
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let group = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .unwrap();
+        assert_eq!(group.tabs[0].id, tab);
+        drop(tree);
+        drop(state);
+    }
 }
 
 fn notification_unix_ms() -> u64 {
@@ -82,6 +160,16 @@ impl std::fmt::Debug for PendingPrompt {
             .field("awaiting_portal_reply", &self.reply.is_some())
             .finish()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecordRequest {
+    pub(crate) request_id: u64,
+    pub(crate) record_id: String,
+    pub(crate) kind: String,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) room: crate::shell::state::RoomId,
+    pub(crate) actor: crate::shell::state::Actor,
 }
 
 /// Snapshot of which shell overlays are currently on screen.
@@ -250,7 +338,7 @@ impl OpenTarget {
     /// will land before the user commits.
     pub fn result_hint(self) -> &'static str {
         match self {
-            OpenTarget::Beside => "Opens beside",
+            OpenTarget::Beside => "Opens in rightmost space",
             OpenTarget::Here(_) => "Opens here, as a tab",
         }
     }
@@ -266,8 +354,13 @@ impl OpenTarget {
 pub struct QuickSettingsState {
     /// 0.0..=1.0.
     pub brightness: f32,
+    /// False after the device probe confirms there is no controllable
+    /// backlight. The slider remains visible but honestly disabled.
+    pub brightness_available: bool,
     /// 0.0..=1.0.
     pub volume: f32,
+    /// False after the audio service cannot provide a sink reading.
+    pub volume_available: bool,
     pub wifi: bool,
     pub bluetooth: bool,
     /// `true` only when `BlueZ` reported a physical adapter. Keeping this
@@ -289,6 +382,10 @@ pub struct QuickSettingsState {
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// True only while `NetworkManager` discovery is outstanding.
+    pub wifi_scanning: bool,
+    /// Last discovery failure, kept separate from an honest empty result.
+    pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
     /// password prompt so open networks can show progress without presenting
     /// an irrelevant secret field.
@@ -344,7 +441,9 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
+            brightness_available: true,
             volume: 0.4,
+            volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
@@ -362,6 +461,8 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_scanning: false,
+            wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
@@ -374,7 +475,9 @@ impl QuickSettingsState {
     pub(crate) fn fixture() -> Self {
         Self {
             brightness: 0.6,
+            brightness_available: true,
             volume: 0.4,
+            volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
@@ -398,6 +501,8 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_scanning: false,
+            wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
@@ -562,13 +667,20 @@ pub struct ChromeState {
     /// is what everything outside the widget tree already reaches
     /// through. Starts in-memory so tests write nothing to disk.
     records: RecordStore,
+    pending_tab_records: VecDeque<PendingTabRecordCreation>,
+    failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
-    /// An exported action asked into the current room, as `(record
-    /// id, record kind)`. Queued because the room's index lives on
-    /// the overlay host, unreachable from an action's `apply`.
-    record_requests: Vec<(String, String)>,
+    /// Compatibility queue for callers of the original active-room API.
+    legacy_record_requests: Vec<(String, String)>,
+    /// Tracked record actions retain the exact authorized destination until
+    /// the overlay-owned room index consumes them on a later frame.
+    tracked_record_requests: Vec<RecordRequest>,
+    record_request_results: BTreeMap<u64, Result<(), String>>,
+    next_record_request_id: u64,
+    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
     /// here lets the chrome remove its durable tab immediately without owning
@@ -689,11 +801,18 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
             wheel_summon: None,
-            record_requests: Vec::new(),
+            legacy_record_requests: Vec::new(),
+            tracked_record_requests: Vec::new(),
+            record_request_results: BTreeMap::new(),
+            next_record_request_id: 1,
+            peer_sync_request_results: BTreeMap::new(),
+            next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
             strip_viewport: None,
             viewport_size: None,
             records: RecordStore::in_memory(),
+            pending_tab_records: VecDeque::new(),
+            failed_tab_records: BTreeMap::new(),
         }))
     }
 
@@ -719,6 +838,16 @@ impl ChromeState {
         self.strip_viewport.as_ref()
     }
 
+    /// Replace app startup inputs for deterministic offscreen captures.
+    #[doc(hidden)]
+    pub fn set_hosted_inputs_for_capture(
+        &mut self,
+        inputs: super::hosted_inputs::HostedTileInputs,
+    ) {
+        self.hosted_inputs = inputs;
+        self.bump();
+    }
+
     pub fn set_viewport_size(&mut self, size: (f64, f64)) {
         self.viewport_size = Some(size);
     }
@@ -731,8 +860,30 @@ impl ChromeState {
         self.peer_sync_requests.push(request);
     }
 
+    pub(crate) fn begin_peer_sync_request(
+        &mut self,
+        request: crate::shell::overlay_host::PeerSyncAction,
+    ) -> u64 {
+        let request_id = self.next_peer_sync_request_id;
+        self.next_peer_sync_request_id = self.next_peer_sync_request_id.saturating_add(1);
+        self.peer_sync_requests
+            .push(crate::shell::overlay_host::PeerSyncAction::Tracked {
+                request_id,
+                action: Box::new(request),
+            });
+        request_id
+    }
+
     pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    pub(crate) fn complete_peer_sync_request(
+        &mut self,
+        request_id: u64,
+        result: Result<(), String>,
+    ) {
+        self.peer_sync_request_results.insert(request_id, result);
     }
 
     pub fn push_presence_request(&mut self, request: PresenceRequest) {
@@ -743,14 +894,57 @@ impl ChromeState {
         std::mem::take(&mut self.presence_requests)
     }
 
-    /// Same effect as activating that record's row in search — a
-    /// reference is added to this room's index, no bytes move.
-    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
-        self.record_requests.push((id.into(), kind.into()));
+    pub(crate) fn take_peer_sync_request_result(
+        &mut self,
+        request_id: u64,
+    ) -> Option<Result<(), String>> {
+        self.peer_sync_request_results.remove(&request_id)
     }
 
+    /// Same effect as activating that record's row in search — a
+    /// reference is added to this room's index, no bytes move.
+    #[deprecated(note = "use push_tracked_record_request to retain authorization context")]
+    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
+        self.legacy_record_requests.push((id.into(), kind.into()));
+    }
+
+    /// Queue an authorized record import against its exact workspace target.
+    pub fn push_tracked_record_request(
+        &mut self,
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        workspace_id: WorkspaceId,
+        room: crate::shell::state::RoomId,
+        actor: crate::shell::state::Actor,
+    ) -> u64 {
+        let request_id = self.next_record_request_id;
+        self.next_record_request_id = self.next_record_request_id.saturating_add(1);
+        self.tracked_record_requests.push(RecordRequest {
+            request_id,
+            record_id: id.into(),
+            kind: kind.into(),
+            workspace_id,
+            room,
+            actor,
+        });
+        request_id
+    }
+
+    #[deprecated(note = "use take_tracked_record_requests for authorization-aware requests")]
     pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.record_requests)
+        std::mem::take(&mut self.legacy_record_requests)
+    }
+
+    pub(crate) fn take_tracked_record_requests(&mut self) -> Vec<RecordRequest> {
+        std::mem::take(&mut self.tracked_record_requests)
+    }
+
+    pub fn complete_record_request(&mut self, request_id: u64, result: Result<(), String>) {
+        self.record_request_results.insert(request_id, result);
+    }
+
+    pub fn take_record_request_result(&mut self, request_id: u64) -> Option<Result<(), String>> {
+        self.record_request_results.remove(&request_id)
     }
 
     pub fn request_surface_close(&mut self, surface_id: u64) {
@@ -835,7 +1029,88 @@ impl ChromeState {
     /// Install the session's persistent record store; called before
     /// the window tree is built.
     pub fn set_records(&mut self, records: RecordStore) {
+        self.pending_tab_records.clear();
+        self.failed_tab_records.clear();
         self.records = records;
+        self.bump();
+    }
+
+    /// Finalize a new-tab action after its complete document reference/setup.
+    /// Only transient record-loan contention retains a bounded retry ticket.
+    pub(crate) fn create_new_tab_record(&mut self, tab: u64) {
+        let Some(identity) = TabRecordCreationIdentity::capture(&self.tree(), tab) else {
+            return;
+        };
+        match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
+            Ok(()) => {}
+            Err(ui::record::RecordOpenError::Busy) => {
+                self.pending_tab_records
+                    .push_back(PendingTabRecordCreation {
+                        identity,
+                        store: self.records.clone(),
+                    });
+            }
+            Err(error) => {
+                self.failed_tab_records.insert(
+                    tab,
+                    (identity, format!("New document unavailable: {error}")),
+                );
+            }
+        }
+    }
+
+    /// Retain every valid ticket, attempting at most 64 per drain. Busy tickets
+    /// rotate behind unattempted work; rebuilding missing tabs adds no authority.
+    pub(crate) fn retry_new_tab_records(&mut self) {
+        let tree = self.tree_handle.read();
+        let before = self.failed_tab_records.len();
+        self.failed_tab_records.retain(|tab, (identity, _)| {
+            TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
+        });
+        let mut changed = self.failed_tab_records.len() != before;
+        self.pending_tab_records.retain(|pending| {
+            TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
+                == Some(&pending.identity)
+        });
+        let attempts = self.pending_tab_records.len().min(64);
+        for _ in 0..attempts {
+            let Some(pending) = self.pending_tab_records.pop_front() else {
+                break;
+            };
+            match super::tab_documents::create_scratch_tab_record(
+                &pending.store,
+                pending.identity.tab,
+            ) {
+                Ok(()) => changed = true,
+                Err(ui::record::RecordOpenError::Busy) => {
+                    self.pending_tab_records.push_back(pending)
+                }
+                Err(error) => {
+                    self.failed_tab_records.insert(
+                        pending.identity.tab,
+                        (
+                            pending.identity,
+                            format!("New document unavailable: {error}"),
+                        ),
+                    );
+                    changed = true;
+                }
+            }
+        }
+        drop(tree);
+        if changed {
+            self.bump();
+        }
+    }
+
+    pub(crate) fn record_creation_errors(&self, tree: &WorkspaceTree) -> BTreeMap<u64, String> {
+        self.failed_tab_records
+            .iter()
+            .filter_map(|(tab, (identity, error))| {
+                (TabRecordCreationIdentity::capture(tree, *tab).as_ref() == Some(identity))
+                    .then(|| (*tab, error.clone()))
+            })
+            .collect()
     }
 
     /// The guard drops at the end of the borrow scope, so concurrent
@@ -953,7 +1228,13 @@ impl ChromeState {
 
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
         self.activity_focus_request = focus;
-        self.overlays.room_activity = true;
+        {
+            let mut tree = self.tree_mut();
+            crate::shell::tab_binding::open_workspace_activity(&mut tree);
+        }
+        // Kept as a request edge for compatibility with older control/state
+        // clients; Activity itself is no longer a modal overlay.
+        self.overlays.room_activity = false;
         self.overlays.collaborators = false;
         self.bump();
     }
@@ -1048,7 +1329,8 @@ impl ChromeState {
             let mut tree = self.tree_mut();
             super::workspace_drop::apply_workspace_drop_from_path(&mut tree, path)
         };
-        if tab_id.is_some() {
+        if let Some(tab_id) = tab_id {
+            self.create_new_tab_record(tab_id);
             self.bump();
         }
         tab_id
@@ -1071,12 +1353,100 @@ impl ChromeState {
             )
         };
         if let Some(tab_id) = tab_id {
+            self.create_new_tab_record(tab_id);
             // A dropped file is an explicit capability grant to the app
             // the user aimed at, keyed by the tab the drop created.
             self.grant_dropped_file_access(path, strip_id, group_id, tab_id);
             self.bump();
         }
         tab_id
+    }
+
+    /// Exact-placement sibling of [`Self::handle_file_drop_at`]. External
+    /// content and existing app tabs share the row's spatial target, so a
+    /// fallback Files/Editor tab must preserve the named tab gap or window
+    /// seam rather than collapsing it to a group id.
+    pub fn handle_file_drop_at_placement(
+        &mut self,
+        path: &std::path::Path,
+        placement: crate::shell::tab_binding::Placement,
+    ) -> Option<u64> {
+        const MAX_HOSTED_TEXT_BYTES: u64 = 32 * 1024 * 1024;
+        let mut hosted_document = None;
+        let mut files_directory = None;
+        if path.exists() {
+            let canonical = path.canonicalize().ok()?;
+            if canonical.is_dir() {
+                files_directory = Some(canonical);
+            } else {
+                let is_editor = canonical
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| {
+                        super::workspace_drop::EDITOR_EXTENSIONS
+                            .iter()
+                            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+                    });
+                if is_editor {
+                    if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
+                        return None;
+                    }
+                    hosted_document =
+                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                } else {
+                    files_directory = canonical.parent().map(std::path::Path::to_path_buf);
+                }
+            }
+        }
+        let tab_id = {
+            let mut tree = self.tree_mut();
+            super::workspace_drop::apply_workspace_drop_at_placement_from_path(
+                &mut tree, path, placement,
+            )
+        }?;
+        let address = {
+            let tree = self.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.id == tab_id)
+                            .then_some((strip.id, group.id))
+                    })
+                })
+            })
+        };
+        if let Some((strip, group)) = address {
+            self.grant_dropped_file_access(path, strip, group, tab_id);
+        }
+        // Exact placement is only half of opening a drop: hosted apps also
+        // need device-local startup data naming the thing they should show.
+        // Synthetic/nonexistent paths used by shell layout fixtures retain the
+        // historical placeholder behaviour; real paths are bound here.
+        if let Some(directory) = files_directory {
+            self.hosted_inputs.bind_files_directory(tab_id, directory);
+        }
+        if let Some((path, text)) = hosted_document {
+            self.hosted_inputs.bind_document(
+                tab_id,
+                super::hosted_inputs::HostedDocument {
+                    provider_id: "org.tilo.Editor",
+                    path: path.clone(),
+                    text,
+                },
+            );
+            self.tree_mut().native_document_tabs.insert(
+                tab_id,
+                crate::shell::state::NativeDocumentReference {
+                    provider_id: "org.tilo.Editor".to_string(),
+                    path,
+                },
+            );
+        }
+        self.bump();
+        Some(tab_id)
     }
 
     /// Through the SAME [`GrantStoreHandle`] the portal uses, so
@@ -1125,6 +1495,7 @@ impl ChromeState {
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
         let app_id = match &tab.tile {
+            TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
             TileContent::Foreign { app_id, .. }
@@ -2287,6 +2658,38 @@ mod active_tab_tests {
             ..WorkspaceTree::default()
         };
         (tree, strip_id, group_id, tab_id)
+    }
+
+    #[test]
+    fn history_file_drop_creates_only_the_new_tabs_record() {
+        let (tree, strip, group, existing) = tree_with_single_tab(TileContent::AppPlaceholder {
+            kind: AppKind::Other("Notes".into()),
+            label: "Existing".into(),
+        });
+        let chrome = ChromeState::new(tree);
+        let mut state = chrome.borrow_mut();
+        let first = state
+            .handle_file_drop(std::path::Path::new("/missing/example.txt"))
+            .unwrap();
+        let second = state
+            .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
+            .unwrap();
+        for id in [first, second] {
+            assert!(
+                state
+                    .records()
+                    .read(&ui::RecordId::for_tab(id), |_| ())
+                    .is_some(),
+                "a successful drop owns its newly minted scratch record"
+            );
+        }
+        assert!(
+            state
+                .records()
+                .read(&ui::RecordId::for_tab(existing), |_| ())
+                .is_none(),
+            "a drop never authorizes repairing a missing persisted sibling"
+        );
     }
 
     /// Gap-2 proof: when the drop target is a real adopted Wayland client,

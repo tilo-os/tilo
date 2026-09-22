@@ -62,9 +62,7 @@ pub const PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 pub fn find_proxy_binary() -> Option<PathBuf> {
     if let Some(bin) = std::env::var_os(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {

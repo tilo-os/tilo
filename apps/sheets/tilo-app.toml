@@ -10,7 +10,7 @@
 
 
 [package]
-id       = "dev.tilo.sheets"
+id       = "so.tilo.sheets"
 name     = "Sheets"
 category = "Office"
 version  = "0.1.0"
