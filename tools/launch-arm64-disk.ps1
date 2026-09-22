@@ -39,6 +39,8 @@ param(
     [int]$MemoryMiB = 8192,
     [ValidateRange(1, 65535)]
     [int]$QmpPort = 4444,
+    [ValidateRange(1, 65535)]
+    [int]$SerialTcpPort,
     [switch]$ResetVars,
     [switch]$CheckOnly,
     [switch]$WritableSourceDisk,
@@ -189,8 +191,20 @@ if ($varsWasCopied) {
         throw "Persistent UEFI variables copy failed verification: $firmwareVars"
     }
 }
-$serialProbe = [System.IO.File]::Open($serialLog, 'OpenOrCreate', 'Write', 'ReadWrite')
-$serialProbe.Dispose()
+$serialEndpoint = if ($SerialTcpPort) {
+    if ($SerialTcpPort -eq $QmpPort) {
+        throw 'SerialTcpPort must differ from QmpPort.'
+    }
+    $serialListener = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $SerialTcpPort -State Listen -ErrorAction SilentlyContinue
+    if ($serialListener) {
+        throw "Serial console port 127.0.0.1:$SerialTcpPort is already in use by PID $($serialListener.OwningProcess)."
+    }
+    "tcp:127.0.0.1:$SerialTcpPort,server=on,wait=off"
+} else {
+    $serialProbe = [System.IO.File]::Open($serialLog, 'OpenOrCreate', 'Write', 'ReadWrite')
+    $serialProbe.Dispose()
+    "file:$serialLog"
+}
 
 $diskExists = Test-Path -LiteralPath $DiskPath -PathType Leaf
 $diskHasGpt = $false
@@ -243,7 +257,7 @@ if ($CheckOnly) {
     } else {
         Write-Host 'Target:      none'
     }
-    Write-Host "Serial log:  $serialLog [writable]"
+    Write-Host "Serial:      $serialEndpoint"
     Write-Host "QMP:         tcp:127.0.0.1:$QmpPort [available]"
     return
 }
@@ -296,8 +310,7 @@ $qemuArgs = @(
     '-device', 'usb-tablet'
     '-netdev', 'user,id=net0'
     '-device', 'virtio-net-pci,netdev=net0'
-    '-chardev', "file,id=serial0,path=$serialLog,append=on"
-    '-serial', 'chardev:serial0'
+    '-serial', $serialEndpoint
     '-monitor', 'none'
     '-qmp', "tcp:127.0.0.1:$QmpPort,server=on,wait=off"
     '-boot', 'menu=on'
@@ -315,11 +328,11 @@ Write-Host "Disk:       $DiskPath ($sourceMode)"
 if ($targetIsRequested) {
     Write-Host "Target:     $InstallTargetDisk (serial=tilo-install-target)"
 }
-Write-Host "Serial log: $serialLog"
+Write-Host "Serial:     $serialEndpoint"
 Write-Host "QMP:        tcp:127.0.0.1:$QmpPort"
 & $qemuExe @qemuArgs
 if ($LASTEXITCODE -ne 0) {
-    throw "QEMU exited with status $LASTEXITCODE. See $serialLog"
+    throw "QEMU exited with status $LASTEXITCODE. Serial endpoint: $serialEndpoint"
 }
 
 if (-not $WritableSourceDisk) {
