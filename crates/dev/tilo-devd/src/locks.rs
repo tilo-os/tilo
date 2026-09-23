@@ -69,6 +69,19 @@ impl Locks {
         )
     }
 
+    /// Held by an in-VM build (and the rsync before it) of one worktree;
+    /// `gc` never evicts a build dir whose lock is held.
+    ///
+    /// # Errors
+    /// [`DaemonError::Busy`] while another build of this worktree runs.
+    pub fn src(&self, worktree: &str) -> Result<Guard, DaemonError> {
+        self.take(
+            &format!("src-{worktree}.lock"),
+            true,
+            &format!("the in-VM build dir of worktree '{worktree}'"),
+        )
+    }
+
     /// # Errors
     /// [`DaemonError::Busy`] while another operation changes this slot.
     pub fn slot(&self, name: &str) -> Result<Guard, DaemonError> {

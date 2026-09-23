@@ -8,11 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_dev_protocol::ControlResult;
+use tilo_dev_protocol::{ControlResult, InputAction};
 
 use crate::apply::{Apply, SessionProcess};
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
+use crate::input;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
@@ -357,6 +358,133 @@ impl Apply for SystemdApply {
         let _ = fs::remove_file(&path);
         bytes
     }
+
+    fn input(
+        &mut self,
+        slot: &str,
+        seat: &str,
+        actions: &[InputAction],
+    ) -> Result<u64, DaemonError> {
+        let socket = input::socket_path(slot);
+        let reply = match input::send(&socket, actions) {
+            Ok(reply) if reply.seat == seat => reply,
+            // Not running yet, or its devices belong to the seat the slot had
+            // before a seat0 claim or release: (re)create them.
+            _ => {
+                start_input_server(slot, seat, &socket)?;
+                input::send(&socket, actions).map_err(|e| DaemonError::Apply {
+                    step: format!("send input to {}", input::unit_name(slot)),
+                    detail: e.to_string(),
+                })?
+            }
+        };
+        match reply.error {
+            Some(detail) => Err(DaemonError::Apply {
+                step: "input".into(),
+                detail,
+            }),
+            None => Ok(reply.events),
+        }
+    }
+
+    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError> {
+        // A unit that is not loaded is already stopped.
+        let _ = Command::new("systemctl")
+            .args(["stop", &input::unit_name(slot)])
+            .output();
+        Ok(())
+    }
+
+    fn install_app(&mut self, user: &str, tapp: &Path) -> Result<String, DaemonError> {
+        let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
+            step: "tilo-install".into(),
+            detail: format!("no user {user}"),
+        })?;
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        // The slot user must read the package; the state root is root's.
+        let dir =
+            Path::new("/var/tmp").join(format!("tilo-dev-app-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
+        let staged = dir.join("app.tapp");
+        let result = fs::copy(tapp, &staged)
+            .map_err(DaemonError::io("stage the app package"))
+            .and_then(|_| {
+                make_readable(&dir, &staged)?;
+                run(
+                    "tilo-install install --allow-self-signed --force",
+                    Command::new("runuser")
+                        .args(["-u", user, "--", "env"])
+                        .arg(format!("HOME={home}"))
+                        .arg(format!("USER={user}"))
+                        .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
+                        .args(["tilo-install", "install", "--allow-self-signed", "--force"])
+                        .arg(&staged),
+                )
+            });
+        let _ = fs::remove_dir_all(&dir);
+        result
+    }
+}
+
+/// Start `tilo-devd input-serve` for `slot` as a transient unit and wait
+/// until its socket answers and udev has handed the devices to the seat.
+fn start_input_server(slot: &str, seat: &str, socket: &Path) -> Result<(), DaemonError> {
+    let unit = input::unit_name(slot);
+    let _ = Command::new("systemctl").args(["stop", &unit]).output();
+    let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-devd binary"))?;
+    run(
+        &format!("systemd-run --unit {unit}"),
+        Command::new("systemd-run")
+            .arg(format!("--unit={unit}"))
+            .args(["--collect", "--quiet"])
+            .arg(format!(
+                "--description=tilo-dev input devices for slot {slot}"
+            ))
+            .arg(exe)
+            .args(["input-serve", "--seat", seat, "--socket"])
+            .arg(socket),
+    )?;
+    for _ in 0..100 {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            // New input devices reach the compositor via udev and libinput.
+            let _ = Command::new("udevadm").arg("settle").output();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(DaemonError::Apply {
+        step: format!("start {unit}"),
+        detail: format!(
+            "{} did not appear within 5s; journalctl -u {unit} says why",
+            socket.display()
+        ),
+    })
+}
+
+fn home_of(user: &str) -> Option<String> {
+    let output = Command::new("getent")
+        .args(["passwd", user])
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&output.stdout).into_owned();
+    line.split(':')
+        .nth(5)
+        .map(|h| h.trim().to_owned())
+        .filter(|h| !h.is_empty())
+}
+
+#[cfg(unix)]
+fn make_readable(dir: &Path, file: &Path) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755))
+        .and_then(|()| fs::set_permissions(file, fs::Permissions::from_mode(0o644)))
+        .map_err(DaemonError::io("make the app package readable"))
+}
+
+#[cfg(not(unix))]
+fn make_readable(_dir: &Path, _file: &Path) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 /// The active policy's `file_contexts`, or `None` when `SELinux` is off.

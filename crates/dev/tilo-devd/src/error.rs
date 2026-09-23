@@ -56,6 +56,24 @@ pub enum DaemonError {
     Apply { step: String, detail: String },
     #[error("slot '{slot}' session differs from a greetd session: {detail}")]
     SessionParity { slot: String, detail: String },
+    #[error("no component '{name}' in the synced os/components.toml")]
+    UnknownComponent { name: String, known: Vec<String> },
+    #[error("no app 'apps/{dir}' (with a tilo-app.toml) in the synced sources")]
+    UnknownApp { dir: String, known: Vec<String> },
+    #[error("no synced sources for worktree '{0}' in the VM")]
+    SourceMissing(String),
+    #[error("{step} failed: {detail}")]
+    Job { step: String, detail: String },
+    #[error("the VM's image has no {tool} (needed to {purpose})")]
+    ToolMissing { tool: String, purpose: String },
+    #[error("the registry refused the VM's credentials for {image}")]
+    RegistryAuth { image: String },
+    #[error("{image} does not exist in the registry")]
+    ImageNotFound { image: String },
+    #[error("{image} has no {path}")]
+    MissingInImage { image: String, path: String },
+    #[error("slot '{0}' is headless: it has no seat, so no input devices")]
+    HeadlessInput(String),
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -77,17 +95,26 @@ impl DaemonError {
             | Self::LayerNotFound(_)
             | Self::UploadNotFound(_)
             | Self::GenerationNotFound { .. }
-            | Self::ControlMissing(_) => code::NOT_FOUND,
+            | Self::ControlMissing(_)
+            | Self::UnknownComponent { .. }
+            | Self::UnknownApp { .. }
+            | Self::SourceMissing(_)
+            | Self::ImageNotFound { .. }
+            | Self::MissingInImage { .. } => code::NOT_FOUND,
             Self::SlotKindConflict { .. } | Self::SeatBusy { .. } | Self::Busy(_) => code::CONFLICT,
             Self::AbiMismatch { .. } => code::ABI,
             Self::ReservedName(_)
             | Self::InvalidName(_)
             | Self::InvalidLayer(_)
             | Self::NoEarlierGeneration(_)
-            | Self::NoSession(_) => code::INVALID,
+            | Self::NoSession(_)
+            | Self::HeadlessInput(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
             Self::Apply { .. } | Self::SessionParity { .. } => code::APPLY,
             Self::Io { .. } => code::IO,
+            Self::Job { .. } => code::JOB,
+            Self::ToolMissing { .. } => code::TOOL,
+            Self::RegistryAuth { .. } => code::AUTH,
         }
     }
 
@@ -155,6 +182,37 @@ impl DaemonError {
                 "slot session capabilities or SELinux domain differ from a greetd session; see tilo-dev guide troubleshooting"
                     .into()
             }
+            Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
+            Self::UnknownApp { known, .. } if known.is_empty() => {
+                "apps live in apps/<dir>/tilo-app.toml; check the name, then rerun the swap".into()
+            }
+            Self::UnknownApp { known, .. } => {
+                format!("tilo-dev swap app:<dir> with one of: {}", known.join(", "))
+            }
+            Self::SourceMissing(_) => {
+                "rerun the swap: tilo-dev swap <component> --builder vm syncs the worktree first".into()
+            }
+            Self::Job { .. } => {
+                "the build output above names the cause; fix it and rerun the swap".into()
+            }
+            Self::ToolMissing { tool, .. } if tool == "podman" => {
+                "extract on the host instead (needs podman there), or move the VM to a newer dev image: tilo-dev vm upgrade".into()
+            }
+            Self::ToolMissing { .. } => {
+                "build on a Linux host: tilo-dev swap <component> --builder host, or move the VM to a dev image that has it: tilo-dev vm upgrade".into()
+            }
+            Self::RegistryAuth { .. } => {
+                "tilo-dev vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.podesta.ai   (forge token with package read access)".into()
+            }
+            Self::ImageNotFound { .. } => {
+                "check the tag: CI publishes code.podesta.ai/qos/tilo:main-<sha7> for main commits and :<version> for releases".into()
+            }
+            Self::MissingInImage { .. } => {
+                "that image does not ship this component (an optional one, or an older image); pick another tag or build it: --from worktree".into()
+            }
+            Self::HeadlessInput(slot) => format!(
+                "drive headless slots through the compositor: tilo-dev control --slot {slot} key|type|click ...   (or create a headful slot: tilo-dev slot create <name> --headful)"
+            ),
             Self::Io { .. } => "tilo-dev doctor   (checks the VM's disk and daemon state)".into(),
         }
     }
@@ -172,14 +230,24 @@ impl DaemonError {
             | Self::GenerationNotFound { .. }
             | Self::NoEarlierGeneration(_)
             | Self::ScopeMismatch { .. }
-            | Self::AbiMismatch { .. } => Some("tilo-dev guide swapping"),
-            Self::SeatBusy { .. } | Self::ControlMissing(_) => Some("tilo-dev guide driving"),
+            | Self::AbiMismatch { .. }
+            | Self::UnknownComponent { .. }
+            | Self::UnknownApp { .. }
+            | Self::SourceMissing(_)
+            | Self::Job { .. }
+            | Self::ToolMissing { .. }
+            | Self::ImageNotFound { .. }
+            | Self::MissingInImage { .. } => Some("tilo-dev guide swapping"),
+            Self::SeatBusy { .. } | Self::ControlMissing(_) | Self::HeadlessInput(_) => {
+                Some("tilo-dev guide driving")
+            }
             Self::VersionMismatch { .. }
             | Self::HelloRequired
             | Self::InvalidParams(_)
             | Self::Busy(_)
             | Self::Apply { .. }
             | Self::SessionParity { .. }
+            | Self::RegistryAuth { .. }
             | Self::Io { .. } => Some("tilo-dev guide troubleshooting"),
         }
     }
@@ -200,6 +268,7 @@ mod tests {
 
     /// One sample per variant. The match below has no wildcard, so adding a
     /// variant fails to compile until it gets a sample here.
+    #[expect(clippy::too_many_lines, reason = "one sample per variant")]
     fn samples() -> Vec<DaemonError> {
         let all = vec![
             DaemonError::VersionMismatch {
@@ -263,6 +332,42 @@ mod tests {
                 slot: "a".into(),
                 detail: "CapAmb 800000000".into(),
             },
+            DaemonError::UnknownComponent {
+                name: "x".into(),
+                known: vec!["shell".into()],
+            },
+            DaemonError::UnknownApp {
+                dir: "x".into(),
+                known: vec![],
+            },
+            DaemonError::UnknownApp {
+                dir: "x".into(),
+                known: vec!["notes".into()],
+            },
+            DaemonError::SourceMissing("wt".into()),
+            DaemonError::Job {
+                step: "cargo build".into(),
+                detail: "exit status: 101".into(),
+            },
+            DaemonError::ToolMissing {
+                tool: "cargo".into(),
+                purpose: "build".into(),
+            },
+            DaemonError::ToolMissing {
+                tool: "podman".into(),
+                purpose: "pull".into(),
+            },
+            DaemonError::RegistryAuth {
+                image: "code.podesta.ai/qos/tilo:main-abc1234".into(),
+            },
+            DaemonError::ImageNotFound {
+                image: "code.podesta.ai/qos/tilo:nope".into(),
+            },
+            DaemonError::MissingInImage {
+                image: "i".into(),
+                path: "/usr/bin/browser".into(),
+            },
+            DaemonError::HeadlessInput("a".into()),
             DaemonError::Io {
                 context: "c".into(),
                 source: std::io::Error::other("e"),
@@ -290,6 +395,15 @@ mod tests {
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }
                 | DaemonError::SessionParity { .. }
+                | DaemonError::UnknownComponent { .. }
+                | DaemonError::UnknownApp { .. }
+                | DaemonError::SourceMissing(_)
+                | DaemonError::Job { .. }
+                | DaemonError::ToolMissing { .. }
+                | DaemonError::RegistryAuth { .. }
+                | DaemonError::ImageNotFound { .. }
+                | DaemonError::MissingInImage { .. }
+                | DaemonError::HeadlessInput(_)
                 | DaemonError::Io { .. } => {}
             }
         }
