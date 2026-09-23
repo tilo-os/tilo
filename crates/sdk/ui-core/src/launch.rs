@@ -12,6 +12,9 @@ use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
 use crate::{App, State, Theme};
 
+mod shot_frame;
+pub use shot_frame::{ShotFrame, ShotLayout, render_widget_png};
+
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
