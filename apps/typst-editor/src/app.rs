@@ -1415,7 +1415,12 @@ impl TypstApp {
             name
         };
         // Elide to fit the cap.
-        let label = elide_to_width(tr, &base, max_chip - 24.0);
+        let label = tr.elide_to_width_weighted(
+            &base,
+            PILL_FONT,
+            ui::num::f32_of_f64(max_chip - 24.0),
+            TextWeight::Semibold,
+        );
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + self.pill_h);
@@ -1711,7 +1716,12 @@ impl TypstApp {
                     &RoundedRect::from_rect(row, 6.0),
                 );
             }
-            let label = elide_to_width(tr, lbl, (row.width() - 20.0).max(1.0));
+            let label = tr.elide_to_width_weighted(
+                lbl,
+                PILL_FONT,
+                ui::num::f32_of_f64((row.width() - 20.0).max(1.0)),
+                TextWeight::Semibold,
+            );
             tr.draw_text(
                 scene,
                 &label,
@@ -1927,26 +1937,6 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
     } else {
         format!("{n} {plural}")
     }
-}
-
-/// Shorten `s` with a trailing ellipsis so it fits within `max_w` pixels at the
-/// toolbar font. Returns `s` untouched when it already fits.
-fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
-    let (full, _) = tr.measure_weighted(s, PILL_FONT, None, TextWeight::Semibold);
-    if f64::from(full) <= max_w || max_w <= 0.0 {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let mut keep = chars.len();
-    while keep > 1 {
-        keep -= 1;
-        let candidate: String = chars.iter().take(keep).collect::<String>() + "…";
-        let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
-        if f64::from(w) <= max_w {
-            return candidate;
-        }
-    }
-    "…".to_string()
 }
 
 impl Widget for TypstApp {

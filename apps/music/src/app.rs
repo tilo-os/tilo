@@ -4904,23 +4904,13 @@ fn draw_text(
 /// preceding text conveys nothing and, in a too-narrow column, would spill past
 /// its bounds into the neighbouring UI.
 fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
-    if f64::from(tr.measure_weighted(text, size, None, weight).0) <= max_w {
-        return text.to_string();
-    }
-    let mut s = String::new();
-    for ch in text.chars() {
-        let cand = format!("{s}{ch}\u{2026}");
-        if f64::from(tr.measure_weighted(&cand, size, None, weight).0) > max_w {
-            break;
-        }
-        s.push(ch);
-    }
-    if s.is_empty() {
+    let out = tr.elide_to_width_weighted(text, size, ui::num::f32_of_f64(max_w), weight);
+    if out != text && out.starts_with(ui::text_render::ELLIPSIS) {
         // Not even one glyph + ellipsis fits — render nothing so the `\u{2026}`
         // never overflows into an adjacent column.
         String::new()
     } else {
-        format!("{s}\u{2026}")
+        out
     }
 }
 
