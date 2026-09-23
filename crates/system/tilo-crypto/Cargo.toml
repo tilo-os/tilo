@@ -30,7 +30,7 @@ getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
-p256 = { version = "0.13", features = ["pem"] }
+p256 = { version = "0.14", features = ["pem"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 ring = "0.17"
 rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
