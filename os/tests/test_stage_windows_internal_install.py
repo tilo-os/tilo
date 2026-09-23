@@ -68,6 +68,18 @@ class StageTests(unittest.TestCase):
             value["staging"].reverse(); path.write_text(json.dumps(value))
             with self.assertRaises(ValueError): stage.load_plan(path)
 
+    def test_plan_loader_rejects_target_or_source_range_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "plan.json"
+            for mutate in (
+                lambda value: value["staging"][0].update(offset_bytes=40961),
+                lambda value: value["staging"][1].update(source_offset_bytes=30000),
+                lambda value: value["preserve_partitions"][0].update(offset_bytes=25000),
+            ):
+                value = plan_fixture(); mutate(value); path.write_text(json.dumps(value))
+                with self.subTest(value=value):
+                    with self.assertRaises(ValueError): stage.load_plan(path)
+
 
 if __name__ == "__main__":
     unittest.main()
