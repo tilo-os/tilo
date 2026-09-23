@@ -99,6 +99,9 @@ const RECOVERY_SAVED_PATH: &str = "installer.recovery_saved";
 const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
 const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
 const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
+/// Staged (USB-free) installs only: leave the installer and restart into the
+/// retained OS. Firmware already consumed the one-shot `BootNext`.
+const RETURN_TO_HOST_PATH: &str = "installer.return_to_host";
 fn network_path(i: usize) -> String {
     format!("installer.network.{i}")
 }
@@ -1115,6 +1118,10 @@ pub struct InstallerApp {
     /// Independently validated choices supplied by Tilo Imager. `None` is the
     /// ordinary manual flow; incomplete fields route to their repair screen.
     profile_completion: Option<ProfileCompletion>,
+    /// A verified staged (USB-free) installation, when the installer booted
+    /// from the staging ESP Tilo Imager prepared. It is a hint: the backend
+    /// re-derives every fact before it writes anything.
+    internal_handoff: Option<crate::internal_handoff::Handoff>,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
     /// Live power probe. Tests and deterministic screenshots use a no-op;
@@ -1149,7 +1156,84 @@ impl InstallerApp {
             }
             Err(message) => s.status = message,
         }
+        match crate::internal_handoff::load() {
+            Ok(Some(handoff)) => s.apply_internal_handoff(handoff),
+            Ok(None) => {
+                if let Ok(message) =
+                    std::fs::read_to_string(crate::internal_handoff::HANDOFF_ERROR_PATH)
+                {
+                    s.status = message.trim().to_string();
+                }
+            }
+            Err(message) => s.status = message,
+        }
         s
+    }
+
+    /// Adopt a staged installation: bind it to the one disk it describes,
+    /// preselect guided alongside in its prepared extent, and prefill the
+    /// Imager's setup choices. Nothing is confirmed; Review still shows every
+    /// choice and requires the typed confirmation.
+    fn apply_internal_handoff(&mut self, handoff: crate::internal_handoff::Handoff) {
+        let profile = handoff.media_profile();
+        self.internal_handoff = Some(handoff);
+        if !self.bind_internal_handoff() {
+            self.internal_handoff = None;
+            self.status = "Tilo Imager prepared an installation, but this disk no longer matches it. Installing onto the disk that holds this installer is unavailable; restart into your existing system and run Tilo Imager again.".to_string();
+            return;
+        }
+        match profile {
+            Ok(profile) => self.apply_media_profile(profile),
+            Err(message) => self.status = message,
+        }
+        if let Some(host) = self.internal_host() {
+            let prefix = format!(
+                "Tilo Imager prepared space for Tilo next to {}.",
+                host.display_name()
+            );
+            self.status = if self.status.is_empty() {
+                prefix
+            } else {
+                format!("{prefix} {}", self.status)
+            };
+        }
+    }
+
+    /// Re-bind the staged plan after (re)discovery. Returns whether exactly
+    /// one disk accepted it; that disk is then selected for guided alongside.
+    fn bind_internal_handoff(&mut self) -> bool {
+        let Some(handoff) = self.internal_handoff.clone() else {
+            return false;
+        };
+        let mut bound = Vec::new();
+        for (index, disk) in self.disks.iter_mut().enumerate() {
+            if disk.apply_internal_handoff(&handoff).is_ok() {
+                bound.push(index);
+            }
+        }
+        if let [index] = bound.as_slice() {
+            self.selected_disk = Some(*index);
+            self.install_method = InstallMethod::Alongside;
+            true
+        } else {
+            for disk in &mut self.disks {
+                disk.internal_plan = None;
+            }
+            false
+        }
+    }
+
+    /// The retained OS on the staged disk, when this is a staged install.
+    fn internal_host(&self) -> Option<crate::internal_handoff::HostOs> {
+        self.internal_handoff
+            .as_ref()
+            .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
+            .map(crate::internal_handoff::Handoff::host)
+    }
+
+    fn selected_disk_hosts_installer(&self) -> bool {
+        self.selected_disk_ref()
+            .is_some_and(Disk::hosts_staged_installer)
     }
 
     /// Construct with an explicit disk list (tests / headless rendering).
@@ -1199,6 +1283,7 @@ impl InstallerApp {
             storage_preflight_request: None,
             storage_preflight_passed: false,
             profile_completion: None,
+            internal_handoff: None,
             proxy_slot: None,
             power_probe: || None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -1565,6 +1650,12 @@ impl InstallerApp {
             keyvariant: layout.variant_or_empty().to_string(),
             pin: secret_copy(&self.password),
             fido2: self.fido2,
+            internal_handoff: if guided.is_some() && disk.is_some_and(Disk::hosts_staged_installer)
+            {
+                crate::internal_handoff::HANDOFF_PATH.to_string()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -1733,7 +1824,7 @@ impl InstallerApp {
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
         if self.step == Step::Disk {
-            if self.selected_disk_ref().is_some_and(|disk| disk.is_system) {
+            if self.selected_disk_ref().is_some_and(Disk::blocks_install) {
                 self.set_status("The running installer disk cannot be used as its own destination");
                 return;
             }
@@ -2009,8 +2100,11 @@ impl InstallerApp {
     fn mark_install_done(&mut self) {
         self.install_state = InstallState::Done;
         self.reset_viewport();
-        self.status_lines
-            .push("Installed — remove the medium and reboot.".to_string());
+        self.status_lines.push(if self.internal_host().is_some() {
+            "Installed — restart to start Tilo.".to_string()
+        } else {
+            "Installed — remove the medium and reboot.".to_string()
+        });
         // Completion replaces an unfocusable progress surface with recovery
         // and power controls. Put keyboard users on the first recovery action
         // deterministically instead of retaining a stale node from Review.
@@ -2068,6 +2162,23 @@ impl InstallerApp {
             Step::Options => self.compose_options_step(theme, &mut children),
             Step::Review => self.compose_review_step(theme, &mut children),
             Step::Install => self.compose_install_step(theme, &mut children),
+        }
+
+        // A staged install has no medium to pull: offer the way back to the
+        // retained OS on every screen except while installing or once done.
+        if let Some(host) = self.internal_host()
+            && !matches!(
+                self.install_state,
+                InstallState::Running | InstallState::Done
+            )
+        {
+            children.push(Box::new(
+                ActionButton::new(
+                    &format!("Return to {}", host.display_name()),
+                    RETURN_TO_HOST_PATH,
+                )
+                .with_test_id("return_to_host"),
+            ));
         }
 
         // A transient validation/error line under every step's controls.
@@ -2218,38 +2329,13 @@ impl InstallerApp {
     }
 
     fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
-        let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
         let xl = theme.tokens.typography.scale.xl;
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
 
         children.push(Box::new(Text::new("Install Tilo").with_size(xl)));
-        children.push(Box::new(
-            SegChoice::new(
-                INSTALL_METHOD_LABELS
-                    .iter()
-                    .map(|s| (*s).to_string())
-                    .collect(),
-                (0..INSTALL_METHOD_LABELS.len())
-                    .map(install_method_path)
-                    .collect(),
-                usize::from(self.install_method == InstallMethod::Alongside),
-            )
-            .with_test_id("install_method"),
-        ));
-        let guidance = if self.install_method == InstallMethod::Erase {
-            "Erase disk deletes every partition and operating system on the selected disk."
-        } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
-        };
-        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
-            if self.install_method == InstallMethod::Erase {
-                danger
-            } else {
-                dim
-            },
-        )));
+        self.compose_install_method(theme, children);
         children.push(Box::new(
             ActionButton::new("Refresh disks", DISK_REFRESH_PATH).with_test_id("disk_refresh"),
         ));
@@ -2313,6 +2399,54 @@ impl InstallerApp {
             "Next",
             self.selected_disk.is_none() || unavailable,
         ));
+    }
+
+    /// The Erase/Alongside choice, or — on the disk that holds a staged
+    /// installer — the one plan that disk allows and what it leaves untouched.
+    fn compose_install_method(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let danger = theme.tokens.colors.semantic.danger;
+        let sm = theme.tokens.typography.scale.sm;
+        if let Some(host) = self
+            .internal_host()
+            .filter(|_| self.selected_disk_hosts_installer())
+        {
+            children.push(Box::new(
+                Text::new(&format!(
+                    "Tilo will be installed alongside {} in the space Tilo Imager prepared. This disk also holds the running installer; {} and its files are not changed.",
+                    host.display_name(),
+                    host.display_name()
+                ))
+                .with_size(sm)
+                .with_color(dim),
+            ));
+        } else {
+            children.push(Box::new(
+                SegChoice::new(
+                    INSTALL_METHOD_LABELS
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                    (0..INSTALL_METHOD_LABELS.len())
+                        .map(install_method_path)
+                        .collect(),
+                    usize::from(self.install_method == InstallMethod::Alongside),
+                )
+                .with_test_id("install_method"),
+            ));
+        }
+        let guidance = if self.install_method == InstallMethod::Erase {
+            "Erase disk deletes every partition and operating system on the selected disk."
+        } else {
+            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
+        };
+        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
+            if self.install_method == InstallMethod::Erase {
+                danger
+            } else {
+                dim
+            },
+        )));
     }
 
     fn windows_alongside_preparation(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
@@ -2671,11 +2805,37 @@ impl InstallerApp {
                     "Existing partitions",
                     "Preserved byte-for-byte; none resized, moved, or deleted",
                 ));
-                children.push(summary_row(
-                    theme,
-                    "Choose an OS",
-                    "Use the firmware boot picker; its current default and existing entries are preserved",
-                ));
+                if let Some(host) = self
+                    .internal_host()
+                    .filter(|_| self.selected_disk_hosts_installer())
+                {
+                    let host = host.display_name();
+                    children.push(summary_row(
+                        theme,
+                        "This disk",
+                        &format!(
+                            "Also holds the running installer and your existing {host} system. {host} stays untouched."
+                        ),
+                    ));
+                    children.push(summary_row(
+                        theme,
+                        "Installer space",
+                        "Returned to Tilo automatically after you first sign in",
+                    ));
+                    children.push(summary_row(
+                        theme,
+                        "Choose an OS",
+                        &format!(
+                            "The next restart starts Tilo once; {host} stays the firmware default"
+                        ),
+                    ));
+                } else {
+                    children.push(summary_row(
+                        theme,
+                        "Choose an OS",
+                        "Use the firmware boot picker; its current default and existing entries are preserved",
+                    ));
+                }
             } else {
                 children.push(summary_row(
                     theme,
@@ -2789,10 +2949,15 @@ impl InstallerApp {
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Polite),
                 ));
+                let completion = match self.internal_host() {
+                    Some(host) => format!(
+                        "Installation complete. Restart to start Tilo; {} stays the default in the firmware boot order. The temporary installer space is returned to Tilo after you first sign in. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.",
+                        host.display_name()
+                    ),
+                    None => "Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.".to_string(),
+                };
                 children.push(Box::new(
-                    Text::new("Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.")
-                        .with_size(sm)
-                        .with_color(dim),
+                    Text::new(&completion).with_size(sm).with_color(dim),
                 ));
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
@@ -3026,6 +3191,8 @@ fn sample_disks() -> Vec<Disk> {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: vec![
                 DiskPartition {
                     name: "/dev/sda1".to_string(),
@@ -3083,6 +3250,8 @@ fn sample_disks() -> Vec<Disk> {
             removable: false,
             read_only: false,
             is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
             partitions: Vec::new(),
         },
     ]
@@ -3240,6 +3409,11 @@ impl InstallerApp {
         self.erase_confirmation.clear();
         self.storage_preflight_request = None;
         self.storage_preflight_passed = false;
+        if self.internal_handoff.is_some() && !self.bind_internal_handoff() {
+            // Discovery no longer matches the staged plan: fall back to the
+            // ordinary rules, which keep the running-system disk unavailable.
+            self.internal_handoff = None;
+        }
         self.status = if self.disks.is_empty() {
             "Disk list refreshed; no installable disks were found.".to_string()
         } else {
@@ -3335,7 +3509,7 @@ impl InstallerApp {
                 if self
                     .disks
                     .get(i)
-                    .is_some_and(|disk| !disk.is_system && !disk.read_only)
+                    .is_some_and(|disk| !disk.blocks_install() && !disk.read_only)
                 {
                     if self.selected_disk != Some(i) {
                         Self::clear_text(state, root, ERASE_CONFIRM_PATH);
@@ -3345,6 +3519,9 @@ impl InstallerApp {
                         self.storage_preflight_passed = false;
                     }
                     self.selected_disk = Some(i);
+                    if self.selected_disk_hosts_installer() {
+                        self.install_method = InstallMethod::Alongside;
+                    }
                     self.status.clear();
                     self.dirty_structure = true;
                 }
@@ -3355,7 +3532,9 @@ impl InstallerApp {
             let p = install_method_path(i);
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
-                let method = if i == 1 {
+                let method = if i == 1 || self.selected_disk_hosts_installer() {
+                    // The disk holding the running installer (and the retained
+                    // OS) can never be erased; the backend refuses it too.
                     InstallMethod::Alongside
                 } else {
                     InstallMethod::Erase
@@ -3455,6 +3634,20 @@ impl InstallerApp {
             let _ = state.put(root, BEGIN_PATH, false);
             if self.step == Step::Review {
                 self.begin_install(state, root);
+            }
+        }
+
+        // Leave a staged installer for the retained OS. Refused while the
+        // backend is running; after success the Finish screen's Reboot applies.
+        if Self::read_flag(state, root, RETURN_TO_HOST_PATH) {
+            let _ = state.put(root, RETURN_TO_HOST_PATH, false);
+            if self.internal_host().is_some()
+                && !matches!(
+                    self.install_state,
+                    InstallState::Running | InstallState::Done
+                )
+            {
+                self.run_power(PowerAction::Reboot);
             }
         }
 
@@ -4732,6 +4925,101 @@ mod tests {
         assert!(!restarted.destructive_confirmation_ready());
         restarted.go_next();
         assert_eq!(restarted.step, Step::Disk);
+    }
+
+    fn staged_app() -> InstallerApp {
+        let disk =
+            crate::disks::parse_lsblk(&crate::internal_handoff::tests::lsblk_json().to_string());
+        let mut app = InstallerApp::with_disks(disk);
+        app.apply_internal_handoff(crate::internal_handoff::tests::handoff());
+        app
+    }
+
+    #[test]
+    fn staged_installation_preselects_the_prepared_plan_and_profile() {
+        use crate::internal_handoff::tests::TARGET;
+        let mut app = staged_app();
+        assert_eq!(app.selected_disk, Some(0));
+        assert_eq!(app.install_method, InstallMethod::Alongside);
+        assert_eq!(app.username, "ada");
+        assert_eq!(app.hostname, "studio");
+        assert!(
+            app.status
+                .starts_with("Tilo Imager prepared space for Tilo next to Windows.")
+        );
+        assert!(app.uses_guided_alongside());
+        let opts = app.install_options();
+        assert_eq!(opts.guided_free_start_bytes, TARGET.0 * 512);
+        assert_eq!(
+            opts.guided_root_start_bytes + opts.guided_root_size_bytes,
+            (TARGET.1 + 1) * 512
+        );
+        assert_eq!(opts.internal_handoff, crate::internal_handoff::HANDOFF_PATH);
+        assert_eq!(
+            opts.expected_partitions.len(),
+            4,
+            "staging partitions stay in the reviewed map"
+        );
+        assert!(opts.alongside_root.is_empty());
+
+        // The running-installer disk can never be switched to Erase.
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        let _ = doc.put(&root, install_method_path(0).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.install_method, InstallMethod::Alongside);
+
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        assert!(!has_test_id(&app, "install_method"));
+        assert!(has_test_id(&app, "return_to_host"));
+        assert!(find_accessible(&app, "Return to Windows").is_some());
+        app.go_next();
+        assert_eq!(
+            app.step,
+            Step::Account,
+            "the staged disk is a valid destination"
+        );
+
+        app.step = Step::Review;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(
+                &app,
+                "Also holds the running installer and your existing Windows system. Windows stays untouched."
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn staged_handoff_that_no_longer_matches_keeps_the_disk_unavailable() {
+        let mut json = crate::internal_handoff::tests::lsblk_json();
+        json["blockdevices"][0]["ptuuid"] = "99999999-2222-4333-8444-555555555555".into();
+        let mut app = InstallerApp::with_disks(crate::disks::parse_lsblk(&json.to_string()));
+        app.apply_internal_handoff(crate::internal_handoff::tests::handoff());
+        assert!(app.internal_handoff.is_none());
+        assert!(app.internal_host().is_none());
+        assert_eq!(app.selected_disk, None);
+        assert!(app.disks[0].blocks_install());
+        assert!(app.status.contains("no longer matches"));
+        assert!(app.install_options().internal_handoff.is_empty());
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        assert!(!has_test_id(&app, "return_to_host"));
+    }
+
+    #[test]
+    fn return_to_host_is_withheld_while_installing() {
+        let mut app = staged_app();
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let _ = build(&mut app);
+        assert!(!has_test_id(&app, "return_to_host"));
+        app.install_state = InstallState::Failed;
+        let _ = build(&mut app);
+        assert!(has_test_id(&app, "return_to_host"));
     }
 
     #[test]
