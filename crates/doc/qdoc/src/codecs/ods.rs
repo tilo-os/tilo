@@ -5,7 +5,8 @@
 //! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
 
 use crate::codecs::sheet_common::{
-    SheetPackage, SheetProvider, attr_local, end_local_name, local_name,
+    ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
+    local_name,
 };
 use crate::codecs::xml_escape::escape_attr_quotes;
 use crate::format::{CodecError, Confidence};
@@ -19,6 +20,18 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 const MIMETYPE: &str = "application/vnd.oasis.opendocument.spreadsheet";
+
+/// Calc compresses runs of identical cells and rows into one element with a
+/// repeat count; expanding a *populated* repeat is capped workbook-wide so a
+/// tiny hostile `content.xml` can't claim billions of cells.
+const MAX_EXPANDED_REPEATS: usize = 1_000_000;
+/// `<text:s text:c="…"/>` space runs stop growing a cell's text past this
+/// (a cell holds at most 32767 characters in either office suite), so a few
+/// bytes of markup can't claim gigabytes of spaces.
+const MAX_SPACE_RUN: usize = 32_767;
+/// Excel's grid, which every codec here shares.
+const MAX_COL: u32 = 16_384;
+const MAX_ROW: u32 = 1_048_576;
 
 pub struct OdsCodec;
 
@@ -36,53 +49,106 @@ impl SheetProvider for OdsCodec {
     }
 
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
-        let pkg = SheetPackage::read(bytes)?;
-        let content = pkg
-            .get("content.xml")
-            .ok_or_else(|| CodecError::Parse("ods: missing content.xml".into()))?;
-        parse_content(content, wb)?;
-        if let Some(meta) = pkg.get("meta.xml") {
-            import_meta(meta, wb);
-        }
-        // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
-        for name in pkg.names() {
-            if is_preserved_part(name)
-                && let Some(b) = pkg.get(name)
-            {
-                wb.set_preserved(&format!("ods/part/{name}"), b);
-            }
-        }
+        Self::parse(bytes)?.apply(wb, "ods");
         Ok(())
     }
 
     fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError> {
         let snap = wb.materialize();
-        let mut pkg = SheetPackage { parts: Vec::new() };
-        pkg.set("mimetype", MIMETYPE.as_bytes().to_vec());
-        pkg.set("content.xml", content_xml(&snap).into_bytes());
-        pkg.set("meta.xml", meta_xml(&snap.properties).into_bytes());
-        let has_styles = wb.preserved_part("ods/part/styles.xml").is_some();
-        if let Some(styles) = wb.preserved_part("ods/part/styles.xml") {
-            pkg.set("styles.xml", styles);
-        }
-        pkg.set(
-            "META-INF/manifest.xml",
-            manifest_xml(has_styles).into_bytes(),
-        );
-        pkg.write_odf()
+        serialize(&snap, wb.preserved_part("ods/part/styles.xml"))
     }
 }
 
-/// Parses the spreadsheet body: `table:table` → `table:table-row` → `table:table-cell` (positional, honouring column/row repeats and formulas).
-fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
+impl OdsCodec {
+    /// Parses an untrusted `.ods` package — bounded and XXE-hardened like
+    /// [`SheetProvider::import`] — without building a CRDT. Repeated populated
+    /// cells and rows are expanded (up to a workbook-wide cap).
+    ///
+    /// # Errors
+    /// [`CodecError::Parse`] for a malformed or over-limit package.
+    pub fn parse(bytes: &[u8]) -> Result<ParsedWorkbook, CodecError> {
+        let pkg = SheetPackage::read(bytes)?;
+        let content = pkg
+            .get("content.xml")
+            .ok_or_else(|| CodecError::Parse("ods: missing content.xml".into()))?;
+        let mut parsed = ParsedWorkbook {
+            sheets: parse_content(content)?,
+            ..ParsedWorkbook::default()
+        };
+        if let Some(meta) = pkg.get("meta.xml") {
+            parsed.properties = parse_meta(meta);
+        }
+        // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
+        for (name, bytes) in &pkg.parts {
+            if is_preserved_part(name) {
+                parsed.preserved.insert(name.clone(), bytes.clone());
+            }
+        }
+        Ok(parsed)
+    }
+
+    /// Serializes a workbook snapshot (sheets in tab order) as a complete
+    /// `.ods` package, without a CRDT. `preserved` holds unmodeled parts by
+    /// part name; `styles.xml` (see [`common_styles_part`]) is re-emitted when
+    /// present, so `table:style-name` refs can name the styles it declares.
+    ///
+    /// # Errors
+    /// [`CodecError::Export`] if writing the package fails.
+    pub fn export_snapshot(
+        snap: &WorkbookSnapshot,
+        preserved: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>, CodecError> {
+        serialize(snap, preserved.get("styles.xml").cloned())
+    }
+}
+
+fn serialize(snap: &WorkbookSnapshot, styles: Option<Vec<u8>>) -> Result<Vec<u8>, CodecError> {
+    let mut pkg = SheetPackage { parts: Vec::new() };
+    pkg.set("mimetype", MIMETYPE.as_bytes().to_vec());
+    pkg.set("content.xml", content_xml(snap).into_bytes());
+    pkg.set("meta.xml", meta_xml(&snap.properties).into_bytes());
+    let has_styles = styles.is_some();
+    if let Some(styles) = styles {
+        pkg.set("styles.xml", styles);
+    }
+    pkg.set(
+        "META-INF/manifest.xml",
+        manifest_xml(has_styles).into_bytes(),
+    );
+    pkg.write_odf()
+}
+
+/// A `styles.xml` declaring `office_styles` — `<style:style>` and
+/// `<number:*-style>` elements — as common styles, for
+/// [`OdsCodec::export_snapshot`]: a cell's style ref can then name any of them.
+pub fn common_styles_part(office_styles: &str) -> Vec<u8> {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2"><office:styles>{office_styles}</office:styles></office:document-styles>"#
+    )
+    .into_bytes()
+}
+
+/// Parses the spreadsheet body: `table:table` → `table:table-row` →
+/// `table:table-cell`, positional, honouring column/row repeats and formulas.
+/// A repeated *populated* cell or row is expanded to every position it
+/// covers; empty repeats (Calc pads every table to its full width and height
+/// that way) only advance the cursor.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one streaming pass keeps every table/row/cell state transition in a single auditable match"
+)]
+fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
-    let mut sheet_id: Option<String> = None;
+    let mut sheets: Vec<ParsedSheet> = Vec::new();
     let mut row: u32 = 0; // last-used 1-based row index
-    let mut cur_row: u32 = 0; // the row the current cells belong to
     let mut row_repeat: u32 = 1;
     let mut col: u32 = 0; // column cursor within the current row
+    // The current row's populated cells: (column, repeat, cell).
+    let mut row_cells: Vec<(u32, u32, CellInput)> = Vec::new();
+    let mut budget = MAX_EXPANDED_REPEATS;
 
     let mut cur = OdsCell::default();
     let mut in_text_p = false;
@@ -94,7 +160,10 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
         {
             Event::Start(e) | Event::Empty(e) if local_name(&e) == b"table" => {
                 let name = attr_local(&e, b"name").unwrap_or_else(|| "Sheet".to_string());
-                sheet_id = Some(wb.add_sheet(&name));
+                sheets.push(ParsedSheet {
+                    name,
+                    cells: Vec::new(),
+                });
                 row = 0;
             }
             Event::Start(e) if local_name(&e) == b"table-row" => {
@@ -102,11 +171,15 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                     .and_then(|v| v.parse::<u32>().ok())
                     .unwrap_or(1)
                     .max(1);
-                cur_row = row.saturating_add(1);
                 col = 0;
+                row_cells.clear();
             }
             Event::End(e) if end_local_name(&e) == b"table-row" => {
                 let _ = &e;
+                if let Some(sheet) = sheets.last_mut() {
+                    place_row(sheet, &row_cells, row, row_repeat, &mut budget)?;
+                }
+                row_cells.clear();
                 row = row.saturating_add(row_repeat); // repeated (usually empty) rows advance the counter
                 row_repeat = 1;
             }
@@ -114,18 +187,16 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
             Event::Empty(e)
                 if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
             {
-                let (cell, repeat) = read_cell_attrs(&e, col.saturating_add(1));
-                if let Some(sid) = sheet_id.as_deref() {
-                    flush_cell(wb, sid, &cell, cur_row);
+                let cell = read_cell_attrs(&e, col.saturating_add(1));
+                col = col.saturating_add(cell.repeat);
+                if let Some(input) = resolve_cell(&cell) {
+                    row_cells.push((cell.col, cell.repeat, input));
                 }
-                col = col.saturating_add(repeat);
             }
             Event::Start(e)
                 if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
             {
-                let (cell, repeat) = read_cell_attrs(&e, col.saturating_add(1));
-                cur = cell;
-                cur.repeat = repeat;
+                cur = read_cell_attrs(&e, col.saturating_add(1));
                 in_text_p = false;
             }
             Event::End(e)
@@ -133,10 +204,10 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                     || end_local_name(&e) == b"covered-table-cell" =>
             {
                 let _ = &e;
-                if let Some(sid) = sheet_id.as_deref() {
-                    flush_cell(wb, sid, &cur, cur_row);
-                }
                 col = col.saturating_add(cur.repeat);
+                if let Some(input) = resolve_cell(&cur) {
+                    row_cells.push((cur.col, cur.repeat, input));
+                }
                 cur = OdsCell::default();
             }
             Event::Start(e) if local_name(&e) == b"p" => {
@@ -150,6 +221,20 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                 let _ = &e;
                 in_text_p = false;
             }
+            // ODF spells runs of spaces, tabs and line breaks as elements.
+            Event::Empty(e) if in_text_p => match local_name(&e) {
+                b"s" => {
+                    let count = attr_local(&e, b"c")
+                        .and_then(|c| c.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .max(1)
+                        .min(MAX_SPACE_RUN.saturating_sub(cur.text.len()));
+                    cur.text.extend(std::iter::repeat_n(' ', count));
+                }
+                b"tab" => cur.text.push('\t'),
+                b"line-break" => cur.text.push('\n'),
+                _ => {}
+            },
             Event::Text(t) => {
                 if in_text_p {
                     let txt = t
@@ -158,8 +243,52 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                     cur.text.push_str(&txt);
                 }
             }
+            Event::GeneralRef(r) if in_text_p => {
+                cur.text.extend(crate::codecs::resolve_general_ref(&r));
+            }
             Event::Eof => break,
             _ => {}
+        }
+    }
+    Ok(sheets)
+}
+
+/// Writes one parsed row's cells into `sheet` at every row it repeats to and
+/// every column each cell repeats to, within the grid, charging each copy
+/// past the first against `budget`. A style-only cell (Calc formats whole
+/// empty columns that way) is recorded once, at its first position.
+fn place_row(
+    sheet: &mut ParsedSheet,
+    cells: &[(u32, u32, CellInput)],
+    last_row: u32,
+    row_repeat: u32,
+    budget: &mut usize,
+) -> Result<(), CodecError> {
+    for row_offset in 1..=row_repeat {
+        let Some(row) = last_row.checked_add(row_offset).filter(|r| *r <= MAX_ROW) else {
+            break;
+        };
+        for (first_col, repeat, input) in cells {
+            let populated = !input.value.is_empty() || input.formula.is_some();
+            if !populated && row_offset > 1 {
+                continue;
+            }
+            let repeat = if populated { *repeat } else { 1 };
+            for col_offset in 0..repeat {
+                let Some(col) = first_col.checked_add(col_offset).filter(|c| *c <= MAX_COL) else {
+                    break;
+                };
+                if row_offset > 1 || col_offset > 0 {
+                    *budget = budget.checked_sub(1).ok_or_else(|| {
+                        CodecError::Parse(format!(
+                            "ods: repeated cells expand past {MAX_EXPANDED_REPEATS} cells"
+                        ))
+                    })?;
+                }
+                sheet
+                    .cells
+                    .push((crate::sheet::a1::make_ref(col, row), input.clone()));
+            }
         }
     }
     Ok(())
@@ -180,12 +309,12 @@ struct OdsCell {
     text: String,
 }
 
-fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> (OdsCell, u32) {
+fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> OdsCell {
     let repeat = attr_local(e, b"number-columns-repeated")
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(1)
         .max(1);
-    let cell = OdsCell {
+    OdsCell {
         col,
         repeat,
         value_type: attr_local(e, b"value-type").unwrap_or_default(),
@@ -196,13 +325,12 @@ fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> (OdsCell, u32
         formula: attr_local(e, b"formula").filter(|f| !f.is_empty()),
         style: attr_local(e, b"style-name").filter(|s| !s.is_empty()),
         text: String::new(),
-    };
-    (cell, repeat)
+    }
 }
 
-/// Resolves a parsed ODS cell into a [`CellInput`] and writes it (skipping cells with
-/// no value/formula/style); a repeated *populated* cell is placed once at its first column.
-fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
+/// Resolves a parsed ODS cell into a [`CellInput`], or `None` for a cell with no
+/// value, formula or style.
+fn resolve_cell(cell: &OdsCell) -> Option<CellInput> {
     let (cell_type, value) = match cell.value_type.as_str() {
         "float" | "percentage" | "currency" => (
             CellType::Number,
@@ -240,29 +368,25 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
         }
     };
     if value.is_empty() && cell.formula.is_none() && cell.style.is_none() {
-        return;
+        return None;
     }
     let cell_type = if value.is_empty() && cell.formula.is_none() {
         CellType::Empty
     } else {
         cell_type
     };
-    let reference = crate::sheet::a1::make_ref(cell.col, row);
-    wb.set_cell(
-        sheet_id,
-        &reference,
-        CellInput {
-            value,
-            cell_type,
-            formula: cell.formula.clone(),
-            style: cell.style.clone(),
-        },
-    );
+    Some(CellInput {
+        value,
+        cell_type,
+        formula: cell.formula.clone(),
+        style: cell.style.clone(),
+    })
 }
 
-fn import_meta(xml: &[u8], wb: &mut Workbook) {
+fn parse_meta(xml: &[u8]) -> BTreeMap<String, String> {
+    let mut props = BTreeMap::new();
     let Ok(s) = std::str::from_utf8(xml) else {
-        return;
+        return props;
     };
     let mut reader = Reader::from_str(s);
     let mut cur: Option<&'static str> = None;
@@ -286,17 +410,21 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
                     buf.push_str(&txt);
                 }
             }
+            Event::GeneralRef(r) if cur.is_some() => {
+                buf.extend(crate::codecs::resolve_general_ref(&r));
+            }
             Event::End(_) => {
                 if let Some(key) = cur.take()
                     && !buf.is_empty()
                 {
-                    wb.set_prop(key, &buf);
+                    props.insert(key.to_string(), buf.clone());
                 }
             }
             Event::Eof => break,
             _ => {}
         }
     }
+    props
 }
 
 const CONTENT_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0""#;

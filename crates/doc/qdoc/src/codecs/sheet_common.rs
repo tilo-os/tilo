@@ -7,7 +7,8 @@
 
 use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::{CodecError, Confidence};
-use crate::sheet::Workbook;
+use crate::sheet::{CellInput, Workbook};
+use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -25,6 +26,48 @@ pub trait SheetProvider: Send + Sync {
     /// Returns [`CodecError`] if the workbook cannot be serialised into this
     /// format, or if writing its container fails.
     fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError>;
+}
+
+/// A spreadsheet package parsed without touching a CRDT: its tabs in order with
+/// their cells, the document properties, and the unmodeled parts an export
+/// re-emits verbatim. [`SheetProvider::import`] writes one of these into a
+/// [`Workbook`]; a reader that keeps its own model (an app's grid) can use it
+/// directly and skip the CRDT.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedWorkbook {
+    pub sheets: Vec<ParsedSheet>,
+    /// Document properties (`title`/`author`/`created`/`modified`).
+    pub properties: BTreeMap<String, String>,
+    /// Unmodeled package parts by part name (`xl/styles.xml`, `styles.xml`, …).
+    pub preserved: BTreeMap<String, Vec<u8>>,
+}
+
+/// One parsed tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedSheet {
+    pub name: String,
+    /// `(A1 reference, cell)` in document order; a later entry for a reference
+    /// replaces an earlier one, as it does in a [`Workbook`].
+    pub cells: Vec<(String, CellInput)>,
+}
+
+impl ParsedWorkbook {
+    /// Writes everything into `wb`, filing preserved parts under `format`
+    /// (`xlsx`/`ods`) where that codec's export looks for them.
+    pub(crate) fn apply(self, wb: &mut Workbook, format: &str) {
+        for sheet in self.sheets {
+            let id = wb.add_sheet(&sheet.name);
+            for (reference, cell) in sheet.cells {
+                wb.set_cell(&id, &reference, cell);
+            }
+        }
+        for (key, value) in &self.properties {
+            wb.set_prop(key, value);
+        }
+        for (name, bytes) in &self.preserved {
+            wb.set_preserved(&format!("{format}/part/{name}"), bytes);
+        }
+    }
 }
 
 /// A spreadsheet package's parts in original zip order, read bounded + XXE-hardened
@@ -46,11 +89,6 @@ impl SheetPackage {
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, b)| b.as_slice())
-    }
-
-    /// Names of every part (original order).
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.parts.iter().map(|(n, _)| n.as_str())
     }
 
     pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
