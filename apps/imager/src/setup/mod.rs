@@ -16,6 +16,8 @@ mod internal_cache;
 pub mod internal_download;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 mod internal_download_flow;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+mod internal_install_flow;
 pub mod known_folders;
 pub mod migration;
 mod migration_durability;

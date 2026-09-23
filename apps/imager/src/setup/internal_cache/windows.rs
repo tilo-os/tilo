@@ -845,14 +845,17 @@ mod native {
             )
         }
     }
+    /// The per-user cache directory that holds `qos-internal-install`.
+    pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
+        dirs::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
+    }
     pub(in crate::setup) struct CacheRoot {
         lease: Arc<LockedRoot>,
         manifest: String,
     }
     impl CacheRoot {
         pub(in crate::setup) fn acquire(selected: &SelectedManifest) -> Result<Self> {
-            let cache = dirs::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
-            Self::acquire_at(&cache, selected)
+            Self::acquire_at(&cache_base()?, selected)
         }
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
             let parsed = windows_cache_path(cache.as_os_str().encode_wide())?;
