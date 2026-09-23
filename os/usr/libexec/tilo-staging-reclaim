@@ -130,8 +130,18 @@ def user_session_exists():
 def find_disk(record):
     listing = json.loads(run(['lsblk', '-J', '-b', '-p', '-d', '-o', 'NAME,TYPE,PTTYPE,PTUUID,SIZE']).stdout)
     kinds = ('disk', 'loop') if os.environ.get('TILO_STAGING_RECLAIM_ALLOW_LOOP') else ('disk',)
-    disks = [item for item in listing.get('blockdevices', [])
-             if item.get('type') in kinds and str(item.get('ptuuid') or '').lower() == record['disk_guid']]
+    candidates = [item for item in listing.get('blockdevices', []) if item.get('type') in kinds]
+    for item in candidates:
+        # lsblk reads PTTYPE/PTUUID from udev; read the GPT itself when the
+        # udev database has nothing (containers, very early boot).
+        if not item.get('ptuuid') or not item.get('pttype'):
+            probe = subprocess.run(['sfdisk', '--json', item['name']], capture_output=True, text=True)
+            if probe.returncode == 0:
+                table = json.loads(probe.stdout).get('partitiontable', {})
+                item['ptuuid'] = item.get('ptuuid') or table.get('id')
+                item['pttype'] = item.get('pttype') or table.get('label')
+    disks = [item for item in candidates
+             if str(item.get('ptuuid') or '').lower() == record['disk_guid']]
     if len(disks) != 1:
         raise Mismatch('expected exactly one disk with GPT GUID %s, found %d' % (record['disk_guid'], len(disks)))
     disk = disks[0]
