@@ -533,7 +533,7 @@ impl MapsApp {
             theme.text_dim
         };
         if self.navigation_end_hovered {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 visual,
                 end,
@@ -553,7 +553,7 @@ impl MapsApp {
             // (a contrast step on both themes) with its derived edge.
             draw::edged(scene, visual, end, 10.0, c.surfaces.base);
         }
-        draw::fill_rrect(
+        draw::fill_round(
             scene,
             visual,
             Rect::new(
@@ -3026,7 +3026,7 @@ impl MapsApp {
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
-        draw::fill_rrect(
+        draw::fill_round(
             scene,
             t,
             Rect::new(card.x0, card.y0, card.x0 + 5.0, card.y1),
@@ -3238,7 +3238,7 @@ impl MapsApp {
         y += header_h;
         for level in Congestion::ALL {
             let sw = Rect::new(x, y + 3.0, x + 18.0, y + 3.0 + 6.0);
-            draw::fill_rrect(scene, t, sw, 3.0, canvas::traffic_color(&pal, level));
+            draw::fill_round(scene, t, sw, 3.0, canvas::traffic_color(&pal, level));
             draw::text(
                 scene,
                 tr,
@@ -3597,7 +3597,7 @@ impl MapsApp {
             draw::edged(scene, t, cr, 12.0, c.surfaces.base);
             // Accent identifies the current selection. Category is written
             // directly below, so it does not need a competing colour stripe.
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(cr.x0, cr.y0, cr.x0 + 5.0, cr.y1),
@@ -3664,7 +3664,7 @@ impl MapsApp {
                     // Chosen state is a lift with a derived edge, not an
                     // accent wash (HIG §9.3).
                     let tier = selection_tier(theme, SelectionState::active(true));
-                    draw::fill_rrect(scene, t, br, 8.0, tier.fill);
+                    draw::fill_round(scene, t, br, 8.0, tier.fill);
                     if let Some(border) = tier.border {
                         draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
                     }
@@ -4034,7 +4034,7 @@ impl MapsApp {
             // A translucent accent wash: the surface the eye sees is the
             // panel beneath it, so the edge derives from that ground, not
             // from the wash's accent RGB (which would vanish on light).
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 loc_r,
@@ -4112,7 +4112,7 @@ impl MapsApp {
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
             let active = self.model.mode == *m;
             if active {
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     seg.inflate(-seg_inset, -seg_inset),
@@ -4387,7 +4387,7 @@ impl MapsApp {
             let active = tt.mode == *m;
             if active {
                 let active_rect = seg.inflate(-s1, -s1);
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     active_rect,
@@ -4556,7 +4556,7 @@ impl MapsApp {
             // derives from the panel it sits on (the surface actually seen),
             // then the accent ring.
             if selected {
-                draw::fill_rrect(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
+                draw::fill_round(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
                 scene.stroke(
                     &Stroke::new(1.0),
                     t,
@@ -4638,7 +4638,7 @@ impl MapsApp {
                     };
                     let w = draw::measure_w(tr, &lbl, 12.0) + 16.0;
                     let pill = Rect::new(px, py, px + w, py + 22.0);
-                    draw::fill_rrect(scene, t, pill, 6.0, col);
+                    draw::fill_round(scene, t, pill, 6.0, col);
                     draw::text_center(
                         scene,
                         tr,

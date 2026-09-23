@@ -45,6 +45,7 @@ use crate::actions::HexOperation;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel, LocalEdit};
 use crate::search::{self, SearchKind};
+use ui::paint::with_alpha;
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
@@ -2726,11 +2727,6 @@ impl GridMetrics {
 }
 
 // --- small drawing utilities ------------------------------------------
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    let rgba = c.to_rgba8();
-    Color::from_rgba8(rgba.r, rgba.g, rgba.b, a)
-}
 
 /// ASCII glyph for the ASCII column: the printable char, or a centred dot
 /// for control / high bytes (the universal hex-editor convention).

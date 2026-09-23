@@ -26,6 +26,7 @@ use ui::winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
+use ui::paint::with_alpha;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -3457,9 +3458,6 @@ fn partition_segments(drive: &Drive, map: Rect) -> Vec<(Rect, Option<usize>)> {
 }
 
 // ---- theme-derived colour helpers --------------------------------------
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 fn kind_color(theme: &Theme, kind: DriveKind) -> Color {
     let c = &theme.tokens.colors;

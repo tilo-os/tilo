@@ -7,7 +7,7 @@
 //! a coloured initials disc.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
 use ui::ImageStore;
@@ -16,6 +16,7 @@ use ui::theme::Theme;
 use ui::widget::Avatar;
 
 use crate::model::Addr;
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 
 pub struct AvatarPaintContext<'a> {
     pub scene: &'a mut Scene,
@@ -44,10 +45,6 @@ pub const CHIP_SIZE: f64 = 36.0;
 pub const CHIP_CLEARANCE: f64 = 52.0;
 /// Horizontal room the `NavShell` "Back" chip needs (chevron + label).
 pub const BACK_CLEARANCE: f64 = 118.0;
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
 
 // Rounded fills and edged surfaces go through the toolkit — `ui::surface::pill`
 // for a plain rounded fill (or one with a semantic border such as focus) and
@@ -334,24 +331,4 @@ mod tests {
         let u = gravatar_url("  MyEmailAddress@example.com ");
         assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
     }
-}
-
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
-
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
 }

@@ -403,7 +403,7 @@ impl TimelineInteraction {
     ) -> Vec<(Rect, TimelineEffect)> {
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        fill_rect(scene, transform, area, colors.surfaces.base);
 
         let geom = self.geometry(area);
         let grid_x0 = area.x0 + geom.gutter;
@@ -466,7 +466,7 @@ impl TimelineInteraction {
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
             if is_today {
-                fill_rect(scene, transform, colors.accent[5].with_alpha(0.10), header);
+                fill_rect(scene, transform, header, colors.accent[5].with_alpha(0.10));
             }
             text.draw_text(
                 scene,
@@ -650,9 +650,9 @@ impl TimelineInteraction {
                 fill_round(
                     scene,
                     transform,
-                    color,
                     Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
                     2.0,
+                    color,
                 );
                 scene.push_layer(
                     Fill::NonZero,
@@ -772,8 +772,8 @@ impl TimelineInteraction {
             TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return,
         };
         let block = self.block_rect(area, model.days.len(), geom, column, start_min, end_min);
-        fill_round(scene, transform, fill, block, 6.0);
-        stroke_round(scene, transform, stroke, block, 6.0, 1.5);
+        fill_round(scene, transform, block, 6.0, fill);
+        stroke_round(scene, transform, block, 6.0, stroke, 1.5);
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),

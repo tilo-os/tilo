@@ -17,6 +17,7 @@
 #![allow(clippy::should_implement_trait)]
 
 use ui::ColorCompat;
+use ui::paint::with_alpha;
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -589,10 +590,6 @@ pub const FILL_ROLES: [&str; 8] = [
     "info",
 ];
 pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {

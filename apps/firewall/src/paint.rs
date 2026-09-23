@@ -9,9 +9,10 @@
 //! it sits on (HIG §9.5) rather than declared.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::TextRenderer;
 
 /// Top edge that vertically centres `text` inside `[y0, y0 + h]`, using the
@@ -21,29 +22,6 @@ use ui::text_render::TextRenderer;
 pub fn centered_top(tr: &mut TextRenderer, text: &str, size: f32, y0: f64, h: f64) -> f64 {
     let (_, text_h) = tr.measure(text, size, None);
     y0 + (h - f64::from(text_h)) / 2.0
-}
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-/// An emphasis stroke (selection, danger, focus) on top of a surface that
-/// already carries its derived rest edge from [`card`].
-pub fn stroke_rrect(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    width: f64,
-) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
 
 /// A filled card / tile / row with its rest edge derived from `fill`

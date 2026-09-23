@@ -2276,7 +2276,7 @@ impl SnippetsApp {
         let focused = self.search_input.is_focused();
         ui::surface::card(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
         if focused {
-            draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, c.border_focus);
+            draw::stroke_round(scene, t, search_rect, theme.radii_md(), c.border_focus, 1.5);
         }
         let empty = self.search_input.value().is_empty();
         // Keep Snippets' compact rectangular chrome and grammar hint while
@@ -2604,7 +2604,7 @@ impl SnippetsApp {
         let active = self.open == Some(s.id);
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surfaces.raised);
-            draw::stroke_round(scene, t, row, theme.radii_md(), 1.0, c.accent[5]);
+            draw::stroke_round(scene, t, row, theme.radii_md(), c.accent[5], 1.0);
         } else if row.contains(self.last_mouse) {
             draw::fill_round(scene, t, row, theme.radii_md(), c.lift(0.35));
         }
@@ -2747,7 +2747,7 @@ impl SnippetsApp {
         let pad = 28.0;
         let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
         draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
-        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
+        draw::stroke_round(scene, t, card, theme.radii_md(), c.border_standard, 1.0);
         self.body_editor.set_rect(card);
         self.body_editor.draw_embedded(scene, t, tr, theme);
     }

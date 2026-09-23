@@ -25,6 +25,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
+use ui::paint::fill_rect;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
@@ -449,10 +450,6 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
 )]
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
-}
-
-fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, transform, color, None, &rect);
 }
 
 /// Shared title/description/tab rhythm for the custom library panel. Text

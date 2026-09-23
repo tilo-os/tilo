@@ -1,5 +1,6 @@
 use crate::color::{hsl_to_rgb, rgb_to_hsl};
 use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use vello::peniko::Color;
 
 /// Index into the accent ramp used as the dominant fill (active dot, slider
@@ -29,10 +30,6 @@ pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     )]
     let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
-}
-
-fn with_a(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
@@ -415,7 +412,7 @@ impl Colors {
                 // tier instead.
                 overlay: p.popover,
                 scrim,
-                glass: with_a(mix8(p.base, p.raised, 0.4), 214),
+                glass: with_alpha(mix8(p.base, p.raised, 0.4), 214),
                 glass_blur_px: 24.0,
                 window_card,
                 window_card_border,
@@ -714,7 +711,7 @@ impl Colors {
         } else {
             Color::BLACK
         };
-        composite(with_a(step, GLASS_FILM_LIFT), self.lift_target())
+        composite(with_alpha(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
     /// The hairline separating a window from the desktop. Deliberately

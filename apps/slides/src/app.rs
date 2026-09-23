@@ -4674,7 +4674,7 @@ impl SlidesApp {
         let c = &theme.tokens.colors;
         // Soft drop shadow.
         let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_rrect(
+        chrome::fill_round(
             scene,
             t,
             sh.inflate(2.0, 2.0),
@@ -4692,7 +4692,7 @@ impl SlidesApp {
             14.0,
             &self.images,
         );
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             t,
             chrome.slide_dest,
@@ -4737,7 +4737,7 @@ impl SlidesApp {
         // Ring is drawn at the handle outset so it passes through the
         // handle centres — the whole selection frame sits *around* the
         // content, never over the first glyph.
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             t,
             er.inflate(HANDLE_OFFSET, HANDLE_OFFSET),
@@ -4760,8 +4760,8 @@ impl SlidesApp {
                 // paint a smaller visual pip centred on it so the handle
                 // clears the content edge on every side.
                 let vis = hr.inflate(-4.0, -4.0);
-                chrome::fill_rrect(scene, t, vis, 2.5, Color::WHITE);
-                chrome::stroke_rrect(scene, t, vis, 2.5, sel_col, 1.5);
+                chrome::fill_round(scene, t, vis, 2.5, Color::WHITE);
+                chrome::stroke_round(scene, t, vis, 2.5, sel_col, 1.5);
             }
         }
     }
@@ -4949,7 +4949,7 @@ impl SlidesApp {
         let armed = self.over_delete_zone();
         let danger = theme.tokens.colors.semantic.danger;
         if armed {
-            chrome::fill_rrect(scene, t, zone, 10.0, render::with_alpha(danger, 40));
+            chrome::fill_round(scene, t, zone, 10.0, render::with_alpha(danger, 40));
         }
         scene.stroke(
             &Stroke::new(if armed { 2.0 } else { 1.5 }).with_dashes(0.0, [6.0, 4.0]),
@@ -5285,7 +5285,7 @@ impl SlidesApp {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, chip.fill);
             chip.ink
         } else if active {
-            chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, pal.accent);
+            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
@@ -5315,7 +5315,7 @@ impl SlidesApp {
     ) {
         let c = &paint.theme.tokens.colors;
         let fg = if accent {
-            chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, pal.accent);
+            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
@@ -5346,7 +5346,7 @@ impl SlidesApp {
         active: bool,
     ) {
         let fg = if active {
-            chrome::fill_rrect(scene, t, rect, 7.0, pal.accent);
+            chrome::fill_round(scene, t, rect, 7.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(scene, t, rect, 7.0, c.surfaces.base);
@@ -5383,7 +5383,7 @@ impl SlidesApp {
             );
         }
         if selected {
-            chrome::stroke_rrect(scene, t, rect.inflate(2.5, 2.5), 8.0, pal.accent, 2.0);
+            chrome::stroke_round(scene, t, rect.inflate(2.5, 2.5), 8.0, pal.accent, 2.0);
         }
     }
 
@@ -5397,7 +5397,7 @@ impl SlidesApp {
         let col = Palette::resolve(kind, paint.theme).accent;
         ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
         if selected {
-            chrome::stroke_rrect(paint.scene, paint.transform, rect, 8.0, col, 2.0);
+            chrome::stroke_round(paint.scene, paint.transform, rect, 8.0, col, 2.0);
         }
         let dot = Rect::new(
             rect.x0 + 8.0,
@@ -5405,7 +5405,7 @@ impl SlidesApp {
             rect.x0 + 20.0,
             rect.center().y + 6.0,
         );
-        chrome::fill_rrect(paint.scene, paint.transform, dot, 6.0, col);
+        chrome::fill_round(paint.scene, paint.transform, dot, 6.0, col);
         if rect.width() > 40.0 {
             // Clip the name to the pill so a slight text-metric over-run can
             // never bleed onto the next pill. Pills are sized (see
@@ -5492,7 +5492,7 @@ impl SlidesApp {
     ) {
         let active = self.rail_open();
         let fg = if active {
-            chrome::fill_rrect(scene, t, rect, 8.0, pal.accent);
+            chrome::fill_round(scene, t, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
@@ -5773,7 +5773,7 @@ impl SlidesApp {
         let style = TextBoxStyle::for_element(el, er, s);
         let col = render::with_alpha(pal.accent, 70);
         for r in self.selection_rects_in_box(paint.text, &el.text, sel.min(), sel.max(), style) {
-            chrome::fill_rrect(paint.scene, paint.transform, r, 2.0, col);
+            chrome::fill_round(paint.scene, paint.transform, r, 2.0, col);
         }
     }
 
@@ -5792,7 +5792,7 @@ impl SlidesApp {
         ui::surface::card(scene, t, nb, 8.0, c.surfaces.base);
         if self.editing_notes {
             let accent = self.palette(theme).accent;
-            chrome::fill_rrect(scene, t, nb, 8.0, render::with_alpha(accent, 28));
+            chrome::fill_round(scene, t, nb, 8.0, render::with_alpha(accent, 28));
             scene.stroke(
                 &Stroke::new(1.0),
                 t,

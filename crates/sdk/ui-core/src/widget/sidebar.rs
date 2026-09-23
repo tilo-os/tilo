@@ -24,6 +24,7 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::Metrics;
@@ -868,10 +869,6 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
         lerp(a.b(), b.b()),
         255,
     )
-}
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
 #[cfg(test)]
