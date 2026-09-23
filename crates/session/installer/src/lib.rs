@@ -23,6 +23,7 @@
 //! * [`install`] — backend (`/usr/libexec/tilo-install`, `/usr/libexec/tilo-power`)
 //!   invocation + line-streaming.
 //! * [`installer_network`] — asynchronous connectivity, Wi-Fi and portal flow.
+//! * [`internal_handoff`] — the staged (USB-free) installation handoff.
 //! * [`status_log`] — the auto-tailing status view widget.
 //! * [`disk_row`] — a selectable disk row widget.
 //! * [`step_indicator`] — the numbered step-progress breadcrumb.
@@ -52,6 +53,7 @@ pub mod disks;
 pub mod install;
 pub mod installer_app;
 pub mod installer_network;
+pub mod internal_handoff;
 pub mod keyboard_view;
 pub mod layouts;
 pub mod locales;
