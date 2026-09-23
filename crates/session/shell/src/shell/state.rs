@@ -7595,7 +7595,9 @@ impl WorkspaceTree {
             src_group_id,
             false,
             &new_group,
-            destination,
+            ui::widget::TabDropTarget::GroupGap {
+                gap_index: destination,
+            },
         ) {
             tracing::warn!(
                 tab_id,

@@ -35,13 +35,13 @@ const MAKE_SPACE_ANIM_MS: u32 = 420;
 /// each outer edge. The target follows the window size, but stays useful on a
 /// compact window and does not consume an absurd amount of an ultrawide one.
 const TAB_GROUP_EDGE_FRAC: f64 = 0.25;
-const TAB_GROUP_EDGE_MIN_PX: f64 = 48.0;
-const TAB_GROUP_EDGE_MAX_PX: f64 = 144.0;
+const TAB_GROUP_EDGE_MIN_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
+const TAB_GROUP_EDGE_MAX_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64 * 3.0;
 const TAB_GROUP_EDGE_MAX_FRAC: f64 = 0.32;
 /// Keep a resolved target through a few pixels of boundary jitter. Release
 /// commits the retained preview verbatim, so the window cannot land somewhere
 /// other than the place the indicator showed.
-const TAB_DROP_HYSTERESIS_PX: f64 = 8.0;
+const TAB_DROP_HYSTERESIS_PX: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 fn tab_group_edge_width(group_width: f64) -> f64 {
     (group_width * TAB_GROUP_EDGE_FRAC)
@@ -5347,55 +5347,61 @@ mod tests {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
         let path = automerge::ROOT.clone();
-        let mut handled = false;
         let mut focus: Option<NodeId> = None;
 
-        row.handle_event(
+        dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx, cy),
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
         );
-        row.handle_event(
+        assert!(
+            row.handle_at(0).unwrap().is_hovered(),
+            "cursor over handle must engage hover before the press",
+        );
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
+        );
+        assert!(handled, "press on handle must claim its own event");
+        assert!(
+            row.handle_at(0).unwrap().is_dragging(),
+            "press must start the resize before clamp behavior is exercised",
         );
         // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
         // 240`. Clamp pins left at 240; right absorbs only the actual
         // 160px moved, settling at 560.
-        row.handle_event(
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx - 500.0, cy),
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
         );
+        assert!(handled, "active resize must claim drag motion");
         let min = min_group_px(FIXTURE_USABLE_PX);
         assert_eq!(
             row.groups[0].resolved_width_px(),
