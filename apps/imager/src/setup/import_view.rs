@@ -3877,20 +3877,37 @@ mod tests {
             start_action(&mut app, &choose, invocation).unwrap(),
             ui::widget::ResourceOperationStart::Accepted
         );
-        app.poll_background();
-        assert!(
-            app.picker.is_none(),
-            "disconnected portal must clear the picker"
-        );
-        assert!(matches!(
-            Widget::poll_resource_operation(
+        // The identity gate runs on its own thread before the picker opens, so
+        // one poll can observe neither the picker nor its failure yet.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let update = loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
                 &mut app,
                 invocation,
                 false,
                 &AutoCommit::new(),
                 &automerge::ROOT,
-            ),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
+            ) {
+                break update;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "disconnected picker never failed the review action"
+            );
+            std::thread::yield_now();
+        };
+        assert!(
+            app.gate_request.is_none(),
+            "identity gate must have resolved"
+        );
+        assert!(
+            app.picker.is_none(),
+            "disconnected portal must clear the picker"
+        );
+        assert!(matches!(
+            update,
+            tilo_actions::InvocationUpdate::Failed { .. }
         ));
     }
 
