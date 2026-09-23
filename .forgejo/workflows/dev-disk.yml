@@ -4,9 +4,9 @@ name: Release / Dev VM disk
 # image of the same commit, installs it to a bootable disk, boots that disk once,
 # and publishes:
 #
-#   code.podesta.ai/qos/tilo-dev:<tag>              OCI index, one child per arch
-#   <generic packages>/tilo-dev-disk/<tag>/<disk>   qcow2 (and optional VHDX) disks
-#   <generic packages>/tilo-dev-disk/<tag>/tilo-dev-disk.json
+#   code.podesta.ai/qos/tilo-vm:<tag>              OCI index, one child per arch
+#   <generic packages>/tilo-vm-disk/<tag>/<disk>   qcow2 (and optional VHDX) disks
+#   <generic packages>/tilo-vm-disk/<tag>/tilo-vm-disk.json
 #
 # Disks are cross-workflow outputs that outlive this run, so they go to the
 # generic package registry (docs/release-pipeline.md); workflow artifacts are
@@ -28,7 +28,7 @@ on:
         required: false
         default: ""
       tag:
-        description: "tilo-dev tag and disk package version; empty derives main-<sha7>, the release version, or <branch>-<sha7>."
+        description: "tilo-vm tag and disk package version; empty derives main-<sha7>, the release version, or <branch>-<sha7>."
         required: false
         default: ""
       architectures:
@@ -42,7 +42,7 @@ on:
 
 concurrency:
   # `latest` is the channel's single mutable commit point; serialize its writers.
-  group: tilo-dev-disk
+  group: tilo-vm-disk
   cancel-in-progress: false
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
             tag=${branch:0:100}-$short
           fi
           [[ $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ && $tag != latest && $tag != *-candidate-* ]] || {
-            echo "::error::invalid tilo-dev tag: $tag"
+            echo "::error::invalid tilo-vm tag: $tag"
             exit 1
           }
           # Only main and release tags advance `latest`; other refs publish
@@ -138,7 +138,7 @@ jobs:
             echo "formats=${formats[*]}"
             echo "matrix=$(jq -c '{include:.}' <<< "$include")"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::tilo-dev:$tag from $base at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
+          echo "::notice::tilo-vm:$tag from $base at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
 
   build:
     needs: plan
@@ -154,7 +154,7 @@ jobs:
       BASE_REF_INPUT: ${{ needs.plan.outputs.base }}
       DISK_FORMATS: ${{ needs.plan.outputs.formats }}
       ARCH: ${{ matrix.arch }}
-      DEV_IMAGE: localhost/tilo-dev:ci
+      DEV_IMAGE: localhost/tilo-vm:ci
     steps:
       - name: Checkout the exact source revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -287,12 +287,12 @@ jobs:
       - name: Install the dev image to a bootable disk
         timeout-minutes: 60
         env:
-          TILO_IMAGE: localhost/tilo-dev:ci
+          TILO_IMAGE: localhost/tilo-vm:ci
           TILO_SKIP_BUILD: "1"
           TILO_DISTROBOX: ""
-          TILO_OUTPUT: /var/tmp/tilo-dev-disk-${{ matrix.arch }}
-          TILO_RUN: /var/tmp/tilo-dev-vm-${{ matrix.arch }}
-          TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-dev:${{ needs.plan.outputs.tag }}
+          TILO_OUTPUT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}
+          TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
+          TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
         run: |
           set -euo pipefail
@@ -304,9 +304,9 @@ jobs:
         timeout-minutes: 45
         env:
           TILO_DISTROBOX: ""
-          TILO_OUTPUT: /var/tmp/tilo-dev-disk-${{ matrix.arch }}
-          TILO_RUN: /var/tmp/tilo-dev-vm-${{ matrix.arch }}
-          TILO_DISK: /var/tmp/tilo-dev-disk-${{ matrix.arch }}/qcow2/disk.qcow2
+          TILO_OUTPUT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}
+          TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
+          TILO_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           TILO_VM_ARCH: ${{ matrix.arch }}
           # TCG is much slower than KVM; runners without /dev/kvm need the margin.
           TILO_BOOT_WAIT_ATTEMPTS: "600"
@@ -335,10 +335,10 @@ jobs:
         id: push
         run: |
           set -euo pipefail
-          digest_file=$(mktemp /var/tmp/tilo-dev-digest.XXXXXX)
+          digest_file=$(mktemp /var/tmp/tilo-vm-digest.XXXXXX)
           # A run-scoped candidate name: only the publish job writes the
           # durable multi-architecture tag, after every lane has passed.
-          candidate="code.podesta.ai/qos/tilo-dev:candidate-$DEV_TAG-$GITHUB_RUN_ID-$ARCH"
+          candidate="code.podesta.ai/qos/tilo-vm:candidate-$DEV_TAG-$GITHUB_RUN_ID-$ARCH"
           podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
           digest=$(tr -d '[:space:]' < "$digest_file")
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -347,19 +347,19 @@ jobs:
 
       - name: Convert, hash and describe the disks
         env:
-          SOURCE_DISK: /var/tmp/tilo-dev-disk-${{ matrix.arch }}/qcow2/disk.qcow2
+          SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
           BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
           BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
         run: |
           set -euo pipefail
-          out=/var/tmp/tilo-dev-publish
+          out=/var/tmp/tilo-vm-publish
           rm -rf "$out" dev-disk-fragment
           mkdir -p "$out" dev-disk-fragment
           virtual_size=$(qemu-img info --output=json "$SOURCE_DISK" | jq -er '."virtual-size"')
           disks='[]'
           for format in $DISK_FORMATS; do
-            file="tilo-dev-$DEV_TAG-$ARCH.$format"
+            file="tilo-vm-$DEV_TAG-$ARCH.$format"
             case "$format" in
               # Compressed clusters are read transparently by QEMU (UTM,
               # libvirt), so the download is small and needs no unpacking.
@@ -388,12 +388,12 @@ jobs:
 
       - name: Publish the immutable disks
         env:
-          DISK_AUDIENCE: ${{ vars.TILO_DEV_DISK_RELEASE_AUDIENCE }}
+          DISK_AUDIENCE: ${{ vars.TILO_VM_DISK_RELEASE_AUDIENCE }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
           [[ -n ${DISK_AUDIENCE:-} ]] || {
-            echo '::error::TILO_DEV_DISK_RELEASE_AUDIENCE is required to publish dev disks'
+            echo '::error::TILO_VM_DISK_RELEASE_AUDIENCE is required to publish dev disks'
             exit 1
           }
           # Large-disk runners do not resolve the in-cluster Forgejo service,
@@ -407,23 +407,23 @@ jobs:
             --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DISK_AUDIENCE" | jq -er .value)
           echo "::add-mask::$jwt"
-          out=/var/tmp/tilo-dev-publish
-          uploads="$RUNNER_TEMP/tilo-dev-disk-uploads.tsv"
+          out=/var/tmp/tilo-vm-publish
+          uploads="$RUNNER_TEMP/tilo-vm-disk-uploads.tsv"
           : > "$uploads"
           while read -r file; do
-            printf '%s\t%s\n' "$out/$file" "$package_api/tilo-dev-disk/$DEV_TAG/$file" >> "$uploads"
-            printf '%s\t%s\n' "$out/$file.sha256" "$package_api/tilo-dev-disk/$DEV_TAG/$file.sha256" >> "$uploads"
+            printf '%s\t%s\n' "$out/$file" "$package_api/tilo-vm-disk/$DEV_TAG/$file" >> "$uploads"
+            printf '%s\t%s\n' "$out/$file.sha256" "$package_api/tilo-vm-disk/$DEV_TAG/$file.sha256" >> "$uploads"
           done < <(jq -r '.disks[].file' "dev-disk-fragment/$ARCH.json")
           TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=2 \
             tools/upload_immutable_packages.sh "$uploads"
-          jq --arg base "$package_api/tilo-dev-disk/$DEV_TAG" \
+          jq --arg base "$package_api/tilo-vm-disk/$DEV_TAG" \
             '.disks |= map(. + {url: ($base + "/" + .file)})' \
             "dev-disk-fragment/$ARCH.json" > "dev-disk-fragment/$ARCH.json.tmp"
           mv "dev-disk-fragment/$ARCH.json.tmp" "dev-disk-fragment/$ARCH.json"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: tilo-dev-disk-${{ matrix.arch }}
+          name: tilo-vm-disk-${{ matrix.arch }}
           path: dev-disk-fragment/${{ matrix.arch }}.json
           if-no-files-found: error
 
@@ -468,7 +468,7 @@ jobs:
           printf '%s' "$REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
 
-      - name: Assemble the tilo-dev index and disk manifest
+      - name: Assemble the tilo-vm index and disk manifest
         id: assemble
         env:
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
@@ -495,13 +495,13 @@ jobs:
               then . else error("missing, extra or inconsistent architecture descriptors") end
           ' "${fragments[@]}")
 
-          manifest="tilo-dev-index-$GITHUB_RUN_ID"
+          manifest="tilo-vm-index-$GITHUB_RUN_ID"
           podman manifest create "$manifest"
           for digest in $(jq -r '.[].imageDigest' <<< "$lanes"); do
-            podman manifest add "$manifest" "docker://code.podesta.ai/qos/tilo-dev@$digest"
+            podman manifest add "$manifest" "docker://code.podesta.ai/qos/tilo-vm@$digest"
           done
-          candidate="code.podesta.ai/qos/tilo-dev:index-candidate-$DEV_TAG-$GITHUB_RUN_ID"
-          digest_file=$(mktemp /var/tmp/tilo-dev-index.XXXXXX)
+          candidate="code.podesta.ai/qos/tilo-vm:index-candidate-$DEV_TAG-$GITHUB_RUN_ID"
+          digest_file=$(mktemp /var/tmp/tilo-vm-index.XXXXXX)
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest=$(tr -d '[:space:]' < "$digest_file")
           [[ $index_digest =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -511,14 +511,14 @@ jobs:
           }
           # The durable tag is immutable: refuse different bytes, accept an
           # exact retry, and read every write back.
-          durable="code.podesta.ai/qos/tilo-dev:$DEV_TAG"
+          durable="code.podesta.ai/qos/tilo-vm:$DEV_TAG"
           existing=$(manifest_digest "$durable" 2>/dev/null) || existing=""
           if [[ -n $existing && $existing != "$index_digest" ]]; then
             echo "::error::$durable already binds $existing"
             exit 1
           fi
           if [[ -z $existing ]]; then
-            skopeo copy --all "docker://code.podesta.ai/qos/tilo-dev@$index_digest" "docker://$durable"
+            skopeo copy --all "docker://code.podesta.ai/qos/tilo-vm@$index_digest" "docker://$durable"
           fi
           [[ "$(manifest_digest "$durable")" == "$index_digest" ]] || {
             echo "::error::registry did not persist $durable as $index_digest"
@@ -526,7 +526,7 @@ jobs:
           }
 
           jq -n --arg tag "$DEV_TAG" --arg source "$SOURCE_REVISION" \
-            --arg image "code.podesta.ai/qos/tilo-dev:$DEV_TAG" --arg digest "$index_digest" \
+            --arg image "code.podesta.ai/qos/tilo-vm:$DEV_TAG" --arg digest "$index_digest" \
             --argjson lanes "$lanes" '
             {
               schema: "https://tilo.sh/dev/disk/v1",
@@ -547,20 +547,20 @@ jobs:
                 imageDigest: $lane.imageDigest,
                 baseDigest: $lane.baseDigest
               }]
-            }' > tilo-dev-disk.json
-          cat tilo-dev-disk.json
+            }' > tilo-vm-disk.json
+          cat tilo-vm-disk.json
           echo "index-digest=$index_digest" >> "$GITHUB_OUTPUT"
 
       # The manifest is the disk package's commit point: it is written only
       # after every disk and the durable image tag exist.
       - name: Publish the disk manifest
         env:
-          DISK_AUDIENCE: ${{ vars.TILO_DEV_DISK_RELEASE_AUDIENCE }}
+          DISK_AUDIENCE: ${{ vars.TILO_VM_DISK_RELEASE_AUDIENCE }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
           [[ -n ${DISK_AUDIENCE:-} ]] || {
-            echo '::error::TILO_DEV_DISK_RELEASE_AUDIENCE is required to publish dev disks'
+            echo '::error::TILO_VM_DISK_RELEASE_AUDIENCE is required to publish dev disks'
             exit 1
           }
           package_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
@@ -572,54 +572,54 @@ jobs:
             --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DISK_AUDIENCE" | jq -er .value)
           echo "::add-mask::$jwt"
-          sha256sum tilo-dev-disk.json > tilo-dev-disk.json.sha256
-          uploads="$RUNNER_TEMP/tilo-dev-manifest-uploads.tsv"
+          sha256sum tilo-vm-disk.json > tilo-vm-disk.json.sha256
+          uploads="$RUNNER_TEMP/tilo-vm-manifest-uploads.tsv"
           printf '%s\t%s\n' \
-            tilo-dev-disk.json "$package_api/tilo-dev-disk/$DEV_TAG/tilo-dev-disk.json" \
-            tilo-dev-disk.json.sha256 "$package_api/tilo-dev-disk/$DEV_TAG/tilo-dev-disk.json.sha256" \
+            tilo-vm-disk.json "$package_api/tilo-vm-disk/$DEV_TAG/tilo-vm-disk.json" \
+            tilo-vm-disk.json.sha256 "$package_api/tilo-vm-disk/$DEV_TAG/tilo-vm-disk.json.sha256" \
             > "$uploads"
           TILO_PACKAGE_TOKEN="$jwt" tools/upload_immutable_packages.sh "$uploads"
           {
-            echo "### tilo-dev:$DEV_TAG"
+            echo "### tilo-vm:$DEV_TAG"
             echo
-            echo "Disk manifest: \`$package_api/tilo-dev-disk/$DEV_TAG/tilo-dev-disk.json\`"
+            echo "Disk manifest: \`$package_api/tilo-vm-disk/$DEV_TAG/tilo-vm-disk.json\`"
             echo
             echo '| Arch | Format | Size | SHA-256 |'
             echo '| --- | --- | ---: | --- |'
-            jq -r '.disks[] | "| \(.arch) | \(.format) | \(.size) | `\(.sha256)` |"' tilo-dev-disk.json
+            jq -r '.disks[] | "| \(.arch) | \(.format) | \(.size) | `\(.sha256)` |"' tilo-vm-disk.json
           } >> "$GITHUB_STEP_SUMMARY"
 
       # `latest` is the only mutable name and moves last. It never moves
       # backwards: the revision it currently names must be an ancestor.
-      - name: Advance tilo-dev:latest
+      - name: Advance tilo-vm:latest
         if: needs.plan.outputs.channel == 'true'
         env:
           INDEX_DIGEST: ${{ steps.assemble.outputs.index-digest }}
         run: |
           set -euo pipefail
-          latest=code.podesta.ai/qos/tilo-dev:latest
+          latest=code.podesta.ai/qos/tilo-vm:latest
           current=""
           if raw=$(skopeo inspect --raw "docker://$latest" 2>/dev/null); then
             # Every child carries the same labels; read the first one's.
             child=$(jq -r '.manifests[0].digest // empty' <<< "$raw")
             ref=$latest
-            [[ -z $child ]] || ref="code.podesta.ai/qos/tilo-dev@$child"
+            [[ -z $child ]] || ref="code.podesta.ai/qos/tilo-vm@$child"
             current=$(skopeo inspect "docker://$ref" \
               | jq -r '.Labels["org.opencontainers.image.revision"] // empty')
           fi
           if [[ -n $current ]] && ! git merge-base --is-ancestor "$current" "$SOURCE_REVISION"; then
-            echo "::notice::tilo-dev:latest names $current, which is not an ancestor of $SOURCE_REVISION; leaving it"
+            echo "::notice::tilo-vm:latest names $current, which is not an ancestor of $SOURCE_REVISION; leaving it"
             exit 0
           fi
-          skopeo copy --all "docker://code.podesta.ai/qos/tilo-dev@$INDEX_DIGEST" "docker://$latest"
+          skopeo copy --all "docker://code.podesta.ai/qos/tilo-vm@$INDEX_DIGEST" "docker://$latest"
           [[ "$(skopeo inspect --raw "docker://$latest" | sha256sum | awk '{print "sha256:" $1}')" == "$INDEX_DIGEST" ]] || {
-            echo "::error::registry did not commit tilo-dev:latest as $INDEX_DIGEST"
+            echo "::error::registry did not commit tilo-vm:latest as $INDEX_DIGEST"
             exit 1
           }
-          echo "::notice::tilo-dev:latest -> $DEV_TAG ($INDEX_DIGEST)"
+          echo "::notice::tilo-vm:latest -> $DEV_TAG ($INDEX_DIGEST)"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: tilo-dev-disk-manifest
-          path: tilo-dev-disk.json
+          name: tilo-vm-disk-manifest
+          path: tilo-vm-disk.json
           if-no-files-found: error
