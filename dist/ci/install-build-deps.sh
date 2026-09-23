@@ -10,7 +10,7 @@ debian)
     apt-get update
     apt-get install -y --no-install-recommends \
         curl ca-certificates build-essential binutils clang libclang-dev cmake \
-        pkg-config capnproto file dpkg-dev \
+        pkg-config capnproto file dpkg-dev autoconf automake libtool libgcrypt20-dev \
         libxkbcommon-dev libwayland-dev libseat-dev libinput-dev libudev-dev \
         libdrm-dev libgbm-dev libgl-dev libegl-dev libpipewire-0.3-dev \
         libdbus-1-dev dbus-daemon xdg-dbus-proxy libfontconfig-dev libfreetype-dev \
@@ -21,6 +21,7 @@ fedora)
     dnf install -y --setopt=install_weak_deps=False \
         curl git jq gcc gcc-c++ binutils make clang clang-devel cmake perl \
         pkgconf-pkg-config capnproto file rpm-build rpm-sign rpmlint \
+        autoconf automake libtool libgcrypt-devel \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
         mesa-libEGL-devel pipewire-devel dbus-devel dbus-daemon xdg-dbus-proxy \
@@ -32,7 +33,7 @@ arch)
     packages=(
         curl git base-devel binutils rustup clang cmake pkgconf capnproto file namcap
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa
-        pipewire dbus xdg-dbus-proxy fontconfig freetype2 harfbuzz fuse3
+        pipewire dbus xdg-dbus-proxy fontconfig freetype2 harfbuzz fuse3 libgcrypt
         gstreamer gst-plugins-base-libs
     )
     # Under QEMU/PRoot, libalpm's faccessat probe cannot reopen sync databases
