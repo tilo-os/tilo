@@ -9,7 +9,24 @@ impl App {
     ///     .run();
     /// ```
     #[must_use]
+    /// # Panics
+    /// Fails closed if the host storage lifetime counter is exhausted.
+    #[allow(
+        clippy::expect_used,
+        reason = "storage identity must fail closed rather than wrap and admit an old owner"
+    )]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("autosave generation exhausted");
+        if let Some(history) = &mut self.history {
+            self.layout.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.layout.structure_dirty = true;
+        }
         self.persistence.autosave = Some(autosave);
         self
     }
@@ -21,10 +38,6 @@ impl App {
         self.legacy_persistence = policy;
         self
     }
-    /// `records` owns per-record documents and persistence; `room_index` is
-    /// which records the room holds. Pair with [`App::with_autosave`] only if
-    /// the room index itself should persist — records persist through
-    /// `records`.
     #[must_use]
     pub fn with_records(
         mut self,
@@ -32,6 +45,14 @@ impl App {
         room_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
+        self.advance_autosave_generation();
+        if let Some(history) = &mut self.history {
+            self.layout.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.layout.structure_dirty = true;
+        }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
@@ -39,6 +60,13 @@ impl App {
         self.persistence.records = Some(records);
         self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
+    }
+
+    /// Starts a new autosave generation so writes queued for the previous
+    /// document are recognised as stale. A `u64` counter never wraps in
+    /// practice; wrapping keeps this total instead of panicking.
+    fn advance_autosave_generation(&mut self) {
+        self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
@@ -52,9 +80,6 @@ impl App {
             .map(crate::state::DocumentReplica::document)
     }
 
-    /// The record is the collaboration routing key, so a checkout is a
-    /// change of address — without re-announcing it, deltas keep publishing
-    /// under the previous record's name.
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let Some(set) = self.persistence.records.as_mut() else {
@@ -71,6 +96,14 @@ impl App {
         );
         match switched {
             Some(id) => {
+                self.advance_autosave_generation();
+                if let Some(history) = &mut self.history {
+                    self.layout.node_map.clear();
+                    self.bindings.clear();
+                    self.focused_node = None;
+                    history.invalidate_owner();
+                    self.layout.structure_dirty = true;
+                }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
@@ -162,13 +195,11 @@ impl App {
     /// keystroke still finds it on disk.
     fn autosave_flush(&mut self) {
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) = self
-                .root_widget
-                .try_flush_owned_persistence()
-                .unwrap_or_else(|| {
-                    Err("widget-owned persistence requires a checked flush hook".into())
-                })
-            {
+            self.close_components();
+            if let Err(error) = flush_widget_owned_persistence(
+                self.root_widget.as_mut(),
+                &mut self.component_close_reports,
+            ) {
                 tracing::error!(%error, "widget-owned persistence failed during shutdown");
                 eprintln!("tilo: notebook save failed during shutdown: {error}");
             }
