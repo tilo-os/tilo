@@ -14,7 +14,7 @@
 #     unit that does not exist;
 #   * tools/policy/check_dev_image_contract.py, which keeps dev-only components
 #     out of the production image and the dev image out of production tags;
-#   * tilo-devd, which reads its copy at /usr/share/tilo/components.toml in the
+#   * tilo-vmd, which reads its copy at /usr/share/tilo/components.toml in the
 #     dev image to learn each component's scope and units;
 #   * os/tests/lib/containerfile.sh, which expands the manifest into the image's
 #     copy contract.
@@ -438,7 +438,7 @@ files = [
 # or copies any of it.
 
 # The compositor's control-socket CLI, the one way agents and scripts drive a
-# running desktop (AGENTS.md). tilo-devd's `control` passes through to it.
+# running desktop (AGENTS.md). tilo-vmd's `control` passes through to it.
 [[component]]
 name = "control"
 kind = "userspace"
@@ -451,18 +451,18 @@ files = [
   { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
 ]
 
-# The dev-VM guest daemon. It is not a service: `tilo-dev` runs
-# `ssh <vm> tilo-devd rpc` per call, hence the PATH link.
+# The dev-VM guest daemon. It is not a service: `tilo-vm` runs
+# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
 [[component]]
-name = "devd"
+name = "vmd"
 kind = "userspace"
 scope = "vm"
-packages = ["tilo-devd"]
-bins = ["tilo-devd"]
+packages = ["tilo-vmd"]
+bins = ["tilo-vmd"]
 layer = "dev-tools"
 files = [
-  { from = "tilo-devd", to = "/usr/libexec/tilo-devd", mode = "0755" },
-  { link = "../libexec/tilo-devd", to = "/usr/bin/tilo-devd" },
+  { from = "tilo-vmd", to = "/usr/libexec/tilo-vmd", mode = "0755" },
+  { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
 # ---- Boot: effective only after a cold boot ---------------------------------

@@ -11,6 +11,9 @@
           "signedIdentity": { "type": "matchRepository" }
         }
       ],
+      "code.sandbox.example/qos/tilo-vm": [
+        { "type": "reject" }
+      ],
       "code.sandbox.example/qos/tilo-dev": [
         { "type": "reject" }
       ]
