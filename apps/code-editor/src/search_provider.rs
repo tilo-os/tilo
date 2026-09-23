@@ -6,10 +6,7 @@
 //! that catalogue for one budgeted continuation page.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::actions::{SearchResultRef, SymbolRef};
 use crate::model::NodeId;
@@ -102,37 +99,13 @@ impl FileSearchProvider {
     }
 }
 
-impl SearchProvider for FileSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for FileSearchProvider {
+    fn provider_name(&self) -> &str {
         "Code"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
@@ -185,6 +158,7 @@ pub fn symbols_in(file_id: &str, path: &str, text: &str) -> Vec<SymbolRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
 
     fn file(node: usize, name: &str, path: &str) -> FileEntry {
         FileEntry {

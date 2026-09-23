@@ -10,10 +10,7 @@
 //! authority at activation time and refuses stale rows after deletion.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::{Article, Feed, Store};
 
@@ -163,36 +160,13 @@ fn article_subtitle(article: &Article, feed: &Feed) -> String {
     }
 }
 
-impl SearchProvider for FeedsSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for FeedsSearchProvider {
+    fn provider_name(&self) -> &str {
         "Feeds"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
@@ -200,6 +174,7 @@ impl SearchProvider for FeedsSearchProvider {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
+    use ui::search::SearchProvider;
     use ui::widget::Widget;
     use uuid::Uuid;
 
