@@ -119,9 +119,7 @@ impl OskService {
                     // Launcher, bwrap and OSK share one group. The supervisor
                     // can therefore revoke the service as one unit.
                     .process_group(0);
-                for (key, value) in command.env {
-                    cmd.env(key, value);
-                }
+                crate::shell::launcher::apply_launch_env(&mut cmd, &command.env);
                 let mut child = match cmd.spawn() {
                     Ok(child) => child,
                     Err(error) => {
