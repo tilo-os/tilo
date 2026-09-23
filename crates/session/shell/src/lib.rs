@@ -33,7 +33,6 @@ pub mod priority_contacts;
 #[cfg(test)]
 #[path = "../tests/runtime_host.rs"]
 mod runtime_host_tests;
-pub mod sandbox;
 pub mod security;
 pub mod shell;
 pub mod wayland;
