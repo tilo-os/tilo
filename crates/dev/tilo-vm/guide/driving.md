@@ -9,12 +9,23 @@ tilo-vm control actions invoke PROVIDER ID   # do it, no coordinates
 tilo-vm control state-dump --pretty          # what it believes is on screen
 tilo-vm control list-targets                 # named rects
 tilo-vm control click NAME                   # also click-at, drag, key, type
-tilo-vm shot -o target/slot.png              # PNG of the live scene
+tilo-vm shot -o target/slot.png              # the slot compositor's own frame
 tilo-vm logs -n 200                          # the session's journal
 ```
 
 Prefer the semantic half (`actions`, `state-dump`): it is the surface real
-users and agents depend on.
+users and agents depend on. On the host, without a VM, the same story is
+`tilo-control` and `shots` (AGENTS.md, "Driving a running desktop").
+
+## Screenshots: `shot` and `vm shot`
+
+- `tilo-vm shot` asks the slot's compositor to render its current scene into
+  a PNG (`tilo-control snapshot`). Headless slot, headful slot on its vkms
+  seat, or a slot holding seat0: the same call, the compositor's own frame.
+  It never reads a display, so it cannot show what the kernel scanned out.
+- `tilo-vm vm shot` is the hypervisor's screenshot of the VM's real display,
+  seat0: greetd's greeter, or the slot that claimed it. Headless and vkms
+  slots never appear there. It needs no SSH.
 
 ## Real input devices (headful slots)
 
@@ -35,8 +46,9 @@ key|type|click` there. While a slot holds seat0, its input goes to seat0.
 ## seat0
 
 ```sh
-tilo-vm seat claim      # your session moves onto the real display (VT 1)
-tilo-vm seat release    # back to your own seat; greetd returns
+tilo-vm seat claim                   # your session moves onto the real display (VT 1)
+tilo-vm vm shot -o target/seat0.png  # what the hypervisor window shows now
+tilo-vm seat release                 # back to your own seat; greetd returns
 ```
 
 Only one slot holds seat0. A claim on a held seat fails and names the holder;

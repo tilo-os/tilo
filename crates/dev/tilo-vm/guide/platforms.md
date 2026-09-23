@@ -1,18 +1,40 @@
 # Platforms
 
-A dev VM runs the host's native architecture by default. Emulating another
-architecture needs `--arch <arch> --emulated` and is many times slower.
+A dev VM runs under the host's native hypervisor, so a human can open it in
+the native UI, and the host's native architecture by default. Emulating
+another architecture needs `--arch <arch> --emulated` and is many times slower.
 
-| Host | Adapter | Builds | GPU in guest | Other-arch emulation |
+| Host | Adapter (default) | Humans watch it in | Builds | GPU in guest |
 |---|---|---|---|---|
-| Linux x86_64 | libvirt (`virt-install`, `virsh`); raw `qemu` via `os/dev/vm.sh` | VM or host | virgl, else llvmpipe | aarch64 via TCG (slow) |
-| Linux aarch64 | libvirt; raw `qemu` | VM or host | virgl, else llvmpipe | x86_64 via TCG (slow) |
-| macOS arm64 | UTM (`utmctl`, Apple Virtualization) | VM only | none (llvmpipe) | x86_64 via UTM's QEMU backend (slow) |
-| Windows x86_64 / arm64 | Hyper-V (PowerShell) | VM only | none (llvmpipe) | not supported |
+| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `virt-install`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
+| macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
+| Windows x86_64 / arm64 | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: from WSL, MSYS2 or cwRsync on `PATH`). Headless and vkms
 slots need no GPU, so every row runs them.
+
+## Linux: libvirt's user session
+
+VMs live in libvirt's rootless per-user connection, `qemu:///session`: no
+root, no system daemon config. To watch one: virt-manager, File > Add
+Connection > QEMU/KVM user session (GNOME Boxes shows session VMs too).
+`tilo-vm doctor` checks `virsh` and `virt-install`, that `qemu:///session`
+answers, and that you can open `/dev/kvm`, and prints the install line for
+your host:
+
+- dnf: `sudo dnf install libvirt-daemon-kvm virt-install virt-manager qemu-img`
+- apt: `sudo apt install libvirt-daemon-system libvirt-clients virtinst virt-manager qemu-utils`
+- image-based (Silverblue, Kinoite, Bazzite): `rpm-ostree install libvirt-daemon-kvm virt-install virt-manager qemu-img`, then reboot. Bazzite also has `ujust setup-virtualization`.
+
+`doctor` prints the resolved path of every tool it will run. The `qemu-img`
+used is the one beside `virsh`; a `qemu-img` from elsewhere on `PATH` (an
+Android SDK's, say) is named and refused, never silently used.
+
+The raw `qemu` adapter (`--hypervisor qemu`) drives `os/dev/vm.sh` with that
+script's own conventions. It is the headless adapter for CI and scenario
+tests: its VMs do not appear in virt-manager or Boxes, so it is never the
+default, and it runs only from a Tilo worktree.
 
 ## Creating a VM
 
@@ -24,13 +46,34 @@ tilo-vm vm use dev            # this worktree (writes .tilo-vm)
 tilo-vm vm use dev --global   # the default for every worktree
 ```
 
-`vm create` downloads `tilo-vm-disk.json` for the tag from the forge's
-generic packages, picks the disk for your architecture (qcow2, or VHDX for
+`vm create` checks everything before it downloads or creates anything, and
+stops at the first missing piece with its fix: the hypervisor and its tools,
+an `--image` that exists, the published disk for the tag (for your
+architecture and format), a VM disk path that is not taken, and free space
+for the download and the VM. Then it downloads `tilo-vm-disk.json` for the
+tag from the forge's generic packages, picks the disk (qcow2, or VHDX for
 Hyper-V), resumes an interrupted download, checks its SHA-256 and caches it.
-It needs a forge token with package read access: `FORGEJO_TOKEN`, or an fgj
-(`~/.config/fgj/config.yaml`) or tea login for code.sandbox.example. No disk
-published yet? Build one locally with `os/dev/build-dev-image.sh` and pass it
-as `--image`.
+
+The download needs a **forge token** with package read access:
+`FORGEJO_TOKEN`, or an fgj (`~/.config/fgj/config.yaml`) or tea login for
+code.sandbox.example. That token is read only for disk downloads; image pulls
+(`swap --from ci:`/`sha:`, `vm upgrade`) use podman's registry login instead
+(`tilo-vm guide troubleshooting`).
+
+### No disk published yet
+
+`tilo-vm doctor` says whether one is. If none is:
+
+- ask a human to dispatch the "Release / Dev VM disk" workflow
+  (`.forgejo/workflows/dev-disk.yml`); it needs the commit's production
+  image to be published;
+- or, if you may dispatch CI yourself: `fgj workflow run dev-disk.yml -R qos/qos`,
+  then `fgj run watch`;
+- or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
+- or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
+  locally and pass it as `--image`. The error says whether it exists here.
+
+## Registry and files
 
 `vms.toml` sits in the platform config dir (`~/.config/tilo-vm/` on Linux,
 `~/Library/Application Support/tilo-vm/` on macOS, `%APPDATA%\tilo-vm\` on

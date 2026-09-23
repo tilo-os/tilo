@@ -86,7 +86,34 @@ pub struct Component {
     pub paths: Vec<String>,
 }
 
+/// Is `profile` a cargo profile name tilo-vm will pass on?
+pub fn valid_profile(profile: &str) -> bool {
+    !profile.is_empty()
+        && profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 impl Component {
+    /// This component built with another cargo profile (`swap --profile`).
+    #[must_use]
+    pub fn with_profile(mut self, profile: Option<&str>) -> Self {
+        if let Some(profile) = profile {
+            profile.clone_into(&mut self.profile);
+        }
+        self
+    }
+
+    /// The directory under the target dir that cargo writes this profile
+    /// to: `dev` and `test` land in `debug`, `bench` in `release`.
+    pub fn profile_dir(&self) -> &str {
+        match self.profile.as_str() {
+            "dev" | "test" => "debug",
+            "bench" => "release",
+            other => other,
+        }
+    }
+
     /// Every feature a dev build enables: the manifest's, its dev features,
     /// then `extra` (e.g. `pkg/dev-overrides` found in `cargo metadata`).
     pub fn build_features(&self, extra: &[String]) -> Vec<String> {
@@ -324,6 +351,28 @@ mod tests {
         let kernel = m.get("kernel").unwrap();
         assert!(kernel.boot);
         assert_eq!(kernel.scenario.as_deref(), Some("os/dev/vm.sh"));
+    }
+
+    #[test]
+    fn a_profile_override_changes_the_build_and_its_output_dir() {
+        let m =
+            Manifest::parse("[[component]]\nname = \"shell\"\npackages = [\"shell\"]\n").unwrap();
+        let shell = m.get("shell").unwrap().clone();
+        assert_eq!(shell.profile_dir(), "release");
+        let dev = shell.clone().with_profile(Some("dev"));
+        assert_eq!(
+            dev.cargo_args(&[])[..4],
+            ["build", "--locked", "--profile", "dev"]
+        );
+        assert_eq!(dev.profile_dir(), "debug");
+        assert_eq!(shell.clone().with_profile(None).profile, "release");
+        assert_eq!(
+            shell.with_profile(Some("thin-app")).profile_dir(),
+            "thin-app"
+        );
+        assert!(valid_profile("dev"));
+        assert!(!valid_profile("../x"));
+        assert!(!valid_profile(""));
     }
 
     #[test]

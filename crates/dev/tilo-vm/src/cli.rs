@@ -44,13 +44,15 @@ pub enum Command {
     Slot(SlotCommand),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap vm fs                      # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap review-a launcher --from layer:3f9c..."
+        after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
-        /// `[SLOT] COMPONENT`; the slot defaults to the one named after your
-        /// branch. `app:<dir>` names an app under apps/.
-        #[arg(num_args = 1..=2, required = true, value_names = ["SLOT", "COMPONENT"])]
-        target: Vec<String>,
+        /// A component from os/components.toml (python3 os/scripts/install-components.py --list), or `app:<dir>` for an app under apps/.
+        component: String,
+        /// The slot to swap into (default: the one named after your branch;
+        /// `vm` for VM-wide components).
+        #[arg(long)]
+        slot: Option<String>,
         /// `worktree` (build it), `layer:<hash>` (already in the VM),
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
@@ -59,6 +61,10 @@ pub enum Command {
         /// into the VM) or `host` (Linux hosts only).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
+        /// Cargo profile for `--from worktree` builds (default: the manifest's,
+        /// release for almost every component). `dev` compiles faster.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Type, press keys, move and click on a headful slot's own seat (real libinput path).
     #[command(
@@ -90,9 +96,9 @@ pub enum Command {
     /// Hand the VM's real display (seat0) to a slot, or give it back.
     #[command(subcommand)]
     Seat(SeatCommand),
-    /// Save a PNG of a slot's live scene.
+    /// Save a PNG of the slot compositor's own frame (headless, headful, or on seat0).
     #[command(
-        after_help = "Examples:\n  tilo-vm shot\n  tilo-vm shot -o target/after-swap.png review-a"
+        after_help = "Examples:\n  tilo-vm shot\n  tilo-vm shot -o target/after-swap.png review-a\n\nThe slot's compositor renders its current scene into a PNG (tilo-control\nsnapshot): the same picture for a headless slot, a headful slot on its vkms\nseat, and a slot that holds seat0. It does not read any display. For the\nVM's real display (seat0) as the hypervisor shows it: tilo-vm vm shot."
     )]
     Shot {
         slot: Option<String>,
@@ -124,6 +130,22 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// Does this command leave a receipt? Only commands that change state or
+/// run long do; looking around (status, doctor, guide, lists, logs) does not.
+pub fn writes_receipt(command: Option<&Command>) -> bool {
+    !matches!(
+        command,
+        None | Some(
+            Command::Status
+                | Command::Doctor
+                | Command::Guide { .. }
+                | Command::Logs { .. }
+                | Command::Vm(VmCommand::List | VmCommand::Status { .. })
+                | Command::Slot(SlotCommand::List)
+        )
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -193,7 +215,7 @@ pub enum VmCommand {
     Status { name: Option<String> },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
+        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
@@ -221,8 +243,10 @@ pub enum VmCommand {
     /// Attach to the VM's serial console (works when SSH does not).
     #[command(after_help = "Examples:\n  tilo-vm vm serial")]
     Serial { name: Option<String> },
-    /// Screenshot the VM's own display through the hypervisor.
-    #[command(after_help = "Examples:\n  tilo-vm vm shot -o target/vm.png")]
+    /// Screenshot seat0, the VM's real display, through the hypervisor.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm shot -o target/vm.png\n\nThis is what the hypervisor window shows: greetd's greeter, or the slot that\nclaimed seat0 (tilo-vm seat claim). Slots on their own seats (headless, or\nheadful on a vkms card) never appear here; use tilo-vm shot for them.\nWorks without SSH."
+    )]
     Shot {
         name: Option<String>,
         #[arg(short, long, default_value = "target/tilo-vm-vm.png")]
@@ -246,7 +270,10 @@ pub enum VmCommand {
 #[derive(Debug, Args)]
 pub struct CreateArgs {
     pub name: String,
-    /// libvirt, qemu, utm or hyperv (default: the host's native one).
+    /// Default: the host's native one, which its UI shows: libvirt's
+    /// `qemu:///session` on Linux (virt-manager, Boxes), utm on macOS, hyperv on
+    /// Windows. `qemu` is the headless os/dev/vm.sh adapter for CI and
+    /// scenario tests.
     #[arg(long)]
     pub hypervisor: Option<String>,
     /// A local dev disk to create the VM from, instead of downloading one.
@@ -352,18 +379,72 @@ mod tests {
     }
 
     #[test]
-    fn swap_takes_optional_slot() {
+    fn swap_usage_shows_the_slot_as_an_option() {
+        let mut command = Cli::command();
+        let swap = command.find_subcommand_mut("swap").unwrap();
+        let usage = swap.render_usage().to_string();
+        assert!(usage.contains("[OPTIONS] <COMPONENT>"), "{usage}");
+        assert!(!usage.contains("<SLOT>"), "{usage}");
+        let help = swap.render_long_help().to_string();
+        assert!(help.contains("--slot <SLOT>"), "{help}");
+        assert!(
+            help.contains("--profile dev compiles much faster"),
+            "{help}"
+        );
+        assert!(help.contains("dev-overrides"), "{help}");
+    }
+
+    #[test]
+    fn only_state_changing_or_long_commands_write_receipts() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["tilo-vm"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all).unwrap().command
+        };
+        for quiet in [
+            &[][..],
+            &["status"],
+            &["doctor"],
+            &["guide", "quickstart"],
+            &["vm", "list"],
+            &["vm", "status"],
+            &["slot", "list"],
+            &["logs"],
+        ] {
+            assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
+        }
+        for loud in [
+            &["swap", "shell"][..],
+            &["vm", "create", "dev"],
+            &["vm", "start"],
+            &["slot", "create"],
+            &["rollback"],
+            &["gc"],
+            &["seat", "claim"],
+            &["shot"],
+        ] {
+            assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
+        }
+    }
+
+    #[test]
+    fn swap_takes_an_optional_slot() {
         let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
         assert!(
-            matches!(cli.command, Some(Command::Swap { ref target, .. }) if target == &["shell"])
+            matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "shell")
         );
         let cli = Cli::try_parse_from([
-            "tilo-vm", "--json", "swap", "vm", "fs", "--from", "layer:ab",
+            "tilo-vm", "--json", "swap", "--slot", "vm", "fs", "--from", "layer:ab",
         ])
         .unwrap();
         assert!(cli.json);
         assert!(
-            matches!(cli.command, Some(Command::Swap { ref target, ref from, builder: None }) if target.len() == 2 && from == "layer:ab")
+            matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+        );
+        assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--profile", "dev"]).unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::Swap { profile: Some(ref p), .. }) if p == "dev")
         );
         let cli =
             Cli::try_parse_from(["tilo-vm", "swap", "app:notes", "--builder", "host"]).unwrap();

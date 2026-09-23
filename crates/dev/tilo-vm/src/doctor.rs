@@ -1,0 +1,462 @@
+//! `tilo-vm doctor`'s host-side checks, as pure functions of what was
+//! probed, so every verdict and fix line is unit-tested. The checks that
+//! need the VM stay in [`crate::app`].
+
+use std::path::Path;
+
+use serde::Serialize;
+
+use crate::config::VmEntry;
+use crate::disk::{self, Token};
+use crate::error::{CliError, FORGE_TOKEN_USE, REGISTRY_LOGIN_USE, no_disk_help};
+use crate::host::{self, Choice, HostFacts, HostKind, Missing};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Check {
+    pub check: String,
+    pub state: &'static str,
+    pub detail: String,
+    pub fix: Option<String>,
+}
+
+impl Check {
+    pub fn ok(check: &str, detail: impl Into<String>) -> Self {
+        Self {
+            check: check.into(),
+            state: "ok",
+            detail: detail.into(),
+            fix: None,
+        }
+    }
+
+    pub fn warn(check: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
+        Self {
+            check: check.into(),
+            state: "warn",
+            detail: detail.into(),
+            fix: Some(fix.into()),
+        }
+    }
+
+    pub fn fail(check: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
+        Self {
+            check: check.into(),
+            state: "fail",
+            detail: detail.into(),
+            fix: Some(fix.into()),
+        }
+    }
+}
+
+/// How to install one host package on this host.
+pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
+    let package = match (tool, facts.kind) {
+        ("ssh", HostKind::Apt) => "openssh-client",
+        ("ssh", HostKind::Pacman) => "openssh",
+        ("ssh", _) => "openssh-clients",
+        ("python3", HostKind::Pacman) => "python",
+        (tool, _) => tool,
+    };
+    match facts.kind {
+        HostKind::RpmOstree => {
+            format!("this host is image-based: rpm-ostree install {package}, then reboot")
+        }
+        HostKind::Bootc => {
+            format!("this host is image-based (bootc): add {package} to your host image")
+        }
+        HostKind::Apt => format!("sudo apt install {package}"),
+        HostKind::Pacman => format!("sudo pacman -S {package}"),
+        HostKind::Zypper => format!("sudo zypper install {package}"),
+        HostKind::Macos => format!("brew install {package}"),
+        HostKind::Windows if tool == "rsync" => {
+            "put rsync on PATH: from WSL, MSYS2 or cwRsync".into()
+        }
+        HostKind::Windows => format!("install {package} (winget) and put it on PATH"),
+        HostKind::Dnf | HostKind::Unknown => format!("sudo dnf install {package}"),
+    }
+}
+
+/// Host tools, each with the path it resolves to, and the hypervisor.
+pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
+    let mut checks = vec![Check::ok(
+        "host",
+        format!("{} on {}", facts.kind.describe(), facts.arch),
+    )];
+    for (tool, purpose) in [
+        ("ssh", "reach the VM"),
+        ("git", "name your slot and record provenance"),
+        ("rsync", "sync this worktree into the VM for in-VM builds"),
+        ("curl", "download the published dev disk"),
+    ] {
+        checks.push(match facts.first(tool) {
+            Some(path) => Check::ok(tool, format!("{} ({purpose})", path.display())),
+            None => Check::fail(
+                tool,
+                format!("not on PATH (needed to {purpose})"),
+                install_fix(facts, tool),
+            ),
+        });
+    }
+    if facts.os == "linux" {
+        for tool in ["cargo", "python3"] {
+            checks.push(match facts.first(tool) {
+                Some(path) => Check::ok(
+                    tool,
+                    format!("{} (for swap --builder host)", path.display()),
+                ),
+                None => Check::warn(
+                    tool,
+                    "not on PATH: swap --builder host cannot build here (the in-VM builder still can)",
+                    install_fix(facts, tool),
+                ),
+            });
+        }
+    } else {
+        checks.push(Check::ok(
+            "host builds",
+            "not possible on this OS; swaps build in the VM (--builder vm, the default)",
+        ));
+    }
+    checks.push(match facts.first("podman") {
+        Some(path) => Check::ok(
+            "podman",
+            format!(
+                "{} (pulls CI layers on this host when the VM has no podman)",
+                path.display()
+            ),
+        ),
+        None => Check::warn(
+            "podman",
+            "not on PATH: swap --from ci:/sha: works only when the VM's image has podman",
+            install_fix(facts, "podman"),
+        ),
+    });
+    checks.extend(hypervisor_checks(facts));
+    checks
+}
+
+fn verdict(name: &str, result: Result<String, Missing>) -> Check {
+    match result {
+        Ok(detail) => Check::ok(name, detail),
+        Err(m) => Check::fail(name, m.detail, m.fix),
+    }
+}
+
+/// The adapter `vm create` uses by default, with every tool's resolved
+/// path. On Linux that is libvirt's rootless session, so three checks: its
+/// tools, KVM access and the session connection.
+pub fn hypervisor_checks(facts: &HostFacts) -> Vec<Check> {
+    if facts.os != "linux" {
+        return vec![verdict(
+            "hypervisor",
+            host::auto(facts).map(|c| format!("vm create uses {}", c.describe())),
+        )];
+    }
+    let tools = host::libvirt_tools(facts);
+    let have_virsh = facts.first("virsh").is_some();
+    let mut checks = vec![verdict(
+        "hypervisor",
+        tools.map(|tools| {
+            let choice = Choice {
+                adapter: "libvirt",
+                tools,
+            };
+            format!(
+                "vm create uses {}; {}",
+                choice.describe(),
+                host::VIRT_MANAGER_TIP
+            )
+        }),
+    )];
+    checks.push(verdict(
+        "kvm",
+        host::kvm_usable(facts).map(|()| "/dev/kvm is usable".to_owned()),
+    ));
+    if have_virsh {
+        checks.push(verdict(
+            "libvirt session",
+            host::session_answers(facts).map(|()| format!("{} answers", host::SESSION_URI)),
+        ));
+    }
+    checks
+}
+
+/// The registered VM's own adapter, plus what the qemu adapter needs from
+/// the worktree.
+pub fn vm_adapter_checks(
+    entry: &VmEntry,
+    verdict: Result<Choice, Missing>,
+    has_vm_sh: bool,
+) -> Vec<Check> {
+    let mut checks = vec![match verdict {
+        Ok(choice) => Check::ok("vm hypervisor", choice.describe()),
+        Err(missing) => Check::fail(
+            "vm hypervisor",
+            format!("{}: {}", missing.adapter, missing.detail),
+            missing.fix,
+        ),
+    }];
+    if entry.hypervisor == "qemu" && !has_vm_sh {
+        checks.push(Check::fail(
+            "vm.sh",
+            "no os/dev/vm.sh here; the qemu adapter drives it",
+            "run tilo-vm from a Tilo worktree",
+        ));
+    }
+    checks
+}
+
+/// The two credentials, each with the operations that read it.
+pub fn credential_checks(token: Option<&Token>, login: Result<String, CliError>) -> Vec<Check> {
+    let forge = match token {
+        Some(token) => Check::ok(
+            "forge token",
+            format!("from {}; {FORGE_TOKEN_USE}", token.source),
+        ),
+        None => Check::warn(
+            "forge token",
+            format!(
+                "none found (FORGEJO_TOKEN, fgj or tea login); a forge token is {FORGE_TOKEN_USE}"
+            ),
+            "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea",
+        ),
+    };
+    let registry = match login {
+        Ok(user) => Check::ok(
+            "registry login",
+            format!(
+                "podman here is logged in to {} as {user}; that login is {REGISTRY_LOGIN_USE}",
+                crate::app::REGISTRY
+            ),
+        ),
+        Err(error) => Check::warn(
+            "registry login",
+            format!("{error}; a registry login is {REGISTRY_LOGIN_USE}"),
+            error.hint(),
+        ),
+    };
+    vec![forge, registry]
+}
+
+/// Is a dev disk published? `listing` is the forge's answer to
+/// [`disk::VERSIONS`]; `token` whether one was sent.
+pub fn disk_check(
+    listing: Result<(u16, String), CliError>,
+    token: Option<&Token>,
+    local_build: Option<&str>,
+) -> Check {
+    let name = "published disk";
+    match listing {
+        Ok((200, body)) => match disk::newest_tag(&body) {
+            Some(tag) => Check::ok(
+                name,
+                format!("newest dev disk: {tag} (vm create without --tag takes it)"),
+            ),
+            None if token.is_none() => Check::warn(
+                name,
+                "none visible: without a forge token the forge hides private packages",
+                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea",
+            ),
+            None => Check::warn(
+                name,
+                "no dev disk is published yet: vm create cannot download one",
+                no_disk_help(local_build),
+            ),
+        },
+        Ok((status @ (401 | 403), _)) => {
+            let error = CliError::ForgeAuth {
+                url: disk::VERSIONS.into(),
+                status,
+                token: token.map(|t| t.source.clone()),
+            };
+            Check::warn(name, error.to_string(), error.hint())
+        }
+        Ok((status, _)) => Check::warn(
+            name,
+            format!("the forge answered HTTP {status} to {}", disk::VERSIONS),
+            "rerun tilo-vm doctor; if it repeats, the forge is having trouble",
+        ),
+        Err(error) => Check::warn(
+            name,
+            format!("could not ask the forge: {error}"),
+            error.hint(),
+        ),
+    }
+}
+
+/// Where the local dev-disk build script is, when this checkout has one.
+pub fn local_build(root: &Path) -> Option<String> {
+    let script = root.join(crate::error::LOCAL_BUILD_SCRIPT);
+    script.is_file().then(|| script.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::tests::{LIBVIRT, linux};
+
+    fn find<'a>(checks: &'a [Check], name: &str) -> &'a Check {
+        checks
+            .iter()
+            .find(|c| c.check == name)
+            .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
+    }
+
+    #[test]
+    fn tools_print_their_resolved_path_or_an_os_specific_fix() {
+        let facts = linux(
+            HostKind::RpmOstree,
+            &[("ssh", "/usr/bin/ssh"), ("git", "/usr/bin/git")],
+        );
+        let checks = host_checks(&facts);
+        assert_eq!(find(&checks, "ssh").detail, "/usr/bin/ssh (reach the VM)");
+        let rsync = find(&checks, "rsync");
+        assert_eq!(rsync.state, "fail");
+        assert!(
+            rsync
+                .fix
+                .as_deref()
+                .unwrap()
+                .starts_with("this host is image-based: rpm-ostree install rsync"),
+            "{rsync:?}"
+        );
+        let apt = linux(HostKind::Apt, &[]);
+        assert_eq!(
+            find(&host_checks(&apt), "ssh").fix.as_deref(),
+            Some("sudo apt install openssh-client")
+        );
+    }
+
+    #[test]
+    fn hypervisor_checks_cover_tools_kvm_and_the_session() {
+        let facts = linux(HostKind::Dnf, LIBVIRT);
+        let checks = hypervisor_checks(&facts);
+        let hv = find(&checks, "hypervisor");
+        assert_eq!(hv.state, "ok");
+        assert!(
+            hv.detail.contains("libvirt (qemu:///session)"),
+            "{}",
+            hv.detail
+        );
+        assert!(
+            hv.detail.contains("qemu-img = /usr/bin/qemu-img"),
+            "{}",
+            hv.detail
+        );
+        assert!(hv.detail.contains("virt-manager"), "{}", hv.detail);
+        assert_eq!(find(&checks, "kvm").state, "ok");
+        assert_eq!(find(&checks, "libvirt session").state, "ok");
+
+        let mut broken = linux(HostKind::Dnf, LIBVIRT);
+        broken.kvm = Some(false);
+        broken.session = Some(Err("no daemon".into()));
+        let checks = hypervisor_checks(&broken);
+        assert_eq!(find(&checks, "kvm").state, "fail");
+        let session = find(&checks, "libvirt session");
+        assert!(session.detail.contains("no daemon"), "{session:?}");
+
+        // An image-based host with only an Android SDK's qemu-img on PATH.
+        let stray = linux(
+            HostKind::RpmOstree,
+            &[("qemu-img", "/home/u/Android/Sdk/emulator/qemu-img")],
+        );
+        let checks = hypervisor_checks(&stray);
+        let hv = find(&checks, "hypervisor");
+        assert_eq!(hv.state, "fail");
+        assert!(
+            hv.fix
+                .as_deref()
+                .unwrap()
+                .contains("rpm-ostree install libvirt-daemon-kvm virt-install virt-manager"),
+            "{hv:?}"
+        );
+        assert!(checks.iter().all(|c| c.check != "libvirt session"));
+    }
+
+    #[test]
+    fn a_registered_qemu_vm_needs_vm_sh() {
+        let entry = VmEntry {
+            hypervisor: "qemu".into(),
+            ..VmEntry::default()
+        };
+        let facts = linux(HostKind::Dnf, &[]);
+        let verdict = host::evaluate(&facts, "qemu");
+        let checks = vm_adapter_checks(&entry, verdict, false);
+        assert_eq!(checks[0].state, "fail");
+        assert_eq!(find(&checks, "vm.sh").state, "fail");
+    }
+
+    #[test]
+    fn credentials_say_which_operations_read_them() {
+        let token = Token {
+            value: "t".into(),
+            source: "FORGEJO_TOKEN".into(),
+        };
+        let checks = credential_checks(
+            Some(&token),
+            Err(CliError::RegistryLogin {
+                place: "this host".into(),
+                registry: "code.sandbox.example".into(),
+            }),
+        );
+        assert!(
+            checks[0].detail.contains("dev disk downloads"),
+            "{:?}",
+            checks[0]
+        );
+        assert_eq!(checks[1].state, "warn");
+        assert!(
+            checks[1].detail.contains("swap --from ci:/sha:"),
+            "{:?}",
+            checks[1]
+        );
+        assert!(checks[1].fix.as_deref().unwrap().contains("podman login"));
+    }
+
+    #[test]
+    fn published_disk_check_covers_each_answer() {
+        let token = Token {
+            value: "t".into(),
+            source: "fgj".into(),
+        };
+        let listing =
+            r#"[{"name":"tilo-vm-disk","version":"main-1a2b3c4","created_at":"2026-09-22"}]"#;
+        let ok = disk_check(Ok((200, listing.into())), Some(&token), None);
+        assert_eq!(ok.state, "ok");
+        assert!(ok.detail.contains("main-1a2b3c4"));
+        let none = disk_check(Ok((200, "[]".into())), Some(&token), None);
+        assert_eq!(none.state, "warn");
+        let fix = none.fix.unwrap();
+        assert!(fix.contains("Release / Dev VM disk"), "{fix}");
+        assert!(
+            fix.contains("no local dev-image build is available"),
+            "{fix}"
+        );
+        let hidden = disk_check(Ok((200, "[]".into())), None, None);
+        assert!(hidden.fix.unwrap().contains("FORGEJO_TOKEN"));
+        let refused = disk_check(Ok((401, String::new())), Some(&token), None);
+        assert!(refused.fix.unwrap().contains("token from fgj"));
+        let offline = disk_check(
+            Err(CliError::ToolMissing {
+                tool: "curl".into(),
+                purpose: "p".into(),
+            }),
+            None,
+            None,
+        );
+        assert_eq!(offline.state, "warn");
+    }
+
+    #[test]
+    fn local_build_is_offered_only_when_the_script_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(local_build(dir.path()), None);
+        std::fs::create_dir_all(dir.path().join("os/dev")).unwrap();
+        std::fs::write(dir.path().join("os/dev/build-dev-image.sh"), "").unwrap();
+        assert!(
+            local_build(dir.path())
+                .unwrap()
+                .ends_with("os/dev/build-dev-image.sh")
+        );
+    }
+}

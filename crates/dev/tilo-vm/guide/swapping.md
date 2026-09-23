@@ -2,8 +2,9 @@
 
 ```sh
 tilo-vm swap shell                        # your slot, built from this worktree
-tilo-vm swap my-slot launcher             # an explicit slot
-tilo-vm swap vm fs                        # a VM-wide component into the vm slot
+tilo-vm swap shell --profile dev          # faster compile, slower binary
+tilo-vm swap --slot my-slot launcher      # an explicit slot
+tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
 tilo-vm swap app:notes                    # one app, installed into your slot's app store
 tilo-vm swap shell --from ci:main-1a2b3c4 # the CI build of a published image
 tilo-vm swap shell --from sha:1a2b3c4     # the CI build of a main commit
@@ -11,8 +12,22 @@ tilo-vm swap shell --from layer:<hash>    # a layer already in the VM
 tilo-vm rollback [--to <generation>]
 ```
 
-Components and their scope come from `os/components.toml`
+The one positional argument is the component; the slot is `--slot` and
+defaults to the one named after your branch. Components and their scope
+come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
+
+## Build profile
+
+A build from your worktree uses the component's manifest profile (`release`
+for almost every component; `apps+runtime` uses `thin-app`) with the
+manifest's features plus each package's `dev-overrides` feature. So the
+binary runs at realistic speed and still honours the harness variables
+(`TILO_TEST_CONTROL` and friends) that release builds without the feature
+ignore. `--profile dev` compiles much faster and runs slower; use it while
+iterating on logic, not for performance or timing work. The layer's
+provenance records the profile. `--profile` applies only to
+`--from worktree` components, not to apps or CI builds.
 
 ## Builders (`--from worktree`, the default)
 
@@ -21,8 +36,9 @@ Components and their scope come from `os/components.toml`
 1. rsyncs the worktree into the VM (`/var/lib/tilo-vm/src/<worktree-id>/`),
    honouring `.gitignore`; `.git` and `target/` stay behind;
 2. runs there `cargo build --locked --profile <profile> -p <packages>
-   --features <manifest features, dev_features, pkg/dev-overrides>` with the
-   dev image's toolchain and the VM's shared sccache; the output streams live;
+   --features <manifest features, dev_features, pkg/dev-overrides>` (see
+   *Build profile* above) with the dev image's toolchain and the VM's shared
+   sccache; the output streams live;
 3. lays the layer out with `os/scripts/install-components.py` from the synced
    tree and imports it in the VM. Nothing travels back to the host.
 
@@ -39,8 +55,12 @@ CI publishes `code.sandbox.example/qos/tilo:main-<sha7>` for main commits and
 `:<version>` for releases. `sha:<commit>` means `ci:main-<sha7>`. The
 component's manifest `files` are copied out of that image into a layer with
 `authority = "ci"`. The VM pulls it when its image has podman; otherwise this
-host does (needs podman here). A 401 or `reqPackageAccess` means a registry
-login is missing; the error names where.
+host does (needs podman here). Pulls need a podman registry login for
+`code.sandbox.example` where the pull runs: the VM's own
+(`tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.sandbox.example`)
+or this host's (`podman login code.sandbox.example`). `FORGEJO_TOKEN` and fgj/tea
+logins do not count for pulls. A 401 or `reqPackageAccess` names which login
+is missing.
 
 ## Apps (`app:<dir>`)
 

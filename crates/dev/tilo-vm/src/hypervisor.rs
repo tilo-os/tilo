@@ -258,8 +258,6 @@ pub trait Hypervisor {
     fn control(&self, _vm: &Vm<'_>, _args: &[String]) -> Option<CommandLine> {
         None
     }
-    /// Host tools this adapter needs, for `doctor`.
-    fn tools(&self) -> &'static [&'static str];
 }
 
 /// # Errors
@@ -277,17 +275,6 @@ pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
     }
 }
 
-/// The adapter a new VM gets on this host by default.
-pub fn native() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "utm"
-    } else if cfg!(windows) {
-        "hyperv"
-    } else {
-        "libvirt"
-    }
-}
-
 fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoint {
     vm.entry
         .ssh
@@ -300,12 +287,14 @@ fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoin
         })
 }
 
-/// A qcow2 child of the published image, so the image stays pristine.
+/// A qcow2 child of the published image, so the image stays pristine. Runs
+/// the `qemu-img` resolved when the VM was created.
 fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     let disk = vm.disk()?;
+    let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
     Ok(vm.entry.image.as_deref().map(|image| {
         CommandLine::new(
-            "qemu-img",
+            qemu_img,
             &["create", "-f", "qcow2", "-F", "qcow2", "-b", image, disk],
         )
     }))
@@ -433,14 +422,14 @@ impl Hypervisor for Libvirt {
         command.args.extend(args.iter().cloned());
         Some(command)
     }
-
-    fn tools(&self) -> &'static [&'static str] {
-        &["virsh", "virt-install", "qemu-img"]
-    }
 }
 
 // ---- raw QEMU via os/dev/vm.sh (Linux, CI and scenario tests) ---------------
 
+/// The headless adapter for CI and scenario tests: it drives `os/dev/vm.sh`
+/// from the worktree root, with that script's own conventions. A VM made
+/// this way is invisible to virt-manager and Boxes, so it is never the
+/// default; people use libvirt.
 pub struct Qemu;
 
 impl Qemu {
@@ -513,10 +502,6 @@ impl Hypervisor for Qemu {
 
     fn control(&self, vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
         Some(Self::script(vm, &["cmd"]).arg(args.join(" ")))
-    }
-
-    fn tools(&self) -> &'static [&'static str] {
-        &["bash", "qemu-img"]
     }
 }
 
@@ -606,10 +591,6 @@ impl Hypervisor for Utm {
         let mut command = CommandLine::new("utmctl", &[]);
         command.args.extend(args.iter().cloned());
         Some(command)
-    }
-
-    fn tools(&self) -> &'static [&'static str] {
-        &["utmctl"]
     }
 }
 
@@ -722,10 +703,6 @@ impl Hypervisor for HyperV {
 
     fn control(&self, _vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
         Some(powershell(&args.join(" ")))
-    }
-
-    fn tools(&self) -> &'static [&'static str] {
-        &["powershell.exe"]
     }
 }
 
@@ -847,6 +824,28 @@ mod tests {
             "TILO_SSH_PORT=2223 TILO_RUN=/tmp/out bash os/dev/vm.sh shot boot"
         );
         assert_eq!(Qemu.destroy(&vm)[1].display(), "rm -f /vms/dev.qcow2");
+    }
+
+    #[test]
+    fn disks_are_made_with_the_qemu_img_resolved_at_creation() {
+        let entry = VmEntry {
+            qemu_img: Some("/usr/bin/qemu-img".into()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert!(
+            Libvirt.create(&vm).unwrap()[0]
+                .display()
+                .starts_with("/usr/bin/qemu-img create")
+        );
+        assert!(
+            Qemu.create(&vm).unwrap()[0]
+                .display()
+                .starts_with("/usr/bin/qemu-img create")
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
 }
 
 pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandLine {
-    let from = format!("{target_dir}/{}", component.profile);
+    let from = format!("{target_dir}/{}", component.profile_dir());
     let mut command = CommandLine::new("python3", &[]);
     command.args = component.installer_args(&from, &dest.display().to_string());
     command
