@@ -142,7 +142,10 @@ fn three_item_ordered_list_yields_one_ol_with_three_li() {
 #[test]
 fn image_block_emits_img_with_data_uri() {
     // A minimal PNG header so the MIME sniff picks image/png.
-    let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4];
+    // The trailing 0xfb 0xff exercise the `+`/`/` alphabet and `=` padding.
+    let png = vec![
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 0xfb, 0xff,
+    ];
     let hash = "abc123".to_string();
     let mut blobs = BTreeMap::new();
     blobs.insert(hash.clone(), png);
@@ -170,8 +173,8 @@ fn image_block_emits_img_with_data_uri() {
         "data URI img:\n{html}"
     );
     assert!(
-        html.contains("data:image/png;base64,"),
-        "png mime + base64:\n{html}"
+        html.contains("<img src=\"data:image/png;base64,iVBORw0KGgoBAgME+/8=\""),
+        "png mime + standard padded base64:\n{html}"
     );
     assert!(html.contains("alt=\"A cat\""), "alt text carried:\n{html}");
 }

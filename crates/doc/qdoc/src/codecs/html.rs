@@ -906,38 +906,35 @@ fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     base64_decode(payload)
 }
 
-/// Minimal standard-alphabet base64 decoder (no external dep); ignores ASCII whitespace, `None` on an invalid character.
+/// Decodes a standard-alphabet base64 payload as HTML authors write it: ASCII
+/// whitespace is ignored, padding is optional and decoding stops at the first
+/// `=`, and non-zero trailing bits or a dangling final character are dropped.
+/// `None` when any character outside the standard alphabet is present.
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some(u32::from(c.saturating_sub(b'A'))),
-            b'a'..=b'z' => Some(u32::from(c.saturating_sub(b'a')).saturating_add(26)),
-            b'0'..=b'9' => Some(u32::from(c.saturating_sub(b'0')).saturating_add(52)),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
+    use base64::Engine as _;
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+    const LENIENT: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
+
+    let mut compact: Vec<u8> = s
+        .bytes()
+        .take_while(|&b| b != b'=')
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    // A lone final character carries only six bits -- not a whole byte. It is
+    // still validated, then dropped, rather than failing the whole payload.
+    if compact.len() % 4 == 1 {
+        let last = compact.pop()?;
+        if !(last.is_ascii_alphanumeric() || last == b'+' || last == b'/') {
+            return None;
         }
     }
-    let mut out = Vec::new();
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &b in s.as_bytes() {
-        if b == b'=' {
-            break;
-        }
-        if b.is_ascii_whitespace() {
-            continue;
-        }
-        let v = val(b)?;
-        acc = (acc << 6) | v;
-        bits = bits.saturating_add(6);
-        if bits >= 8 {
-            bits = bits.saturating_sub(8);
-            let byte = (acc >> bits) & 0xFF;
-            out.push(u8::try_from(byte).unwrap_or(0));
-        }
-    }
-    Some(out)
+    LENIENT.decode(&compact).ok()
 }
 
 /// Collapses runs of HTML whitespace to single spaces; only ASCII whitespace collapses — `&nbsp;` (U+00A0) is meaningful and preserved.
@@ -1310,6 +1307,35 @@ mod tests {
             "{:?}",
             p.marks
         );
+    }
+
+    #[test]
+    fn base64_payload_decoding_is_lenient_about_layout_only() {
+        // Padded, unpadded and wrapped payloads decode alike.
+        assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
+        assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
+        assert_eq!(
+            base64_decode(" Zm9v\r\n YmFy\t").as_deref(),
+            Some(&b"foobar"[..])
+        );
+        assert_eq!(
+            base64_decode("+/+/").as_deref(),
+            Some(&[0xfb, 0xff, 0xbf][..])
+        );
+        assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
+        assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
+        // Decoding stops at the first `=`; whatever follows is ignored.
+        assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
+        assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
+        // Non-zero trailing bits and a dangling final sextet are dropped.
+        assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
+        assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
+        assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
+        // Anything outside the standard alphabet is rejected, even last.
+        assert_eq!(base64_decode("Zm9v-_"), None);
+        assert_eq!(base64_decode("Zm9vY!"), None);
+        assert_eq!(base64_decode("!"), None);
+        assert_eq!(base64_decode("Zm9v\u{a0}"), None);
     }
 
     #[test]
