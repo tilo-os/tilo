@@ -278,7 +278,7 @@ impl IdentityPaths {
             .unwrap_or_else(|| Path::new("device"));
         device_dir
             .join("certs")
-            .join(format!("{}.bin", hex_encode(user_public_key)))
+            .join(format!("{}.bin", hex::encode(user_public_key)))
     }
 }
 
@@ -1049,25 +1049,6 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     fs::create_dir_all(parent)?;
     atomic_file::write(path, &bytes)?;
     Ok(())
-}
-
-/// # Panics
-/// Never in practice: `byte >> 4` and `byte & 0x0f` are both bounded to
-/// `0..16` by the bit operation itself (not by any external input), so
-/// indexing the 16-entry `HEX` table can never go out of range.
-#[allow(
-    clippy::indexing_slicing,
-    reason = "byte >> 4 and byte & 0x0f are both unconditionally in 0..16, so HEX[..] cannot go out of range; see this fn's # Panics doc"
-)]
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(unix)]
