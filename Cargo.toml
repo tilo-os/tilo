@@ -189,6 +189,7 @@ members = [
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
+    "crates/system/sandbox-core",
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/swipe",

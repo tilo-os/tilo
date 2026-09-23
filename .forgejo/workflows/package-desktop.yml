@@ -19,6 +19,7 @@ on:
       - "crates/sdk/tilo-app/**"
       - "crates/sdk/ui-core/**"
       - "crates/packaging/launcher/**"
+      - "crates/system/sandbox-core/**"
       - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
