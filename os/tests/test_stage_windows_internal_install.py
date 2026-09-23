@@ -80,6 +80,17 @@ class StageTests(unittest.TestCase):
                 with self.subTest(value=value):
                     with self.assertRaises(ValueError): stage.load_plan(path)
 
+    def test_live_record_contains_exact_free_extent_and_assigned_identities(self):
+        value = plan_fixture()
+        staged = [{"role": "staging-root", "partuuid": str(uuid.UUID(int=4)), "sha256": "b" * 64,
+                   "offset_bytes": 40960, "size_bytes": 8192},
+                  {"role": "staging-esp", "partuuid": str(uuid.UUID(int=5)), "sha256": "c" * 64,
+                   "offset_bytes": 49152, "size_bytes": 8192}]
+        record = stage.make_live_record(value, staged)
+        self.assertEqual(record["schema"], "tilo.internal-install-source.v1")
+        self.assertEqual(record["target_free_extent"], value["target_free_extent"])
+        self.assertEqual(record["staging"], staged)
+
 
 if __name__ == "__main__":
     unittest.main()

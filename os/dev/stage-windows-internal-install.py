@@ -284,6 +284,46 @@ def atomic_json(path, value):
         except FileNotFoundError: pass
 
 
+def make_live_record(plan, staged):
+    return {"schema": "tilo.internal-install-source.v1", "source_sha256": plan["source"]["sha256"],
+            "disk": {key: plan["windows_disk"][key] for key in ("size_bytes", "unique_id", "serial")},
+            "preserve_partitions": plan["preserve_partitions"],
+            "target_free_extent": plan["target_free_extent"], "staging": staged}
+
+
+def publish_live_record(plan, record):
+    disk = plan["windows_disk"]["number"]
+    esp = next(row for row in record["staging"] if row["role"] == "staging-esp")
+    partuuid = guid(esp["partuuid"])
+    mounted = ps_json(rf'''$ErrorActionPreference='Stop'
+$p=Get-Partition -DiskNumber {disk} -ErrorAction Stop | Where-Object {{([string]$_.Guid).Trim('{{','}}').ToLowerInvariant() -eq '{partuuid}'}}
+if(@($p).Count -ne 1){{throw 'staging ESP identity is missing or ambiguous'}}
+$assigned=$false
+if(-not $p.DriveLetter){{$p|Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop|Out-Null;$assigned=$true;$p=Get-Partition -DiskNumber {disk} -PartitionNumber $p.PartitionNumber -ErrorAction Stop}}
+if(-not $p.DriveLetter){{throw 'Windows could not mount the staged ESP'}}
+[pscustomobject]@{{drive=([string]$p.DriveLetter).ToUpperInvariant();partition_number=[int]$p.PartitionNumber;assigned=[bool]$assigned}}|ConvertTo-Json -Compress''')
+    drive = str(mounted.get("drive", ""))
+    if not re.fullmatch(r"[A-Z]", drive):
+        fail("Windows returned an invalid staged-ESP drive letter")
+    root = Path(f"{drive}:\\EFI\\tilo")
+    path = root / "internal-stage.json"
+    data = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = root / ".internal-stage.json.tmp"
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+        if path.read_bytes() != data:
+            fail("staged ESP operation record failed readback")
+    finally:
+        if mounted.get("assigned") is True:
+            ps_json(rf'''$ErrorActionPreference='Stop'
+$p=Get-Partition -DiskNumber {disk} -PartitionNumber {integer(mounted.get('partition_number'), 'staging ESP partition number', 1)} -ErrorAction Stop
+if($p.DriveLetter){{$p|Remove-PartitionAccessPath -AccessPath (([string]$p.DriveLetter)+':\') -ErrorAction Stop|Out-Null}}
+[pscustomobject]@{{unmounted=$true}}|ConvertTo-Json -Compress''')
+    return hashlib.sha256(data).hexdigest()
+
+
 def execute(args):
     plan = load_plan(args.plan)
     expected_id = plan["windows_disk"]["unique_id"]
@@ -327,9 +367,12 @@ def execute(args):
             actual = next(item for item in additions if item["offset_bytes"] == row["offset_bytes"])
             results.append({"role": row["role"], "partuuid": actual["partuuid"], "sha256": digest,
                             "offset_bytes": row["offset_bytes"], "size_bytes": row["size_bytes"]})
+    live_record = make_live_record(plan, results)
+    record_hash = publish_live_record(plan, live_record)
     receipt = {"schema": "tilo.windows-internal-stage.v1", "disk": plan["windows_disk"],
                "target_free_extent": plan["target_free_extent"], "staging": results,
-               "source_sha256": plan["source"]["sha256"], "readback_verified": True}
+               "source_sha256": plan["source"]["sha256"], "readback_verified": True,
+               "live_record_sha256": record_hash}
     atomic_json(args.output, receipt)
     print(f"staging complete and read back: {args.output}")
 
