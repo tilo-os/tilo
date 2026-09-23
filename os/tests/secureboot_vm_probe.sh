@@ -144,7 +144,7 @@ timeout 40s "$qemu" "${machine[@]}" -m 1024 \
   -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
   -drive if=pflash,format=raw,file="$work/vars.enrolled.fd" \
   -kernel "$kernel" -initrd "$work/enroll.cpio" \
-  -append "console=$console rdinit=/init panic=-1" -nographic -no-reboot \
+  -append "console=$console rdinit=/init panic=-1" -nic none -nographic -no-reboot \
   > "$work/enroll.log" 2>&1 || status=$?
 status=${status:-0}
 case "$status" in 0|124) ;; *) cat "$work/enroll.log"; exit "$status" ;; esac
@@ -167,10 +167,19 @@ cp "$work/vars.enrolled.fd" "$work/vars.unsigned.fd"
 
 boot_efi() {
   local vars="$1" disk="$2" log="$3"
+  local -a disk_args
+  if [ "$arch" = aarch64 ]; then
+    # AAVMF includes the virtio-mmio block driver; avoid requiring the
+    # distribution-specific efi-virtio.rom PCI option ROM on ARM runners.
+    disk_args=(-drive "if=none,id=esp,format=raw,file=$disk"
+               -device virtio-blk-device,drive=esp)
+  else
+    disk_args=(-drive "if=virtio,format=raw,file=$disk")
+  fi
   timeout 35s "$qemu" "${machine[@]}" -m 512 \
     -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
     -drive if=pflash,format=raw,file="$vars" \
-    -drive if=virtio,format=raw,file="$disk" -nographic -no-reboot \
+    "${disk_args[@]}" -nic none -nographic -no-reboot \
     > "$log" 2>&1 || test "$?" -eq 124
 }
 boot_efi "$work/vars.unsigned.fd" "$work/unsigned.img" "$work/unsigned.log"
