@@ -26,6 +26,14 @@ pub mod remedies;
 pub mod scripts;
 pub mod storage;
 
+#[cfg(windows)]
+mod adapter;
+#[cfg(windows)]
+mod sys;
+
+#[cfg(windows)]
+pub use adapter::{WindowsPlatform, probe_facts};
+
 use super::plan::FirmwareFacts;
 use super::platform::{IoResult, Platform};
 
