@@ -99,6 +99,10 @@ class PlanTests(unittest.TestCase):
         ])
         self.assertEqual(result["preserve_partitions"][2]["number"], 4)
         self.assertEqual(result["planned_windows_shrink"]["new_size_bytes"], 858_993_459_200)
+        self.assertEqual([(row["offset_bytes"], row["size_bytes"]) for row in result["target_partitions"]], [
+            (859_401_355_264, 2 * plan.GIB),
+            (861_548_838_912, 91_845_820_416),
+        ])
 
     def test_overlap_identity_and_capacity_drift_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -50,7 +50,7 @@ def load_plan(path: Path) -> dict:
     if type(value) is not dict or value.get("schema") != PLAN_SCHEMA or value.get("read_only_plan") is not True:
         fail("unsupported operation plan")
     required = {"source", "windows_disk", "observed_partitions", "preserve_partitions", "planned_windows_shrink",
-                "reviewed_extent", "target_free_extent", "staging", "post_boot_reclaim"}
+                "reviewed_extent", "target_free_extent", "target_partitions", "staging", "post_boot_reclaim"}
     if not required.issubset(value):
         fail("operation plan lacks required fields")
     disk = value["windows_disk"]
@@ -91,6 +91,19 @@ def load_plan(path: Path) -> dict:
     reviewed_size = integer(reviewed.get("size_bytes"), "reviewed size", 1)
     target_start = integer(target.get("offset_bytes"), "target offset", 1)
     target_size = integer(target.get("size_bytes"), "target size", 1)
+    final = value["target_partitions"]
+    if type(final) is not list or [row.get("role") for row in final] != ["final-esp", "final-root"]:
+        fail("plan lacks the exact final ESP/root pair")
+    if [guid(row.get("type_guid")) for row in final] != [ESP_GUID, TILO_ROOT_GUID]:
+        fail("final partition types do not match ESP/root policy")
+    for row in final:
+        guid(row.get("partuuid"))
+        integer(row.get("offset_bytes"), "final partition offset", 1)
+        integer(row.get("size_bytes"), "final partition size", 1)
+    if (final[0]["offset_bytes"] != target_start
+            or final[0]["offset_bytes"] + final[0]["size_bytes"] != final[1]["offset_bytes"]
+            or final[1]["offset_bytes"] + final[1]["size_bytes"] != target_start + target_size):
+        fail("final partitions do not exactly fill the target extent")
     root, esp = staging
     if (target_start != reviewed_start or target_start + target_size != root["offset_bytes"]
             or root["offset_bytes"] + root["size_bytes"] != esp["offset_bytes"]
@@ -299,7 +312,8 @@ def make_live_record(plan, staged, backend_sha256=None):
             "development_backend": {"efi_path": "/EFI/tilo/dev/tilo-install", "sha256": backend_sha256},
             "disk": {key: plan["windows_disk"][key] for key in ("size_bytes", "unique_id", "serial")},
             "preserve_partitions": plan["preserve_partitions"],
-            "target_free_extent": plan["target_free_extent"], "staging": staged}
+            "target_free_extent": plan["target_free_extent"],
+            "target_partitions": plan["target_partitions"], "staging": staged}
 
 
 def publish_live_record(plan, record, backend_data):

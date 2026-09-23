@@ -28,6 +28,12 @@ def plan_fixture():
             "planned_windows_shrink": {"partition_number": 3, "original_size_bytes": 32768, "new_size_bytes": 16384},
             "reviewed_extent": {"offset_bytes": 24576, "size_bytes": 32768},
             "target_free_extent": {"offset_bytes": 24576, "size_bytes": 16384},
+            "target_partitions": [
+                {"role": "final-esp", "partuuid": str(uuid.UUID(int=7)),
+                 "type_guid": stage.ESP_GUID, "offset_bytes": 24576, "size_bytes": 8192},
+                {"role": "final-root", "partuuid": str(uuid.UUID(int=8)),
+                 "type_guid": stage.TILO_ROOT_GUID, "offset_bytes": 32768, "size_bytes": 8192},
+            ],
             "staging": [
                 {"role": "staging-root", "type_guid": "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab",
                  "offset_bytes": 40960, "size_bytes": 8192, "source_offset_bytes": 4096},
