@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 PLAN_SCHEMA = "tilo.windows-internal-install-plan.v1"
@@ -119,29 +120,41 @@ def load_plan(path: Path) -> dict:
     return value
 
 
-def hash_stream(stream, offset, size):
+def progress(label, done, total, started, last_reported):
+    step = 4 * 1024 * 1024 * 1024
+    if label and (done == total or done // step > last_reported // step):
+        elapsed = time.monotonic() - started
+        print(f"{label}: {done / (1024**3):.1f}/{total / (1024**3):.1f} GiB in {elapsed:.1f}s", file=sys.stderr, flush=True)
+    return done
+
+
+def hash_stream(stream, offset, size, label=None):
     stream.seek(offset)
     digest = hashlib.sha256()
-    remaining = size
+    remaining, done, last_reported = size, 0, 0
+    started = time.monotonic()
     while remaining:
         data = stream.read(min(CHUNK, remaining))
         if not data:
             fail("short read while hashing an extent")
         digest.update(data)
         remaining -= len(data)
+        done += len(data)
+        last_reported = progress(label, done, size, started, last_reported)
     return digest.hexdigest()
 
 
 def hash_file(path: Path):
     with path.open("rb", buffering=0) as stream:
-        return hash_stream(stream, 0, path.stat().st_size)
+        return hash_stream(stream, 0, path.stat().st_size, "verify installer SHA-256")
 
 
-def copy_extent(source, target, source_offset, target_offset, size):
+def copy_extent(source, target, source_offset, target_offset, size, label=None):
     source.seek(source_offset)
     target.seek(target_offset)
     digest = hashlib.sha256()
-    remaining = size
+    remaining, done, last_reported = size, 0, 0
+    started = time.monotonic()
     while remaining:
         data = source.read(min(CHUNK, remaining))
         if not data:
@@ -151,6 +164,8 @@ def copy_extent(source, target, source_offset, target_offset, size):
             fail("short write while staging the installer")
         digest.update(data)
         remaining -= written
+        done += written
+        last_reported = progress(label, done, size, started, last_reported)
     target.flush()
     os.fsync(target.fileno())
     return digest.hexdigest()
@@ -463,8 +478,9 @@ def execute(args):
     results = []
     with image.open("rb", buffering=0) as source, open_physical_drive(plan["windows_disk"]["number"]) as target:
         for row in plan["staging"]:
-            digest = copy_extent(source, target, row["source_offset_bytes"], row["offset_bytes"], row["size_bytes"])
-            readback = hash_stream(target, row["offset_bytes"], row["size_bytes"])
+            digest = copy_extent(source, target, row["source_offset_bytes"], row["offset_bytes"], row["size_bytes"],
+                                 f"write {row['role']}")
+            readback = hash_stream(target, row["offset_bytes"], row["size_bytes"], f"read back {row['role']}")
             if digest != readback:
                 fail("physical staging readback differs from source")
             actual = next(item for item in additions if item["offset_bytes"] == row["offset_bytes"])
