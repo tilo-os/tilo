@@ -447,15 +447,25 @@ impl Provenance {
 }
 
 /// What the VM's base image was built with, from the dev image's
-/// `/usr/share/tilo-vm/base.json`. Layers are checked against it.
+/// `/usr/share/tilo-vm/base.json`. Layers are checked against it, field for
+/// field in the form [`Provenance`] records.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BaseInfo {
     #[serde(default)]
     pub image_digest: Option<String>,
+    /// `None` in a dev image: it is its own builder, identified by
+    /// `toolchain`, `target` and `cargo_lock_hash` instead.
     #[serde(default)]
     pub builder_image_digest: Option<String>,
+    /// `rustc --version` of the image's toolchain.
     #[serde(default)]
     pub toolchain: Option<String>,
+    /// Rust target triple of the image's toolchain (`rustc -vV`'s host).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// SHA-256 (hex) of the `Cargo.lock` the image was built from.
+    #[serde(default)]
+    pub cargo_lock_hash: Option<String>,
 }
 
 /// Who holds seat0, since when.
@@ -931,5 +941,29 @@ mod tests {
         assert!(!valid_slot_name("trail-"));
         assert!(!valid_slot_name(&"a".repeat(29)));
         assert!(!valid_slot_name("a/b"));
+    }
+
+    #[test]
+    fn base_info_reads_what_the_dev_image_writes() {
+        // The shape os/scripts/finalize-dev-image.py writes: a dev image is
+        // its own builder, so `builder_image_digest` is null.
+        let base: BaseInfo = serde_json::from_str(
+            r#"{
+              "image_digest": "sha256:aaaa",
+              "builder_image_digest": null,
+              "toolchain": "rustc 1.97.1 (abc 2026-08-01)",
+              "target": "x86_64-unknown-linux-gnu",
+              "cargo_lock_hash": "0123abcd",
+              "base_image": "code.sandbox.example/qos/tilo:main-1a2b3c4"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(base.builder_image_digest, None);
+        assert_eq!(base.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(base.cargo_lock_hash.as_deref(), Some("0123abcd"));
+        assert_eq!(
+            base.toolchain.as_deref(),
+            Some("rustc 1.97.1 (abc 2026-08-01)")
+        );
     }
 }

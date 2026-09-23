@@ -125,8 +125,15 @@ fn unchanged(record: SlotRecord) -> ApplyResult {
 
 /// Refuse layers the VM cannot run; warn about differences it can.
 ///
+/// Refused: another CPU architecture or target triple, another builder
+/// image, or another `Cargo.lock` than the VM's image was built from (the
+/// swapped component and the rest of the image would disagree on shared
+/// crates). Each is compared only when both sides record it. A dev image
+/// records no builder image (it is its own builder), so there the target,
+/// toolchain and `Cargo.lock` identify the builder instead.
+///
 /// # Errors
-/// [`DaemonError::AbiMismatch`] for a foreign architecture or builder.
+/// [`DaemonError::AbiMismatch`] naming the first field that differs.
 pub fn abi_check(
     provenance: &Provenance,
     base: &BaseInfo,
@@ -137,15 +144,31 @@ pub fn abi_check(
         layer: layer.into(),
         vm: vm.into(),
     };
-    if let Some(target) = &provenance.target
-        && target.split('-').next() != Some(arch)
-    {
-        return Err(mismatch("target", target, arch));
+    if let Some(target) = &provenance.target {
+        // The image's full triple when base.json has it, else the architecture.
+        let foreign = match base.target.as_deref() {
+            Some(vm) => vm != target,
+            None => target.split('-').next() != Some(arch),
+        };
+        if foreign {
+            return Err(mismatch(
+                "target",
+                target,
+                base.target.as_deref().unwrap_or(arch),
+            ));
+        }
     }
+    // Compared only when both name one. A dev image's base.json names none:
+    // the image built itself.
     if let (Some(layer), Some(vm)) = (&provenance.builder_image_digest, &base.builder_image_digest)
         && layer != vm
     {
         return Err(mismatch("builder image", layer, vm));
+    }
+    if let (Some(layer), Some(vm)) = (&provenance.cargo_lock_hash, &base.cargo_lock_hash)
+        && layer != vm
+    {
+        return Err(mismatch("Cargo.lock", short(layer), short(vm)));
     }
     let mut warnings = Vec::new();
     if let (Some(layer), Some(vm)) = (&provenance.base_image_digest, &base.image_digest)
@@ -169,6 +192,11 @@ pub fn abi_check(
         );
     }
     Ok(warnings)
+}
+
+/// The first 12 hex digits, enough to tell two hashes apart in a message.
+fn short(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
 }
 
 impl Daemon {
@@ -1055,6 +1083,7 @@ mod tests {
             image_digest: Some("sha256:base".into()),
             builder_image_digest: Some("sha256:builder".into()),
             toolchain: Some("1.97.1".into()),
+            ..BaseInfo::default()
         };
         let mut layer = Provenance::local("shell");
         layer.target = Some("aarch64-unknown-linux-gnu".into());
@@ -1079,5 +1108,56 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// base.json as a dev image writes it: no builder image, but a target
+    /// triple and a Cargo.lock hash.
+    fn dev_base() -> BaseInfo {
+        BaseInfo {
+            image_digest: Some("sha256:base".into()),
+            builder_image_digest: None,
+            toolchain: Some("rustc 1.97.1".into()),
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            cargo_lock_hash: Some("0123456789abcdef0123".into()),
+        }
+    }
+
+    #[test]
+    fn abi_compares_the_dev_images_target_and_cargo_lock() {
+        let base = dev_base();
+        let mut layer = Provenance::local("shell");
+        layer.target = Some("x86_64-unknown-linux-gnu".into());
+        layer.cargo_lock_hash = base.cargo_lock_hash.clone();
+        layer.toolchain = base.toolchain.clone();
+        // A layer from some builder image, onto an image that is its own
+        // builder: nothing to compare, so neither a refusal nor a warning.
+        layer.builder_image_digest = Some("sha256:ci-builder".into());
+        assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
+        layer.builder = Some("host".into());
+        assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
+
+        // The same architecture, another triple.
+        layer.target = Some("x86_64-unknown-linux-musl".into());
+        let error = abi_check(&layer, &base, "x86_64").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "layer target is x86_64-unknown-linux-musl but the VM expects x86_64-unknown-linux-gnu"
+        );
+        layer.target = Some("x86_64-unknown-linux-gnu".into());
+
+        layer.cargo_lock_hash = Some("fedcba9876543210fedc".into());
+        let error = abi_check(&layer, &base, "x86_64").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "layer Cargo.lock is fedcba987654 but the VM expects 0123456789ab"
+        );
+        let rpc = error.to_rpc();
+        assert!(rpc.hint.contains("Cargo.lock"), "{}", rpc.hint);
+        assert!(rpc.hint.contains("tilo-vm vm upgrade"), "{}", rpc.hint);
+        assert_eq!(rpc.see.as_deref(), Some("tilo-vm guide swapping"));
+
+        // A CI layer records no Cargo.lock: nothing to compare.
+        layer.cargo_lock_hash = None;
+        assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
     }
 }
