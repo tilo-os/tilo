@@ -129,9 +129,11 @@ jobs:
           - arch: x86_64
             platform: linux/amd64
             runner: runner-disk-100g
+            kernel_build_jobs: 6
           - arch: aarch64
             platform: linux/arm64
             runner: runner-disk-100g-arm64
+            kernel_build_jobs: 4
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     # Finish before the existing three-hour runner/server deadline, leaving
@@ -279,28 +281,38 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
-            KERNEL_BUILD_JOBS=2
+            KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
           cache-from: type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:${{ matrix.arch }}
-          # The kernel builder's intermediate source tree is tens of GiB.
-          # Export only final-stage dependencies: mode=max duplicated that
-          # tree during export and exhausted the runner after a successful
-          # compile.
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:${{ matrix.arch }},mode=min
+          # PRs consume the shared cache but do not update it: exporting cache
+          # work can outlive a successful compile and exhaust the runner's
+          # hard deadline. Main/tag/dispatch builds refresh final-stage
+          # dependencies only; mode=max duplicates the multi-GiB source tree.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min', matrix.arch) || '' }}
           provenance: false
 
       - name: Install native kernel acceptance tools
         run: |
           set -euo pipefail
           case '${{ matrix.arch }}' in
-            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
-            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
+            aarch64)
+              apt_qemu=qemu-system-arm
+              fedora_qemu=qemu-system-aarch64
+              apt_firmware=qemu-efi-aarch64
+              fedora_firmware=edk2-aarch64
+              ;;
+            x86_64)
+              apt_qemu=qemu-system-x86
+              fedora_qemu=qemu-system-x86
+              apt_firmware=ovmf
+              fedora_firmware=edk2-ovmf
+              ;;
             *) exit 2;;
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd dosfstools mtools "$apt_qemu" "$apt_firmware"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"
           fi
 
       - name: Boot the packaged native kernel and verify module signatures
@@ -337,6 +349,7 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}" \
             --output "type=local,dest=$probe" .
           TILO_KERNEL_PATH="$probe/vmlinuz" \
           TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \
