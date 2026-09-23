@@ -9,8 +9,14 @@
 //!
 //! Layer bytes travel as base64 chunks ([`LayerUploadChunk`]) so the stream
 //! stays line-oriented JSON and a truncated upload is detectable.
+//!
+//! Long jobs that stream output (in-VM builds, CI layer extraction) do not
+//! use the RPC loop: `tilo-dev` runs `ssh <vm> tilo-devd build` (or
+//! `ci-layer`) with a [`BuildJob`] or [`CiJob`] on stdin. The job's own
+//! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
 pub mod client;
+pub mod input;
 pub mod manifest;
 
 use std::collections::BTreeMap;
@@ -19,10 +25,15 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
+pub use input::{Button, InputAction};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Where in-VM builds keep one synced source tree per host worktree; its
+/// `target/` is the worktree's own, evictable build dir.
+pub const SRC_DIR: &str = "/var/lib/tilo-dev/src";
 
 /// Decoded bytes per upload chunk. Small enough to keep a line bounded,
 /// large enough that per-line overhead is noise.
@@ -74,6 +85,12 @@ pub mod code {
     pub const APPLY: i64 = 6;
     pub const IO: i64 = 7;
     pub const ABI: i64 = 8;
+    /// The registry refused the VM's credentials.
+    pub const AUTH: i64 = 9;
+    /// A tool the job needs is not in the VM's image.
+    pub const TOOL: i64 = 10;
+    /// The build or extraction itself failed; its output says why.
+    pub const JOB: i64 = 11;
 }
 
 /// Every method, tagged by its wire name.
@@ -116,6 +133,10 @@ pub enum Request {
     Control(Control),
     #[serde(rename = "gc")]
     Gc(Gc),
+    #[serde(rename = "input")]
+    Input(Input),
+    #[serde(rename = "app.install")]
+    AppInstall(AppInstall),
 }
 
 impl Request {
@@ -139,6 +160,8 @@ impl Request {
             Self::Shot(_) => "shot",
             Self::Control(_) => "control",
             Self::Gc(_) => "gc",
+            Self::Input(_) => "input",
+            Self::AppInstall(_) => "app.install",
         }
     }
 }
@@ -180,6 +203,8 @@ call! {
     Shot => ShotResult,
     Control => ControlResult,
     Gc => GcResult,
+    Input => InputResult,
+    AppInstall => AppInstallResult,
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -300,12 +325,36 @@ pub struct Control {
     pub args: Vec<String>,
 }
 
-/// Remove what no kept generation references.
+/// Remove what no kept generation references, and evict build dirs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gc {
     /// Generations to keep per slot, besides the current one.
     pub keep: u32,
     pub dry_run: bool,
+    /// In-VM build dirs (one per host worktree) to keep, most recently
+    /// used first; older ones are evicted.
+    #[serde(default)]
+    pub keep_targets: Option<u32>,
+    /// Evict further build dirs, least recently used first, until the VM
+    /// has this much free space.
+    #[serde(default)]
+    pub free_goal_bytes: Option<u64>,
+}
+
+/// Drive a headful slot's seat through its own uinput keyboard and pointer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Input {
+    pub slot: String,
+    pub actions: Vec<InputAction>,
+}
+
+/// Install a `.tapp` into the slot user's app store (`tilo-install
+/// install --allow-self-signed --force`, run as that user).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstall {
+    pub slot: String,
+    /// An upload of the `.tapp` file, or a path to one inside the VM.
+    pub source: LayerSource,
 }
 
 // ---- shared vocabulary ------------------------------------------------------
@@ -422,6 +471,9 @@ pub struct Lease {
 pub struct Storage {
     /// Physically allocated bytes of all layers.
     pub layers_bytes: u64,
+    /// In-VM build dirs, as measured after each build.
+    #[serde(default)]
+    pub targets_bytes: u64,
     pub free_bytes: Option<u64>,
     pub total_bytes: Option<u64>,
 }
@@ -492,6 +544,44 @@ pub struct HelloResult {
     /// State that needs attention: half-applied transitions, dead sessions.
     #[serde(default)]
     pub issues: Vec<Issue>,
+    /// Which build and extraction tools the VM's image has.
+    #[serde(default)]
+    pub tools: VmTools,
+}
+
+/// Tools found on the VM's `PATH`, which decide where builds and CI layer
+/// extraction can run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one independent flag per tool"
+)]
+pub struct VmTools {
+    pub cargo: bool,
+    pub rsync: bool,
+    pub python3: bool,
+    pub sccache: bool,
+    pub podman: bool,
+}
+
+impl VmTools {
+    /// Everything the in-VM builder needs.
+    pub fn can_build(&self) -> bool {
+        self.cargo && self.rsync && self.python3
+    }
+
+    /// Names of the tools the in-VM builder lacks.
+    pub fn missing_for_build(&self) -> Vec<&'static str> {
+        [
+            ("cargo", self.cargo),
+            ("rsync", self.rsync),
+            ("python3", self.python3),
+        ]
+        .into_iter()
+        .filter(|(_, present)| !present)
+        .map(|(name, _)| name)
+        .collect()
+    }
 }
 
 /// Something wrong with the VM's state, and how to repair it.
@@ -530,6 +620,11 @@ pub struct GcResult {
     /// `<slot>/<generation>` of each pruned generation.
     pub removed_generations: Vec<String>,
     pub freed_bytes: u64,
+    /// Worktree ids whose in-VM build dir was evicted.
+    #[serde(default)]
+    pub removed_targets: Vec<String>,
+    #[serde(default)]
+    pub freed_target_bytes: u64,
     pub storage: Storage,
 }
 
@@ -618,6 +713,120 @@ pub struct ControlResult {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputResult {
+    pub slot: String,
+    /// The logind seat the devices belong to (`seat-<slot>`, or `seat0`
+    /// while the slot holds it).
+    pub seat: String,
+    /// Kernel input events written, `SYN` reports included.
+    pub events: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstallResult {
+    pub slot: String,
+    /// `[package].id` of the installed app, when tilo-install reported it.
+    pub id: Option<String>,
+    pub version: Option<String>,
+    /// What tilo-install printed.
+    pub output: String,
+}
+
+// ---- streaming jobs ---------------------------------------------------------
+
+/// What `tilo-devd build` builds from the synced tree `SRC_DIR/<worktree>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildTarget {
+    /// A manifest component, imported as a layer.
+    Component { name: String },
+    /// An app under `apps/<dir>`, packaged as a self-signed `.tapp` and
+    /// installed into `slot`'s app store.
+    App { dir: String, slot: String },
+}
+
+/// Stdin of `tilo-devd build`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildJob {
+    /// Directory name under [`SRC_DIR`]; one per host worktree.
+    pub worktree: String,
+    pub target: BuildTarget,
+    /// What the host knows (commit, dirty hash, `Cargo.lock` hash); the VM
+    /// adds its toolchain, target and builder image.
+    pub provenance: Provenance,
+    #[serde(default)]
+    pub owner: Owner,
+    /// Colour and progress bars in the streamed output.
+    #[serde(default)]
+    pub color: bool,
+}
+
+/// Stdin of `tilo-devd ci-layer`: pull a published image and turn one
+/// component's files into a layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiJob {
+    pub image: String,
+    pub component: String,
+    /// The component's install paths from the manifest; `dir/` is a tree.
+    pub paths: Vec<String>,
+    pub provenance: Provenance,
+}
+
+/// What a job produced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JobOutput {
+    Layer {
+        hash: String,
+        existed: bool,
+        provenance: Box<Provenance>,
+        /// Seconds per phase (`build`, `assemble`, `import`, `pull`, ...).
+        #[serde(default)]
+        phases: BTreeMap<String, f64>,
+        /// `sccache_hits` and `sccache_misses` of this build.
+        #[serde(default)]
+        cache: BTreeMap<String, u64>,
+    },
+    App {
+        #[serde(flatten)]
+        result: AppInstallResult,
+        #[serde(default)]
+        phases: BTreeMap<String, f64>,
+    },
+}
+
+/// The one stdout line of a job: exactly one of `result` or `error`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobLine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<JobOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+}
+
+/// Prefix of the job line, so it is found among anything else a remote
+/// shell prints on stdout.
+pub const JOB_LINE_PREFIX: &str = "tilo-devd-job: ";
+
+impl JobLine {
+    /// The last job line in `stdout`.
+    pub fn find(stdout: &str) -> Option<Self> {
+        stdout
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix(JOB_LINE_PREFIX))
+            .and_then(|json| serde_json::from_str(json).ok())
+    }
+
+    pub fn render(&self) -> String {
+        format!(
+            "{JOB_LINE_PREFIX}{}",
+            serde_json::to_string(self).unwrap_or_default()
+        )
+    }
+}
+
 /// Slot names become Linux user names (`tds-<name>`, at most 32 bytes)
 /// and systemd instance names, so they are short, lowercase and dash-safe.
 pub fn valid_slot_name(name: &str) -> bool {
@@ -678,6 +887,35 @@ mod tests {
             let value = serde_json::to_value(&request).unwrap();
             assert_eq!(value["method"], request.method());
         }
+    }
+
+    #[test]
+    fn job_lines_are_found_among_other_output() {
+        let line = JobLine {
+            result: None,
+            error: Some(RpcError {
+                code: code::TOOL,
+                message: "no cargo".into(),
+                hint: "h".into(),
+                see: None,
+            }),
+        };
+        let stdout = format!("motd noise\n{}\ntrailing\n", line.render());
+        assert_eq!(JobLine::find(&stdout), Some(line));
+        assert_eq!(JobLine::find("nothing here"), None);
+        let job = BuildJob {
+            worktree: "wt-1234".into(),
+            target: BuildTarget::App {
+                dir: "notes".into(),
+                slot: "a".into(),
+            },
+            provenance: Provenance::local("app:notes"),
+            owner: Owner::default(),
+            color: false,
+        };
+        let text = serde_json::to_string(&job).unwrap();
+        assert!(text.contains(r#""target":{"kind":"app","dir":"notes","slot":"a"}"#));
+        assert_eq!(serde_json::from_str::<BuildJob>(&text).unwrap(), job);
     }
 
     #[test]

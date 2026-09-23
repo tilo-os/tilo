@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use tilo_dev_protocol::{Action, ComponentInfo, ControlResult, Policy, Scope, SlotKind};
+use tilo_dev_protocol::{
+    Action, ComponentInfo, ControlResult, InputAction, Policy, Scope, SlotKind,
+};
 
 use crate::error::DaemonError;
 use crate::slots::{Generation, SlotRecord};
@@ -69,6 +71,19 @@ pub trait Apply {
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
+    /// Send input through `seat`'s uinput keyboard and pointer, creating
+    /// them on first use; returns the number of kernel events written.
+    fn input(
+        &mut self,
+        slot: &str,
+        seat: &str,
+        actions: &[InputAction],
+    ) -> Result<u64, DaemonError>;
+    /// Remove the slot's uinput devices (they follow its seat).
+    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
+    /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
+    /// returns what it printed.
+    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
 }
 
 /// What makes a session equivalent to a greetd one, as read from `/proc`.
@@ -326,6 +341,9 @@ pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Acti
     actions.push(Action::StopUnit {
         unit: session.clone(),
     });
+    if record.kind == SlotKind::Headful {
+        apply.stop_input(&record.name)?;
+    }
     let uid = apply.ensure_user(&user)?;
     let user_manager = user_unit(uid);
     apply.stop_unit(&user_manager)?;
@@ -468,6 +486,27 @@ impl Apply for RecordingApply {
     }
     fn disk_space(&mut self, _path: &std::path::Path) -> Option<(u64, u64)> {
         None
+    }
+    fn input(
+        &mut self,
+        slot: &str,
+        seat: &str,
+        actions: &[InputAction],
+    ) -> Result<u64, DaemonError> {
+        self.call(format!("input {slot} {seat} {}", actions.len()));
+        Ok(u64::try_from(actions.len()).unwrap_or(0).saturating_mul(2))
+    }
+    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError> {
+        self.call(format!("stop_input {slot}"));
+        Ok(())
+    }
+    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError> {
+        self.call(format!("install_app {user}"));
+        let name = tapp
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
     }
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
         self.units
