@@ -72,7 +72,8 @@ pub fn install_fix(facts: &HostFacts, tool: &str) -> String {
             "put rsync on PATH: from WSL, MSYS2 or cwRsync".into()
         }
         HostKind::Windows => format!("install {package} (winget) and put it on PATH"),
-        HostKind::Dnf | HostKind::Unknown => format!("sudo dnf install {package}"),
+        HostKind::Dnf => format!("sudo dnf install {package}"),
+        HostKind::Unknown => format!("install {package} with your package manager"),
     }
 }
 
