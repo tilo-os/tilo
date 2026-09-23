@@ -307,6 +307,11 @@ jobs:
           SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
         run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
+      - name: Resolve the digest-pinned base with bounded retries
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: bash os/containers/tilo-relay/resolve-base-with-retry.sh "$SNAPSHOT_BUILDER" "$BASE_REF"
+
       - name: Extract image metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
