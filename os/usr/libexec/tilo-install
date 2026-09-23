@@ -26,6 +26,12 @@
 #                                     append a dedicated ESP and root inside one
 #                                     exact unallocated GPT extent; never resize,
 #                                     move, or delete an existing partition
+#     --internal-source --internal-source-root-partuuid UUID
+#       --internal-source-root-size-bytes N --internal-source-efi-partuuid UUID
+#       --internal-source-efi-size-bytes N
+#                                     permit guided installation from exact
+#                                     protected staging partitions on the target
+#                                     disk; ordinary live media remain refused
 #     --confirm-erase <dev>           required for whole-disk installs and must
 #                                     exactly match --disk
 #     --confirm-root <partition>      required for alongside installs and must
@@ -258,6 +264,11 @@ NEW_EFI_PARTUUID=""
 NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
 EXPECTED_PARTITIONS=()
+INTERNAL_SOURCE=0
+EXPECT_SOURCE_ROOT_PARTUUID=""
+EXPECT_SOURCE_ROOT_SIZE_BYTES=""
+EXPECT_SOURCE_EFI_PARTUUID=""
+EXPECT_SOURCE_EFI_SIZE_BYTES=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -299,6 +310,11 @@ while [ $# -gt 0 ]; do
     --new-efi-partuuid) NEW_EFI_PARTUUID="${2:-}"; shift 2 ;;
     --new-root-partuuid) NEW_ROOT_PARTUUID="${2:-}"; shift 2 ;;
     --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
+    --internal-source) INTERNAL_SOURCE=1; shift ;;
+    --internal-source-root-partuuid) EXPECT_SOURCE_ROOT_PARTUUID="${2:-}"; shift 2 ;;
+    --internal-source-root-size-bytes) EXPECT_SOURCE_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --internal-source-efi-partuuid) EXPECT_SOURCE_EFI_PARTUUID="${2:-}"; shift 2 ;;
+    --internal-source-efi-size-bytes) EXPECT_SOURCE_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
     --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
@@ -319,6 +335,21 @@ esac
   || die "missing stable disk identity (expected WWN or serial)"
 if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[:cntrl:]]'; then
   die "expected disk identity contains control characters"
+fi
+
+if [ "$INTERNAL_SOURCE" -eq 1 ]; then
+  [ "$GUIDED_ALONGSIDE" -eq 1 ] \
+    || die "--internal-source requires --guided-alongside"
+  [[ "$EXPECT_SOURCE_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || die "missing or invalid --internal-source-root-partuuid"
+  [[ "$EXPECT_SOURCE_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || die "missing or invalid --internal-source-efi-partuuid"
+  for value in EXPECT_SOURCE_ROOT_SIZE_BYTES EXPECT_SOURCE_EFI_SIZE_BYTES; do
+    case "${!value}" in ''|*[!0-9]*|0) die "missing or invalid internal-source value $value" ;; esac
+  done
+else
+  [ -z "$EXPECT_SOURCE_ROOT_PARTUUID$EXPECT_SOURCE_ROOT_SIZE_BYTES$EXPECT_SOURCE_EFI_PARTUUID$EXPECT_SOURCE_EFI_SIZE_BYTES" ] \
+    || die "internal-source identity arguments require --internal-source"
 fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
@@ -514,6 +545,7 @@ validate_disk_identity
 # dm-crypt and aliases to their whole-disk ancestor. Fail closed if the live
 # medium cannot be identified; guessing here can erase the running installer.
 LIVE_MAJ_MIN=""
+LIVE_PARTITIONS=()
 while read -r SOURCE MOUNTPOINT; do
   SOURCE="${SOURCE%%\[*}"
   [ -b "$SOURCE" ] || continue
@@ -525,13 +557,80 @@ while read -r SOURCE MOUNTPOINT; do
   # `\u2514\u2500`, turning /dev/vda into the invalid path `\u2514\u2500/dev/vda`.
   LIVE_DISK="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
   [ -n "$LIVE_DISK" ] || continue
-  LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
-  [ -n "$LIVE_MAJ_MIN" ] && break
+  OBSERVED_LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
+  [ -n "$OBSERVED_LIVE_MAJ_MIN" ] || continue
+  if [ -n "$LIVE_MAJ_MIN" ] && [ "$LIVE_MAJ_MIN" != "$OBSERVED_LIVE_MAJ_MIN" ]; then
+    die "critical live mounts resolve to more than one physical disk"
+  fi
+  LIVE_MAJ_MIN="$OBSERVED_LIVE_MAJ_MIN"
+  LIVE_PARTITION="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "part" { print $1; exit }')"
+  [ -z "$LIVE_PARTITION" ] || LIVE_PARTITIONS+=("$(readlink -f "$LIVE_PARTITION")")
 done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 [ -n "$LIVE_MAJ_MIN" ] \
   || die "could not resolve the live medium's physical disk; refusing a destructive install"
-[ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] \
+[ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] || [ "$INTERNAL_SOURCE" -eq 1 ] \
   || die "$DISK is the live medium's own disk — refusing to install onto it"
+
+partition_by_uuid() {
+  local expected="${1,,}" path type identity
+  while read -r path type identity; do
+    [ "$type" = part ] || continue
+    if [ "${identity,,}" = "$expected" ]; then
+      printf '%s\n' "$(readlink -f "$path")"
+      return 0
+    fi
+  done < <(lsblk -rpn -o NAME,TYPE,PARTUUID "$DISK" 2>/dev/null)
+  return 1
+}
+
+expected_partition_is_bound() {
+  local partition="$1" expected_uuid="$2" expected_size="$3"
+  local start_sectors start_bytes expected observed
+  start_sectors="$(lsblk -dno START "$partition" 2>/dev/null | tr -d '[:space:]')"
+  case "$start_sectors" in ''|*[!0-9]*) die "could not read protected source partition start" ;; esac
+  start_bytes=$((start_sectors * 512))
+  expected="${expected_uuid,,}:$start_bytes:$expected_size"
+  for observed in "${EXPECTED_PARTITIONS[@]}"; do
+    [ "${observed,,}" != "$expected" ] || return 0
+  done
+  die "protected source partition is absent from the reviewed partition map"
+}
+
+ranges_disjoint() {
+  local a_start="$1" a_size="$2" b_start="$3" b_size="$4"
+  [ $((a_start + a_size)) -le "$b_start" ] || [ $((b_start + b_size)) -le "$a_start" ]
+}
+
+if [ "$INTERNAL_SOURCE" -eq 1 ]; then
+  [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ] \
+    || die "internal source is not on the reviewed target disk"
+  SOURCE_ROOT_PARTITION="$(partition_by_uuid "$EXPECT_SOURCE_ROOT_PARTUUID" || true)"
+  SOURCE_EFI_PARTITION="$(partition_by_uuid "$EXPECT_SOURCE_EFI_PARTUUID" || true)"
+  [ -n "$SOURCE_ROOT_PARTITION" ] && [ -n "$SOURCE_EFI_PARTITION" ] \
+    || die "protected internal-source partitions are missing"
+  [ "$SOURCE_ROOT_PARTITION" != "$SOURCE_EFI_PARTITION" ] \
+    || die "internal source root and EFI identities are not distinct"
+  validate_partition_identity "$SOURCE_ROOT_PARTITION" "$EXPECT_SOURCE_ROOT_PARTUUID" \
+    "$EXPECT_SOURCE_ROOT_SIZE_BYTES" "internal source root"
+  validate_partition_identity "$SOURCE_EFI_PARTITION" "$EXPECT_SOURCE_EFI_PARTUUID" \
+    "$EXPECT_SOURCE_EFI_SIZE_BYTES" "internal source EFI"
+  expected_partition_is_bound "$SOURCE_ROOT_PARTITION" "$EXPECT_SOURCE_ROOT_PARTUUID" \
+    "$EXPECT_SOURCE_ROOT_SIZE_BYTES"
+  expected_partition_is_bound "$SOURCE_EFI_PARTITION" "$EXPECT_SOURCE_EFI_PARTUUID" \
+    "$EXPECT_SOURCE_EFI_SIZE_BYTES"
+  for source_partition in "$SOURCE_ROOT_PARTITION" "$SOURCE_EFI_PARTITION"; do
+    source_start_sectors="$(lsblk -dno START "$source_partition" | tr -d '[:space:]')"
+    source_start_bytes=$((source_start_sectors * 512))
+    source_size="$(blockdev --getsize64 "$source_partition")"
+    ranges_disjoint "$source_start_bytes" "$source_size" "$FREE_START_BYTES" "$FREE_SIZE_BYTES" \
+      || die "reviewed install extent overlaps a protected internal-source partition"
+  done
+  [ "${#LIVE_PARTITIONS[@]}" -gt 0 ] || die "no protected live partition was observed"
+  for live_partition in "${LIVE_PARTITIONS[@]}"; do
+    [ "$live_partition" = "$SOURCE_ROOT_PARTITION" ] || [ "$live_partition" = "$SOURCE_EFI_PARTITION" ] \
+      || die "a critical live mount is outside the protected internal source"
+  done
+fi
 
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
@@ -682,9 +781,22 @@ if [ "$ALONGSIDE" -eq 1 ]; then
   trap restore_firmware_boot_state EXIT
 fi
 
-# Refuse if the target disk (or any of its partitions) is currently mounted.
-if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
-  die "$DISK (or one of its partitions) is currently mounted — unmount it first"
+# Refuse mounted targets. Internal-source mode permits only the two exact
+# protected staging partitions that the installer is currently running from.
+if [ "$INTERNAL_SOURCE" -eq 0 ]; then
+  if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
+    die "$DISK (or one of its partitions) is currently mounted — unmount it first"
+  fi
+else
+  while read -r mounted_source; do
+    [ -b "$mounted_source" ] || continue
+    mounted_disk="$(lsblk -srpno NAME,TYPE "$mounted_source" 2>/dev/null | awk '$2 == "disk" { print $1; exit }')"
+    [ "$(readlink -f "$mounted_disk")" = "$DISK" ] || continue
+    mounted_partition="$(lsblk -srpno NAME,TYPE "$mounted_source" 2>/dev/null | awk '$2 == "part" { print $1; exit }')"
+    mounted_partition="$(readlink -f "$mounted_partition")"
+    [ "$mounted_partition" = "$SOURCE_ROOT_PARTITION" ] || [ "$mounted_partition" = "$SOURCE_EFI_PARTITION" ] \
+      || die "an unreviewed target-disk partition is mounted"
+  done < <(findmnt -rn -o SOURCE 2>/dev/null | sed 's/\[.*$//')
 fi
 
 # --- read the password (now that we are root) --------------------------------
