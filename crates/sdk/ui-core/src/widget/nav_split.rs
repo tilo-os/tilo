@@ -225,6 +225,97 @@ impl FlapState {
     }
 }
 
+/// The master↔detail push transition of a single-pane narrow layout: which
+/// pane is the target and the eased slide toward it, on the shared
+/// [`FlapState`] kernel (`slide() == 1` ⇒ detail fully shown).
+///
+/// [`NavSplit`] in [`SplitMode::Push`] runs it for its two child widgets;
+/// hand-painted master-detail apps hold one directly and position their own
+/// two panes from [`PushNav::slide`]. Which widths count as narrow is the
+/// app's decision (its breakpoint), not this state's.
+#[derive(Clone, Debug)]
+pub struct PushNav {
+    pane: PushPane,
+    flap: FlapState,
+    /// Wall clock of the last [`PushNav::tick`]; the kernel itself advances
+    /// by an explicit `dt`.
+    last_tick: Instant,
+}
+
+impl Default for PushNav {
+    /// Starts on the master pane with the slide settled at `0`, so a narrow
+    /// first frame (and `--shots`) opens to the list.
+    fn default() -> Self {
+        Self {
+            pane: PushPane::Master,
+            flap: FlapState::closed_by_default(),
+            last_tick: crate::time::now(),
+        }
+    }
+}
+
+impl PushNav {
+    /// Which pane the push flow currently targets.
+    pub fn pane(&self) -> PushPane {
+        self.pane
+    }
+
+    /// Push the detail pane in (call from the list's selection handler).
+    pub fn show_detail(&mut self) {
+        self.pane = PushPane::Detail;
+        self.flap.open();
+    }
+
+    /// Slide back to the master pane (the Back affordance / Esc).
+    pub fn show_master(&mut self) {
+        self.pane = PushPane::Master;
+        self.flap.close();
+    }
+
+    /// The eased slide in `0.0..=1.0`: `0` = master shown, `1` = detail shown.
+    pub fn slide(&self) -> f64 {
+        self.flap.slide()
+    }
+
+    /// Advance the slide by the wall-clock time since the previous tick
+    /// (clamped to [`MAX_FRAME_DT`]). With `reduce_motion` the slide lands on
+    /// its target at once. Returns `true` while still animating, so the host
+    /// can request another frame.
+    pub fn tick(&mut self, reduce_motion: bool) -> bool {
+        let now = crate::time::now();
+        let dt = now
+            .saturating_duration_since(self.last_tick)
+            .as_secs_f64()
+            .min(MAX_FRAME_DT);
+        self.last_tick = now;
+        if reduce_motion {
+            self.flap.snap(self.pane == PushPane::Detail);
+            return false;
+        }
+        self.tick_by(dt)
+    }
+
+    /// Advance the slide by an explicit `dt` seconds. Returns `true` while
+    /// still animating.
+    pub fn tick_by(&mut self, dt: f64) -> bool {
+        // The target is driven explicitly by `show_*`, so the layout the
+        // kernel would otherwise default from does not matter here.
+        self.flap.tick(SplitLayout::Overlay, dt)
+    }
+
+    /// `true` while the slide hasn't settled.
+    pub fn is_animating(&self) -> bool {
+        self.flap.is_animating(SplitLayout::Overlay)
+    }
+
+    /// Show `pane` with the slide already settled — no animation — so a
+    /// headless frame captures the pane rather than one mid-slide.
+    pub fn snap(&mut self, pane: PushPane) {
+        self.pane = pane;
+        self.flap.snap(pane == PushPane::Detail);
+    }
+}
+
 /// The reusable responsive sidebar/split widget. See the module docs.
 pub struct NavSplit {
     sidebar: Element,
@@ -240,11 +331,8 @@ pub struct NavSplit {
     breakpoint: f64,
     sidebar_width: f64,
     flap: FlapState,
-    /// Push-mode current pane.
-    push_pane: PushPane,
-    /// Eased push transition (master↔detail), reusing the flap kernel where
-    /// `reveal == 1` means "detail fully shown".
-    push: FlapState,
+    /// Push-mode master↔detail transition.
+    push: PushNav,
     /// Resolved outer rect from the last layout pass.
     rect: Rect,
     /// Cached sub-rects computed each layout for hit-testing + child layout.
@@ -301,8 +389,7 @@ impl NavSplit {
             breakpoint: DEFAULT_BREAKPOINT,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             flap: FlapState::open_when_docked(),
-            push_pane: PushPane::Master,
-            push: FlapState::closed_by_default(),
+            push: PushNav::default(),
             rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
@@ -421,21 +508,19 @@ impl NavSplit {
     /// Push mode: reveal the detail pane (call from the list's selection
     /// handler). No-op outside [`SplitMode::Push`].
     pub fn show_detail(&mut self) {
-        self.push_pane = PushPane::Detail;
-        self.push.open();
+        self.push.show_detail();
         self.dirty = true;
     }
 
     /// Push mode: return to the master/list pane (the Back affordance).
     pub fn show_master(&mut self) {
-        self.push_pane = PushPane::Master;
-        self.push.close();
+        self.push.show_master();
         self.dirty = true;
     }
 
     /// Which pane Push mode is showing.
     pub fn push_pane(&self) -> PushPane {
-        self.push_pane
+        self.push.pane()
     }
 
     /// Snap all animation to its endpoint (deterministic `--shots`).
@@ -652,7 +737,7 @@ impl NavSplit {
         let layout = self.layout_mode();
         let a = self.flap.tick(layout, dt);
         let b = if self.mode == SplitMode::Push {
-            self.push.tick(SplitLayout::Docked, dt)
+            self.push.tick_by(dt)
         } else {
             false
         };
@@ -889,7 +974,7 @@ impl Widget for NavSplit {
                 ..
             } => {
                 // Esc dismisses the overlay flap (or returns Push to master).
-                if self.mode == SplitMode::Push && self.push_pane == PushPane::Detail {
+                if self.mode == SplitMode::Push && self.push.pane() == PushPane::Detail {
                     self.show_master();
                     *handled = true;
                     return;
@@ -927,7 +1012,7 @@ impl Widget for NavSplit {
         // overlay on top, else content first.
         let route_sidebar_first = self.layout_mode() == SplitLayout::Overlay
             && self.is_sidebar_open()
-            || self.mode == SplitMode::Push && self.push_pane == PushPane::Master;
+            || self.mode == SplitMode::Push && self.push.pane() == PushPane::Master;
         let (Some(taffy), Some(s_node), Some(c_node)) = (
             self.inner_taffy.as_ref(),
             self.sidebar_node,
@@ -1025,6 +1110,46 @@ impl Widget for NavSplit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_nav_defaults_to_the_master_pane() {
+        let nav = PushNav::default();
+        assert_eq!(nav.pane(), PushPane::Master);
+        assert!(
+            nav.slide().abs() < f64::EPSILON,
+            "a fresh narrow frame opens to the list"
+        );
+        assert!(!nav.is_animating());
+    }
+
+    #[test]
+    fn push_nav_selecting_pushes_detail_and_back_returns() {
+        let mut nav = PushNav::default();
+        nav.show_detail();
+        assert_eq!(nav.pane(), PushPane::Detail);
+        assert!(nav.is_animating(), "showing the detail starts the slide");
+        assert!(nav.tick_by(0.016));
+        assert!(nav.slide() > 0.0 && nav.slide() < 1.0);
+        nav.snap(PushPane::Detail);
+        assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
+        assert!(!nav.is_animating(), "snap leaves nothing to animate");
+        nav.show_master();
+        nav.snap(PushPane::Master);
+        assert_eq!(nav.pane(), PushPane::Master);
+        assert!(nav.slide().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn push_nav_reduced_motion_lands_without_requesting_frames() {
+        let mut nav = PushNav::default();
+        nav.show_detail();
+        assert!(!nav.tick(true));
+        assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
+        assert!(!nav.is_animating());
+        nav.show_master();
+        assert!(!nav.tick(true));
+        assert!(nav.slide().abs() < f64::EPSILON);
+    }
     use crate::widget::Text;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1269,7 +1394,7 @@ mod tests {
         assert_eq!(ns.push_pane(), PushPane::Master);
         // Master sits at the left edge initially.
         ns.show_detail();
-        ns.push.snap(true);
+        ns.push.snap(PushPane::Detail);
         ns.recompute_rects();
         assert_eq!(ns.push_pane(), PushPane::Detail);
         // Detail is now flush with the pane; master has slid off-left.
@@ -1279,7 +1404,7 @@ mod tests {
         );
         // Back returns to master.
         ns.show_master();
-        ns.push.snap(false);
+        ns.push.snap(PushPane::Master);
         ns.recompute_rects();
         assert_eq!(ns.push_pane(), PushPane::Master);
     }

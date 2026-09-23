@@ -55,9 +55,9 @@ use ui::widget::{TextInput, Widget};
 use crate::actions::{self, LogsOperation};
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
-use crate::responsive::{Pane, PushNav};
 use crate::theme_ext::{ThemeColors, tint};
 use ui::paint::{fill_rect, fill_round, stroke_round};
+use ui::widget::{PushNav, PushPane};
 
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
@@ -261,7 +261,7 @@ impl LogsApp {
     /// eased slide so a headless frame captures a settled pane. A no-op
     /// effect on wide windows, where both panes are docked anyway.
     pub fn shots_show_detail(&mut self) {
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
         self.dirty = true;
     }
 
@@ -720,7 +720,7 @@ impl LogsApp {
     /// as much 2× text as a half-width 1× window. One predicate for layout,
     /// paint and the event path, so they never disagree about the pane mode.
     fn narrow_at(&self, w: f64) -> bool {
-        PushNav::is_narrow(w / self.m.k.max(f64::from(f32::EPSILON)))
+        crate::responsive::is_narrow(w / self.m.k.max(f64::from(f32::EPSILON)))
     }
 
     /// The filters need more width than the docked journal split. Keep this
@@ -2491,7 +2491,7 @@ impl LogsApp {
                 .with_hashed_key("logs.entries")
                 .with_children(rows),
         );
-        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == Pane::Detail {
+        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == PushPane::Detail {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name("Back to entries")
@@ -2763,7 +2763,7 @@ impl Widget for LogsApp {
 
         if theme.reduce_motion {
             self.push.snap(self.push.pane());
-        } else if self.push.tick() {
+        } else if self.push.tick(false) {
             self.dirty = true;
         }
 
@@ -2962,7 +2962,7 @@ impl Widget for LogsApp {
             return true;
         }
         if target == "logs.back" && activate {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             return true;
         }
@@ -3352,7 +3352,7 @@ impl LogsApp {
         // Narrow-window Back affordance: when the detail pane is pushed in,
         // tapping Back slides the list back.
         if reg.narrow && reg.back_btn.width() > 0.0 && reg.back_btn.contains(pt) {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             *handled = true;
             return;
@@ -3482,12 +3482,12 @@ impl LogsApp {
             }
             Key::Named(NamedKey::Escape) => {
                 let narrow_in_detail =
-                    self.narrow_at(self.rect.width()) && self.push.pane() == Pane::Detail;
+                    self.narrow_at(self.rect.width()) && self.push.pane() == PushPane::Detail;
                 if self.popup.is_some() {
                     self.popup = None;
                 } else if narrow_in_detail {
                     // Back out of the pushed detail pane to the list.
-                    self.push.show_list();
+                    self.push.show_master();
                 } else if !self.filter.search.is_empty() {
                     self.apply_view_operation(LogsOperation::SetSearch {
                         value: String::new(),
