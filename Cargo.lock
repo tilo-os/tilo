@@ -1488,6 +1488,7 @@ dependencies = [
 name = "bounded-zip"
 version = "0.1.0"
 dependencies = [
+ "roxmltree",
  "thiserror 2.0.18",
  "zip",
 ]
@@ -14581,7 +14582,6 @@ dependencies = [
  "media",
  "moka",
  "pdfium-render",
- "roxmltree",
  "serde",
  "tempfile",
  "zip",
