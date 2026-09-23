@@ -45,10 +45,7 @@ impl App {
         room_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
-        self.autosave_generation = self
-            .autosave_generation
-            .checked_add(1)
-            .expect("document generation exhausted");
+        self.advance_autosave_generation();
         if let Some(history) = &mut self.history {
             self.layout.node_map.clear();
             self.bindings.clear();
@@ -63,6 +60,13 @@ impl App {
         self.persistence.records = Some(records);
         self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
+    }
+
+    /// Starts a new autosave generation so writes queued for the previous
+    /// document are recognised as stale. A `u64` counter never wraps in
+    /// practice; wrapping keeps this total instead of panicking.
+    fn advance_autosave_generation(&mut self) {
+        self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
@@ -92,10 +96,7 @@ impl App {
         );
         match switched {
             Some(id) => {
-                self.autosave_generation = self
-                    .autosave_generation
-                    .checked_add(1)
-                    .expect("document generation exhausted");
+                self.advance_autosave_generation();
                 if let Some(history) = &mut self.history {
                     self.layout.node_map.clear();
                     self.bindings.clear();
