@@ -45,7 +45,9 @@ base64.workspace = true
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
-# (.crx behind a small binary header); manifest.json describes them.
+# (.crx behind a small binary header); manifest.json describes them. Read
+# under the shared zip-bomb bounds before anything is extracted.
+bounded-zip = { path = "../../crates/doc/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
 serde.workspace = true

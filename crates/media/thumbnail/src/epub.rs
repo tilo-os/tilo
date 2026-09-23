@@ -8,30 +8,36 @@
 //! hermetic. It returns the *raw cover bytes*; [`crate::generate`] decodes them.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
+use bounded_zip::{BoundedArchive, ZipLimits};
 use roxmltree::Document;
-use zip::ZipArchive;
 
-type Archive = ZipArchive<Cursor<Vec<u8>>>;
+type Archive<'a> = BoundedArchive<Cursor<&'a [u8]>>;
 
 /// A cover image is never larger than a few MB; cap the read so a malformed
 /// entry can't make a worker allocate without bound.
-const MAX_COVER_BYTES: usize = 32 * 1024 * 1024;
+const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
+/// `META-INF/container.xml` names one rootfile; the OPF lists the manifest.
+/// Both are small text documents, bounded like the ebook reader bounds them.
+const MAX_CONTAINER_BYTES: u64 = 512 * 1024;
+const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// The raw (undecoded) bytes of an EPUB's cover image, or `None` if the book
 /// declares no cover or the container is unreadable.
 pub fn cover_bytes(epub: &[u8]) -> Option<Vec<u8>> {
-    let mut archive = ZipArchive::new(Cursor::new(epub.to_vec())).ok()?;
+    let mut archive = BoundedArchive::from_bytes(epub, ZipLimits::default()).ok()?;
     let opf_path = find_opf_path(&mut archive)?;
-    let opf_src = read_text(&mut archive, &opf_path)?;
+    let opf_src = archive.read_text(&opf_path, MAX_PACKAGE_BYTES).ok()?;
     let base = parent_dir(&opf_path);
     let cover_href = resolve_cover_href(&opf_src, &base)?;
-    read_binary(&mut archive, &cover_href)
+    archive.read(&cover_href, MAX_COVER_BYTES).ok()
 }
 
-fn find_opf_path(archive: &mut Archive) -> Option<String> {
-    let xml = read_text(archive, "META-INF/container.xml")?;
+fn find_opf_path(archive: &mut Archive<'_>) -> Option<String> {
+    let xml = archive
+        .read_text("META-INF/container.xml", MAX_CONTAINER_BYTES)
+        .ok()?;
     let doc = Document::parse(&xml).ok()?;
     let rootfile = doc.descendants().find(|n| n.has_tag_name("rootfile"))?;
     Some(normalize(rootfile.attribute("full-path")?))
@@ -88,18 +94,6 @@ fn resolve_cover_href(opf: &str, base: &str) -> Option<String> {
     cover_by_props
         .or_else(|| cover_meta_id.and_then(|id| manifest.get(&id).cloned()))
         .or(cover_by_name)
-}
-
-fn read_text(archive: &mut Archive, name: &str) -> Option<String> {
-    let mut file = archive.by_name(name).ok()?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
-    Some(buf)
-}
-
-fn read_binary(archive: &mut Archive, name: &str) -> Option<Vec<u8>> {
-    let file = archive.by_name(name).ok()?;
-    crate::generate::read_capped(file, MAX_COVER_BYTES)
 }
 
 fn parent_dir(path: &str) -> String {

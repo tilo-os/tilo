@@ -1485,6 +1485,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-zip"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zip",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1514,6 +1522,7 @@ dependencies = [
  "automerge",
  "base64 0.22.1",
  "blake3",
+ "bounded-zip",
  "libc",
  "pollster",
  "reqwest 0.13.2",
@@ -3611,6 +3620,7 @@ dependencies = [
  "anyhow",
  "automerge",
  "blake3",
+ "bounded-zip",
  "image",
  "roxmltree",
  "runtime-dylib",
@@ -3627,7 +3637,6 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
- "zip",
 ]
 
 [[package]]
@@ -11192,6 +11201,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "bounded-zip",
  "proptest",
  "pulldown-cmark",
  "quick-xml 0.41.0",
@@ -13484,6 +13494,7 @@ name = "slides"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-zip",
  "image",
  "qdoc",
  "quick-xml 0.41.0",
@@ -14564,6 +14575,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "blake3",
+ "bounded-zip",
  "hex",
  "image",
  "media",

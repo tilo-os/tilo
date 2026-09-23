@@ -37,9 +37,10 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# EPUB containers are ZIP archives with XHTML and an OPF manifest. These
-# pure-Rust crates keep parsing hermetic; `deflate` covers common EPUBs.
-zip.workspace = true
+# EPUB containers are ZIP archives with XHTML and an OPF manifest, read
+# through the shared zip-bomb bounds. These pure-Rust crates keep parsing
+# hermetic; `deflate` covers common EPUBs.
+bounded-zip = { path = "../../crates/doc/bounded-zip" }
 roxmltree.workspace = true
 # Decode and downscale embedded raster covers for the shelf.
 image = { workspace = true, features = ["jpeg", "png"] }

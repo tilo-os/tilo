@@ -83,6 +83,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-zip"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "zip",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -394,6 +402,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "bounded-zip",
  "pulldown-cmark",
  "quick-xml",
  "serde",
