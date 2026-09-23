@@ -134,7 +134,15 @@ compiles. A contract check guarantees that production images never enable the fe
 
 ## Revisions after the spike and review
 
-- The per-agent object is called a **slot** (`tilo-dev slot …`, user `tds-<name>`, seat
+- The CLI is **`tilo-vm`** and the guest daemon `tilo-vmd`, because `tilo-dev` collides with the
+  `tilo-dev.desktop` developer session. Everything follows: crates `crates/dev/tilo-vm*`, state
+  `/var/lib/tilo-vm/`, unit `tilo-vm-session@.service`, config `tilo-vm/vms.toml`, env `TILO_VM`,
+  worktree file `.tilo-vm`, disk package `tilo-vm-disk`, image `code.sandbox.example/qos/tilo-vm:<tag>`.
+  Slots are meant to become the one dev story, replacing the Fedora 44 loop over time.
+- In-VM builds and CI layer extraction are streaming jobs (`ssh <vm> tilo-vmd build|ci-layer`,
+  the job on stdin, live output on stderr) rather than RPC calls. A headful slot's uinput devices
+  live in a transient `tilo-vm-input-<slot>` unit, since a uinput device dies with its creator.
+- The per-agent object is called a **slot** (`tilo-vm slot …`, user `tds-<name>`, seat
   `seat-<slot>`). "Overlay" below means slot.
 - The session unit uses `PAMName=greetd` and `SyslogIdentifier=tilo-session-%i`. A swap stops the
   session unit, restarts `user@<uid>`, then starts the session unit. A VM-wide swap also restarts
