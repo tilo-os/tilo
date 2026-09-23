@@ -1,0 +1,92 @@
+//! The narrow host I/O surface the staging helper needs. Linux and Windows each
+//! implement [`Platform`]; tests use an in-memory fake. Nothing here decides
+//! policy: plan checks live in `plan`, sequencing and recording in `helper`.
+
+use serde::{Deserialize, Serialize};
+
+/// A GPT disk as the host reports it. `id` is a platform handle valid only for
+/// this boot (Windows disk number, Linux `/dev/...` path); `guid` is durable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Disk {
+    pub id: String,
+    pub guid: String,
+    pub size_bytes: u64,
+    pub sector_bytes: u64,
+    /// First and last LBA usable for partitions (GPT header bounds).
+    pub first_usable_lba: u64,
+    pub last_usable_lba: u64,
+    pub partitions: Vec<Partition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Partition {
+    /// 1-based GPT entry number (needed for the EFI HD device path).
+    pub number: u32,
+    pub guid: String,
+    pub type_guid: String,
+    pub first_lba: u64,
+    pub last_lba: u64,
+}
+
+/// The system volume Windows booted from, with its shrink bounds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemVolume {
+    pub partition_guid: String,
+    pub size_bytes: u64,
+    /// `Get-PartitionSupportedSize` minimum.
+    pub supported_min_bytes: u64,
+    pub used_bytes: u64,
+}
+
+/// A partition to create at an exact place.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewPartition {
+    pub first_lba: u64,
+    pub last_lba: u64,
+    pub type_guid: String,
+    pub name: String,
+    /// Pre-generated where the platform can set it (Linux); `None` on Windows.
+    pub guid: Option<String>,
+}
+
+pub type IoResult<T> = Result<T, String>;
+
+/// Host disk + firmware operations. Every mutating call must be followed by
+/// the caller re-reading state; implementations must not retry silently.
+pub trait Platform {
+    /// The disk holding the running OS's boot volume, with its partition map.
+    fn system_disk(&self) -> IoResult<Disk>;
+    /// Windows only; `Ok(None)` on Linux.
+    fn system_volume(&self) -> IoResult<Option<SystemVolume>>;
+    /// Shrink the system volume to exactly `to_bytes` (Windows only).
+    fn shrink_system_volume(&mut self, partition_guid: &str, to_bytes: u64) -> IoResult<()>;
+    /// Grow the system volume back to exactly `to_bytes` (Windows only).
+    fn grow_system_volume(&mut self, partition_guid: &str, to_bytes: u64) -> IoResult<()>;
+    /// Create one partition; returns its GUID as read back.
+    fn create_partition(&mut self, disk: &Disk, spec: &NewPartition) -> IoResult<String>;
+    fn delete_partition(&mut self, disk: &Disk, partition_guid: &str) -> IoResult<()>;
+    /// Write `data` at `offset` bytes from the start of the partition.
+    /// `offset` and `data.len()` are multiples of `disk.sector_bytes`.
+    fn write_partition(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> IoResult<()>;
+    fn read_partition(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> IoResult<()>;
+    /// Flush every write to stable storage.
+    fn sync_disk(&mut self, disk: &Disk) -> IoResult<()>;
+    /// Read an EFI global variable (`8be4df61-93ca-11d2-aa0d-00e098032b8c`).
+    /// `Ok(None)` when it does not exist. Returns the payload without attributes.
+    fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>>;
+    /// Create or replace a non-volatile, boot + runtime EFI global variable.
+    fn set_efi_var(&mut self, name: &str, data: &[u8]) -> IoResult<()>;
+    fn delete_efi_var(&mut self, name: &str) -> IoResult<()>;
+}
