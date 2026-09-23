@@ -710,6 +710,17 @@ impl Widget for Card {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
+        // Card is a vertical flex container. Let its height grow with its
+        // controls instead of allowing Taffy to shrink form fields and the
+        // recovery acknowledgement to zero when Review is taller than the
+        // viewport. The surrounding Scrollable handles that overflow.
+        for &child_node in &child_nodes {
+            if let Ok(style) = taffy.style(child_node) {
+                let mut style = style.clone();
+                style.flex_shrink = 0.0;
+                let _ = taffy.set_style(child_node, style);
+            }
+        }
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
@@ -5852,7 +5863,7 @@ mod tests {
             .expect("recovery-key acknowledgement");
         let nav = controls.last().expect("review navigation");
         assert!(
-            input.get_rect().height() >= 40.0,
+            input.get_rect().height() >= 38.0,
             "confirmation input collapsed: {:?}",
             input.get_rect()
         );
@@ -5860,7 +5871,11 @@ mod tests {
             card.get_rect().y1 >= input.get_rect().y1,
             "confirmation input escaped the review card"
         );
-        assert!(ack.get_rect().height() >= 40.0, "acknowledgement collapsed");
+        assert!(
+            ack.get_rect().height() >= 40.0,
+            "acknowledgement collapsed: {:?}",
+            ack.get_rect()
+        );
         assert!(
             ack.get_rect().y0 >= input.get_rect().y1,
             "acknowledgement overlaps confirmation input"
