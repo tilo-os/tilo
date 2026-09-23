@@ -69,6 +69,14 @@ pub trait Apply {
     /// Capabilities and `SELinux` domain of the slot's running session
     /// process, or `None` when it is not running.
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
+    /// Wait until the slot's session unit is up and stays up.
+    ///
+    /// # Errors
+    /// The unit's state when it never settled (a start that fails and
+    /// restarts looks `active` for a moment, so one sample is not enough).
+    fn wait_session_ready(&mut self, _slot: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
     /// Send input through `seat`'s uinput keyboard and pointer, creating
