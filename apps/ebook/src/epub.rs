@@ -16,12 +16,12 @@
 //! (nav doc preferred, NCX fallback) supplies chapter titles.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use bounded_zip::{BoundedArchive, ZipLimits};
 use roxmltree::Document;
-use zip::ZipArchive;
 
 use crate::model::{Book, Chapter, Cover};
 use crate::xhtml::parse_xhtml;
@@ -55,7 +55,7 @@ const MAX_SPINE_ITEMS: usize = 1_024;
 const MAX_COVER_DIMENSION: u32 = 4_096;
 const MAX_COVER_PIXELS: u64 = 4_000_000;
 
-type Archive<'a> = ZipArchive<Cursor<&'a [u8]>>;
+type Archive<'a> = BoundedArchive<Cursor<&'a [u8]>>;
 
 /// A book's stable identity: the BLAKE3 content hash of its EPUB bytes,
 /// prefixed `book:`. Deriving identity from the bytes (not the file path or
@@ -90,7 +90,8 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
     // `Cursor<&[u8]>` lets the archive seek through the caller's buffer
     // directly. A `Cursor<Vec<u8>>` would duplicate even an accepted 128 MiB
     // book before we had read a single chapter.
-    let mut archive = ZipArchive::new(Cursor::new(bytes)).context("open epub zip")?;
+    let mut archive =
+        BoundedArchive::from_bytes(bytes, ZipLimits::default()).context("open epub zip")?;
 
     let opf_path = find_opf_path(&mut archive)?;
     let opf_src = read_entry(&mut archive, &opf_path, MAX_PACKAGE_BYTES)?;
@@ -495,51 +496,15 @@ fn first_heading(blocks: &[crate::model::Block]) -> Option<String> {
 // ZIP + path helpers
 // ---------------------------------------------------------------------------
 
+/// Read a UTF-8 entry, bounded to `limit` bytes. XHTML chapters may carry a
+/// doctype, so this does not apply the office-format DTD rejection.
 fn read_entry(archive: &mut Archive<'_>, name: &str, limit: usize) -> Result<String> {
-    let file = archive
-        .by_name(name)
-        .with_context(|| format!("zip entry not found: {name}"))?;
-    if file.size() > limit as u64 {
-        return Err(anyhow!(
-            "zip entry exceeds the {} MiB limit: {name}",
-            limit / (1024 * 1024)
-        ));
-    }
-    let mut buf = Vec::new();
-    file.take(limit as u64 + 1)
-        .read_to_end(&mut buf)
-        .with_context(|| format!("read zip entry: {name}"))?;
-    if buf.len() > limit {
-        return Err(anyhow!(
-            "zip entry streamed beyond the {} MiB limit: {name}",
-            limit / (1024 * 1024)
-        ));
-    }
-    String::from_utf8(buf).with_context(|| format!("zip entry is not UTF-8: {name}"))
+    Ok(archive.read_text(name, limit as u64)?)
 }
 
 /// Read a binary entry (cover images are not UTF-8).
 fn read_entry_bytes(archive: &mut Archive<'_>, name: &str, limit: usize) -> Result<Vec<u8>> {
-    let file = archive
-        .by_name(name)
-        .with_context(|| format!("zip entry not found: {name}"))?;
-    if file.size() > limit as u64 {
-        return Err(anyhow!(
-            "zip entry exceeds the {} MiB limit: {name}",
-            limit / (1024 * 1024)
-        ));
-    }
-    let mut buf = Vec::new();
-    file.take(limit as u64 + 1)
-        .read_to_end(&mut buf)
-        .with_context(|| format!("read zip entry: {name}"))?;
-    if buf.len() > limit {
-        return Err(anyhow!(
-            "zip entry streamed beyond the {} MiB limit: {name}",
-            limit / (1024 * 1024)
-        ));
-    }
-    Ok(buf)
+    Ok(archive.read(name, limit as u64)?)
 }
 
 fn strip_fragment(href: &str) -> &str {
@@ -651,11 +616,12 @@ mod tests {
 
     #[test]
     fn zip_member_limit_is_enforced_before_reading() {
-        let mut archive = ZipArchive::new(Cursor::new(crate::content::SAMPLE_EPUB)).unwrap();
+        let mut archive =
+            BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default()).unwrap();
         let error = read_entry(&mut archive, "META-INF/container.xml", 1)
             .expect_err("the container is larger than one byte");
         assert!(
-            error.to_string().contains("exceeds"),
+            error.to_string().contains("per-part limit"),
             "the limit is reported instead of allocating the member: {error:#}"
         );
     }
