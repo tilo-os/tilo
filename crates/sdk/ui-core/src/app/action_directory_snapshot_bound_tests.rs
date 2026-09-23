@@ -74,17 +74,12 @@ fn directory_snapshot_bound_document_mutation_and_remounted_owner_change_revisio
         .bound_publication
         .alias(&fixture.bindings[0], "bound:probe")
         .unwrap();
+    let target = fixture.target(0, "apply");
     fixture
         .app
         .invoke_bound_target(
-            &fixture.target(0, "apply"),
-            None,
-            "fixture-user",
-            true,
-            false,
-            None,
-            None,
-            None,
+            &target,
+            &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
         )
         .unwrap();
     assert_ne!(fixture.app.action_directory_revision(), revision);
