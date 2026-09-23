@@ -13,7 +13,7 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -24,6 +24,7 @@ use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
 use ui::icons::Icon;
+use ui::paint::{fill_round, stroke_round};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -1517,25 +1518,6 @@ fn point_in(r: Rect, p: Point) -> bool {
 // ----------------------------------------------------------------------
 // Drawing primitives
 // ----------------------------------------------------------------------
-
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
 
 #[allow(
     clippy::too_many_arguments,

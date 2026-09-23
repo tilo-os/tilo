@@ -59,6 +59,7 @@ use crate::template_picker::TemplatePicker;
 use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
+use ui::paint::with_alpha;
 use ui::portal;
 
 mod block_layout;
@@ -291,12 +292,6 @@ fn luminance(c: Color) -> f64 {
     let g = f64::from(c.g()) / 255.0;
     let b = f64::from(c.b()) / 255.0;
     0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-/// Return `base` with its alpha replaced (0..=255). Keeps the RGB, used for the
-/// translucent accent guide tint.
-fn with_alpha(base: Color, alpha: u8) -> Color {
-    Color::from_rgba8(base.r(), base.g(), base.b(), alpha)
 }
 
 const PAGE_TOP: f64 = 28.0;

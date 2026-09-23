@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -57,6 +57,7 @@ use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::responsive::{Pane, PushNav};
 use crate::theme_ext::{ThemeColors, tint};
+use ui::paint::{fill_rect, fill_round, stroke_round};
 
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
@@ -876,28 +877,6 @@ impl LogsApp {
 // ===================================================================
 // Drawing helpers (free functions so borrows stay simple)
 // ===================================================================
-
-fn fill_rect(scene: &mut Scene, t: Affine, r: Rect, c: Color) {
-    scene.fill(Fill::NonZero, t, c, None, &r);
-}
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
 fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Color) {
     scene.fill(Fill::NonZero, t, c, None, &Circle::new(center, radius));
 }
@@ -1090,14 +1069,14 @@ impl LogsApp {
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 tint(theme.accent_primary, 40),
             );
             stroke_round(
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 theme.accent_primary,
                 1.0,
             );
@@ -1231,7 +1210,13 @@ impl LogsApp {
             c.lift(0.35)
         };
         if on {
-            fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
+            fill_round(
+                scene,
+                t,
+                reg.live_pill,
+                f64::from(theme.tokens.radii.full),
+                pill_bg,
+            );
         } else {
             ui::surface::card(
                 scene,
@@ -1300,7 +1285,7 @@ impl LogsApp {
                 scene,
                 t,
                 reg.overflow_trigger,
-                theme.tokens.radii.full,
+                f64::from(theme.tokens.radii.full),
                 c.border_focus,
                 1.5,
             );
@@ -1392,7 +1377,7 @@ impl LogsApp {
                 scene,
                 t,
                 reg.search,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 c.border_focus,
                 1.5,
             );
@@ -1504,10 +1489,29 @@ impl LogsApp {
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 235));
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 235),
+                );
             } else {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, c.lift(0.35));
-                stroke_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 90), 1.0);
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    c.lift(0.35),
+                );
+                stroke_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 90),
+                    1.0,
+                );
             }
             let tag = p.tag();
             let label_c = if active {
@@ -1563,7 +1567,7 @@ impl LogsApp {
                 scene,
                 t,
                 rect,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 if open {
                     c.border_focus
                 } else {
@@ -2102,7 +2106,13 @@ impl LogsApp {
             inner_x + f64::from(blw) + 24.0,
             layout.y + 22.0,
         );
-        fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
+        fill_round(
+            scene,
+            t,
+            badge,
+            f64::from(theme.tokens.radii.full),
+            tint(col, 235),
+        );
         text_at(
             tr,
             scene,
@@ -3190,7 +3200,7 @@ impl LogsApp {
             scene,
             transform,
             panel,
-            theme.tokens.radii.md,
+            f64::from(theme.tokens.radii.md),
             ui::chrome::panel_ground(theme),
         );
         scene.stroke(

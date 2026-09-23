@@ -12,6 +12,7 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use ui::chrome::{GLOW_ALPHA, panel_border, panel_ground};
+pub(crate) use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::surface::{edge_on, edge_outline, shadow};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -157,43 +158,6 @@ pub(crate) struct PaintContext<'a> {
     pub(crate) transform: Affine,
     pub(crate) text: &'a mut TextRenderer,
     pub(crate) theme: &'a Theme,
-}
-
-pub(crate) fn fill_rect(scene: &mut Scene, transform: Affine, color: Color, rect: Rect) {
-    scene.fill(Fill::NonZero, transform, color, None, &rect);
-}
-
-pub(crate) fn fill_round(
-    scene: &mut Scene,
-    transform: Affine,
-    color: Color,
-    rect: Rect,
-    radius: f64,
-) {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
-}
-
-pub(crate) fn stroke_round(
-    scene: &mut Scene,
-    transform: Affine,
-    color: Color,
-    rect: Rect,
-    radius: f64,
-    width: f64,
-) {
-    scene.stroke(
-        &Stroke::new(width),
-        transform,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
 }
 
 pub(crate) fn stroke_line(

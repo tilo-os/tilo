@@ -4417,7 +4417,6 @@ impl CalendarApp {
             fill_round(
                 scene,
                 t,
-                p.color.color(theme),
                 Rect::new(
                     row.x0 + 12.0,
                     row.center().y - 5.0,
@@ -4425,6 +4424,7 @@ impl CalendarApp {
                     row.center().y + 5.0,
                 ),
                 3.0,
+                p.color.color(theme),
             );
             tr.draw_text(
                 scene,
@@ -4485,7 +4485,7 @@ impl CalendarApp {
             );
             let sync = Rect::new(r.x1 - pad - 44.0, y - 4.0, r.x1 - pad, y + 16.0);
             if sync.contains(self.last_mouse) {
-                fill_round(scene, t, c.lift(0.35), sync, 6.0);
+                fill_round(scene, t, sync, 6.0, c.lift(0.35));
             }
             tr.draw_text(
                 scene,
@@ -4503,7 +4503,7 @@ impl CalendarApp {
                 // account's calendar list (management itself lives in Settings).
                 let header = Rect::new(r.x0 + 10.0, y - 4.0, r.x1 - 10.0, y + 18.0);
                 if header.contains(self.last_mouse) {
-                    fill_round(scene, t, c.lift(0.35), header, 6.0);
+                    fill_round(scene, t, header, 6.0, c.lift(0.35));
                 }
                 draw_caret(
                     scene,
@@ -4528,7 +4528,7 @@ impl CalendarApp {
                 for cal in &acc.calendars {
                     let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 30.0);
                     if row.contains(self.last_mouse) {
-                        fill_round(scene, t, c.lift(0.35), row, 6.0);
+                        fill_round(scene, t, row, 6.0, c.lift(0.35));
                     }
                     // Colour swatch checkbox: filled when visible, hollow when
                     // hidden. The whole row toggles visibility.
@@ -4540,10 +4540,10 @@ impl CalendarApp {
                     );
                     let pc = cal.palette().color(theme);
                     if cal.visible {
-                        fill_round(scene, t, pc, sw, 4.0);
+                        fill_round(scene, t, sw, 4.0, pc);
                         draw_check(scene, t, ui::widget::Avatar::initial_ink(pc), sw);
                     } else {
-                        stroke_round(scene, t, pc.with_alpha(0.6), sw, 4.0, 1.4);
+                        stroke_round(scene, t, sw, 4.0, pc.with_alpha(0.6), 1.4);
                     }
                     let txt_color = if cal.visible {
                         c.neutral[8]
@@ -4653,7 +4653,7 @@ impl CalendarApp {
                 }
                 let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 30.0);
                 if row.contains(self.last_mouse) {
-                    fill_round(scene, t, c.lift(0.35), row, 6.0);
+                    fill_round(scene, t, row, 6.0, c.lift(0.35));
                 }
                 // Affordance split: the checkbox AND the label text toggle
                 // completion; the open area to their right selects the task to view
@@ -4731,7 +4731,7 @@ impl CalendarApp {
     ) -> Vec<(Rect, Action)> {
         let c = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, t, c.surfaces.base, area);
+        fill_rect(scene, t, area, c.surfaces.base);
 
         let m = MonthMetrics::new(theme, tr.text_scale());
         let cols = 7;
@@ -4877,7 +4877,7 @@ impl CalendarApp {
             None
         };
         if let Some(tint) = cell_tint {
-            fill_rect(scene, t, tint, cell);
+            fill_rect(scene, t, cell, tint);
         }
         let cell_fill = cell_tint.unwrap_or(c.surfaces.base);
 
@@ -5226,7 +5226,7 @@ impl CalendarApp {
             // than falling through to the dismiss scrim beneath it.
             hits.push((r, Action::Noop));
         } else {
-            fill_rect(scene, t, c.surfaces.raised, r);
+            fill_rect(scene, t, r, c.surfaces.raised);
             hairline(
                 scene,
                 t,
@@ -5252,7 +5252,7 @@ impl CalendarApp {
         let c = &theme.tokens.colors;
         let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
         if back.contains(self.last_mouse) {
-            fill_round(scene, t, c.lift(0.35), back, 8.0);
+            fill_round(scene, t, back, 8.0, c.lift(0.35));
         }
         draw_back_arrow(
             scene,
@@ -5712,13 +5712,13 @@ impl CalendarApp {
         let theme = paint.theme;
         let c = &theme.tokens.colors;
         let large_text = theme.text_scale >= LARGE_TEXT_SCALE;
-        fill_round(scene, t, c.semantic.warning.with_alpha(0.14), rect, 8.0);
+        fill_round(scene, t, rect, 8.0, c.semantic.warning.with_alpha(0.14));
         stroke_round(
             scene,
             t,
-            c.semantic.warning.with_alpha(0.75),
             rect,
             8.0,
+            c.semantic.warning.with_alpha(0.75),
             1.0,
         );
         scene.fill(
@@ -5791,8 +5791,8 @@ impl CalendarApp {
             };
             let radius = f64::from(theme.tokens.radii.md);
             if cal_active {
-                fill_round(scene, t, bg, r, radius);
-                stroke_round(scene, t, c.border_focus, r, radius, 2.0);
+                fill_round(scene, t, r, radius, bg);
+                stroke_round(scene, t, r, radius, c.border_focus, 2.0);
             } else {
                 card(scene, t, r, radius, bg);
             }
@@ -7287,7 +7287,7 @@ impl Widget for CalendarApp {
         // calls need the same accessibility multiplier as toolkit widgets.
         text_renderer.set_text_scale(theme.text_scale);
         let c = &theme.tokens.colors;
-        fill_rect(scene, t, c.surfaces.base, self.rect);
+        fill_rect(scene, t, self.rect, c.surfaces.base);
 
         let mut hits = Vec::new();
 
@@ -8132,8 +8132,8 @@ fn draw_field_button(
     };
     let radius = f64::from(theme.tokens.radii.md);
     if active {
-        fill_round(scene, t, bg, r, radius);
-        stroke_round(scene, t, c.border_focus, r, radius, 2.0);
+        fill_round(scene, t, r, radius, bg);
+        stroke_round(scene, t, r, radius, c.border_focus, 2.0);
     } else {
         card(scene, t, r, radius, bg);
     }

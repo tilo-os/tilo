@@ -174,6 +174,7 @@ pub mod nav_stack;
 pub mod num;
 pub mod offscreen;
 pub mod overlay;
+pub mod paint;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;

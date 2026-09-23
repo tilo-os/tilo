@@ -38,7 +38,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use ui::ColorCompat;
+use ui::paint::with_alpha;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -1457,9 +1457,6 @@ fn live_probe_enabled() -> bool {
 }
 
 // ---- theme-derived colour helpers --------------------------------------
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 fn source_color(theme: &Theme, kind: SourceKind) -> Color {
     let c = &theme.tokens.colors;

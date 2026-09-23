@@ -240,8 +240,8 @@ impl ExpandModal {
                     t,
                     input,
                     f64::from(theme.tokens.radii.md),
-                    1.5,
                     c.border_focus,
+                    1.5,
                 );
             }
             // The modal keeps its established label/box chrome; the shared

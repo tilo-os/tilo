@@ -1,6 +1,6 @@
 //! Horizontal document ruler with owned layout, painting, and drag state.
 
-use ui::ColorCompat;
+use ui::paint::with_alpha;
 use ui::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -393,10 +393,6 @@ impl Ruler {
             }
         }
     }
-}
-
-fn with_alpha(color: Color, alpha: u8) -> Color {
-    Color::from_rgba8(color.r(), color.g(), color.b(), alpha)
 }
 
 fn fill_triangle(

@@ -2925,7 +2925,7 @@ impl MailApp {
             ),
         );
         fill_round(scene, t, panel, 16.0, c.surfaces.raised);
-        stroke_round(scene, t, panel, 16.0, 1.0, c.border_standard);
+        stroke_round(scene, t, panel, 16.0, c.border_standard, 1.0);
         Icon::Trash2.draw(
             scene,
             t,
@@ -2984,12 +2984,12 @@ impl MailApp {
                 t,
                 rect,
                 9.0,
-                1.0,
                 if danger {
                     c.semantic.danger
                 } else {
                     c.border_standard
                 },
+                1.0,
             );
             let (width, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Semibold);
             tr.draw_text_weighted(

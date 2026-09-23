@@ -206,7 +206,7 @@ impl AgendaView {
     ) -> Vec<(Rect, AgendaAction)> {
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        fill_rect(scene, transform, area, colors.surfaces.base);
 
         let end = anchor + Duration::days(DAYS_SHOWN);
         let mut m = AgendaMetrics::new(&theme.tokens.spacing, text.text_scale());
@@ -378,12 +378,11 @@ fn draw_event_row(
     let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
+            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
         }
         fill_round(
             scene,
             transform,
-            event.color.color(theme),
             Rect::new(
                 row.x0,
                 row.y0 + m.bar_inset,
@@ -391,6 +390,7 @@ fn draw_event_row(
                 row.y1 - m.bar_inset,
             ),
             2.0,
+            event.color.color(theme),
         );
         // Every text run is centred on the row from its own measured line
         // height, so time, title and location share one visual centre.
@@ -470,7 +470,7 @@ fn draw_task_row(
     let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
+            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
         }
         if let Some(hit) = clamp_hit(row, area) {
             hits.push((hit, AgendaAction::OpenTask(task.id)));
