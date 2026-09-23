@@ -194,3 +194,142 @@ imager-import-error-command-refused = Folder import could not continue. Open imp
 imager-import-detail-root = { $phase } · { $operations } import(s) · error { $error }
 imager-import-detail-operation = { $state } · { $files } verified file(s) · { $bytes } verified bytes · { $issues } issue(s)
 imager-import-detail-folder = { $mode } · destination reviewed { $reviewed }
+
+# Full Tilo installed alongside the current system, without a USB drive.
+imager-setup-resource-internal = Full Tilo installation
+imager-setup-badge-internal = Full Tilo
+imager-setup-detail-internal = { $readiness } · download { $download } · helper { $run } · blockers { $blockers }
+imager-setup-action-internal-set-target-size = Set Tilo size
+imager-setup-param-internal-target-gib = Tilo size in GiB
+imager-setup-action-internal-install = Install Tilo alongside the current system
+imager-setup-action-internal-restart = Restart into the Tilo installer
+imager-setup-action-internal-restart-later = Restart later
+imager-setup-action-internal-retry = Start the Tilo installer on the next restart
+imager-setup-action-internal-remove = Remove the Tilo installer
+imager-setup-action-internal-firmware-settings = Restart to firmware settings
+imager-setup-action-internal-disable-fast-startup = Turn off Fast Startup
+imager-setup-action-internal-recheck = Check this computer again
+imager-setup-internal-error-not-review = Full Tilo installation commands are available on the Full Tilo review.
+imager-setup-internal-error-command-unavailable = That command is not available in the current installation state.
+imager-setup-internal-error-unavailable = Full Tilo installation is not available on this computer.
+imager-setup-internal-error-size-range = Choose a Tilo size between { $min } and { $max } GiB.
+imager-setup-internal-error-no-plan = There is no installation plan for this disk yet.
+imager-setup-internal-error-plan-changed = The installation plan changed. Review it again before installing.
+imager-setup-internal-error-blocked = Something still blocks installation. Resolve the items under Before installing.
+imager-setup-internal-error-download = Download and verify Tilo before installing.
+imager-setup-internal-error-running = The Tilo installer helper is already running.
+imager-setup-internal-error-staged = The Tilo installer is already set up. Restart to start it.
+imager-setup-internal-error-no-pending = There is no unfinished Tilo installer on this computer.
+imager-setup-internal-error-pending-changed = That unfinished Tilo installer is no longer the current one.
+imager-setup-internal-error-no-restart = The Tilo installer is not set up to start yet.
+imager-setup-internal-error-remedy-unavailable = That fix does not apply to this computer right now.
+imager-setup-internal-checking =
+    Checking whether Tilo can be installed alongside { $host ->
+        [windows] Windows
+        [linux] your Linux system
+       *[other] your current system
+    } on this computer…
+imager-setup-internal-gated = Full Tilo installation is not available in this build yet.
+imager-setup-internal-no-release = This build has no Full Tilo release for this computer's processor.
+imager-setup-internal-unsupported = Tilo cannot be installed alongside the current system on this computer: { $reasons }
+imager-setup-internal-ready =
+    Tilo can be installed alongside { $host ->
+        [windows] Windows
+        [linux] your Linux system
+       *[other] your current system
+    } on this computer.
+imager-setup-internal-plan-title = Installation plan
+imager-setup-internal-plan-checking = Checking this computer's disk…
+imager-setup-internal-plan-shrink =
+    { $host ->
+        [windows] Windows (C:)
+       *[other] Your system partition
+    } shrinks by { $shrink }, from { $from } to { $to }.
+imager-setup-internal-plan-free = Tilo uses free, unpartitioned space on this disk. No existing partition is resized.
+imager-setup-internal-plan-target = Tilo gets { $target }.
+imager-setup-internal-plan-staging = The Tilo installer uses another { $staging } while it runs. That space is given to Tilo after your first login.
+imager-setup-internal-plan-error-space = There is not enough safe space on this disk. Tilo and its installer need { $needed }, but only { $available } can be made available.
+imager-setup-internal-plan-error-other = No installation plan could be made for this disk: { $detail }
+imager-setup-internal-size-label = Tilo size
+imager-setup-internal-size-help =
+    Choose between { $min } and { $max } GiB. More space for Tilo leaves less for { $host ->
+        [windows] Windows
+       *[other] the current system
+    }.
+imager-setup-internal-expect =
+    { $host ->
+        [windows] Windows stays installed and remains the startup default.
+       *[other] Your current system stays installed and remains the startup default.
+    } Installing takes one restart into the Tilo installer, where you confirm again before anything is installed. Secure Boot must be turned off.
+imager-setup-internal-unverified = Development preview: installing without a USB drive has not been verified on real Windows or Linux computers yet. Back up anything important before you continue.
+imager-setup-internal-blockers-title = Before installing
+imager-setup-internal-blockers-none = Nothing on this computer blocks installation.
+imager-setup-internal-blocker-not-uefi = This computer starts in legacy BIOS mode. Tilo needs UEFI startup.
+imager-setup-internal-blocker-secure-boot-on = Secure Boot is on. Turn it off in this computer's firmware settings, then open setup again. Setup never changes Secure Boot keys.
+imager-setup-internal-blocker-bitlocker-locked = The system drive is encrypted with BitLocker and its protection cannot be suspended for the restart.
+imager-setup-internal-blocker-not-gpt = The system disk uses the older MBR layout. Tilo needs a GPT disk.
+imager-setup-internal-blocker-disk-unsupported = This disk setup is not supported (for example Storage Spaces, a dynamic disk, RAID or a removable disk), or the disk could not be read.
+imager-setup-internal-blocker-hibernation = Fast Startup or hibernation is on, so Windows does not fully shut down. Turn it off before installing.
+imager-setup-internal-blocker-insufficient-space = There is not enough free space for Tilo and its installer, even after safely shrinking the system partition.
+imager-setup-internal-blocker-on-battery = This computer is on battery below 50%. Plug it in before installing.
+imager-setup-internal-blocker-pending-operation = An earlier Tilo installer setup is unfinished. Continue it or remove it below.
+imager-setup-internal-blocker-arch-mismatch = No Tilo release matches this computer's processor.
+imager-setup-internal-remedy-firmware = Restart to firmware settings
+imager-setup-internal-remedy-fast-startup = Turn off Fast Startup
+imager-setup-internal-recheck = Check again
+imager-setup-internal-install = Install Tilo
+imager-setup-internal-continue = Continue installation
+imager-setup-internal-installing = Installing…
+imager-setup-internal-run-title = Tilo installer
+imager-setup-internal-run-waiting = Waiting for administrator approval…
+imager-setup-internal-run-progress = { $step }: { $done } of { $total }
+imager-setup-internal-run-step = { $step }…
+imager-setup-internal-step-shrink = Shrinking the system partition
+imager-setup-internal-step-create-esp = Creating the installer boot partition
+imager-setup-internal-step-create-root = Creating the installer partition
+imager-setup-internal-step-write-esp = Writing the installer boot files
+imager-setup-internal-step-write-root = Writing the installer system
+imager-setup-internal-step-verify = Checking what was written
+imager-setup-internal-step-handoff = Saving your installation choices for the installer
+imager-setup-internal-step-boot-entry = Adding the Tilo installer to the startup menu
+imager-setup-internal-step-boot-next = Starting the Tilo installer on the next restart
+imager-setup-internal-step-remove-boot-next = Clearing the one-time startup choice
+imager-setup-internal-step-remove-boot-entry = Removing the Tilo installer from the startup menu
+imager-setup-internal-step-remove-root = Removing the installer partition
+imager-setup-internal-step-remove-esp = Removing the installer boot partition
+imager-setup-internal-step-restore-shrink = Returning space to the system partition
+imager-setup-internal-done-title = Ready to restart
+imager-setup-internal-done =
+    The Tilo installer starts once, the next time this computer restarts. { $host ->
+        [windows] Windows stays the startup default. If you leave the installer, Windows starts as usual.
+       *[other] Your current system stays the startup default. If you leave the installer, it starts as usual.
+    }
+imager-setup-internal-restart-now = Restart now
+imager-setup-internal-restart-later = Restart later
+imager-setup-internal-restart-deferred = Save your work and restart when you are ready. The Tilo installer starts on the next restart.
+imager-setup-internal-restarting = Restarting…
+imager-setup-internal-removed = The Tilo installer was removed and its space returned.
+imager-setup-internal-resume-title = Unfinished Tilo installer
+imager-setup-internal-resume = An earlier Tilo installer setup on this computer is unfinished or was not used. Continue finishes it with the verified download. Try again starts the Tilo installer on the next restart. Remove deletes the installer and returns its space.
+imager-setup-internal-resume-continue = Continue
+imager-setup-internal-resume-retry = Try again
+imager-setup-internal-resume-remove = Remove Tilo installer
+imager-setup-internal-failure-plan-stale = This computer's disk or startup settings changed after you reviewed the plan, so the installer helper stopped before changing anything. Review the updated plan, then install again.
+imager-setup-internal-failure-boot-next-busy = Another one-time startup choice is already set on this computer, so setup did not replace it. Restart once to clear it, then choose Try again.
+imager-setup-internal-failure-digest-mismatch = The downloaded files did not match their verified fingerprints, so nothing was written. Discard the download and download Tilo again.
+imager-setup-internal-failure-launch = The installer helper could not start: { $detail }
+imager-setup-internal-failure-interrupted = Setup stopped following the installer helper before it finished. It may still be running; open setup again to see where it stopped.
+imager-setup-internal-failure-generic = The installer helper stopped: { $detail } Each step it finished is recorded, so you can continue or remove the Tilo installer.
+imager-setup-internal-command-failed = That did not work: { $detail }
+imager-setup-internal-status-checking = Checking this computer…
+imager-setup-internal-status-installing = Preparing the Tilo installer…
+imager-setup-internal-status-retrying = Setting the Tilo installer to start on the next restart…
+imager-setup-internal-status-removing = Removing the Tilo installer…
+imager-setup-internal-status-firmware = Restarting to firmware settings…
+imager-setup-internal-status-fast-startup = Turning off Fast Startup. Approve the administrator prompt.
+imager-setup-internal-status-size = Tilo size set to { $gib } GiB.
+imager-setup-internal-download-consuming = Preparing the Tilo installer
+imager-setup-internal-download-consuming-detail = The installer helper is copying the verified download to this disk.
+imager-setup-internal-download-consumed = Download used
+imager-setup-internal-download-consumed-detail = The installer helper copied the verified download. The download stays on this computer until you discard it.
+imager-setup-internal-download-kept = Installation stopped; download kept
