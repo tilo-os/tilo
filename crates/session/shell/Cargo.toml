@@ -67,6 +67,7 @@ private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store" }
+xdg-paths = { path = "../../system/xdg-paths" }
 desktop-policy = { path = "../../system/desktop-policy" }
 tokio = { workspace = true, features = ["full"] }
 

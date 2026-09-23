@@ -428,12 +428,7 @@ impl BackupsApp {
     }
 
     fn config_path() -> Option<PathBuf> {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .map(|root| root.join("tilo/backups/config.json"))
+        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {

@@ -901,17 +901,9 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
 /// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
 fn default_cache_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty()
-    {
-        return PathBuf::from(xdg).join("tilo-maps/tiles");
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home).join(".cache/tilo-maps/tiles");
-    }
-    std::env::temp_dir().join("tilo-maps/tiles")
+    xdg_paths::xdg::cache_home()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("tilo-maps/tiles")
 }
 
 /// Recursively sum file sizes under `dir` (bytes). Cheap enough for the

@@ -67,6 +67,7 @@ portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_gu
 notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }

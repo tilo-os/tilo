@@ -8,7 +8,7 @@
 //! ceremony owned by the compositor OOBE.
 
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -113,8 +113,8 @@ static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Returns an error when directory creation itself fails (permission denied, ENOSPC); the caller (`main`) logs and continues.
 pub fn run() -> Result<(), Box<dyn Error>> {
     run_with_env(
-        std::env::var_os("XDG_CONFIG_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
     )
 }
 
@@ -402,8 +402,8 @@ fn now_ns_u64() -> u64 {
 ///
 /// Returns an error when directory creation fails (permission denied, ENOSPC).
 pub fn run_with_env(
-    xdg_config_home: Option<OsString>,
-    home: Option<OsString>,
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&OsStr>,
 ) -> Result<(), Box<dyn Error>> {
     let Some(config_dir) = resolve_config_dir(xdg_config_home, home) else {
         tracing::warn!(
@@ -439,20 +439,12 @@ enum IdentityProvisioningContext {
 }
 
 /// Compute the tilo-desktop config dir (`<config-base>/tilo-desktop`) following the same XDG fallback rules the peer-sync marker uses.
-fn resolve_config_dir(
-    xdg_config_home: Option<OsString>,
-    home: Option<OsString>,
-) -> Option<PathBuf> {
-    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
-        let mut p = PathBuf::from(xdg);
-        p.push("tilo-desktop");
-        return Some(p);
-    }
-    let home = home.filter(|v| !v.is_empty())?;
-    let mut p = PathBuf::from(home);
-    p.push(".config");
-    p.push("tilo-desktop");
-    Some(p)
+fn resolve_config_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    Some(
+        xdg_paths::xdg::Base::Config
+            .resolve_from(xdg_config_home, home)?
+            .join("tilo-desktop"),
+    )
 }
 
 fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
@@ -1139,7 +1131,6 @@ mod tests {
             Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
         );
     }
-    use std::ffi::OsString;
     use std::sync::{Arc, Barrier};
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
@@ -1168,7 +1159,7 @@ mod tests {
     #[test]
     fn run_with_xdg_creates_tilo_desktop_dir() {
         let tmp = TmpDir::new("xdg");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot succeeds");
+        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot succeeds");
         let expected = tmp.path().join("tilo-desktop");
         assert!(
             expected.exists() && expected.is_dir(),
@@ -1179,7 +1170,7 @@ mod tests {
     #[test]
     fn run_with_home_falls_back_to_dot_config() {
         let tmp = TmpDir::new("home");
-        run_with_env(None, Some(OsString::from(tmp.path()))).expect("firstboot succeeds via HOME");
+        run_with_env(None, Some(tmp.path().as_os_str())).expect("firstboot succeeds via HOME");
         let expected = tmp.path().join(".config").join("tilo-desktop");
         assert!(
             expected.exists() && expected.is_dir(),
@@ -1190,8 +1181,8 @@ mod tests {
     #[test]
     fn run_is_idempotent_on_existing_dir() {
         let tmp = TmpDir::new("idempotent");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("first run ok");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("second run ok");
+        run_with_env(Some(tmp.path().as_os_str()), None).expect("first run ok");
+        run_with_env(Some(tmp.path().as_os_str()), None).expect("second run ok");
         let expected = tmp.path().join("tilo-desktop");
         assert!(expected.exists());
     }
@@ -1225,7 +1216,7 @@ mod tests {
     #[test]
     fn run_does_not_provision_identity_when_missing() {
         let tmp = TmpDir::new("no-mint-identity");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
         let identity_file = tmp
             .path()
             .join("tilo")
@@ -1244,7 +1235,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
         std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
         assert_eq!(std::fs::read(identity_file).unwrap(), b"MARKER: hands off");
     }
 

@@ -399,9 +399,8 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
     let key = DeviceKey::from_private(private.as_slice())?;
     let public_key = key.public_base64();
     let transport = GrayjaySyncTransport::with_device(key, device_name);
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::state_dir)
+    let base = xdg_paths::env_dir("XDG_STATE_HOME")
+        .or_else(xdg_paths::state_dir)
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,

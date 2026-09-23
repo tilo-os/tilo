@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: the saved-connection store is the app's shared-document

@@ -1172,13 +1172,9 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
 }
 
 fn user_model_root() -> PathBuf {
-    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(data).join("tilo/models");
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".local/share/tilo/models")
+    xdg_paths::xdg::data_home()
+        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
+        .join("tilo/models")
 }
 
 fn allocate_loopback_port() -> Result<u16, String> {

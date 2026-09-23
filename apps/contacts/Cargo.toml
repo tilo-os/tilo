@@ -22,6 +22,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
