@@ -516,7 +516,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-net",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -561,7 +561,7 @@ dependencies = [
  "tilo-app-package",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -589,7 +589,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-net",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
 ]
 
@@ -2190,7 +2190,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -4475,7 +4475,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "wasmtime",
@@ -4587,7 +4587,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-user-identity",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "uuid",
 ]
 
@@ -6775,7 +6775,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -7571,7 +7571,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-desktop-entry",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -11741,7 +11741,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-net",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "zeroize",
@@ -12082,7 +12082,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -13285,7 +13285,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -13886,7 +13886,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-net",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "vello",
  "winit",
@@ -14588,7 +14588,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-headless-schema",
  "tilo-ui-graph",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -14606,7 +14606,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "threshold-identity",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "walkdir",
 ]
 
@@ -14627,7 +14627,7 @@ dependencies = [
  "tempfile",
  "tilo-app-package",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -14837,7 +14837,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-user-identity",
  "tokio",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -14944,7 +14944,7 @@ dependencies = [
  "tilo-ui-graph",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "tts",
@@ -15070,7 +15070,7 @@ dependencies = [
  "libc",
  "serde",
  "tempfile",
- "toml 0.8.23",
+ "toml 1.0.6+spec-1.1.0",
  "walkdir",
 ]
 
