@@ -20,6 +20,8 @@ mod blobstore_fixture;
 mod convergence;
 #[path = "independent_documents.rs"]
 mod independent_documents;
+#[path = "office_entities.rs"]
+mod office_entities;
 #[path = "office_roundtrip.rs"]
 mod office_roundtrip;
 #[path = "sheet_roundtrip.rs"]

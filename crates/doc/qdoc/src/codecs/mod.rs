@@ -4,8 +4,10 @@
 //! `.docx`, `.odt`, `.ods`, `.xlsx` and `.odp` are zip archives of XML 1.0
 //! documents; every codec here reads them through the one `quick-xml` the
 //! workspace pins, pulling text via [`BytesText::xml10_content`], which
-//! unescapes entities *and* applies XML 1.0 end-of-line normalisation (`\r\n`
-//! and lone `\r` become `\n`) — required by the XML 1.0 spec. Neither OOXML nor
+//! applies XML 1.0 end-of-line normalisation (`\r\n` and lone `\r` become
+//! `\n`) — required by the XML 1.0 spec. Entity and character references are
+//! not part of a text event: every reader that collects text also handles
+//! `Event::GeneralRef` through [`resolve_general_ref`]. Neither OOXML nor
 //! ODF carries line breaks as literal CR/LF (those are `<w:br/>` and
 //! `<text:line-break/>` elements), so a raw CR in text content is whitespace
 //! and folding it is correct. Use `xml11_content` only if a format ever
@@ -51,6 +53,12 @@ pub(crate) fn unescape_attr(
 /// folding them into the surrounding text, so a reader that wants the text has
 /// to put them back. Only the five predefined entities and numeric references
 /// exist in these formats (a DTD, the only way to declare more, is refused).
+///
+/// Anything else — an undeclared name like `&bogus;`, or a character reference
+/// to no character such as `&#0;` — makes the part not well-formed, and there
+/// is no character to recover: it yields `None`, so readers drop the reference
+/// and keep the text on either side. Readers that copy XML through verbatim
+/// (unmodeled metadata) copy the reference as written instead.
 pub(crate) fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
     if let Ok(Some(c)) = reference.resolve_char_ref() {
         return Some(c);
