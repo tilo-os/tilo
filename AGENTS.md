@@ -211,11 +211,20 @@ Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
 ## Cargo.lock is committed — do not regenerate it
 
-A fresh resolve does not produce a working tree: `iroh` pulls a pre-release
-`ed25519-dalek 3.0.0-pre.1` stack that fails to compile against newer transitive versions, and
-the failure surfaces inside a dependency rather than where you touched. Tilo's own identities
-resolve to the stable `ed25519-dalek 2.2.0`, which is why `rand` is pinned to 0.8. Treat a
-lock change as a real change: read the diff and rebuild before pushing. `--locked` in CI.
+Move one crate at a time with `cargo update -p <crate> --precise <version>`. A fresh resolve
+moves hundreds of transitive versions at once, and a break surfaces inside a dependency rather
+than where you touched. Treat a lock change as a real change: read the diff and rebuild before
+pushing. `--locked` in CI.
+
+Tilo's own crates use one RustCrypto generation, the one iroh uses: `ed25519-dalek` and
+`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13,
+`chacha20poly1305` 0.11. Take OS randomness from `getrandom::SysRng`, wrapped as
+`UnwrapErr(SysRng)` where an infallible `CryptoRng` is required. The previous generation is in
+the lock only through third-party crates (openmls, frost-ed25519, authenticode, smithay, …); do
+not add a direct dependency on it. The two sanctioned exceptions exist because the newest
+releases of those dependencies still require it: frost's `rand_core` 0.6 is reached only
+through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's stack
+(`authenticode-sha2`, `x509-cert`/`cms` 0.2 on `der` 0.7).
 
 ## Traps that have cost real time
 
