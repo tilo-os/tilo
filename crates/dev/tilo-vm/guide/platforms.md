@@ -6,7 +6,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 
 | Host | Adapter (default) | Humans watch it in | Builds | GPU in guest |
 |---|---|---|---|---|
-| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `virt-install`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
+| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
 | macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 
@@ -19,13 +19,28 @@ slots need no GPU, so every row runs them.
 VMs live in libvirt's rootless per-user connection, `qemu:///session`: no
 root, no system daemon config. To watch one: virt-manager, File > Add
 Connection > QEMU/KVM user session (GNOME Boxes shows session VMs too).
-`tilo-vm doctor` checks `virsh` and `virt-install`, that `qemu:///session`
-answers, and that you can open `/dev/kvm`, and prints the install line for
+
+`vm create` writes the VM's libvirt domain XML itself, beside the VM disk
+(`<disk>.xml`), and registers it with `virsh define`. That needs only the
+libvirt client and libvirt's QEMU driver: no virt-install, and no libvirt
+storage or network driver (a broken `virtstoraged` does not matter). The
+domain is UEFI without Secure Boot, KVM with the host CPU (TCG with
+`--emulated`), a virtio disk, passt networking with the SSH port forwarded,
+and SPICE with virtio video for virt-manager.
+
+`tilo-vm doctor` checks `virsh`, the `qemu-img` beside it and `passt`; that
+you can open `/dev/kvm`; and that `virsh --connect qemu:///session
+capabilities` succeeds and lists a KVM guest for your architecture (when it
+fails, the fix quotes virsh's own error). It prints the install line for
 your host:
 
-- dnf: `sudo dnf install libvirt-daemon-kvm virt-install virt-manager qemu-img`
-- apt: `sudo apt install libvirt-daemon-system libvirt-clients virtinst virt-manager qemu-utils`
-- image-based (rpm-ostree): `rpm-ostree install libvirt-daemon-kvm virt-install virt-manager qemu-img`, then reboot
+- dnf: `sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt`
+- apt: `sudo apt install libvirt-daemon-system libvirt-clients virt-manager qemu-utils passt`
+- pacman: `sudo pacman -S libvirt virt-manager qemu-full passt`
+- zypper: `sudo zypper install libvirt-daemon-qemu libvirt-client virt-manager qemu-tools passt`
+- image-based (rpm-ostree): `rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt`, then reboot
+
+virt-manager is only the viewer; tilo-vm does not run it.
 
 `doctor` prints the resolved path of every tool it will run. The `qemu-img`
 used is the one beside `virsh`; a `qemu-img` from elsewhere on `PATH` (an
@@ -86,7 +101,7 @@ at creation where the hypervisor has a channel for credentials:
 
 | Adapter | How the key gets in |
 |---|---|
-| libvirt | at creation: an SMBIOS type 11 OEM string (`virt-install --sysinfo type=smbios,oemStrings.entry0=io.systemd.credential.binary:ssh.authorized_keys.root=<base64>`) |
+| libvirt | at creation: an SMBIOS type 11 OEM string in the domain XML (`<sysinfo type='smbios'><oemStrings><entry>io.systemd.credential.binary:ssh.authorized_keys.root=<base64></entry>`, with `<smbios mode='sysinfo'/>`) |
 | UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
 
 The one-time step logs in with the dev account's password (`tester`,
@@ -99,6 +114,11 @@ ssh -t -p <port> tester@<vm address> 'sudo install -d -m 0700 /root/.ssh && echo
 
 It asks for that password twice (SSH, then sudo). The same command fixes a
 libvirt VM created before keys were passed at creation.
+
+Each VM also has its own `known_hosts`, `keys/<name>_ed25519.known_hosts`,
+so local VMs that share `127.0.0.1` and a forwarded port never collide in
+`~/.ssh/known_hosts`; `vm create` clears it, since a new VM has new host
+keys. For a shell or one command as root: `tilo-vm vm ssh [<name>] [-- <command>]`.
 
 ## Registry and files
 

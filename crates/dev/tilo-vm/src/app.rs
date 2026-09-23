@@ -775,7 +775,12 @@ impl App {
         match command {
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
-            VmCommand::Ssh { raw, vm, command } => self.vm_ssh(vm.as_deref(), raw, &command),
+            VmCommand::Ssh {
+                raw,
+                name,
+                vm,
+                command,
+            } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
@@ -865,16 +870,30 @@ impl App {
             }
         }
         run_all(&mut self.runner, &adapter.stop(&vm.vm()))?;
-        let down = lock
-            .as_mut()
-            .map(|l| l.wait_for_shutdown(Duration::from_secs(120)));
+        let started = Instant::now();
+        let limit = Duration::from_secs(120);
+        let mut down = lock.as_mut().map(|l| l.wait_for_shutdown(limit));
+        // SSH closes early in a shutdown; where the hypervisor can say, "down"
+        // means the VM is off, so a following vm start finds it stopped.
+        if down != Some(false) && adapter.running(&vm.vm(), &mut self.runner).is_some() {
+            down = Some(loop {
+                match adapter.running(&vm.vm(), &mut self.runner) {
+                    Some(true) if started.elapsed() < limit => {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    Some(true) => break false,
+                    _ => break true,
+                }
+            });
+        }
         let text = match down {
-            Some(true) => format!(
+            Some(true) if lock.is_some() => format!(
                 "VM {} shut down (it held the VM lock until it was down)",
                 vm.name
             ),
+            Some(true) => format!("VM {} shut down", vm.name),
             Some(false) => format!(
-                "VM {} was asked to shut down but still answers after 120s; tilo-vm vm status",
+                "VM {} was asked to shut down but is still up after 120s; tilo-vm vm status",
                 vm.name
             ),
             None => format!("VM {} is shutting down", vm.name),
@@ -998,6 +1017,18 @@ impl App {
                 insert(&mut data, "daemon", json!(remote.hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
             }
+            Err(error @ CliError::DaemonMissing { .. }) => {
+                lines.push(
+                    "  reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
+                        .into(),
+                );
+                insert(&mut data, "reachable", json!(true));
+                insert(&mut data, "daemon", Value::Null);
+                insert(&mut data, "error", error.to_json());
+                let mut outcome = Outcome::new(lines.join("\n"), data);
+                outcome.next = vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)];
+                Ok(outcome)
+            }
             Err(error) => {
                 lines.push(format!("  not reachable: {error}"));
                 insert(&mut data, "reachable", json!(false));
@@ -1028,6 +1059,9 @@ impl App {
             None => host::auto(facts),
         }
         .map_err(CliError::NoHypervisor)?;
+        if choice.adapter == "libvirt" {
+            host::session_domain(facts, arch, args.emulated).map_err(CliError::NoHypervisor)?;
+        }
         if choice.adapter == "qemu" && !self.base_dir().join("os/dev/vm.sh").is_file() {
             return Err(CliError::Unsupported {
                 what: "the qemu adapter outside a Tilo worktree".into(),
@@ -1178,6 +1212,14 @@ impl App {
         }
         let key = sshkey::key_path(&self.registry_path, &args.name);
         let root_key = sshkey::ensure(&mut self.runner, &key, &args.name)?;
+        // A new VM has new host keys: forget those of any earlier VM of this name.
+        let known_hosts = remote::known_hosts_path(&key.display().to_string());
+        match std::fs::remove_file(&known_hosts) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(CliError::io(format!("remove {known_hosts}"))(e));
+            }
+            _ => {}
+        }
         let entry = VmEntry {
             hypervisor: plan.choice.adapter.to_owned(),
             ssh: args.ssh,
@@ -1357,6 +1399,7 @@ impl App {
         run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
         let started = Instant::now();
         let mut reachable = false;
+        let mut no_daemon = None;
         while started.elapsed() < Duration::from_secs(180) {
             match self.connect(&vm) {
                 Ok(_) => {
@@ -1365,6 +1408,12 @@ impl App {
                 }
                 // sshd is up and says no: waiting will not change that.
                 Err(error @ CliError::RootKeyRefused { .. }) => return Err(error),
+                // SSH works; the image just has no daemon, and never will.
+                Err(error @ CliError::DaemonMissing { .. }) => {
+                    reachable = true;
+                    no_daemon = Some(error);
+                    break;
+                }
                 Err(_) => std::thread::sleep(Duration::from_secs(2)),
             }
         }
@@ -1378,6 +1427,18 @@ impl App {
         }
         self.warnings.extend(self.receipt.slow());
         let seconds = started.elapsed().as_secs_f64();
+        if let Some(error) = no_daemon {
+            return Ok(Outcome {
+                next: vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)],
+                ..Outcome::new(
+                    format!(
+                        "VM {} is up; SSH answered after {seconds:.0}s, but it runs no tilo-vmd (not a Tilo dev image), so slots and swaps cannot use it",
+                        vm.name
+                    ),
+                    json!({ "vm": vm.name, "boot_seconds": seconds, "daemon": false }),
+                )
+            });
+        }
         Ok(Outcome::new(
             format!("VM {} is up; SSH answered after {seconds:.0}s", vm.name),
             json!({ "vm": vm.name, "boot_seconds": seconds }),
@@ -2642,6 +2703,21 @@ mod tests {
         let text = plan.describe();
         assert!(text.contains("qemu:///session"), "{text}");
         assert!(text.contains("tilo-vm.qcow2"), "{text}");
+
+        // An emulated aarch64 VM needs libvirt to list an aarch64 guest.
+        args.arch = Some("aarch64".into());
+        args.emulated = true;
+        let error = app
+            .preflight_create(&facts, &args, "aarch64")
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
+        assert!(error.to_string().contains("no aarch64 guest"), "{error}");
+        assert!(
+            error.hint().contains("qemu-system-aarch64"),
+            "{}",
+            error.hint()
+        );
     }
 
     #[test]

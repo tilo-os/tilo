@@ -145,7 +145,9 @@ fn verdict(name: &str, result: Result<String, Missing>) -> Check {
 
 /// The adapter `vm create` uses by default, with every tool's resolved
 /// path. On Linux that is libvirt's rootless session, so three checks: its
-/// tools, KVM access and the session connection.
+/// tools, KVM access, and that the session's QEMU driver answers
+/// `virsh capabilities` with a KVM guest for this host's architecture. The
+/// storage and network drivers are never needed, so never probed.
 pub fn hypervisor_checks(facts: &HostFacts) -> Vec<Check> {
     if facts.os != "linux" {
         return vec![verdict(
@@ -176,7 +178,7 @@ pub fn hypervisor_checks(facts: &HostFacts) -> Vec<Check> {
     if have_virsh {
         checks.push(verdict(
             "libvirt session",
-            host::session_answers(facts).map(|()| format!("{} answers", host::SESSION_URI)),
+            host::session_domain(facts, &facts.arch, false),
         ));
     }
     checks
@@ -346,15 +348,35 @@ mod tests {
         );
         assert!(hv.detail.contains("virt-manager"), "{}", hv.detail);
         assert_eq!(find(&checks, "kvm").state, "ok");
-        assert_eq!(find(&checks, "libvirt session").state, "ok");
+        let session = find(&checks, "libvirt session");
+        assert_eq!(session.state, "ok");
+        assert!(
+            session.detail.contains("x86_64 guests with kvm"),
+            "{session:?}"
+        );
 
         let mut broken = linux(HostKind::Dnf, LIBVIRT);
         broken.kvm = Some(false);
-        broken.session = Some(Err("no daemon".into()));
+        let stderr = "error: failed to connect to the hypervisor\nerror: Failed to connect socket to '/run/user/1000/libvirt/virtqemud-sock': Connection refused";
+        broken.session = Some(Err(stderr.into()));
         let checks = hypervisor_checks(&broken);
         assert_eq!(find(&checks, "kvm").state, "fail");
         let session = find(&checks, "libvirt session");
-        assert!(session.detail.contains("no daemon"), "{session:?}");
+        assert_eq!(session.state, "fail");
+        assert!(session.detail.contains(stderr), "{session:?}");
+        assert!(
+            session.fix.as_deref().unwrap().contains(stderr),
+            "{session:?}"
+        );
+
+        let mut no_kvm = linux(HostKind::Dnf, LIBVIRT);
+        no_kvm.session = Some(Ok(vec![host::Guest {
+            arch: "x86_64".into(),
+            domains: vec!["qemu".into()],
+        }]));
+        let session = find(&hypervisor_checks(&no_kvm), "libvirt session").clone();
+        assert_eq!(session.state, "fail");
+        assert!(session.detail.contains("not kvm"), "{session:?}");
 
         // An image-based host with only an Android SDK's qemu-img on PATH.
         let stray = linux(
@@ -368,10 +390,36 @@ mod tests {
             hv.fix
                 .as_deref()
                 .unwrap()
-                .contains("rpm-ostree install libvirt-daemon-kvm virt-install virt-manager"),
+                .contains("rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager"),
             "{hv:?}"
         );
         assert!(checks.iter().all(|c| c.check != "libvirt session"));
+    }
+
+    #[test]
+    fn doctor_verdicts_ignore_virt_install() {
+        let mut with_it = LIBVIRT.to_vec();
+        with_it.push(("virt-install", "/usr/bin/virt-install"));
+        let with = hypervisor_checks(&linux(HostKind::Dnf, &with_it));
+        let without = hypervisor_checks(&linux(HostKind::Dnf, LIBVIRT));
+        assert_eq!(with, without);
+        assert!(without.iter().all(|c| c.state == "ok"), "{without:?}");
+        let text = format!("{without:?}");
+        assert!(!text.contains("virt-install"), "{text}");
+
+        // virt-install alone is not libvirt: the fix names what is needed.
+        let only = hypervisor_checks(&linux(
+            HostKind::Apt,
+            &[("virt-install", "/usr/bin/virt-install")],
+        ));
+        let hv = find(&only, "hypervisor");
+        assert_eq!(hv.state, "fail");
+        let fix = hv.fix.as_deref().unwrap();
+        assert!(
+            !fix.contains("virtinst") && !fix.contains("virt-install"),
+            "{fix}"
+        );
+        assert!(fix.contains("libvirt-clients"), "{fix}");
     }
 
     #[test]
