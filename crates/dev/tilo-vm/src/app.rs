@@ -1028,6 +1028,9 @@ impl App {
             None => host::auto(facts),
         }
         .map_err(CliError::NoHypervisor)?;
+        if choice.adapter == "libvirt" {
+            host::session_domain(facts, arch, args.emulated).map_err(CliError::NoHypervisor)?;
+        }
         if choice.adapter == "qemu" && !self.base_dir().join("os/dev/vm.sh").is_file() {
             return Err(CliError::Unsupported {
                 what: "the qemu adapter outside a Tilo worktree".into(),
@@ -2641,6 +2644,21 @@ mod tests {
         let text = plan.describe();
         assert!(text.contains("qemu:///session"), "{text}");
         assert!(text.contains("tilo-vm.qcow2"), "{text}");
+
+        // An emulated aarch64 VM needs libvirt to list an aarch64 guest.
+        args.arch = Some("aarch64".into());
+        args.emulated = true;
+        let error = app
+            .preflight_create(&facts, &args, "aarch64")
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
+        assert!(error.to_string().contains("no aarch64 guest"), "{error}");
+        assert!(
+            error.hint().contains("qemu-system-aarch64"),
+            "{}",
+            error.hint()
+        );
     }
 
     #[test]
