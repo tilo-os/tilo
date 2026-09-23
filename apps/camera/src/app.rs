@@ -2476,19 +2476,6 @@ fn now_secs() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-fn ago(ts: i64, now: i64) -> String {
-    let d = (now - ts).max(0);
-    if d < 60 {
-        "just now".into()
-    } else if d < 3600 {
-        format!("{}m ago", d / 60)
-    } else if d < 86_400 {
-        format!("{}h ago", d / 3600)
-    } else {
-        format!("{}d ago", d / 86_400)
-    }
-}
-
 fn fmt_dur(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
     ui::format::timecode(u64::try_from(seconds).unwrap_or(0))
@@ -5913,7 +5900,7 @@ impl CameraApp {
                 tr,
                 row.x0 + 36.0,
                 summ_top + summ_h,
-                &ago(entry.ts, now),
+                &ui::format::relative(now - entry.ts),
                 11.0,
                 p::alpha(white(), 0.6),
             );

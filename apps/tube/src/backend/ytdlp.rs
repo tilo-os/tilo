@@ -372,17 +372,6 @@ fn f64_field(v: &Value, key: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian date.
-/// Howard Hinnant's `days_from_civil` — exact, no leap-year special-casing bugs.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146_097 + doe - 719_468
-}
-
 /// Today, as days since the civil epoch (UTC).
 fn today_days() -> i64 {
     std::time::SystemTime::now()
@@ -405,41 +394,26 @@ fn humanize_date(d: &str) -> String {
     }
     let (y, m, day) = (
         d.get(0..4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-        d.get(4..6).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
-        d.get(6..8).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        d.get(4..6).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
+        d.get(6..8).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
     );
     if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
         return d.to_string();
     }
     let month = MONTHS.get((m - 1) as usize).copied().unwrap_or("");
     let absolute = format!("{month} {day}, {y}");
-    let age = today_days() - days_from_civil(y, m, day);
+    let age = today_days() - ui::date::days_from_civil(y, m, day);
     age_label(age, &absolute)
 }
 
 /// Pure age-in-days → human label. Split out so the relative wording is unit-
-/// tested without depending on the system clock.
+/// tested without depending on the system clock. Upload dates carry no time of
+/// day, so the same day reads "today" and anything past a year is absolute.
 fn age_label(age: i64, absolute: &str) -> String {
     match age {
-        a if a < 0 => absolute.to_string(), // clock skew / future date
         0 => "today".to_string(),
-        1 => "1 day ago".to_string(),
-        2..=6 => format!("{age} days ago"),
-        7..=13 => "1 week ago".to_string(),
-        // Weeks stop at 29, not 59: a month is the unit a person reaches
-        // for once there is a whole one to name, and "8 weeks ago" is not
-        // how anyone says "2 months ago". The `.max(1)` below is the tell
-        // that this boundary was always meant to sit at 30 — at 60 it can
-        // never fire, since 60/30 is already 2.
-        14..=29 => format!("{} weeks ago", age / 7),
-        30..=364 => {
-            let months = (age / 30).max(1);
-            if months == 1 {
-                "1 month ago".to_string()
-            } else {
-                format!("{months} months ago")
-            }
-        }
+        1..=364 => ui::format::relative(age.saturating_mul(86_400)),
+        // Clock skew / future date, or older than a year.
         _ => absolute.to_string(),
     }
 }
@@ -449,16 +423,9 @@ mod date_tests {
     use super::*;
 
     #[test]
-    fn days_from_civil_matches_known_anchors() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(1970, 1, 2), 1);
-        assert_eq!(days_from_civil(2000, 1, 1), 10957);
-    }
-
-    #[test]
     fn relative_ages_read_naturally() {
         assert_eq!(age_label(0, "x"), "today");
-        assert_eq!(age_label(1, "x"), "1 day ago");
+        assert_eq!(age_label(1, "x"), "yesterday");
         assert_eq!(age_label(3, "x"), "3 days ago");
         assert_eq!(age_label(10, "x"), "1 week ago");
         assert_eq!(age_label(21, "x"), "3 weeks ago");
