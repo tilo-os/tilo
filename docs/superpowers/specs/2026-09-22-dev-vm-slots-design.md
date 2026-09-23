@@ -54,7 +54,7 @@ catches divergence.
 
 ### Swap semantics
 
-`tilo-vm swap [<overlay>] <component> --from worktree|sha:<commit>|layer:<hash>` resolves the
+`tilo-vm swap [--slot <overlay>] <component> --from worktree|sha:<commit>|layer:<hash>` resolves the
 source to a layer, writes a new generation and applies it:
 
 - Session components (shell, launcher, user services, runtime) restart the session normally.
@@ -108,7 +108,7 @@ compiles. A contract check guarantees that production images never enable the fe
 - Defaults: the overlay name derives from the worktree/branch. The VM comes from
   `TILO_VM`, then `.tilo-vm` in the worktree, then `~/.config/tilo-vm/vms.toml`, which a
   human edits to tell agents which VM to use.
-- Every command takes `--json`, is idempotent and writes a receipt under `target/dev-runs/`.
+- Every command takes `--json` and is idempotent; commands that change state or run long write a receipt under `target/dev-runs/`.
 
 ## Dev image and hosts
 
@@ -123,7 +123,7 @@ compiles. A contract check guarantees that production images never enable the fe
   - UTM (`utmctl`, Apple Virtualization backend) on macOS
   - Hyper-V (PowerShell) on Windows
 - The SSH key is injected at first boot.
-- `os/dev/vm.sh` (raw QEMU) stays for CI and scenario tests.
+- `os/dev/vm.sh` (raw QEMU) stays for CI and scenario tests, as the headless `qemu` adapter; it is never the default, because its VMs are invisible to virt-manager and Boxes. On Linux the default is libvirt's rootless `qemu:///session`.
 
 ## Early spikes
 
