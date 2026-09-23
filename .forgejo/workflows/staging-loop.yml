@@ -93,7 +93,26 @@ jobs:
           command -v mkfs.vfat >/dev/null || missing+=(dosfstools)
           command -v mcopy >/dev/null || missing+=(mtools)
           command -v sfdisk >/dev/null || missing+=(util-linux)
+          command -v mkfs.btrfs >/dev/null || missing+=(btrfs-progs)
           if [ "${#missing[@]}" -gt 0 ]; then dnf install -y "${missing[@]}"; fi
+
+      # The job container's /dev is a static tmpfs with no udev, so neither
+      # /dev/loop-control nor the loopNpM partition nodes ever appear. Mount
+      # the (Kata guest) kernel's devtmpfs instead: the kernel then creates
+      # every loop and partition node itself. pts and shm are remounted so
+      # the remaining steps keep a normal /dev.
+      - name: Expose kernel block device nodes
+        run: |
+          modprobe loop 2>/dev/null || true
+          if [ ! -e /dev/loop-control ]; then
+            mount -t devtmpfs devtmpfs /dev
+            mkdir -p /dev/pts /dev/shm
+            mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/loop-control
+          loop="$(losetup --find)"
+          echo "first free loop device: $loop"
 
       - name: Build the debug imager (test seams enabled)
         run: cargo build --locked -p imager --bin imager
