@@ -114,6 +114,22 @@ pub struct Record {
     pub steps: Vec<StepRecord>,
     pub original_firmware: OriginalFirmware,
     pub owned_boot_entry: Option<OwnedBootEntry>,
+    /// Component sizes and digests verified at `stage`, so `arm` can
+    /// re-verify the partitions after the download is gone.
+    #[serde(default)]
+    pub bundle: Option<RecordedBundle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedComponent {
+    pub byte_size: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedBundle {
+    pub esp: RecordedComponent,
+    pub root: RecordedComponent,
 }
 
 /// Where a record stands, for the resume card and the pending-operation rule.
@@ -159,6 +175,7 @@ impl Record {
             steps: Vec::new(),
             original_firmware,
             owned_boot_entry: None,
+            bundle: None,
         }
     }
 
