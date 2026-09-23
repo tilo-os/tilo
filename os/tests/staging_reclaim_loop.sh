@@ -87,12 +87,18 @@ PY
 # Remove the not-yet-created target pair so the extent is unallocated again.
 sfdisk --delete "$loop" 3 4 >/dev/null
 partx -u "$loop"
+# Find the staging root's node from the GPT itself: without a udev database
+# (CI containers) lsblk reports no PARTUUID to match on.
+root_node="$(sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1].lower()
+print(*[p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower() == u])' "$root_uuid")"
+[ -n "$root_node" ] || { echo 'FAIL  staging root partition not found in the GPT' >&2; exit 1; }
 lsblk -J -b -p -o NAME,TYPE,START,SIZE,PARTUUID,PARTTYPE,PTTYPE,PTUUID,LOG-SEC,MOUNTPOINTS "$loop" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); u=sys.argv[1]
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); n=sys.argv[1]
 d["blockdevices"][0]["type"] = "disk"  # lsblk reports loop devices as "loop"
-for c in d["blockdevices"][0]["children"]:
-    if (c.get("partuuid") or "").lower() == u: c["mountpoints"] = ["/sysroot"]
-json.dump(d, sys.stdout)' "$root_uuid" > "$fixture/lsblk.json"
+hits = [c for c in d["blockdevices"][0]["children"] if c.get("name") == n]
+assert len(hits) == 1, "staging root node missing from lsblk"
+hits[0]["mountpoints"] = ["/sysroot"]
+json.dump(d, sys.stdout)' "$root_node" > "$fixture/lsblk.json"
 check() {
   TILO_STAGING_EFIVARS="$fixture/efivars" TILO_STAGING_ESP_DIR="$fixture/esp" \
   TILO_STAGING_LSBLK_JSON="$fixture/lsblk.json" \
