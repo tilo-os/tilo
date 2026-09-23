@@ -14850,6 +14850,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
+ "hex",
  "libc",
  "postcard",
  "private-fs",
