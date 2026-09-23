@@ -35,7 +35,6 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
@@ -201,13 +200,7 @@ pub struct SearchResultRef {
 }
 
 fn path_key(path: &str) -> String {
-    path.as_bytes().iter().fold(
-        String::with_capacity(path.len().saturating_mul(2)),
-        |mut key, byte| {
-            let _ = write!(key, "{byte:02x}");
-            key
-        },
-    )
+    hex::encode(path)
 }
 
 pub fn symbol_resource_id(symbol: &SymbolRef) -> String {
