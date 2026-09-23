@@ -77,6 +77,11 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>,
                     }
                 }
             }
+            Event::GeneralRef(r) if in_meta == 0 && cur.is_some() => {
+                if let Some(c) = crate::codecs::resolve_general_ref(&r) {
+                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"dc:creator" | b"dc:date" | b"meta:date-string" => {
                     in_meta = in_meta.saturating_sub(1);
@@ -135,6 +140,14 @@ fn annotation_meta(raw: &str) -> (String, String) {
                         date.push_str(&txt);
                     }
                 }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                let target = match collecting {
+                    Some(true) => &mut author,
+                    Some(false) => &mut date,
+                    None => continue,
+                };
+                target.extend(crate::codecs::resolve_general_ref(&r));
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"dc:creator" | b"dc:date" => collecting = None,

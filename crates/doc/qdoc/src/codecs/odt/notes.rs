@@ -79,6 +79,11 @@ pub(super) fn import_note(raw: &str, doc: &mut DocMut) -> String {
                     }
                 }
             }
+            Event::GeneralRef(r) if in_body && cur.is_some() => {
+                if let Some(c) = crate::codecs::resolve_general_ref(&r) {
+                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"text:note-body" => in_body = false,
                 b"text:p" | b"text:h" if in_body => cur = None,

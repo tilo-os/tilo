@@ -64,6 +64,14 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
                     }
                 }
             }
+            Event::GeneralRef(r) => {
+                let target = match collecting {
+                    Some(true) => &mut author,
+                    Some(false) => &mut date,
+                    None => continue,
+                };
+                target.extend(crate::codecs::resolve_general_ref(&r));
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"dc:creator" | b"dc:date" => collecting = None,
                 b"text:changed-region" => {
