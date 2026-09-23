@@ -253,6 +253,11 @@ pub trait Hypervisor {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
+    /// Is the VM running, as the hypervisor sees it? `None` when the adapter
+    /// cannot tell.
+    fn running(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
+        None
+    }
     fn serial(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
@@ -469,6 +474,16 @@ impl Hypervisor for Libvirt {
             control: Some("virsh"),
         }
     }
+
+    fn running(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        // Names only, so the answer does not depend on virsh's locale.
+        let output = runner
+            .output(&Self::virsh(vm, &["list", "--name", "--state-running"]))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.lines().any(|l| l.trim() == vm.name))
+    }
+
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
         Some(Self::virsh(vm, &["console", vm.name]))
     }
@@ -969,6 +984,14 @@ mod tests {
         );
         let endpoint = Libvirt.ssh_endpoint(&vm, &mut fake("")).unwrap();
         assert_eq!((endpoint.host.as_str(), endpoint.port), ("127.0.0.1", 2223));
+        let mut runner = fake("other\ndev\n\n");
+        assert_eq!(Libvirt.running(&vm, &mut runner), Some(true));
+        assert_eq!(
+            runner.0[0].display(),
+            "virsh --connect qemu:///session list --name --state-running"
+        );
+        assert_eq!(Libvirt.running(&vm, &mut fake("dev2\n")), Some(false));
+        assert_eq!(Utm.running(&vm, &mut fake("")), None);
     }
 
     #[test]
