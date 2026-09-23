@@ -86,10 +86,11 @@ class StageTests(unittest.TestCase):
                    "offset_bytes": 40960, "size_bytes": 8192},
                   {"role": "staging-esp", "partuuid": str(uuid.UUID(int=5)), "sha256": "c" * 64,
                    "offset_bytes": 49152, "size_bytes": 8192}]
-        record = stage.make_live_record(value, staged)
+        record = stage.make_live_record(value, staged, "d" * 64)
         self.assertEqual(record["schema"], "tilo.internal-install-source.v1")
         self.assertEqual(record["target_free_extent"], value["target_free_extent"])
         self.assertEqual(record["staging"], staged)
+        self.assertEqual(record["development_backend"]["sha256"], "d" * 64)
 
 
 if __name__ == "__main__":
