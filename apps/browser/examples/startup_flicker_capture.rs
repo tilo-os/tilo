@@ -97,11 +97,7 @@ fn mean(rgba: &[u8]) -> (u8, u8, u8, u8) {
 }
 
 fn save_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) {
-    let file = std::fs::File::create(path).unwrap();
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().unwrap().write_image_data(rgba).unwrap();
+    ui::png::write_rgba8(path, w, h, rgba).unwrap();
 }
 
 fn main() {

@@ -436,14 +436,15 @@ mod tests {
     }
 
     fn png(path: &Path) {
-        let file = fs::File::create(path).unwrap();
-        let mut encoder = png::Encoder::new(file, 2, 1);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer
-            .write_image_data(&[8, 20, 30, 255, 40, 50, 60, 255])
-            .unwrap();
+        image::save_buffer_with_format(
+            path,
+            &[8, 20, 30, 255, 40, 50, 60, 255],
+            2,
+            1,
+            image::ExtendedColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .unwrap();
     }
 
     #[test]

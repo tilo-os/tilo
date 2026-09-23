@@ -399,19 +399,14 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufReader;
     use tempfile::TempDir;
 
     fn masthead_ink_pixels(path: &Path) -> usize {
-        let file = std::fs::File::open(path).unwrap();
-        let decoder = png::Decoder::new(BufReader::new(file));
-        let mut reader = decoder.read_info().unwrap();
-        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
-        let frame = reader.next_frame(&mut bytes).unwrap();
-        assert_eq!(frame.color_type, png::ColorType::Rgba);
+        let frame = ui::png::read_rgba8(path).unwrap();
         let width = usize::try_from(frame.width).unwrap();
         let top_rows = usize::try_from(frame.height.min(180)).unwrap();
-        bytes[..frame.buffer_size()]
+        frame
+            .rgba
             .chunks_exact(4)
             .take(width.saturating_mul(top_rows))
             .filter(|pixel| {

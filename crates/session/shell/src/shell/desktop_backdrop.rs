@@ -499,22 +499,13 @@ fn safe_cache_name(name: &str) -> bool {
 }
 
 fn read_normalised_wallpaper(path: &std::path::Path) -> Option<ImageData> {
-    let file = std::fs::File::open(path).ok()?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder.read_info().ok()?;
-    let size = reader.output_buffer_size()?;
-    let mut rgba = vec![0; size];
-    let info = reader.next_frame(&mut rgba).ok()?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return None;
-    }
-    rgba.truncate(info.buffer_size());
+    let decoded = ui::png::read_rgba8(path).ok()?;
     Some(ImageData {
-        data: Blob::new(Arc::new(rgba)),
+        data: Blob::new(Arc::new(decoded.rgba)),
         format: Format::Rgba8,
         alpha_type: ImageAlphaType::Alpha,
-        width: info.width,
-        height: info.height,
+        width: decoded.width,
+        height: decoded.height,
     })
 }
 

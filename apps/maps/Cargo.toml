@@ -29,7 +29,6 @@ winit.workspace = true
 taffy.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
-png.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
 chrono = { workspace = true, default-features = true }
 

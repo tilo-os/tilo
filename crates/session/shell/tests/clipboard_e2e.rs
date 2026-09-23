@@ -1146,14 +1146,11 @@ fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
     compositor.chrome_copy_image();
 
     let png = client.read_clipboard_bytes("image/png", None);
-    let decoder = png::Decoder::new(std::io::Cursor::new(png));
-    let mut reader = decoder.read_info().expect("PNG header");
-    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-    let info = reader.next_frame(&mut frame).expect("PNG frame");
-    assert_eq!((info.width, info.height), (2, 1));
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
     assert_eq!(
-        &frame[..info.buffer_size()],
-        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
     );
 
     // One compositor-owned selection advertises both formats, so image copy
@@ -1240,14 +1237,11 @@ fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
     sink.assert_is_tilo_compositor();
     sink.map_window(&compositor);
     let png = sink.read_clipboard_bytes("image/png", None);
-    let decoder = png::Decoder::new(std::io::Cursor::new(png));
-    let mut reader = decoder.read_info().expect("PNG header");
-    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-    let info = reader.next_frame(&mut frame).expect("PNG frame");
-    assert_eq!((info.width, info.height), (2, 1));
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
     assert_eq!(
-        &frame[..info.buffer_size()],
-        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
     );
     assert_eq!(sink.read_clipboard(None), "app caption");
 }
