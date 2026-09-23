@@ -252,6 +252,23 @@ impl Daemon {
         slots: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), DaemonError> {
         for slot in slots {
+            if let Err(state) = self.apply.wait_session_ready(slot) {
+                let log = self
+                    .apply
+                    .journal(
+                        &[
+                            format!("_SYSTEMD_UNIT={}", session_unit(slot)),
+                            format!("SYSLOG_IDENTIFIER=tilo-session-{slot}"),
+                        ],
+                        12,
+                    )
+                    .unwrap_or_default();
+                return Err(DaemonError::SessionFailed {
+                    slot: slot.to_owned(),
+                    state,
+                    log: log.trim_end().to_owned(),
+                });
+            }
             if let Some(detail) = self.parity(slot) {
                 return Err(DaemonError::SessionParity {
                     slot: slot.to_owned(),
