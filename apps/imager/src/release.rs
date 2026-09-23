@@ -1448,6 +1448,34 @@ mod internal_catalog_tests {
         assert!(release.verify_manifest(&changed).is_err());
     }
     #[test]
+    fn published_package_entries_parse_as_internal_releases() {
+        // The exact shape build-release-catalog.sh emits for a Forgejo package.
+        let mut value = crate::setup::internal_bundle::tests::fixture();
+        value["release_id"] = json!("imager-v1.2.3");
+        let bytes = crate::setup::internal_bundle::tests::bytes(&value);
+        let mut entry = internal(&bytes);
+        entry["release_id"] = json!("imager-v1.2.3");
+        entry["manifest_url"] = json!(
+            "https://code.podesta.ai/api/packages/qos/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
+        );
+        let raw = json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
+        let catalog = parse_catalog(&raw).unwrap();
+        assert_eq!(
+            media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
+            1
+        );
+        let release = catalog
+            .releases
+            .into_iter()
+            .find_map(|entry| match entry {
+                CatalogRelease::Internal(metadata) => Some(InternalRelease { metadata }),
+                CatalogRelease::Media(_) => None,
+            })
+            .unwrap();
+        assert_eq!(release.release_id(), "imager-v1.2.3");
+        assert!(release.verify_manifest(&bytes).is_ok());
+    }
+    #[test]
     fn internal_selection_rejects_release_and_architecture_mismatch() {
         let bytes = crate::setup::internal_bundle::tests::bytes(
             &crate::setup::internal_bundle::tests::fixture(),
