@@ -84,9 +84,15 @@ components in your own slot.
 
 ## Checks
 
-- A layer built for another CPU architecture, or with a builder image that
-  differs from the VM's, is refused. A different base image or toolchain
-  is reported as a warning.
+- Each layer's provenance is checked against the VM image's
+  `/usr/share/tilo-vm/base.json`. Refused: another target triple (or CPU
+  architecture), another builder image, or another `Cargo.lock` than the
+  image was built from; the error names the field and both values. A dev
+  image names no builder image (it is its own builder), so there the
+  target, toolchain and `Cargo.lock` stand for it. A different base image
+  or toolchain is reported as a warning. For a `Cargo.lock` mismatch, move
+  the VM to an image of your commit (`tilo-vm vm upgrade`) or rebase onto
+  the image's commit; never regenerate `Cargo.lock` to match.
 - Local builds (`vm`, `host`) are for testing and never promoted; only CI
   builds are.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
