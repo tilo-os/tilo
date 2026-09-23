@@ -208,6 +208,21 @@ rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five sec
 **Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
 Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
+## Dev VMs
+
+To run your build in the real Tilo OS image (a headful session, real DRM and input, VM-wide
+services), use the one tool, `tilo-vm`. Start here:
+
+```bash
+cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+```
+
+You get a **slot** in a shared dev VM: your own user, session and layer stack, swapped with
+`tilo-vm swap <component>` and undone with `tilo-vm rollback`. Driving stays the one story above:
+`tilo-vm control …` runs the VM's `tilo-control` against your slot, and `tilo-vm shot` is its
+snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy into a VM with raw
+`ssh`/`scp`.
+
 ## Cargo.lock is committed — do not regenerate it
 
 A fresh resolve does not produce a working tree: `iroh` pulls a pre-release
