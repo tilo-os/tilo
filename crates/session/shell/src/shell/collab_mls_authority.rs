@@ -5,10 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1043,23 +1040,7 @@ fn io_error(error: std::io::Error) -> MlsAuthorityError {
     MlsAuthorityError::Persistence(error.to_string())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
-    let tmp = path.with_extension("tmp");
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(&tmp).map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
-    fs::rename(tmp, path).map_err(io_error)?;
-    if let Some(parent) = path.parent() {
-        OpenOptions::new()
-            .read(true)
-            .open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(io_error)?;
-    }
-    Ok(())
+    atomic_file::write_with_mode(path, bytes, 0o600).map_err(io_error)
 }
 
 #[cfg(test)]
