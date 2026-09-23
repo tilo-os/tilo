@@ -379,40 +379,21 @@ fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
 }
 
 fn encode_key(key: &[u8; KEY_LEN]) -> String {
-    use std::fmt::Write as _;
-    let mut encoded = String::with_capacity(KEY_LEN * 2);
-    for byte in key {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    // One exactly-sized allocation, so no partial copy of the key is left
+    // behind in a freed buffer; the caller wraps the result in `Zeroizing`.
+    hex::encode(key)
 }
 
 fn decode_key(encoded: &str) -> Result<VaultKey, String> {
     if encoded.len() != KEY_LEN * 2 {
         return Err("Secret Service key has the wrong length".into());
     }
+    // Decode straight into the zeroizing buffer; no intermediate `Vec` holds
+    // key bytes.
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
-    for (byte, pair) in key.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
-        // `chunks_exact(2)` guarantees `pair` is exactly two bytes; the pattern expresses
-        // that instead of indexing into it.
-        let &[hi, lo] = pair else {
-            return Err("Secret Service key is not hexadecimal".to_string());
-        };
-        let high = hex_nibble(hi)?;
-        let low = hex_nibble(lo)?;
-        *byte = high
-            .checked_mul(16)
-            .and_then(|value| value.checked_add(low))
-            .ok_or_else(|| "Secret Service key is not hexadecimal".to_string())?;
-    }
+    hex::decode_to_slice(encoded, key.as_mut_slice())
+        .map_err(|_| "Secret Service key is not hexadecimal".to_string())?;
     Ok(key)
-}
-
-fn hex_nibble(byte: u8) -> Result<u8, String> {
-    char::from(byte)
-        .to_digit(16)
-        .and_then(|value| u8::try_from(value).ok())
-        .ok_or_else(|| "Secret Service key is not hexadecimal".into())
 }
 
 #[cfg(test)]
