@@ -193,14 +193,14 @@ impl OverviewGrid {
         }
         scene.pop_layer();
         if let Some((track, thumb)) = scrollbar_rects(area, self.scroll.clamp(0.0, max), max) {
-            chrome::fill_rrect(
+            chrome::fill_round(
                 scene,
                 transform,
                 track,
                 3.0,
                 render::with_alpha(colors.text_primary, 18),
             );
-            chrome::fill_rrect(
+            chrome::fill_round(
                 scene,
                 transform,
                 thumb,
@@ -230,7 +230,7 @@ impl OverviewGrid {
         slide: &Slide,
     ) {
         let colors = &theme.tokens.colors;
-        chrome::fill_rrect(
+        chrome::fill_round(
             scene,
             transform,
             (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
@@ -242,7 +242,7 @@ impl OverviewGrid {
         );
         // The thumbnail frame is the window ground's derived edge; the
         // current slide keeps its accent ring.
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             transform,
             rect,

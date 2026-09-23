@@ -8,8 +8,8 @@
 //! tracks the OS theme like every other system app.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::peniko::Color;
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -17,6 +17,7 @@ use ui::theme::Theme;
 use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::model::ChangeKind;
+pub use ui::paint::{fill_rect, fill_round};
 
 /// The mutable resources shared by one immediate-mode paint pass.
 ///
@@ -42,17 +43,6 @@ impl<'a> PaintCtx<'a> {
     pub fn parts(&mut self) -> (&mut Scene, &mut TextRenderer, Affine) {
         (self.scene, self.text, self.transform)
     }
-}
-
-/// Fill a plain rectangle.
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-/// Fill a rounded rectangle.
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let r = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &r);
 }
 
 /// A card, row or control face with its derived rest edge (HIG §9.5): the

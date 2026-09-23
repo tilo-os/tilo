@@ -8,6 +8,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+pub use ui::paint::{fill_rect, fill_round};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -39,14 +40,6 @@ pub fn hex_color(s: &str) -> Option<Color> {
     let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
     let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
     Some(Color::from_rgba8(r, g, b, 255))
-}
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect.to_rounded_rect(radius));
 }
 
 pub fn stroke_rrect(
@@ -138,7 +131,7 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
 /// larger, very transparent black plate seated a few pixels below.
 fn floating_shadow(scene: &mut Scene, t: Affine, rect: Rect, radius: f64) {
     let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
-    fill_rrect(
+    fill_round(
         scene,
         t,
         shadow,
@@ -169,7 +162,7 @@ pub fn card_ring(
     width: f64,
 ) {
     floating_shadow(scene, t, rect, radius);
-    fill_rrect(scene, t, rect, radius, fill);
+    fill_round(scene, t, rect, radius, fill);
     stroke_rrect(scene, t, rect, radius, width, ring);
 }
 
@@ -190,7 +183,7 @@ const SELECTED_WASH_ALPHA: u8 = 40;
 /// surface actually seen), not against the wash's own RGB.
 pub fn selected_row(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let ground = theme.tokens.colors.surfaces.raised;
-    fill_rrect(
+    fill_round(
         scene,
         t,
         rect,

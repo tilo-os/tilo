@@ -677,7 +677,7 @@ impl OfflinePanel {
         draw::edged(scene, transform, bar, bar_h / 2.0, colors.surfaces.base);
         let fraction = frame.progress.fraction();
         if fraction > 0.0 {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 transform,
                 Rect::new(

@@ -414,7 +414,7 @@ impl CalculatorApp {
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
+                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
             }
             let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
@@ -444,9 +444,9 @@ impl CalculatorApp {
         );
         ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_rrect(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
