@@ -121,9 +121,9 @@ impl VaultFormat {
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
         OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+        let cipher = XChaCha20Poly1305::new(<&Key>::from(key));
         let ciphertext = cipher
-            .encrypt(XNonce::from_slice(&nonce_bytes), plaintext)
+            .encrypt(<&XNonce>::from(&nonce_bytes), plaintext)
             .ok()?;
 
         let mut out = Vec::with_capacity(
@@ -153,9 +153,9 @@ impl VaultFormat {
             return None;
         }
         let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+        let cipher = XChaCha20Poly1305::new(<&Key>::from(key));
         cipher
-            .decrypt(XNonce::from_slice(nonce_bytes), ciphertext)
+            .decrypt(<&XNonce>::try_from(nonce_bytes).ok()?, ciphertext)
             .ok()
             .map(Zeroizing::new)
     }

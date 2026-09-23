@@ -261,7 +261,7 @@ pub fn export_encrypted_backup(
         .and_then(|()| OsRng.try_fill_bytes(&mut nonce))
         .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
     let key = derive_backup_key(passphrase, &salt)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
     let mut header = Vec::with_capacity(BACKUP_HEADER_BYTES);
     header.extend_from_slice(BACKUP_MAGIC);
     header.push(BACKUP_VERSION);
@@ -269,7 +269,7 @@ pub fn export_encrypted_backup(
     header.extend_from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            <&XNonce>::from(&nonce),
             Payload {
                 msg: &plaintext,
                 aad: &header,
@@ -310,11 +310,12 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
         .split_at_checked(BACKUP_SALT_BYTES)
         .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
     let key = derive_backup_key(passphrase, salt)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(
-                XNonce::from_slice(nonce),
+                <&XNonce>::try_from(nonce)
+                    .map_err(|_| "This is not a valid Passwords backup".to_string())?,
                 Payload {
                     msg: ciphertext,
                     aad: header,

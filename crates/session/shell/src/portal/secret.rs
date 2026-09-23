@@ -168,7 +168,7 @@ fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce = [0; NONCE_BYTES];
     OsRng.fill_bytes(&mut nonce);
-    let encrypted = cipher.encrypt(XNonce::from_slice(&nonce), plaintext).ok()?;
+    let encrypted = cipher.encrypt(<&XNonce>::from(&nonce), plaintext).ok()?;
     let mut out = Vec::with_capacity(STORE_MAGIC.len() + nonce.len() + encrypted.len());
     out.extend_from_slice(STORE_MAGIC);
     out.extend_from_slice(&nonce);
@@ -181,7 +181,7 @@ fn open_store(key: &[u8; SECRET_BYTES], bytes: &[u8]) -> Option<Zeroizing<Vec<u8
     let (nonce, ciphertext) = rest.split_at_checked(NONCE_BYTES)?;
     XChaCha20Poly1305::new_from_slice(key)
         .ok()?
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .decrypt(<&XNonce>::try_from(nonce).ok()?, ciphertext)
         .ok()
         .map(Zeroizing::new)
 }

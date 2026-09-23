@@ -119,7 +119,7 @@ impl ChannelGroup {
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let ciphertext = cipher
             .encrypt(
-                XNonce::from_slice(&nonce),
+                <&XNonce>::from(&nonce),
                 Payload {
                     msg: &plaintext,
                     aad: MAGIC,
@@ -164,7 +164,8 @@ impl ChannelGroup {
         let plaintext = Zeroizing::new(
             cipher
                 .decrypt(
-                    XNonce::from_slice(nonce),
+                    <&XNonce>::try_from(nonce)
+                        .map_err(|_| Error::InvalidState("truncated sealed-state nonce".into()))?,
                     Payload {
                         msg: ciphertext,
                         aad: MAGIC,
