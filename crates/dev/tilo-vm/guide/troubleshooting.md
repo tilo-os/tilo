@@ -59,9 +59,13 @@ dispatch it with fgj if you may, or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
 interrupted download resumes when you rerun the command.
 
-**No hypervisor.** `tilo-vm doctor` names what is missing (virsh,
-virt-install, `qemu:///session`, `/dev/kvm`; UTM's `utmctl`; Hyper-V) and the
-install line for your host.
+**No hypervisor.** `tilo-vm doctor` names what is missing (virsh, qemu-img,
+passt, `/dev/kvm`, a `qemu:///session` whose `virsh capabilities` lists a KVM
+guest; UTM's `utmctl`; Hyper-V) and the install line for your host.
+virt-install is not used. If `virsh --connect qemu:///session capabilities`
+fails, doctor quotes virsh's error: it means libvirt's QEMU driver
+(`virtqemud`, or `libvirtd`) does not start for your user. Libvirt's storage
+driver is never needed.
 
 **The VM cannot build.** Its image lacks cargo, rsync or python3 (`tilo-vm
 status` shows where builds run). `tilo-vm vm upgrade` to a current dev image;
