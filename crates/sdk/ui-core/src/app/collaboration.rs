@@ -103,6 +103,9 @@ impl App {
         if let Some(next) = self.actions.permission_generation.get().checked_add(1) {
             self.actions.permission_generation.set(next);
         }
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_stamp = None;
+        self.actions.action_directory_cursors.clear();
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
@@ -341,37 +344,6 @@ impl App {
         }
     }
 
-    fn apply_signed_document_envelope(
-        &mut self,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
-    ) {
-        if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {
-            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
-            return;
-        }
-        let applied = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
-            Ok(mutation) => match self.apply_primary_document(mutation) {
-                Ok(changed) => changed,
-                Err(error) => {
-                    tracing::warn!(%error, "collab: primary document mutation refused");
-                    false
-                }
-            },
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
-                false
-            }
-        };
-        if applied {
-            self.invalidate_widget_resource_cache();
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
-    }
-
     /// Apply a document envelope received on the unqualified room route.
     /// The broker authenticated the route; discovery still validates and
     /// bounds its names before exposing them to the app.
@@ -471,26 +443,44 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
+        self.refresh_document_routes();
+        self.drain_document_routes();
+        self.publish_owned_documents();
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
-        any |= self.drain_collab_presence_events();
+        let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
+        any |= drained;
         if any {
             self.invalidate_widget_resource_cache();
         }
-        any
-    }
-
-    fn drain_collab_presence_events(&mut self) -> bool {
-        let events = self.collaboration.manager.poll();
-        let any = !events.is_empty();
-        for event in events {
-            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
-            self.apply_collab_presence_event(event);
+        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
+            && self.actions.last_published_actions.is_some()
+            && self.actions.action_directory_snapshot.is_none();
+        if action_surface_may_have_changed || published_snapshot_was_evicted {
+            // The normal idle pump also repairs invalidation from a later
+            // model sync or a presence-only batch. Neither necessarily brings
+            // another action event after a terminal operation was published.
+            // Query/resolve remain bounded reads; this refresh runs even with
+            // no directory requests or inbound events, and skips stable idle.
+            self.publish_action_surface();
         }
         any
     }
 
+    /// Applies every queued collaboration event. Returns whether any event
+    /// arrived and whether one of them may have changed the action surface.
+    fn drain_collab_presence_events(&mut self) -> (bool, bool) {
+        let events = self.collaboration.manager.poll();
+        let any = !events.is_empty();
+        let mut action_surface_may_have_changed = false;
+        for event in events {
+            action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
+            self.forward_session_notification(&event);
+            self.apply_collab_presence_event(event);
+        }
+        (any, action_surface_may_have_changed)
+    }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
         match event {
             CollabEvent::Context { collaborators, .. } => {
@@ -595,12 +585,7 @@ impl App {
                     operations = ops.len(),
                     "applying document scrollback"
                 );
-                for (index, envelope) in ops.into_iter().enumerate() {
-                    let decrypted = decrypted_payloads
-                        .get(index)
-                        .and_then(|payload| payload.as_deref());
-                    self.apply_signed_document_envelope(&envelope, decrypted);
-                }
+                self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             _ => {}
         }
@@ -746,7 +731,8 @@ impl App {
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
-        crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
+        let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
+        self.forward_session_notification(&event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -766,16 +752,19 @@ impl App {
             } => {
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
             }
+            CollabEvent::ScrollbackBatch {
+                ops,
+                decrypted_payloads,
+                ..
+            } => {
+                self.apply_document_scrollback(ops, &decrypted_payloads);
+            }
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
             CollabEvent::DocumentSnapshotRequested { .. } => {
-                let data = self.state.save();
-                let _ = self
-                    .collaboration
-                    .manager
-                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                self.respond_primary_document_snapshot();
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
@@ -854,6 +843,9 @@ impl App {
             _ => {}
         }
         self.invalidate_widget_resource_cache();
+        if action_surface_may_have_changed {
+            self.publish_action_surface();
+        }
     }
 
     pub fn local_author(&self) -> &crate::permissions::UserId {
