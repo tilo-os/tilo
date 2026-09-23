@@ -2052,7 +2052,10 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.podesta.ai/qos/tilo (everything else stays permissive), so a tampered or
 # unsigned OS image is refused at `bootc upgrade`. registries.d points the
-# verifier at cosign's sigstore attachment in the same repo.
+# verifier at cosign's sigstore attachment in the same repo. The unsigned dev
+# image repository (code.podesta.ai/qos/tilo-vm, os/Containerfile.dev, and its
+# former name tilo-dev) is rejected outright; only the dev image's own policy
+# admits it.
 
 
 # ---------------------------------------------------------------------------
