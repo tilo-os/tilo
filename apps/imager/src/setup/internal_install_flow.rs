@@ -1367,8 +1367,10 @@ pub(super) mod tests {
             original_firmware: OriginalFirmware {
                 boot_order: vec!["0001".into()],
                 boot_next: None,
+                entries: Default::default(),
             },
             owned_boot_entry: None,
+            bundle: None,
         }
     }
 
@@ -1559,7 +1561,7 @@ pub(super) mod tests {
         install.begin_stage(&digest, true).unwrap();
         let intent = install.link.lock().intent.clone().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let manifest = selected(8192);
+        let manifest = selected(40 * GIB);
         let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
         assert_eq!(request.action, Action::Stage);
         assert_eq!(request.plan_sha256, digest);
@@ -1575,7 +1577,7 @@ pub(super) mod tests {
             std::fs::read(&request.manifest_path).unwrap(),
             manifest.bytes()
         );
-        assert_eq!(install.link.lock().requirements, Some((4096, 8192)));
+        assert_eq!(install.link.lock().requirements, Some((4096, 40 * GIB)));
     }
 
     // Catches staging a plan whose installer partitions are smaller than the
