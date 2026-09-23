@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+xdg-paths = { path = "../xdg-paths" }
 serde.workspace = true
 serde_json.workspace = true
 fcast-sender-sdk.workspace = true

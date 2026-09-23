@@ -17,6 +17,7 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 tilo-app-package = { path = "../tilo-app-package" }

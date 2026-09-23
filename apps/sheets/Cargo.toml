@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
@@ -31,8 +32,6 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Per-user config path resolution for the shared global-settings store.
-dirs.workspace = true
 # Spreadsheet interchange: calamine reads .xlsx/.ods; rust_xlsxwriter writes
 # .xlsx; the .ods writer is hand-rolled on top of `zip` (a flat-XML archive).
 calamine = "0.36.1"

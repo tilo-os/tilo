@@ -20,6 +20,7 @@ path = "src/main.rs"
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 registry-types = { path = "../registry-types" }

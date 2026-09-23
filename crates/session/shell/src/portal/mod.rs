@@ -555,11 +555,10 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// A user-private persistent root.  Never fall back to a predictable shared
 /// `/tmp` directory for portal authority, secrets, or user choices: without a
 /// per-user state/runtime directory persistence fails closed instead.
+/// Both variables follow the XDG rule: an empty or relative value is ignored
+/// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::state_dir)
-        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {

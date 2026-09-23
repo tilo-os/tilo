@@ -331,10 +331,8 @@ impl RemoteRestoreStore {
         )
     )]
     fn load() -> Self {
-        let path = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(dirs::state_dir)
-            .map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
+        let path =
+            xdg_paths::state_dir().map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
         let durable = path
             .as_ref()
             .and_then(|path| std::fs::read(path).ok())

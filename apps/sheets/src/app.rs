@@ -5572,10 +5572,7 @@ fn tsv_cell(display: &str) -> String {
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
 fn workbook_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::data_dir)?;
+    let base = xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_dir)?;
     Some(base.join("tilo").join("sheets").join("workbook.automerge"))
 }
 
