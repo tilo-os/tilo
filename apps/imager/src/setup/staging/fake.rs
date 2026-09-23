@@ -360,9 +360,24 @@ mod tests {
         helper::read_basis(p).unwrap()
     }
 
+    const FIXTURE_ROOT_FSID: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+    const FIXTURE_ROOT_FSID_BYTES: [u8; 16] = [
+        0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1,
+        0xf0,
+    ];
+
     fn world(platform: &FakePlatform) -> World {
+        // A real bundle for a 4Kn disk must carry a FAT with 4096-byte
+        // sectors; the helper refuses a smaller one before any mutation.
+        let sector = platform.disk.sector_bytes as usize;
+        world_with_esp(
+            platform,
+            fat::tests::staging_esp_image_with_sector(false, 8192, sector),
+        )
+    }
+
+    fn world_with_esp(platform: &FakePlatform, esp: Vec<u8>) -> World {
         let dir = tempfile::tempdir().unwrap();
-        let esp = fat::tests::staging_esp_image(false, 8192);
         // 1536 bytes: a 512-byte multiple (as the manifest requires) but not
         // a 4096-byte one, so 4Kn disks exercise the read-modify-write tail.
         let root: Vec<u8> = (0..3 * 512_u32).map(|i| (i * 7 % 251) as u8).collect();
@@ -380,11 +395,13 @@ mod tests {
                 byte_size: esp.len() as u64,
                 sha256: sha(&esp),
                 minimum_partition_bytes: 2 * MIB,
+                filesystem_uuid: "1234-ABCD".into(),
             },
             root: ComponentFacts {
                 byte_size: root.len() as u64,
                 sha256: sha(&root),
                 minimum_partition_bytes: 3 * MIB,
+                filesystem_uuid: FIXTURE_ROOT_FSID.into(),
             },
             efi_path: "/EFI/BOOT/BOOTX64.EFI".into(),
         };
@@ -564,6 +581,19 @@ mod tests {
             tail[w.root.len()..].iter().all(|b| *b == 0),
             "zeroed, not garbage"
         );
+    }
+
+    // Catches staging a 512-byte-sector ESP onto a 4Kn disk, which would
+    // shrink and partition the disk for an installer that can never mount it.
+    #[test]
+    fn small_fat_sectors_on_a_4kn_disk_are_refused_before_mutation() {
+        let mut p = linux_4kn_platform();
+        let before = p.clone();
+        let w = world_with_esp(&p, fat::tests::staging_esp_image(false, 8192));
+        let err = run(&mut p, &w, Action::Stage).unwrap_err();
+        assert_eq!(err.code, codes::SECTOR_SIZE);
+        assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
+        assert_eq!(p.vars, before.vars);
     }
 
     #[test]
@@ -763,6 +793,45 @@ mod tests {
         assert!(matches!(err.code, codes::PENDING_OPERATION), "{err}");
     }
 
+    // Catches a second operation orphaning a completed staging pair and its
+    // boot entry: only removal ends an operation.
+    #[test]
+    fn a_fully_staged_operation_still_blocks_a_new_stage() {
+        let mut p = linux_platform();
+        let w = world(&p);
+        run(&mut p, &w, Action::Stage).unwrap();
+        let before = p.clone();
+        let mut other = w.request.clone();
+        other.operation_id = "0a0b0c0d-0000-4000-8000-000000000003".into();
+        let err = helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap_err();
+        assert_eq!(err.code, codes::PENDING_OPERATION, "{err}");
+        assert_eq!(p.system_disk().unwrap(), before.system_disk().unwrap());
+        run(&mut p, &w, Action::Remove).unwrap();
+        helper::execute(&mut p, &w.store, &w.authority, &other, &mut |_| {}).unwrap();
+    }
+
+    // Catches the helper trusting the unprivileged caller's geometry: a plan
+    // that shrinks C: further (or moves the target) than the planner would
+    // is refused before anything is touched, even with a matching digest.
+    #[test]
+    fn a_plan_the_planner_would_not_produce_is_refused_before_mutation() {
+        for tamper in 0..2 {
+            let mut p = windows_platform();
+            let mut w = world(&p);
+            let plan = &mut w.request.plan;
+            if tamper == 0 {
+                let shrink = plan.shrink.as_mut().expect("windows plan shrinks C:");
+                shrink.to_bytes -= 4 << 30;
+            } else {
+                plan.target_extent.first_lba -= 2048;
+            }
+            w.request.plan_sha256 = w.request.plan.digest();
+            let err = run(&mut p, &w, Action::Stage).unwrap_err();
+            assert_eq!(err.code, codes::REQUEST_INVALID, "{err}");
+            assert_eq!(p.mutations, 0);
+        }
+    }
+
     #[test]
     fn arm_rearms_a_consumed_boot_next_and_reverifies_bytes() {
         let mut p = linux_platform();
@@ -785,6 +854,34 @@ mod tests {
         let err = run(&mut p, &w, Action::Arm).unwrap_err();
         assert_eq!(err.code, codes::DIGEST_MISMATCH);
         assert!(!p.vars.contains_key("BootNext"), "not armed onto bad bytes");
+    }
+
+    // Catches the recovery path the spec promises: after the staged installer
+    // booted once (growing its Btrfs root), arm must still re-arm by the
+    // root's bound fsid, and must not accept a root whose identity is gone.
+    #[test]
+    fn arm_accepts_a_booted_root_by_its_bound_fsid_only() {
+        let mut p = linux_platform();
+        let w = world(&p);
+        run(&mut p, &w, Action::Stage).unwrap();
+        p.vars.remove("BootNext");
+        let (_, root) = staged_guids(&p, &w.request.plan);
+        // The installer's first boot rewrote the filesystem: the download
+        // digest no longer matches, but the superblock names our fsid.
+        p.tamper(&root, 0, b"grown by the live installer");
+        let mut sb = vec![0_u8; 0x48];
+        sb[0x20..0x30].copy_from_slice(&FIXTURE_ROOT_FSID_BYTES);
+        sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+        p.tamper(&root, 0x1_0000, &sb);
+        run(&mut p, &w, Action::Arm).unwrap();
+        assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
+        p.vars.remove("BootNext");
+        // A different filesystem in the same partition is not ours.
+        sb[0x20] ^= 0xff;
+        p.tamper(&root, 0x1_0000, &sb);
+        let err = run(&mut p, &w, Action::Arm).unwrap_err();
+        assert_eq!(err.code, codes::DIGEST_MISMATCH);
+        assert!(!p.vars.contains_key("BootNext"));
     }
 
     #[test]

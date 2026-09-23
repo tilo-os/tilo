@@ -389,6 +389,13 @@ impl Platform for LinuxPlatform {
             .iter()
             .find(|p| super::same_guid(&p.guid, partition_guid))
             .ok_or("partition already gone")?;
+        // An exclusive open fails with EBUSY while anything mounts or holds
+        // the partition; deleting its GPT entry then would leave a live
+        // filesystem over unallocated space.
+        drop(
+            self.open_partition(&current, partition_guid, false)
+                .map_err(|e| format!("staging partition is in use; unmount it first ({e})"))?,
+        );
         let number = p.number.to_string();
         run(Command::new("sfdisk")
             .args(["--no-reread", "--delete"])
