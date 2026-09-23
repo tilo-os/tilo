@@ -38,7 +38,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # with a blocking client and cached under the user cache dir.
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
-dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 libc.workspace = true
 sha2.workspace = true
 base64.workspace = true
