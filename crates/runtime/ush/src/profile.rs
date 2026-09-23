@@ -7,10 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use seccompiler::{
-    BackendError, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition,
-    SeccompFilter, SeccompRule, TargetArch,
-};
+pub use sandbox_core::seccomp::SeccompError;
+use sandbox_core::seccomp::{af_packet_socket_rule, compile_deny_list};
+use seccompiler::SeccompRule;
 
 /// Which posture a session runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -91,11 +90,13 @@ impl Profile {
 }
 
 /// Syscalls the guest never gets under [`Profile::Ush`]: the namespace- and
-/// mount-manipulation half of the deny-list in
-/// `crates/packaging/launcher/src/seccomp.rs` (itself Flatpak's published
-/// profile). Kept textually separate because this is the *reason the
-/// runtime's own use of these syscalls does not propagate* — readable next
-/// to that claim rather than behind a dependency on the packaging crate.
+/// mount-manipulation half of the application baseline in
+/// `sandbox_core::seccomp::BLANKET_DENIES` (itself Flatpak's published
+/// profile). Listed here rather than derived from that list because this
+/// is the *reason the runtime's own use of these syscalls does not
+/// propagate* — readable next to that claim — and because `dsh` must be
+/// able to drop exactly this half and nothing else.
+///
 /// `bwrap` installs the filter right before it execs the guest, so the
 /// supervisor holds these syscalls only as long as it takes to build the
 /// confinement, and no descendant of the guest ever holds them.
@@ -122,30 +123,12 @@ const ALWAYS_DENIES: &[libc::c_long] = &[
     libc::SYS_delete_module,
 ];
 
-#[derive(Debug, thiserror::Error)]
-pub enum SeccompError {
-    #[error("unsupported host architecture for the guest seccomp policy: {0}")]
-    UnsupportedArch(&'static str),
-    #[error("seccompiler: {0}")]
-    Compile(#[from] BackendError),
-    #[error("staging the guest seccomp blob: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-fn host_target_arch() -> Result<TargetArch, SeccompError> {
-    if cfg!(target_arch = "x86_64") {
-        Ok(TargetArch::x86_64)
-    } else if cfg!(target_arch = "aarch64") {
-        Ok(TargetArch::aarch64)
-    } else if cfg!(target_arch = "riscv64") {
-        Ok(TargetArch::riscv64)
-    } else {
-        Err(SeccompError::UnsupportedArch(std::env::consts::ARCH))
-    }
-}
-
-fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
-    let arch = host_target_arch()?;
+/// The guest deny-list for `profile`. Compiled by
+/// [`sandbox_core::seccomp::compile_deny_list`]: default-allow, `EPERM`
+/// rather than `SIGSYS` — a shell hosts arbitrary programs against
+/// arbitrary libcs, so an allow-list would break on the next syscall nobody
+/// enumerated, killing the process as if it crashed.
+fn guest_rules(profile: Profile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in ALWAYS_DENIES {
@@ -158,36 +141,8 @@ fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
     }
 
     // socket(AF_PACKET, ...) — a raw link-layer socket, in every profile.
-    rules.insert(
-        libc::SYS_socket,
-        vec![SeccompRule::new(vec![SeccompCondition::new(
-            0,
-            SeccompCmpArgLen::Dword,
-            SeccompCmpOp::Eq,
-            libc::AF_PACKET as u64,
-        )?])?],
-    );
-
-    // Deny-list, not allow-list, with `EPERM` rather than `SIGSYS`: a shell
-    // hosts arbitrary programs against arbitrary libcs, so an allow-list would
-    // break on the next syscall nobody enumerated, killing the process as if it crashed.
-    Ok(SeccompFilter::new(
-        rules,
-        SeccompAction::Allow,
-        SeccompAction::Errno(libc::EPERM as u32),
-        arch,
-    )?)
-}
-
-fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
-    for stmt in prog {
-        out.extend_from_slice(&stmt.code.to_ne_bytes());
-        out.push(stmt.jt);
-        out.push(stmt.jf);
-        out.extend_from_slice(&stmt.k.to_ne_bytes());
-    }
-    out
+    rules.insert(libc::SYS_socket, af_packet_socket_rule()?);
+    Ok(rules)
 }
 
 /// Compile the guest filter for `profile` to a raw BPF blob.
@@ -198,9 +153,7 @@ fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 /// guest filter has no rules for, or [`SeccompError::Compile`] if
 /// `seccompiler` refuses to compile the filter.
 pub fn compile_guest_filter(profile: Profile) -> Result<Vec<u8>, SeccompError> {
-    let filter = build_filter(profile)?;
-    let program: BpfProgram = filter.try_into()?;
-    Ok(bpf_to_bytes(&program))
+    compile_deny_list(guest_rules(profile)?)
 }
 
 /// Write the guest filter into `dir`, returning the path. The supervisor opens
@@ -268,7 +221,7 @@ mod tests {
 
     /// The compiled guest programs, byte for byte. A change to what a guest
     /// may call fails here and has to be reviewed as a policy change with a
-    /// regenerated golden file. Only x86_64 is pinned: syscall numbers and
+    /// regenerated golden file. Only `x86_64` is pinned: syscall numbers and
     /// the arch check differ per architecture.
     #[test]
     #[cfg(target_arch = "x86_64")]
@@ -316,8 +269,9 @@ mod tests {
     /// forked child and try the syscalls. Exit codes: 0 behaved as documented,
     /// 10 a denied syscall succeeded, 11 an allowed one was refused, 12 install failed.
     fn probe_under(profile: Profile) -> i32 {
-        let filter = build_filter(profile).expect("build");
-        let program: BpfProgram = filter.try_into().expect("compile");
+        let program =
+            sandbox_core::seccomp::deny_list_program(guest_rules(profile).expect("rules"))
+                .expect("compile");
         let denies_ns = profile.confines_namespaces();
 
         // SAFETY: the child only installs the filter, makes raw syscalls and

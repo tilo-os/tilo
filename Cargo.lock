@@ -16264,6 +16264,7 @@ dependencies = [
  "landlock",
  "libc",
  "runtime-portal",
+ "sandbox-core",
  "seccompiler",
  "serde",
  "serde_json",
