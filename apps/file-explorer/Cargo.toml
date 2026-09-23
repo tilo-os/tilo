@@ -40,6 +40,7 @@ ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 uuid.workspace = true
+hex.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.

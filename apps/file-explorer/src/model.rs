@@ -180,7 +180,10 @@ pub enum ShareGrantStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::struct_excessive_bools)] // Mirrors the versioned, redundant share projection contract.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the versioned, redundant share projection contract"
+)]
 pub struct ShareGrantProjection {
     pub grant_id: String,
     pub subject: ShareSubject,
@@ -714,7 +717,7 @@ fn root_generation(root: &Path) -> String {
         hasher.update(b"opaque-v3\\0");
         hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(&bytes);
-        return format!("{:x}", hasher.finalize());
+        return hex::encode(hasher.finalize());
     }
     match std::fs::metadata(root) {
         Ok(metadata) => {
@@ -737,7 +740,7 @@ fn root_generation(root: &Path) -> String {
             hasher.update(&bytes);
         }
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjection> {

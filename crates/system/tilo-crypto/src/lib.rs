@@ -1520,7 +1520,7 @@ fn embed_efi_signature(
     image: &[u8],
 ) -> Result<Vec<u8>, String> {
     use authenticode::authenticode_digest;
-    use sha2::Digest as _;
+    use authenticode_sha2::Digest as _;
 
     let mut prepared = image.to_vec();
     let (security_dir_offset, checksum_offset, certificate_offset, old_size) =
@@ -1559,7 +1559,7 @@ fn embed_efi_signature(
         certificate_offset
     };
 
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = authenticode_sha2::Sha256::new();
     with_pe(&prepared, |pe| {
         authenticode_digest(pe, &mut hasher).map_err(|error| error.to_string())
     })?;
@@ -1610,13 +1610,13 @@ fn embed_efi_signature(
 /// invalid, or when no signature is bound to the supplied certificate.
 pub fn verify_efi_image(certificate_pem: &str, image: &[u8]) -> Result<(), String> {
     use authenticode::{AttributeCertificateIterator, authenticode_digest};
-    use sha2::Digest as _;
+    use authenticode_sha2::Digest as _;
 
     let expected_der = certificate_der(certificate_pem.as_bytes())
         .map_err(|error| format!("invalid EFI certificate: {error}"))?;
 
     with_pe(image, |pe| {
-        let mut hasher = sha2::Sha256::new();
+        let mut hasher = authenticode_sha2::Sha256::new();
         authenticode_digest(pe, &mut hasher).map_err(|error| error.to_string())?;
         let digest = hasher.finalize();
         let certificates = AttributeCertificateIterator::new(pe)

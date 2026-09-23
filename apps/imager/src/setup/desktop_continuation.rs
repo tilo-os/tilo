@@ -144,10 +144,9 @@ impl Continuation {
         // Content identity binds this complete reviewed selection, including native
         // source identities, policy overrides and destination intent. A repeated
         // install of the exact same review retains stable operation IDs.
-        let revision = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&folders).map_err(|e| e.to_string())?)
-        );
+        let revision = hex::encode(Sha256::digest(
+            serde_json::to_vec(&folders).map_err(|e| e.to_string())?,
+        ));
         Ok(Self {
             version: 1,
             revision,

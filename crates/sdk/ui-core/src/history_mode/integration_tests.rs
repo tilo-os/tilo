@@ -442,9 +442,9 @@ fn media_preview_uses_only_digest_recorded_in_immutable_selected_snapshot() {
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, sync::Arc};
     let historical: Arc<[u8]> = Arc::from(b"historical photograph".as_slice());
-    let digest = format!("{:x}", Sha256::digest(&historical));
+    let digest = hex::encode(Sha256::digest(&historical));
     let current: Arc<[u8]> = Arc::from(b"current photograph".as_slice());
-    let current_digest = format!("{:x}", Sha256::digest(&current));
+    let current_digest = hex::encode(Sha256::digest(&current));
     let provider = std::rc::Rc::new(DeferredMedia::default());
     let mut state = State::new();
     state.doc.put(ROOT, "media", digest.clone()).unwrap();

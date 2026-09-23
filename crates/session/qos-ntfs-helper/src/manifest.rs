@@ -79,10 +79,7 @@ pub fn metadata_digest(facts: &[Value], record: u64) -> io::Result<String> {
         }
         _ => return Err(bad()),
     }
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&selected)?)
-    ))
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&selected)?)))
 }
 fn groups(report: &Report) -> io::Result<(Vec<Vec<Value>>, Vec<u16>)> {
     let mut table = Vec::new();

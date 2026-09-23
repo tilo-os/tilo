@@ -38,7 +38,7 @@ taffy.workspace = true
 # RFC 6238 is implemented in-crate using RustCrypto HMAC/SHA primitives and
 # RFC 4648 base32 decoding.
 hmac.workspace = true
-sha1 = "0.10"
+sha1 = "0.11"
 sha2.workspace = true
 base32.workspace = true
 

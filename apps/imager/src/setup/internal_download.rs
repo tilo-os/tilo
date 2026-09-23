@@ -790,7 +790,7 @@ fn hash_file_stoppable(
     if regular_length(file, length, cancel)? != length {
         return Err("Working file length changed".into());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 fn validate_prefix(
     selected: &SelectedManifest,

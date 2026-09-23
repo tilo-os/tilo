@@ -105,7 +105,7 @@ fn metadata_manifest_and_twelve_native_chunks_preserve_real_image() {
         assert_eq!(r["status"], 0);
         let chunk = bytes(&r).unwrap();
         assert_eq!(chunk.len(), 1_048_576);
-        assert!(chunk_hashes.insert(format!("{:x}", Sha256::digest(&chunk))));
+        assert!(chunk_hashes.insert(hex::encode(Sha256::digest(&chunk))));
         hash.update(chunk);
     }
     let expected: Vec<u8> = (0..12 * 1024 * 1024)

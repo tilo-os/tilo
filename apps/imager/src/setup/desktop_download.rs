@@ -141,7 +141,7 @@ mod unix {
             remaining -= count as u64;
         }
         if file.read(&mut buffer[..1]).map_err(io_error)? != 0
-            || format!("{:x}", digest.finalize()) != release.sha256
+            || hex::encode(digest.finalize()) != release.sha256
         {
             return Err("The Desktop package failed SHA-256 verification.".into());
         }
@@ -414,7 +414,7 @@ mod tests {
             package_format: PackageFormat::Rpm,
             url,
             byte_size: BYTES.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(BYTES)),
+            sha256: hex::encode(Sha256::digest(BYTES)),
             verified_runtime: None,
         }
     }
