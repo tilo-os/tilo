@@ -39,11 +39,11 @@ fn run(command: &mut Command) -> IoResult<String> {
     let output = command
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("{:?}: {e}", command.get_program()))?;
+        .map_err(|e| format!("{}: {e}", command.get_program().display()))?;
     if !output.status.success() {
         return Err(format!(
-            "{:?} failed: {}",
-            command.get_program(),
+            "{} failed: {}",
+            command.get_program().display(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }

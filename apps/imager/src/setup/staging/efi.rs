@@ -56,7 +56,7 @@ pub fn parse_boot_number(text: &str) -> Result<u16, String> {
 
 /// `BootOrder`/`BootNext` payloads are little-endian `u16` arrays.
 pub fn parse_u16_list(bytes: &[u8]) -> Result<Vec<u16>, String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("odd-length boot number list".into());
     }
     Ok(bytes
@@ -92,10 +92,17 @@ pub fn guid_bytes(text: &str) -> Result<[u8; 16], String> {
     if !super::is_guid(&lower) {
         return Err(format!("invalid GUID {text:?}"));
     }
-    let hex: String = lower.chars().filter(|c| *c != '-').collect();
+    let nibbles: Vec<u8> = lower
+        .bytes()
+        .filter(|c| *c != b'-')
+        .map(|c| match c {
+            b'0'..=b'9' => c - b'0',
+            _ => c - b'a' + 10,
+        })
+        .collect();
     let mut raw = [0_u8; 16];
-    for (i, byte) in raw.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|e| e.to_string())?;
+    for (byte, pair) in raw.iter_mut().zip(nibbles.chunks_exact(2)) {
+        *byte = (pair[0] << 4) | pair[1];
     }
     raw[0..4].reverse();
     raw[4..6].reverse();
@@ -227,8 +234,14 @@ pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     if hd[36] != MBR_TYPE_GPT || hd[37] != SIGNATURE_TYPE_GUID {
         return Err("HD() is not a GPT partition".into());
     }
-    let u64_at = |at: usize| u64::from_le_bytes(hd[at..at + 8].try_into().expect("8 bytes"));
-    let signature: [u8; 16] = hd[20..36].try_into().expect("16 bytes");
+    let array = |at: usize| -> [u8; 8] {
+        let mut out = [0; 8];
+        out.copy_from_slice(&hd[at..at + 8]);
+        out
+    };
+    let u64_at = |at: usize| u64::from_le_bytes(array(at));
+    let mut signature = [0_u8; 16];
+    signature.copy_from_slice(&hd[20..36]);
     let mut at = HD_NODE_LEN;
     let mut file_path = String::new();
     loop {
@@ -254,7 +267,7 @@ pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
     }
     Ok(HardDriveLoadOption {
         description,
-        partition_number: u32::from_le_bytes(hd[0..4].try_into().expect("4 bytes")),
+        partition_number: u32::from_le_bytes([hd[0], hd[1], hd[2], hd[3]]),
         start_lba: u64_at(4),
         size_lba: u64_at(12),
         partition_guid: guid_text(&signature),
@@ -269,7 +282,13 @@ pub fn load_option_attributes(bytes: &[u8]) -> Option<u32> {
 
 /// Lowercase hex, as stored in records.
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 #[cfg(test)]
