@@ -334,7 +334,7 @@ mod imp {
             .object_server()
             .interface::<_, PlayerIface>(OBJECT_PATH)
             .await?;
-        let ctxt = iref.signal_context().clone();
+        let ctxt = iref.signal_emitter().clone();
         {
             let mut guard = iref.get_mut().await;
             guard.snap = new.clone();
