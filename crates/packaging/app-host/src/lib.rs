@@ -40,6 +40,7 @@
 use std::path::PathBuf;
 
 pub mod client;
+pub mod dev_env;
 pub mod fetch;
 pub mod gc;
 pub mod install;
