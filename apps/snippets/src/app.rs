@@ -480,7 +480,7 @@ impl SnippetsApp {
         if self.body_identity != identity {
             self.body_editor
                 .set_highlighter(identity.map(|(_, language)| {
-                    Box::new(highlight::EditorHighlighter(language))
+                    Box::new(highlight::EditorHighlighter::new(language))
                         as Box<dyn ui::widget::code_editor::Highlighter>
                 }));
         }
@@ -3054,7 +3054,7 @@ impl SnippetsApp {
 
         let mut y = card.y0 + pad;
         let code_x = x0 + gutter_w;
-        for (i, line) in s.body.lines().enumerate() {
+        for (i, spans) in highlight::highlight_lines(&s.body, s.language).enumerate() {
             if y > card.y1 - line_h {
                 break;
             }
@@ -3074,9 +3074,9 @@ impl SnippetsApp {
             );
             // Highlighted spans.
             let mut sx = code_x;
-            for span in highlight::highlight_line(line, s.language) {
-                let color = span.kind.color(theme);
-                let weight = if matches!(span.kind, highlight::TokenKind::Keyword) {
+            for span in spans {
+                let color = highlight::token_color(span.kind, theme);
+                let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
                     TextWeight::Semibold
                 } else {
                     TextWeight::Regular

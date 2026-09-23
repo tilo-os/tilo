@@ -7,12 +7,10 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::OnceLock;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -29,6 +27,7 @@ use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{
@@ -46,11 +45,6 @@ pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 pub enum LinkTarget {
     Page(PageId),
     External(String),
-}
-
-fn syntax_set() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
 /// Case-insensitive byte ranges without assuming that Unicode case folding
@@ -100,55 +94,20 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
     ranges
 }
 
-fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
-    let rendered = scopes
-        .as_slice()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    for scope in rendered.split_whitespace().rev() {
-        let role = if scope.starts_with("comment") {
-            TransientColorRole::Comment
-        } else if scope.starts_with("string") || scope.starts_with("constant.character") {
-            TransientColorRole::String
-        } else if scope.starts_with("constant.numeric") || scope.starts_with("constant.language") {
-            TransientColorRole::Number
-        } else if scope.starts_with("entity.name.function")
-            || scope.starts_with("support.function")
-            || scope.starts_with("meta.function-call")
-            || scope.starts_with("variable.function")
-        {
-            TransientColorRole::Function
-        } else if scope.starts_with("entity.name.type")
-            || scope.starts_with("entity.name.class")
-            || scope.starts_with("entity.name.struct")
-            || scope.starts_with("entity.name.enum")
-            || scope.starts_with("entity.name.trait")
-            || scope.starts_with("support.type")
-            || scope.starts_with("support.class")
-        {
-            TransientColorRole::Type
-        } else if scope.starts_with("keyword")
-            || scope.starts_with("storage.type")
-            || scope.starts_with("storage.modifier")
-        {
-            TransientColorRole::Keyword
-        } else if scope.starts_with("entity.name.macro")
-            || scope.starts_with("support.macro")
-            || scope.starts_with("meta.attribute")
-            || scope.starts_with("meta.annotation")
-        {
-            TransientColorRole::Macro
-        } else if scope.starts_with("keyword.operator") || scope.starts_with("punctuation.accessor")
-        {
-            TransientColorRole::Operator
-        } else {
-            continue;
-        };
-        return Some(role);
-    }
-    None
+/// The block editor's colour role for a grammar token; body text stays in the
+/// block's own colour.
+fn syntax_role(kind: TokenKind) -> Option<TransientColorRole> {
+    Some(match kind {
+        TokenKind::Comment => TransientColorRole::Comment,
+        TokenKind::StringLit | TokenKind::CharLit => TransientColorRole::String,
+        TokenKind::Number | TokenKind::Constant => TransientColorRole::Number,
+        TokenKind::Function => TransientColorRole::Function,
+        TokenKind::Type => TransientColorRole::Type,
+        TokenKind::Keyword => TransientColorRole::Keyword,
+        TokenKind::Attribute | TokenKind::Preprocessor => TransientColorRole::Macro,
+        TokenKind::Operator => TransientColorRole::Operator,
+        _ => return None,
+    })
 }
 
 #[expect(
@@ -156,7 +115,6 @@ fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
     reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
 )]
 fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
-    let set = syntax_set();
     let mut index = 0usize;
     while index < blocks.len() {
         let Some(language) = languages.get(index).and_then(Option::as_deref) else {
@@ -167,12 +125,7 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             index = index.saturating_add(1);
             continue;
         };
-        let syntax = set
-            .find_syntax_by_token(language)
-            .or_else(|| set.find_syntax_by_extension(language))
-            .unwrap_or_else(|| set.find_syntax_plain_text());
-        let mut parse = ParseState::new(syntax);
-        let mut scopes = ScopeStack::new();
+        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
         while index < blocks.len()
             && languages.get(index).and_then(Option::as_deref) == Some(language)
@@ -181,35 +134,16 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             let Some(block) = blocks.get_mut(index) else {
                 break;
             };
-            let source = block.text();
-            let with_newline = format!("{source}\n");
-            let mut colors = Vec::new();
-            let mut last = 0usize;
-            let mut role = syntax_role(&scopes);
-            if let Ok(ops) = parse.parse_line(&with_newline, set) {
-                for (offset, op) in ops {
-                    if offset > last {
-                        if let Some(role) = role {
-                            colors.push(TransientColorSpan {
-                                range: last..offset.min(source.len()),
-                                role,
-                            });
-                        }
-                        last = offset;
-                    }
-                    let _ = scopes.apply(&op);
-                    role = syntax_role(&scopes);
-                }
-                if last < source.len()
-                    && let Some(role) = role
-                {
-                    colors.push(TransientColorSpan {
-                        range: last..source.len(),
+            let colors = state
+                .highlight_line(block.text())
+                .into_iter()
+                .filter_map(|span| {
+                    syntax_role(span.kind).map(|role| TransientColorSpan {
+                        range: span.range,
                         role,
-                    });
-                }
-            }
-            colors.retain(|span| span.range.start < span.range.end);
+                    })
+                })
+                .collect();
             block.line.set_transient_colors(colors);
             index = index.saturating_add(1);
         }
