@@ -595,7 +595,7 @@ mod tests {
         assert!(app.close_admission.dialog.is_some());
         let resource = app.close_admission.resources()[0].id.clone();
         let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let dialog = dialog as *const dyn Widget as *const () as usize;
+        let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
         app.state
             .doc
             .put(automerge::ROOT, "edited_after_refusal", true)
@@ -612,7 +612,7 @@ mod tests {
         );
         assert_eq!(app.close_admission.resources()[0].id, resource);
         let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+        assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
 
         close_choice(&mut app, Choice::Retry);
         assert_eq!(
@@ -829,7 +829,7 @@ mod tests {
         let reviewed = app.close_admission.reviewed.clone();
         let focused = app.focused_node;
         let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let dialog = dialog as *const dyn Widget as *const () as usize;
+        let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
 
         assert!(!deliver_quit(&mut quit, &mut app));
         let repeated = app.close_admission.resources();
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(app.close_admission.reviewed, reviewed);
         assert_eq!(app.focused_node, focused);
         let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+        assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
         assert!(dirty.get());
     }
 
@@ -917,16 +917,19 @@ mod tests {
         );
         app.init_layout();
         let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let admitted = modal as *const dyn Widget as *const () as usize;
+        let admitted = (modal as *const dyn Widget).cast::<()>() as usize;
         let root = app.layout.root_node.unwrap();
-        assert_eq!(app.layout.node_map[&root] as *mut () as usize, admitted);
+        assert_eq!(app.layout.node_map[&root].cast::<()>() as usize, admitted);
         // Move the entire initialized App into a different allocation. Compare
         // real tree addresses to the map before dereferencing a single map entry.
         let mut moved = Box::new(app);
         let actual = moved.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, admitted);
+        assert_eq!(
+            (actual as *const dyn Widget).cast::<()>() as usize,
+            admitted
+        );
         fn addresses(widget: &dyn Widget, result: &mut Vec<usize>) {
-            result.push(widget as *const dyn Widget as *const () as usize);
+            result.push((widget as *const dyn Widget).cast::<()>() as usize);
             for child in widget.children() {
                 addresses(child, result);
             }
@@ -938,7 +941,7 @@ mod tests {
                 .layout
                 .node_map
                 .values()
-                .all(|ptr| actual_addresses.contains(&(*ptr as *mut () as usize)))
+                .all(|ptr| actual_addresses.contains(&((*ptr).cast::<()>() as usize)))
         );
         moved.layout_close_dialog((640.0, 480.0));
         assert_eq!(moved.focusable_order.len(), 3);
