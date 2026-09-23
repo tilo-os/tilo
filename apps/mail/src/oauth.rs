@@ -23,8 +23,6 @@
 //! Without it the setup UI still constructs the (correct) authorization URL but
 //! notes that a client id is required to complete sign-in.
 
-use std::fmt::Write as _;
-
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -155,7 +153,7 @@ impl AuthRequest {
             *first = false;
             url.push_str(k);
             url.push('=');
-            url.push_str(&percent_encode(v));
+            url.push_str(&ui::uri::encode_component(v));
         };
         let mut first = true;
         push("client_id", &self.client_id, &mut first);
@@ -565,22 +563,6 @@ pub fn base64url_nopad(input: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
 }
 
-/// Percent-encode a query-parameter value (RFC 3986 unreserved set kept raw).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 /// SHA-256 digest of `input` (FIPS 180-4) — the PKCE S256 challenge hash.
 pub fn sha256(input: &[u8]) -> [u8; 32] {
     Sha256::digest(input).into()
@@ -610,6 +592,7 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
         bytes.iter().fold(String::new(), |mut out, b| {
             let _ = write!(out, "{b:02x}");
             out
@@ -703,18 +686,6 @@ mod tests {
             ),
             "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
         );
-    }
-
-    #[test]
-    fn percent_encode_keeps_only_the_rfc3986_unreserved_set() {
-        assert_eq!(percent_encode("AZaz09-_.~"), "AZaz09-_.~");
-        assert_eq!(
-            percent_encode("a b+c/d?e=f&g%h:i@j"),
-            "a%20b%2Bc%2Fd%3Fe%3Df%26g%25h%3Ai%40j"
-        );
-        // Non-ASCII is encoded byte-by-byte as upper-case UTF-8 escapes.
-        assert_eq!(percent_encode("café ☕"), "caf%C3%A9%20%E2%98%95");
-        assert_eq!(percent_encode("*!'()"), "%2A%21%27%28%29");
     }
 
     #[test]
