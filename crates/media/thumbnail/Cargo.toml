@@ -28,8 +28,7 @@ atomic-file = { path = "../../system/atomic-file" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.
-bounded-zip = { path = "../../doc/bounded-zip" }
-roxmltree.workspace = true
+bounded-zip = { path = "../../doc/bounded-zip", features = ["epub"] }
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
 # In-memory LRU in front of the on-disk cache.
