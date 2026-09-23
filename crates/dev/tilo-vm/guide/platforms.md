@@ -25,7 +25,7 @@ your host:
 
 - dnf: `sudo dnf install libvirt-daemon-kvm virt-install virt-manager qemu-img`
 - apt: `sudo apt install libvirt-daemon-system libvirt-clients virtinst virt-manager qemu-utils`
-- image-based (Silverblue, Kinoite, Bazzite): `rpm-ostree install libvirt-daemon-kvm virt-install virt-manager qemu-img`, then reboot. Bazzite also has `ujust setup-virtualization`.
+- image-based (rpm-ostree): `rpm-ostree install libvirt-daemon-kvm virt-install virt-manager qemu-img`, then reboot
 
 `doctor` prints the resolved path of every tool it will run. The `qemu-img`
 used is the one beside `virsh`; a `qemu-img` from elsewhere on `PATH` (an

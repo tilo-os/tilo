@@ -30,7 +30,7 @@ pub const VIRT_MANAGER_TIP: &str = "watch it in virt-manager: File > Add Connect
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HostKind {
-    /// An image-based Linux host (Silverblue, Bazzite, Kinoite) with rpm-ostree.
+    /// An image-based Linux host with rpm-ostree.
     RpmOstree,
     /// An image-based Linux host with bootc only: packages go in the image.
     Bootc,
@@ -64,8 +64,6 @@ pub struct HostFacts {
     pub os: String,
     pub arch: String,
     pub kind: HostKind,
-    /// `ID` from `/etc/os-release` (Linux).
-    pub distro: Option<String>,
     /// Every match on `PATH`, in `PATH` order, for each tool of interest.
     pub path: BTreeMap<String, Vec<PathBuf>>,
     /// Linux: can this user open `/dev/kvm` for reading and writing?
@@ -134,14 +132,6 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
     found
 }
 
-/// `ID=` from os-release text.
-pub fn os_release_id(text: &str) -> Option<String> {
-    text.lines()
-        .find_map(|l| l.strip_prefix("ID="))
-        .map(|v| v.trim().trim_matches('"').to_owned())
-        .filter(|v| !v.is_empty())
-}
-
 impl HostFacts {
     /// Look at this host.
     pub fn probe(runner: &mut dyn Runner) -> Self {
@@ -165,10 +155,6 @@ impl HostFacts {
             _ => HostKind::Unknown,
         };
         let linux = os == "linux";
-        let distro = linux
-            .then(|| std::fs::read_to_string("/etc/os-release").ok())
-            .flatten()
-            .and_then(|t| os_release_id(&t));
         let kvm = linux.then(|| {
             std::fs::OpenOptions::new()
                 .read(true)
@@ -207,7 +193,6 @@ impl HostFacts {
             os,
             arch: std::env::consts::ARCH.to_owned(),
             kind,
-            distro,
             path,
             kvm,
             session,
@@ -469,14 +454,9 @@ fn companion<'a>(
 /// The one line that installs libvirt (with virt-manager to watch VMs).
 pub fn libvirt_fix(facts: &HostFacts) -> String {
     let fedora = "libvirt-daemon-kvm virt-install virt-manager qemu-img";
-    let bazzite = if facts.distro.as_deref() == Some("bazzite") {
-        "ujust setup-virtualization (Bazzite's own recipe), or "
-    } else {
-        ""
-    };
     match facts.kind {
         HostKind::RpmOstree => {
-            format!("this host is image-based: {bazzite}rpm-ostree install {fedora}, then reboot")
+            format!("this host is image-based: rpm-ostree install {fedora}, then reboot")
         }
         HostKind::Bootc => format!(
             "this host is image-based (bootc): add {fedora} to your host image and switch to it"
@@ -493,7 +473,10 @@ pub fn libvirt_fix(facts: &HostFacts) -> String {
         HostKind::Windows => {
             "Windows uses Hyper-V: tilo-vm vm create <name> --hypervisor hyperv".into()
         }
-        HostKind::Dnf | HostKind::Unknown => format!("sudo dnf install {fedora}"),
+        HostKind::Dnf => format!("sudo dnf install {fedora}"),
+        HostKind::Unknown => {
+            "install libvirt, virt-install, virt-manager and qemu-img with your package manager".into()
+        }
     }
 }
 
@@ -537,7 +520,8 @@ fn qemu_fix(facts: &HostFacts) -> String {
         HostKind::Macos | HostKind::Windows => {
             "the qemu adapter runs on Linux only (CI and scenario tests)".into()
         }
-        HostKind::Dnf | HostKind::Unknown => format!("sudo dnf install {rpm}{tail}"),
+        HostKind::Dnf => format!("sudo dnf install {rpm}{tail}"),
+        HostKind::Unknown => format!("install {rpm} with your package manager{tail}"),
     }
 }
 
@@ -559,7 +543,6 @@ pub mod tests {
             os: "linux".into(),
             arch: "x86_64".into(),
             kind,
-            distro: None,
             path,
             kvm: Some(true),
             session,
@@ -653,15 +636,6 @@ pub mod tests {
             "{fix}"
         );
         assert!(fix.contains("reboot"), "{fix}");
-        assert!(!fix.contains("ujust"), "{fix}");
-        let mut bazzite = linux(HostKind::RpmOstree, &[]);
-        bazzite.distro = Some("bazzite".into());
-        assert!(
-            auto(&bazzite)
-                .unwrap_err()
-                .fix
-                .contains("ujust setup-virtualization")
-        );
         let bootc = linux(HostKind::Bootc, &[]);
         assert!(
             auto(&bootc)
@@ -724,15 +698,5 @@ pub mod tests {
         assert!(why.fix.contains("Microsoft-Hyper-V"), "{}", why.fix);
         win.hyperv = Some(true);
         assert_eq!(auto(&win).unwrap().adapter, "hyperv");
-    }
-
-    #[test]
-    fn os_release_ids_parse() {
-        assert_eq!(
-            os_release_id("NAME=\"Bazzite\"\nID=bazzite\nID_LIKE=\"fedora\"\n").as_deref(),
-            Some("bazzite")
-        );
-        assert_eq!(os_release_id("ID=\"fedora\"").as_deref(), Some("fedora"));
-        assert_eq!(os_release_id("NAME=x"), None);
     }
 }
