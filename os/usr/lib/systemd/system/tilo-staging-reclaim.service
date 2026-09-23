@@ -1,0 +1,39 @@
+[Unit]
+Description=Return the temporary Tilo installer space to Tilo
+# Installed systems only, and never in repair mode. Without the record written
+# by a USB-free install there is nothing to do.
+ConditionKernelCommandLine=!tilo.install
+ConditionKernelCommandLine=!tilo.mode=repair
+ConditionPathExists=/var/lib/tilo/staging-reclaim.json
+# The boot must have proven itself first. The script additionally waits for a
+# real user session, so the staged installer (the way back) survives until
+# Tilo has demonstrably started for its person.
+After=local-fs.target tilo-firstboot-user.service tilo-boot-health.service greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-staging-reclaim
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+# The record lives here; btrfs resize needs a writable fd on the physical root.
+ReadWritePaths=/var/lib/tilo /sysroot
+ProtectProc=invisible
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+# cryptsetup waits for udev through System V semaphores, so IPC stays shared,
+# and device-mapper/udev notifications use netlink.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_IPC_LOCK CAP_MKNOD CAP_SYS_RESOURCE
+AmbientCapabilities=
+SystemCallArchitectures=native
