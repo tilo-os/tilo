@@ -551,7 +551,6 @@ dependencies = [
  "futures",
  "hex",
  "libc",
- "parking_lot",
  "rand 0.8.8",
  "runtime-portal",
  "sd-notify",
@@ -4487,7 +4486,6 @@ dependencies = [
  "format-provider-wit",
  "futures",
  "notify",
- "parking_lot",
  "serde",
  "tempfile",
  "tokio",
@@ -14868,7 +14866,6 @@ dependencies = [
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
- "parking_lot",
  "serde",
  "serde_json",
 ]
