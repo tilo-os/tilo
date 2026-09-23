@@ -166,7 +166,11 @@ impl DaemonError {
             ),
             Self::Busy(_) => "wait for the other command to finish, then retry; tilo-vm status shows what is running".into(),
             Self::AbiMismatch { field, .. } if field == "target" => {
-                "build for the VM's architecture: tilo-vm swap <component> --from worktree on a host of that architecture"
+                "build for the VM's target: tilo-vm swap <component> --builder vm   (the VM's own toolchain), or on a host of that architecture and triple"
+                    .into()
+            }
+            Self::AbiMismatch { field, .. } if field == "Cargo.lock" => {
+                "the layer was built from another Cargo.lock than the VM's image, so shared crates would differ: move the VM to an image of your commit (tilo-vm vm upgrade), or rebase your worktree onto the VM image's commit; never regenerate Cargo.lock to match"
                     .into()
             }
             Self::AbiMismatch { .. } => {
@@ -318,7 +322,12 @@ mod tests {
                 vm: "b".into(),
             },
             DaemonError::AbiMismatch {
-                field: "builder".into(),
+                field: "Cargo.lock".into(),
+                layer: "a".into(),
+                vm: "b".into(),
+            },
+            DaemonError::AbiMismatch {
+                field: "builder image".into(),
                 layer: "a".into(),
                 vm: "b".into(),
             },
