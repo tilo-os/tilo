@@ -14,8 +14,8 @@ still ends at its recorded end or already ends at the grown end. Anything else
 is a mismatch, and a mismatch leaves every partition untouched and says why.
 
 Test seams (never set on a real system): TILO_STAGING_RECLAIM_RECORD,
-TILO_STAGING_RECLAIM_ROOT_MOUNT and TILO_STAGING_RECLAIM_SKIP_LOCK; the
-external tools are found on PATH.
+TILO_STAGING_RECLAIM_ROOT_MOUNT, TILO_STAGING_RECLAIM_SKIP_LOCK and
+TILO_STAGING_RECLAIM_ALLOW_LOOP; the external tools are found on PATH.
 """
 import fcntl
 import json
@@ -129,8 +129,9 @@ def user_session_exists():
 
 def find_disk(record):
     listing = json.loads(run(['lsblk', '-J', '-b', '-p', '-d', '-o', 'NAME,TYPE,PTTYPE,PTUUID,SIZE']).stdout)
+    kinds = ('disk', 'loop') if os.environ.get('TILO_STAGING_RECLAIM_ALLOW_LOOP') else ('disk',)
     disks = [item for item in listing.get('blockdevices', [])
-             if item.get('type') == 'disk' and str(item.get('ptuuid') or '').lower() == record['disk_guid']]
+             if item.get('type') in kinds and str(item.get('ptuuid') or '').lower() == record['disk_guid']]
     if len(disks) != 1:
         raise Mismatch('expected exactly one disk with GPT GUID %s, found %d' % (record['disk_guid'], len(disks)))
     disk = disks[0]
