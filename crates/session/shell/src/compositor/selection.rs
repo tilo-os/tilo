@@ -983,8 +983,7 @@ pub struct ChromeDrag {
     pub mime_types: Vec<String>,
 }
 
-/// The mime type a list of `file://` URIs travels as.
-pub const URI_LIST_MIME: &str = "text/uri-list";
+pub use ui::dnd::{URI_LIST_MIME, mime_for_path};
 
 impl ChromeDrag {
     pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
@@ -1000,13 +999,7 @@ impl ChromeDrag {
     /// The `text/uri-list` body: one `file://` URI per line, CRLF-terminated
     /// per RFC 2483, percent-encoded.
     pub fn uri_list(&self) -> String {
-        let mut out = String::new();
-        for p in &self.paths {
-            out.push_str("file://");
-            out.push_str(&percent_encode_path(&p.to_string_lossy()));
-            out.push_str("\r\n");
-        }
-        out
+        ui::dnd::uri_list(&self.paths)
     }
 
     /// The single file whose bytes `mime` asks for, if that is what the
@@ -1020,39 +1013,6 @@ impl ChromeDrag {
             _ => None,
         }
     }
-}
-
-/// The mime type of a file by extension. Only types an app can do
-/// something with as raw bytes; anything else travels as a path only.
-pub fn mime_for_path(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => return None,
-    })
-}
-
-fn percent_encode_path(path: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(path.len());
-    for b in path.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                out.push(b as char);
-            }
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
 }
 
 /// Write `bytes` into `fd` without stalling: small payloads fit the pipe
