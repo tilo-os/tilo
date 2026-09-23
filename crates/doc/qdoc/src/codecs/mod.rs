@@ -65,11 +65,11 @@ pub fn builtin_registry() -> Registry {
     r.register("markdown", ProviderTier::Builtin, Box::new(MarkdownCodec));
     r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
     r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
-    // RTF is import-only via this codec (`export` returns Unsupported; writing lives
-    // in the editor's `qdoc-rtf` crate) — registering it still makes `.rtf` openable.
+    // RTF is import-only via this codec (`export` returns Unsupported; writing is
+    // `export_rtf`, over a snapshot) — registering it still makes `.rtf` openable.
     r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
-    // HTML is import-only via this codec (`export` returns Unsupported; writing lives
-    // in `qdoc-html`, which `qdoc` can't depend on without a cycle) — this makes `.html`/`.htm` openable.
+    // HTML is import-only via this codec (`export` returns Unsupported; writing is
+    // `export_html`, over a snapshot) — this makes `.html`/`.htm` openable.
     r.register("html", ProviderTier::Builtin, Box::new(HtmlCodec));
     r.register("htm", ProviderTier::Builtin, Box::new(HtmlCodec));
     r

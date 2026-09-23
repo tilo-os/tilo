@@ -658,3 +658,6 @@ fn sanitize_href(href: &str) -> String {
 }
 
 // ---- HTML escaping ----------------------------------------------------------
+
+#[cfg(test)]
+mod tests;

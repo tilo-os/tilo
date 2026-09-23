@@ -267,7 +267,7 @@ fn is_h1(b: &BlockView) -> bool {
 }
 
 /// Render one chapter as a complete XHTML document. Block markup comes
-/// from `qdoc-html` (fragment mode); we then anchor headings, fix void
+/// from `export_html` (fragment mode); we then anchor headings, fix void
 /// elements, and re-point image `data:` URIs to packaged hrefs.
 fn render_chapter_xhtml(
     snap: &DocSnapshot,
@@ -277,7 +277,7 @@ fn render_chapter_xhtml(
 ) -> String {
     let mut body = String::new();
     for (frag, block) in anchored {
-        // Render this block via qdoc-html by handing it a one-block
+        // Render this block via export_html by handing it a one-block
         // snapshot sharing blobs/styles, since its fragment renderer takes
         // whole snapshots.
         let mut sub = empty_like(snap);
@@ -318,7 +318,7 @@ fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
     }
 }
 
-/// Replace the inline `data:` URI `qdoc-html` emits for an image block
+/// Replace the inline `data:` URI `export_html` emits for an image block
 /// with the packaged file href (relative to the chapter doc, beside
 /// `images/` under OEBPS). Non-image fragments pass through unchanged.
 fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String {
@@ -331,7 +331,7 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
     let Some(item) = images.iter().find(|it| &it.blob_hash == hash) else {
         return frag.to_string();
     };
-    // qdoc-html emits `src="data:<mime>;base64,<...>"`; locate `src="`
+    // export_html emits `src="data:<mime>;base64,<...>"`; locate `src="`
     // and replace up to the closing quote. `"src=\""` is pure ASCII, so
     // `val_start` always lands on a UTF-8 char boundary — `.get()` still
     // guards it rather than trusting that.
@@ -759,3 +759,6 @@ fn stable_id(snap: &DocSnapshot, title: &str) -> String {
 }
 
 // ---- XML escaping -----------------------------------------------------------
+
+#[cfg(test)]
+mod tests;

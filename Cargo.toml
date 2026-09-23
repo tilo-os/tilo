@@ -126,10 +126,7 @@ members = [
     "crates/doc/format-host",
     "crates/doc/format-provider-wit",
     "crates/doc/qdoc",
-    "crates/doc/qdoc-epub",
-    "crates/doc/qdoc-html",
     "crates/doc/qdoc-pdf",
-    "crates/doc/qdoc-rtf",
 
     # Hosting
     "crates/hosting/tilo-relay",

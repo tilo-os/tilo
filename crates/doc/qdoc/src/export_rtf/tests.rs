@@ -7,9 +7,9 @@
 //! balanced-group (well-formedness) guarantee.
 
 use super::*;
-use qdoc::MarkSpan;
-use qdoc::document::MarkValue;
-use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
+use crate::MarkSpan;
+use crate::document::MarkValue;
+use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
 
 fn empty_snapshot() -> DocSnapshot {
