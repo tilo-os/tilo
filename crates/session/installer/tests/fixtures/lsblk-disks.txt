@@ -1,7 +1,7 @@
 [
     Disk {
         name: "/dev/nvme0n1",
-        size: "1863.0 GiB",
+        size: "1.8 TiB",
         model: "CT2000P310SSD8",
         size_bytes: 2000398934016,
         partition_table: "gpt",
@@ -48,7 +48,7 @@
     },
     Disk {
         name: "/dev/nvme1n1",
-        size: "953.8 GiB",
+        size: "953.9 GiB",
         model: "WD PC SN560 SDDPNQE-1T00-1002",
         size_bytes: 1024209543168,
         partition_table: "gpt",

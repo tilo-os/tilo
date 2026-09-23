@@ -441,33 +441,17 @@ fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
     }
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= GIB {
-        format!("{:.1} GB", bytes / GIB)
-    } else if bytes >= MIB {
-        format!("{:.1} MB", bytes / MIB)
-    } else if bytes >= KIB {
-        format!("{:.1} KB", bytes / KIB)
-    } else {
-        format!("{bytes:.0} B")
-    }
-}
-
 fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
     match entry.status {
         DownloadStatus::AwaitingDestination => "Waiting for a save destination…".into(),
         DownloadStatus::Downloading => match entry.total_bytes {
             Some(total) => format!(
                 "{} of {} · {:.0}%",
-                format_bytes(entry.received_bytes),
-                format_bytes(total),
+                ui::format::bytes_si(entry.received_bytes),
+                ui::format::bytes_si(total),
                 entry.progress * 100.0
             ),
-            None => format!("{} downloaded", format_bytes(entry.received_bytes)),
+            None => format!("{} downloaded", ui::format::bytes_si(entry.received_bytes)),
         },
         DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
             || "Download complete".into(),

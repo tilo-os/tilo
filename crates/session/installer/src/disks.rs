@@ -448,7 +448,7 @@ fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
                 .any(|device| is_live_system_mount(&mountpoints(device)));
             Some(Disk {
                 name,
-                size: format_bytes(size_bytes),
+                size: ui::format::bytes(size_bytes),
                 model: text(d.model.as_ref()),
                 size_bytes,
                 partition_table: text(d.pttype.as_ref()),
@@ -514,16 +514,6 @@ fn is_live_system_mount(mountpoints: &str) -> bool {
 
 fn text(value: Option<&String>) -> String {
     value.cloned().unwrap_or_default()
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GIB: u64 = 1024 * 1024 * 1024;
-    if bytes >= GIB {
-        let tenths = bytes.saturating_mul(10) / GIB;
-        format!("{}.{} GiB", tenths / 10, tenths % 10)
-    } else {
-        format!("{} MiB", bytes / (1024 * 1024))
-    }
 }
 
 /// Run `lsblk` and parse its output. Returns an empty vec when `lsblk`

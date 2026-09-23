@@ -23,7 +23,8 @@ use ui::widget::{Button, ButtonFace, PieChart, PieSlice, PieStyle, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::doc::DiskUsageDoc;
-use crate::scan::{Entry, ScanCancellation, ScanResult, format_bytes};
+use crate::scan::{Entry, ScanCancellation, ScanResult};
+use ui::format::bytes_si;
 
 const TOP_H: f64 = 78.0;
 const OPERATION_TYPE: &str = "disk-usage.operation";
@@ -185,7 +186,7 @@ impl DiskUsageApp {
                 )
                 .with_detail(format!(
                     "{} · {} files",
-                    format_bytes(entry.bytes),
+                    bytes_si(entry.bytes),
                     entry.files
                 ));
                 if entry.path.file_name().is_some_and(|name| name == ".") {
@@ -201,7 +202,7 @@ impl DiskUsageApp {
             self.chart.set_slices(slices);
         }
         self.chart
-            .set_center(format_bytes(total), "used in this folder");
+            .set_center(bytes_si(total), "used in this folder");
         if self.recent.first() != Some(&result.path) {
             self.recent.retain(|p| p != &result.path);
             self.recent.insert(0, result.path.clone());
@@ -565,7 +566,7 @@ impl Widget for DiskUsageApp {
                         )
                         .with_detail(format!(
                             "{} · {} files",
-                            format_bytes(e.bytes),
+                            bytes_si(e.bytes),
                             e.files
                         ));
                         if e.path.file_name().is_some_and(|name| name == ".") {
@@ -622,7 +623,7 @@ impl Widget for DiskUsageApp {
                         };
                         tr.draw_text(
                             scene,
-                            &format!("{} · {percent:.0}%", format_bytes(entry.bytes)),
+                            &format!("{} · {percent:.0}%", bytes_si(entry.bytes)),
                             theme.tokens.typography.scale.xs,
                             theme.tokens.colors.text_dim,
                             transform * Affine::translate((x + 20.0, y + 22.0)),
