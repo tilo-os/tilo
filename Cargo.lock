@@ -960,16 +960,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atoi_simd"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3cdb3708a128e559a30fb830e8a77a5022ee6902806925c216658652b452a44"
-dependencies = [
- "debug_unsafe",
- "rustversion",
-]
-
-[[package]]
 name = "atomic-file"
 version = "0.1.0"
 dependencies = [
@@ -1623,23 +1613,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "calamine"
-version = "0.36.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fa68281b1a76b54a62156474adb06bb380a67e07dd60656e3217152b42183f3"
-dependencies = [
- "atoi_simd",
- "byteorder",
- "codepage",
- "encoding_rs",
- "fast-float2",
- "log",
- "quick-xml 0.41.0",
- "serde",
- "zip",
 ]
 
 [[package]]
@@ -2305,15 +2278,6 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
-]
-
-[[package]]
-name = "codepage"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48f68d061bc2828ae826206326e61251aca94c1e4a5305cf52d9138639c918b4"
-dependencies = [
- "encoding_rs",
 ]
 
 [[package]]
@@ -3207,12 +3171,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "debug_unsafe"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7eed2c4702fa172d1ce21078faa7c5203e69f5394d48cc436d25928394a867a2"
-
-[[package]]
 name = "delegate"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3980,12 +3938,6 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
 ]
-
-[[package]]
-name = "fast-float2"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6e8948ce679d00a02a94739ea185595dca7118ed04feb991127e443bd3d761f"
 
 [[package]]
 name = "fast-srgb8"
@@ -12363,15 +12315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust_xlsxwriter"
-version = "0.99.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34f2d2cda7223168a14fb86bc7411dbc3379bd7d49749ecc53b91ed98585b6b0"
-dependencies = [
- "zip",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13204,9 +13147,8 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
- "calamine",
+ "qdoc",
  "runtime-dylib",
- "rust_xlsxwriter",
  "serde",
  "serde_json",
  "settings-store",

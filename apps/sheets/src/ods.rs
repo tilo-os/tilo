@@ -1,106 +1,58 @@
-//! `LibreOffice` Calc `.ods` import and export.
-//!
-//! Reading reuses [`calamine`] (it understands ODS as well as XLSX), so the
-//! import path shares [`crate::xlsx::SheetTable`] — including the formula text
-//! it lifts from each cell's `table:formula`. Writing is hand-rolled: an ODS
-//! file is just a ZIP archive of flat XML, so we emit the three members
-//! `LibreOffice` needs — the uncompressed `mimetype` marker, a
-//! `META-INF/manifest.xml`, and the `content.xml` spreadsheet body — using the
-//! `zip` crate already in the dependency tree. This keeps the writer
-//! dependency-light while round-tripping values, basic number/currency/
-//! percent/date styling (`office:value` + a small set of named styles), and
-//! live formulas (`table:formula`, in ODF `of:=SUM([.A1:.A3])` form).
+//! `LibreOffice` Calc `.ods` import and export, through qdoc's
+//! [`OdsCodec`]: reading shares the bounded, XXE-hardened package reader and
+//! the [`SheetTable`] materialisation of [`crate::xlsx`] (formulas come back
+//! from each cell's `table:formula`, normalised to A1). Writing emits a
+//! snapshot of the tables — values, live formulas in ODF `of:=SUM([.A1:.A3])`
+//! form, and a small set of named styles for currency/percent/date cells,
+//! declared in `styles.xml`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::Path;
 
-use crate::model::{CellFormat, Currency, addr_to_a1};
-use crate::xlsx::{ImportedCell, SheetTable};
+use qdoc::OdsCodec;
+use qdoc::codecs::ods::common_styles_part;
 
-/// Read every sheet of an `.ods` document into tables (via calamine).
+use crate::model::{CellFormat, Currency, addr_to_a1};
+use crate::xlsx::SheetTable;
+
+/// Read every sheet of an `.ods` document into tables.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be opened as a valid `.ods`
-/// document, or if a sheet's cell or formula range cannot be read.
+/// Returns an error if the file can't be read, isn't a valid `.ods` package
+/// (including one over the zip-bomb bounds or carrying a DTD), or a tab
+/// spans more than [`crate::xlsx::MAX_MATERIALIZED_SLOTS`].
 pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let mut wb: calamine::Ods<_> = calamine::open_workbook(path)?;
-    crate::xlsx::read_calamine(&mut wb)
+    let parsed = OdsCodec::parse(&std::fs::read(path)?)?;
+    // ODF types dates explicitly (they arrive as ISO text), so no style marks
+    // a number as a date.
+    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
 }
 
 /// Write tables to an `.ods` document.
 ///
 /// # Errors
 ///
-/// Returns an error if the output file cannot be created, or if writing
-/// any ZIP member (`mimetype`, the manifest, or `content.xml`) fails.
+/// Returns an error if the package can't be assembled or `path` can't be
+/// written.
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path)?;
-    let mut zip = zip::ZipWriter::new(file);
-
-    // 1. `mimetype` MUST be the first entry and stored uncompressed.
-    let stored =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    zip.start_file("mimetype", stored)?;
-    zip.write_all(b"application/vnd.oasis.opendocument.spreadsheet")?;
-
-    let deflated = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    // 2. The manifest.
-    zip.start_file("META-INF/manifest.xml", deflated)?;
-    zip.write_all(MANIFEST.as_bytes())?;
-
-    // 3. The spreadsheet body.
-    zip.start_file("content.xml", deflated)?;
-    zip.write_all(content_xml(tables).as_bytes())?;
-
-    zip.finish()?;
+    let snap = crate::xlsx::snapshot_of(tables, cell_style, to_ods_formula);
+    let preserved = BTreeMap::from([("styles.xml".to_string(), common_styles_part(NUMBER_STYLES))]);
+    std::fs::write(path, OdsCodec::export_snapshot(&snap, &preserved)?)?;
     Ok(())
 }
 
-const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
- <manifest:file-entry manifest:full-path="/" manifest:version="1.2" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/>
- <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
-</manifest:manifest>"#;
-
-/// Build the `content.xml` body for the given tables.
-fn content_xml(tables: &[SheetTable]) -> String {
-    let mut s = String::new();
-    s.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    s.push('\n');
-    s.push_str(
-        r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0" office:version="1.2">"#,
-    );
-    s.push_str("<office:automatic-styles>");
-    s.push_str(NUMBER_STYLES);
-    s.push_str("</office:automatic-styles>");
-    s.push_str("<office:body><office:spreadsheet>");
-    for table in tables {
-        let _ = write!(
-            s,
-            r#"<table:table table:name="{}">"#,
-            xml_escape_attr(&table.name)
-        );
-        let cols = table.rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
-        let _ = write!(
-            s,
-            r#"<table:table-column table:number-columns-repeated="{}"/>"#,
-            cols.max(1)
-        );
-        for row in &table.rows {
-            s.push_str("<table:table-row>");
-            for cell in row {
-                s.push_str(&cell_xml(cell.as_ref()));
-            }
-            s.push_str("</table:table-row>");
-        }
-        s.push_str("</table:table>");
-    }
-    s.push_str("</office:spreadsheet></office:body></office:document-content>");
-    s
+/// The named cell style (declared in [`NUMBER_STYLES`]) for a numeric cell's
+/// format, if it has one.
+fn cell_style(format: CellFormat) -> Option<String> {
+    let name = match format {
+        CellFormat::Currency(currency) => currency_cell_style(currency),
+        CellFormat::Percent => "coPct",
+        CellFormat::Date(_) => "coDate",
+        _ => return None,
+    };
+    Some(name.to_string())
 }
 
 /// A handful of named data styles for the formatted numeric kinds.
@@ -118,66 +70,6 @@ fn currency_cell_style(currency: Currency) -> &'static str {
         Currency::CAD => "coCAD",
         Currency::AUD => "coAUD",
     }
-}
-
-/// Emit one `<table:table-cell>` (or an empty one). A cell holding a formula
-/// carries a `table:formula` attribute (ODF `of:=…` form) alongside its cached
-/// value so `LibreOffice` shows a live formula and our importer can recover it.
-fn cell_xml(cell: Option<&ImportedCell>) -> String {
-    let Some(cell) = cell else {
-        return "<table:table-cell/>".into();
-    };
-    let formula_attr = match &cell.formula {
-        Some(f) => format!(
-            r#" table:formula="{}""#,
-            xml_escape_attr(&to_ods_formula(f))
-        ),
-        None => String::new(),
-    };
-    // Numeric cells carry office:value + a value-type so Calc treats them
-    // as numbers; we also attach a cell style for currency/percent/date.
-    if let Ok(n) = cell.raw.parse::<f64>() {
-        let style_attr = match cell.format {
-            CellFormat::Currency(currency) => {
-                format!(r#" table:style-name="{}""#, currency_cell_style(currency))
-            }
-            CellFormat::Percent => r#" table:style-name="coPct""#.to_string(),
-            CellFormat::Date(_) => r#" table:style-name="coDate""#.to_string(),
-            _ => String::new(),
-        };
-        let value_type = match cell.format {
-            CellFormat::Currency(_) => "currency",
-            CellFormat::Percent => "percentage",
-            _ => "float",
-        };
-        if !matches!(cell.format, CellFormat::Text) {
-            let display =
-                crate::model::format_value(&crate::model::CellValue::Number(n), cell.format);
-            return format!(
-                r#"<table:table-cell{style}{formula} office:value-type="{vt}" office:value="{val}"><text:p>{disp}</text:p></table:table-cell>"#,
-                style = style_attr,
-                formula = formula_attr,
-                vt = value_type,
-                val = n,
-                disp = xml_escape_text(&display),
-            );
-        }
-    }
-    if matches!(cell.format, CellFormat::Boolean) {
-        let b = cell.raw.eq_ignore_ascii_case("true");
-        return format!(
-            r#"<table:table-cell{formula} office:value-type="boolean" office:boolean-value="{b}"><text:p>{disp}</text:p></table:table-cell>"#,
-            formula = formula_attr,
-            b = b,
-            disp = if b { "TRUE" } else { "FALSE" }
-        );
-    }
-    // String cell (also the home of formulas whose result is text).
-    format!(
-        r#"<table:table-cell{formula} office:value-type="string"><text:p>{disp}</text:p></table:table-cell>"#,
-        formula = formula_attr,
-        disp = xml_escape_text(&cell.raw)
-    )
 }
 
 /// Convert one of our A1 formulas (`=SUM(A1:A3)`) into ODF form
@@ -222,20 +114,13 @@ fn rewrite_refs_to_ods(body: &str) -> String {
     out
 }
 
-fn xml_escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-fn xml_escape_attr(s: &str) -> String {
-    xml_escape_text(s).replace('"', "&quot;")
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::model::{CellValue, Currency};
+    use crate::model::CellValue;
+    use crate::xlsx::ImportedCell;
+    use std::io::Read;
 
     fn cell(raw: &str, format: CellFormat) -> ImportedCell {
         ImportedCell {
@@ -265,8 +150,28 @@ mod tests {
         }
     }
 
+    /// The members of an `.ods` written by [`write_ods`].
+    fn written_part(tables: &[SheetTable], part: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "sheets-ods-part-{}-{}.ods",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        write_ods(&path, tables).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut out = String::new();
+        archive
+            .by_name(part)
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        out
+    }
+
     #[test]
-    fn ods_round_trips_through_calamine() {
+    fn ods_round_trips() {
         let path = std::env::temp_dir().join("sheets-ods-test.ods");
         write_ods(&path, std::slice::from_ref(&sample_table())).unwrap();
         let back = read_ods(&path).unwrap();
@@ -295,14 +200,20 @@ mod tests {
             (Currency::CAD, "coCAD"),
             (Currency::AUD, "coAUD"),
         ] {
-            let xml = cell_xml(Some(&cell("12.5", CellFormat::Currency(currency))));
+            let table = SheetTable {
+                name: "S".into(),
+                rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
+            };
+            let xml = written_part(std::slice::from_ref(&table), "content.xml");
             assert!(
                 xml.contains(&format!(r#"table:style-name="{style}""#)),
                 "{currency:?} used the wrong ODF style: {xml}"
             );
         }
-        assert!(NUMBER_STYLES.contains("<number:currency-symbol>€</number:currency-symbol>"));
-        assert!(NUMBER_STYLES.contains("<number:currency-symbol>₹</number:currency-symbol>"));
+        let styles = written_part(&[sample_table()], "styles.xml");
+        assert!(styles.contains("<number:currency-symbol>€</number:currency-symbol>"));
+        assert!(styles.contains("<number:currency-symbol>₹</number:currency-symbol>"));
+        assert!(styles.contains(r#"style:name="coPct""#));
     }
 
     /// Formulas written into `.ods` (as `table:formula`) come back with their
@@ -364,36 +275,24 @@ mod tests {
     }
 
     #[test]
-    fn content_xml_is_well_formed_enough() {
-        let xml = content_xml(std::slice::from_ref(&sample_table()));
+    fn content_xml_carries_values_formulas_and_escaped_names() {
+        let mut table = sample_table();
+        table.name = "Budget <&> \"Q1\"".into();
+        table.rows.push(vec![Some(ImportedCell {
+            raw: "12".into(),
+            format: CellFormat::General,
+            formula: Some("=SUM(A1:A2)".into()),
+        })]);
+        let xml = written_part(std::slice::from_ref(&table), "content.xml");
         assert!(xml.contains("office:spreadsheet"));
-        assert!(xml.contains(r#"table:name="Budget""#));
+        assert!(xml.contains(r#"table:name="Budget &lt;&amp;&gt; &quot;Q1&quot;""#));
         // The currency cell carries a numeric office:value.
         assert!(xml.contains(r#"office:value="1200""#));
-    }
-
-    #[test]
-    fn content_xml_emits_table_formula() {
-        let table = SheetTable {
-            name: "S".into(),
-            rows: vec![vec![Some(ImportedCell {
-                raw: "12".into(),
-                format: CellFormat::General,
-                formula: Some("=SUM(A1:A2)".into()),
-            })]],
-        };
-        let xml = content_xml(std::slice::from_ref(&table));
         assert!(
             xml.contains(r#"table:formula="of:=SUM([.A1:.A2])""#),
             "missing formula attr in: {xml}"
         );
         // The cached value is still present so a non-recalc viewer shows it.
         assert!(xml.contains(r#"office:value="12""#));
-    }
-
-    #[test]
-    fn xml_escaping() {
-        assert_eq!(xml_escape_text("a<b>&c"), "a&lt;b&gt;&amp;c");
-        assert_eq!(xml_escape_attr("\"q\""), "&quot;q&quot;");
     }
 }
