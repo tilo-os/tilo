@@ -342,6 +342,11 @@ Before creating a release tag, verify all of the following:
 
 First publish and promote the multi-architecture Tilo image from the exact commit
 to be tagged, then record its manifest-list digest in `TILO_INSTALLER_OS_IMAGE`.
+Protected manual `main` publication uses the native large-disk x86-64 and ARM64
+fleet with QEMU's TCG fallback; version tags remain reserved for the dedicated
+KVM/DRI release runners. Both routes keep the same reproducibility, encrypted
+install/boot, signature, SBOM, SLSA provenance, and two-architecture promotion
+gates.
 Dispatch `Release / imager` manually on that commit with `full_native` enabled.
 That run does not sign or publish, but proves every native label and packaged UI.
 Only after it is green should a maintainer create a protected semantic tag such
