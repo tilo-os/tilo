@@ -32,6 +32,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test
 
 [target.'cfg(unix)'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
+atomic-file = { path = "../../system/atomic-file" }
 serde_bytes.workspace = true
 serde_json.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde"] }

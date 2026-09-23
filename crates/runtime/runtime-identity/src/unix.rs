@@ -45,11 +45,10 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(unix)]
@@ -192,38 +191,18 @@ pub struct IdentitySummary {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
-
-/// Symlink-safe, exclusive staging plus file+directory fsync. The shared
-/// atomic-file helper predates hostile-directory use and opens a predictable
-/// temp name without `O_NOFOLLOW`; identity state needs the stronger form.
+/// Durable owner-only replacement through atomic-file, with the staging file
+/// opened exclusively and without following links, so a planted symlink can
+/// never redirect identity bytes.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("identity");
-    let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
-    let result = (|| {
-        let mut file = OpenOptions::new()
+    atomic_file::write_with_temp_opener(path, bytes, |temp| {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+            .open(temp)
+    })
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.

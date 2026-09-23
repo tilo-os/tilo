@@ -4,10 +4,7 @@
 //! This module never creates a key beside the state file and never falls back to
 //! plaintext. Writes use an owner-only temporary file, `fsync`, and atomic rename.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::fs;
 use std::path::Path;
 
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
@@ -130,36 +127,8 @@ impl ChannelGroup {
             )
             .map_err(|_| Error::StateCrypto("state encryption failed"))?;
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-            }
-        }
-        let tmp = path.with_extension(format!("tmp-{}", hex_nonce(&nonce)));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let write_result = (|| -> std::io::Result<()> {
-            let mut file = options.open(&tmp)?;
-            file.write_all(MAGIC)?;
-            file.write_all(&[FORMAT])?;
-            file.write_all(&nonce)?;
-            file.write_all(&ciphertext)?;
-            file.sync_all()?;
-            fs::rename(&tmp, path)?;
-            if let Some(parent) = path.parent() {
-                OpenOptions::new().read(true).open(parent)?.sync_all()?;
-            }
-            Ok(())
-        })();
-        if write_result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        write_result.map_err(Error::Io)
+        let sealed = [&MAGIC[..], &[FORMAT], &nonce, &ciphertext].concat();
+        atomic_file::write_private(path, &sealed).map_err(Error::Io)
     }
 
     /// Restore a group previously written by [`Self::save_sealed`]. Wrong
@@ -252,18 +221,4 @@ impl ChannelGroup {
             group,
         })
     }
-}
-
-fn hex_nonce(nonce: &[u8; NONCE_LEN]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(48);
-    for byte in nonce {
-        out.push(char::from(
-            HEX.get(usize::from(byte >> 4)).copied().unwrap_or(b'0'),
-        ));
-        out.push(char::from(
-            HEX.get(usize::from(byte & 0x0f)).copied().unwrap_or(b'0'),
-        ));
-    }
-    out
 }

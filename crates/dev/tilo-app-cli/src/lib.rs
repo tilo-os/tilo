@@ -3887,36 +3887,16 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
         .with_context(|| format!("creating {description} directory {}", parent.display()))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating temporary {description} in {}", parent.display()))?;
-    let existing_permissions = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
+    // Keep a regenerated file's existing permissions; new files are 0644.
     #[cfg(unix)]
-    let permissions = existing_permissions.or_else(|| Some(std::fs::Permissions::from_mode(0o644)));
+    let written = {
+        let mode = std::fs::metadata(path)
+            .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+        atomic_file::write_with_mode(path, source, mode)
+    };
     #[cfg(not(unix))]
-    let permissions = existing_permissions;
-    if let Some(permissions) = permissions {
-        temporary
-            .as_file()
-            .set_permissions(permissions)
-            .with_context(|| format!("setting {description} permissions for {}", path.display()))?;
-    }
-    temporary
-        .write_all(source)
-        .with_context(|| format!("writing temporary {description} for {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("syncing temporary {description} for {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("publishing {description} {}", path.display()))?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("syncing {description} directory {}", parent.display()))?;
-    Ok(())
+    let written = atomic_file::write(path, source);
+    written.with_context(|| format!("publishing {description} {}", path.display()))
 }
 
 impl CargoPlan {
