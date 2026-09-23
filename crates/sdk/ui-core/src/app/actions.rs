@@ -87,6 +87,9 @@ impl App {
         if let Some(next) = self.actions.resource_generation.get().checked_add(1) {
             self.actions.resource_generation.set(next);
         }
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_stamp = None;
+        self.actions.action_directory_cursors.clear();
         self.actions.resource_cache.get_mut().take();
         self.actions.local_resource_cache.get_mut().take();
         self.actions.open_resource_search_cache.get_mut().take();
@@ -94,24 +97,29 @@ impl App {
     }
 
     fn ensure_resource_cache(&self) -> ResourceCacheKey {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
         let key = self.resource_cache_key();
+        let trace = self.trace_resource_stage(Stage::ResourceCache);
         if self
             .actions
             .resource_cache
             .borrow()
             .as_ref()
-            .is_some_and(|cache| cache.key == key)
+            .is_some_and(|cache| cache.key == key && cache.complete.is_some())
         {
+            trace.finish(CacheResult::Hit);
             return key;
         }
-
-        let mut declared = Vec::new();
-        crate::bound_dispatch::collect_unbound_resources(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            &mut declared,
-        );
-        let mut complete = declared.clone();
+        trace.finish(CacheResult::Miss);
+        let key = self.ensure_declared_resource_cache();
+        let trace = self.trace_resource_stage(Stage::SemanticConstruction);
+        let mut complete = self
+            .actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
         semantics.refresh_bound(
             self.root_widget.as_ref(),
@@ -120,6 +128,8 @@ impl App {
             &[],
         );
         complete.extend(semantics.action_resources());
+        trace.finish(CacheResult::NotApplicable);
+        let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations = tilo_actions::validate_surface(
@@ -137,15 +147,17 @@ impl App {
             }
             complete.clear();
         }
-        *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
-            key: key.clone(),
-            declared,
-            complete,
-        });
-        // The local projection is keyed by the same generation, but eagerly
-        // dropping it bounds retained action trees after a large document is
-        // closed.
-        self.actions.local_resource_cache.borrow_mut().take();
+        trace.finish(CacheResult::NotApplicable);
+        if let Some(cache) = self
+            .actions
+            .resource_cache
+            .borrow_mut()
+            .as_mut()
+            .filter(|cache| cache.key == key)
+        {
+            cache.complete = Some(complete);
+        }
+        // Completing this generation must retain its already-filtered allowed set.
         key
     }
 
@@ -160,57 +172,51 @@ impl App {
     }
 
     fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
-        fn collect_addresses(
-            resources: &[tilo_actions::Resource],
-            allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
-        ) {
-            for resource in resources {
-                allowed.extend(resource.actions.iter().map(|action| {
-                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
-                }));
-                collect_addresses(&resource.children, allowed);
-            }
-        }
-
-        let key = self.ensure_resource_cache();
-        let permission_generation = self.actions.permission_generation.get();
+        use crate::profiling::resource_trace::{CacheResult, Stage};
+        // Every full consumer still constructs and validates the combined surface.
+        self.ensure_resource_cache();
+        let (key, permission_generation) = self.ensure_local_control_cache();
+        let trace = self.trace_resource_stage(Stage::LocalCache);
         if self
             .actions
             .local_resource_cache
             .borrow()
             .as_ref()
             .is_some_and(|cache| {
-                cache.key == key && cache.permission_generation == permission_generation
+                cache.key == key
+                    && cache.permission_generation == permission_generation
+                    && cache.resources.is_some()
             })
         {
+            trace.finish(CacheResult::Hit);
             return (key, permission_generation);
         }
-        let (declared, complete) = self
+        trace.finish(CacheResult::Miss);
+        let trace = self.trace_resource_stage(Stage::LocalPermissionProjection);
+        let complete = self
             .actions
             .resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(
-                || (Vec::new(), Vec::new()),
-                |cache| (cache.declared.clone(), cache.complete.clone()),
-            );
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default();
         let resources = complete
             .into_iter()
             .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
-        let allowed_resources = declared
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
-        let mut allowed = std::collections::HashSet::new();
-        collect_addresses(&allowed_resources, &mut allowed);
-        *self.actions.local_resource_cache.borrow_mut() = Some(LocalResourceCache {
-            key: key.clone(),
-            permission_generation,
-            resources,
-            allowed,
-        });
+            .collect();
+        if let Some(cache) = self
+            .actions
+            .local_resource_cache
+            .borrow_mut()
+            .as_mut()
+            .filter(|cache| {
+                cache.key == key && cache.permission_generation == permission_generation
+            })
+        {
+            cache.resources = Some(resources);
+        }
+        trace.finish(CacheResult::NotApplicable);
         (key, permission_generation)
     }
 
@@ -224,7 +230,8 @@ impl App {
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .and_then(|cache| cache.resources.clone())
+            .unwrap_or_default();
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -241,6 +248,8 @@ impl App {
     }
 
     fn refresh_control_action_availability(&mut self) {
+        use crate::profiling::resource_trace::{CacheResult, Stage};
+        let trace = self.trace_resource_stage(Stage::BoundDiscovery);
         self.refresh_history_controls();
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
@@ -249,12 +258,27 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
+        trace.finish(CacheResult::NotObserved);
+        let trace = self.trace_resource_stage(Stage::BoundControlProjection);
         let _ =
             crate::bound_dispatch::refresh_bound_controls(self.root_widget.as_mut(), &snapshots);
-        let cache_key = self.ensure_local_resource_cache();
-        if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
+        trace.finish(CacheResult::NotApplicable);
+        // Only ActionEmitter controls consume this address projection. Semantic,
+        // document and legacy controls still use their normal invocation doors.
+        // Recheck presence: widget-local changes can add/remove emitters.
+        if !self.root_widget.has_action_control_bindings() {
+            // A replacement emitter must not inherit a prior refresh stamp.
+            self.actions.last_control_availability = None;
             return;
         }
+        let cache_key = self.ensure_local_control_cache();
+        let trace = self.trace_resource_stage(Stage::ControlCache);
+        if self.actions.last_control_availability.as_ref() == Some(&cache_key) {
+            trace.finish(CacheResult::Hit);
+            return;
+        }
+        trace.finish(CacheResult::Miss);
+        let trace = self.trace_resource_stage(Stage::ControlRefresh);
         // Clone only the compact address set so the cache borrow does not
         // span a mutable call into the retained widget tree.
         let allowed = self
@@ -268,6 +292,7 @@ impl App {
         self.root_widget
             .refresh_control_action_availability(&allowed);
         self.actions.last_control_availability = Some(cache_key);
+        trace.finish(CacheResult::NotApplicable);
     }
 
     /// The complete machine-driveable surface: domain resources declared by
@@ -282,7 +307,8 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.complete.clone());
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default();
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -491,7 +517,8 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.complete.clone())
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default()
             .into_iter()
             .filter_map(remove_reserved)
             .collect::<Vec<_>>();
@@ -532,12 +559,20 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        #[cfg(test)]
+        {
+            self.actions.action_surface_publication_attempts = self
+                .actions
+                .action_surface_publication_attempts
+                .saturating_add(1);
+        }
         if !self.collaboration.manager.is_connected() {
             return;
         }
         let route = self.bound_broker_route().cloned();
         if self.actions.last_published_bound_route != route {
             self.actions.last_published_actions = None;
+            self.actions.action_directory_snapshot = None;
             self.actions.last_published_bound_route = route;
         }
         let publication_app_id = self.publication_app_id();
@@ -557,6 +592,9 @@ impl App {
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
         {
+            self.actions.action_directory_snapshot = None;
+            self.actions.action_directory_stamp = None;
+            self.actions.action_directory_cursors.clear();
             for entry in binding_coverage
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -630,6 +668,7 @@ impl App {
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
+        self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
@@ -672,18 +711,19 @@ impl App {
     }
 
     fn action_directory_revision(&mut self) -> String {
-        let route = self.bound_broker_route().cloned();
-        if self.actions.bound_directory_route != route {
-            self.actions.bound_directory_stamp = None;
-            self.actions.bound_directory_route = route;
-        }
-        let Ok(witnesses) =
-            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc)
-        else {
-            return format!("v4:{}", uuid::Uuid::new_v4());
-        };
-        if !witnesses.is_empty() {
-            let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+        let owners =
+            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc);
+        let reusable = owners
+            .as_ref()
+            .is_ok_and(|owners| owners.iter().all(|owner| owner.generation.is_some()));
+        let witness = action_directory_snapshot::DirectoryWitness {
+            key: self.resource_cache_key(),
+            permissions: self.permission_ctx.clone(),
+            permission_generation: self.actions.permission_generation.get(),
+            route: self.bound_broker_route().cloned(),
+            owners: owners.unwrap_or_default(),
+            root_revision: self.root_widget.action_directory_revision(&self.state.doc),
+            providers: crate::bound_dispatch::search_providers(self.root_widget.as_ref())
                 .into_iter()
                 .map(|provider| {
                     format!(
@@ -695,52 +735,21 @@ impl App {
                         provider.action_directory_generation()
                     )
                 })
-                .collect::<Vec<_>>();
-            let local = self.actions.resource_generation.get();
-            if let Some((old, generation, old_providers, revision)) =
-                &self.actions.bound_directory_stamp
-                && witnesses.iter().all(|witness| witness.generation.is_some())
-                && old == &witnesses
-                && *generation == local
-                && *old_providers == providers
-            {
-                return revision.clone();
-            }
-            let revision = format!("v4:{}", uuid::Uuid::new_v4());
-            self.actions.bound_directory_stamp =
-                Some((witnesses, local, providers, revision.clone()));
-            return revision;
+                .collect(),
+        };
+        if reusable
+            && let Some((old, revision)) = &self.actions.action_directory_stamp
+            && old == &witness
+        {
+            return revision.clone();
         }
-
-        // Automerge heads are the authority generation for document-backed
-        // resources. Remote revisions never call legacy `resources()`: that
-        // hook predates paging and may allocate an unbounded contextual tree.
-        let heads = self
-            .state
-            .doc
-            .get_heads()
-            .iter()
-            .map(|head| format!("{head:?}"))
-            .collect::<Vec<_>>();
-        let root_revision = self
-            .root_widget
-            .action_directory_revision(&self.state.doc)
-            .unwrap_or_default();
-        let provider_generations =
-            crate::bound_dispatch::search_providers(self.root_widget.as_ref())
-                .into_iter()
-                .filter_map(|provider| {
-                    provider
-                        .action_directory_generation()
-                        .map(|generation| format!("{}:{generation}", provider.name()))
-                })
-                .collect::<Vec<_>>();
-        format!(
-            "v3:{}:{}:{}",
-            heads.join(","),
-            root_revision,
-            provider_generations.join("\u{1e}")
-        )
+        // Generations are updated at mutation boundaries; reading Automerge
+        // heads here would commit an open transaction and split an undo unit.
+        self.actions.action_directory_snapshot = None;
+        self.actions.action_directory_cursors.clear();
+        let revision = format!("v5:{}", uuid::Uuid::new_v4());
+        self.actions.action_directory_stamp = Some((witness, revision.clone()));
+        revision
     }
 
     fn exported_directory_action(
@@ -777,40 +786,32 @@ impl App {
         parent_resource: &str,
         may_descend: bool,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptors = tilo_actions::door::survey(std::slice::from_ref(resource));
-        let target = self
-            .actions
-            .bound_publication
-            .target(&tilo_actions::ActionAddress::new(resource.id.as_str(), ""))
-            .ok()
-            .flatten();
-        let explicit = crate::bound_dispatch::publication_visibility(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            target.as_ref().map(|target| &target.binding),
-            target.as_ref().map_or(resource.id.as_str(), |target| {
-                target.address.address.resource.as_str()
-            }),
-        )
-        .and_then(|mut address| {
-            if let Some(target) = &target {
-                address.resource = self
-                    .actions
-                    .bound_publication
-                    .alias(&target.binding, &address.resource)
-                    .ok()?;
-            }
-            Some(address)
-        });
-        // A view operation is a safe derived disclosure policy: it does not
-        // mutate or trigger an external effect, and the broker still checks
-        // its action contract before forwarding this container label.
-        let visibility = descriptors.into_iter().find(|descriptor| {
-            explicit
-                .as_ref()
-                .is_some_and(|address| &descriptor.address == address)
-                || (explicit.is_none() && descriptor.kind == tilo_actions::OperationKind::View)
-        })?;
+        // Preserve the explicit-or-View disclosure rule, finding only the
+        // needed descriptor in this bounded provider result, not surveying a
+        // complete action catalogue for each displayed row.
+        fn visibility(
+            resource: &tilo_actions::Resource,
+            explicit: Option<&tilo_actions::ActionAddress>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            resource
+                .actions
+                .iter()
+                .find(|action| match explicit {
+                    Some(address) => {
+                        address.resource == resource.id.as_str() && address.action == action.id
+                    }
+                    None => action.kind == tilo_actions::OperationKind::View,
+                })
+                .map(|action| App::directory_descriptor(resource, action))
+                .or_else(|| {
+                    resource
+                        .children
+                        .iter()
+                        .find_map(|child| visibility(child, explicit))
+                })
+        }
+        let explicit = self.directory_explicit_visibility(resource);
+        let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
             resource: resource.id.as_str().to_owned(),
@@ -835,9 +836,11 @@ impl App {
         resource: &tilo_actions::Resource,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptor = tilo_actions::door::survey(std::slice::from_ref(resource))
-            .into_iter()
-            .find(|descriptor| descriptor.address.action == action_id)?;
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)?;
+        let descriptor = Self::directory_descriptor(resource, action);
         let exported = Self::exported_directory_action(&descriptor);
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: resource.id.as_str().to_owned(),
@@ -997,10 +1000,29 @@ impl App {
         if query.needle.is_empty() {
             if query.parent_resource.is_empty() {
                 let mut widget_index = state.root_widget_index;
-                let mut provider_cursor = state.root_provider_cursor;
+                let mut provider_cursor = state.root_provider_cursor.clone();
                 let mut inspected = 0usize;
                 let mut exhausted = false;
-                while rows.len() < max_results && inspected < max_work {
+                let mut projected_offset = state.browse_offset;
+                let mut projected_done = true;
+                if let Some(snapshot) = &self.actions.action_directory_snapshot {
+                    while let Some(row) = snapshot.roots.get(projected_offset) {
+                        if rows.len() >= max_results || inspected >= max_work {
+                            break;
+                        }
+                        let mut row = row.clone();
+                        row.has_children &= max_depth > 0;
+                        add(row, &mut rows, &mut estimated_bytes);
+                        if estimated_bytes > max_bytes {
+                            rows.pop();
+                            break;
+                        }
+                        projected_offset = projected_offset.saturating_add(1);
+                        inspected = inspected.saturating_add(1);
+                    }
+                    projected_done = projected_offset >= snapshot.roots.len();
+                }
+                while projected_done && rows.len() < max_results && inspected < max_work {
                     let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
                         &self.state.doc,
@@ -1066,6 +1088,9 @@ impl App {
                     let before_index = widget_index;
                     let before_cursor = provider_cursor.clone();
                     if let Some(resource) = page.resources.first()
+                        && !self.actions.action_directory_snapshot.as_ref().is_some_and(
+                            |snapshot| snapshot.nodes.contains_key(resource.id.as_str()),
+                        )
                         && let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
                     {
                         add(row, &mut rows, &mut estimated_bytes);
@@ -1102,6 +1127,7 @@ impl App {
                 }
                 let next_cursor = (!exhausted).then(|| {
                     self.action_directory_next_cursor(ActionDirectoryCursor {
+                        browse_offset: projected_offset,
                         root_widget_index: widget_index,
                         root_provider_cursor: provider_cursor,
                         ..state
@@ -1116,6 +1142,46 @@ impl App {
                     budget_exhausted: !exhausted,
                 };
             }
+            let mut offset = state.browse_offset;
+            let mut inspected = 0usize;
+            let mut projected_total = 0usize;
+            if let Some(node) = self
+                .actions
+                .action_directory_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.nodes.get(&query.parent_resource))
+            {
+                projected_total = node.rows.len();
+                while let Some(row) = node.rows.get(offset) {
+                    if rows.len() >= max_results || inspected >= max_work {
+                        break;
+                    }
+                    let mut row = row.clone();
+                    row.has_children &= max_depth > 0
+                        && node.depth.saturating_add(1) < usize::from(ACTION_DIRECTORY_MAX_DEPTH);
+                    add(row, &mut rows, &mut estimated_bytes);
+                    if estimated_bytes > max_bytes {
+                        rows.pop();
+                        break;
+                    }
+                    offset = offset.saturating_add(1);
+                    inspected = inspected.saturating_add(1);
+                }
+            }
+            if offset < projected_total || rows.len() >= max_results || inspected >= max_work {
+                let next_cursor = self.action_directory_next_cursor(ActionDirectoryCursor {
+                    browse_offset: offset,
+                    ..state
+                });
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows,
+                    next_cursor,
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                };
+            }
             let parent = self.resolve_publication_resource(&query.parent_resource, "");
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
                 resource
@@ -1127,20 +1193,44 @@ impl App {
             let direct = parent
                 .as_ref()
                 .map_or_else(Vec::new, |resource| resource.children.clone());
-            let mut offset = state.browse_offset;
-            let mut inspected = 0usize;
-            let total = parent_actions.len().saturating_add(direct.len());
+            let total = projected_total
+                .saturating_add(parent_actions.len())
+                .saturating_add(direct.len());
             while offset < total && rows.len() < max_results && inspected < max_work {
-                let row = if offset < parent_actions.len() {
-                    parent.as_ref().and_then(|resource| {
-                        Self::directory_action_row(resource, &parent_actions[offset])
-                    })
+                let provider_offset = offset.saturating_sub(projected_total);
+                let row = if provider_offset < parent_actions.len() {
+                    let action = &parent_actions[provider_offset];
+                    let projected =
+                        self.actions
+                            .action_directory_snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| {
+                                snapshot
+                                    .actions
+                                    .contains_key(&tilo_actions::ActionAddress::new(
+                                        &query.parent_resource,
+                                        action,
+                                    ))
+                            });
+                    if projected {
+                        None
+                    } else {
+                        parent
+                            .as_ref()
+                            .and_then(|resource| Self::directory_action_row(resource, action))
+                    }
                 } else {
-                    self.directory_resource_row(
-                        &direct[offset - parent_actions.len()],
-                        &query.parent_resource,
-                        max_depth > 0,
-                    )
+                    let resource = &direct[provider_offset - parent_actions.len()];
+                    if self
+                        .actions
+                        .action_directory_snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.id.as_str()))
+                    {
+                        None
+                    } else {
+                        self.directory_resource_row(resource, &query.parent_resource, max_depth > 0)
+                    }
                 };
                 if let Some(row) = row {
                     add(row, &mut rows, &mut estimated_bytes);
@@ -1369,6 +1459,18 @@ impl App {
     ) -> runtime_collab::ActionDirectoryResolution {
         if revision != self.action_directory_revision() {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
+        }
+        if let Some(row) = self
+            .actions
+            .action_directory_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .actions
+                    .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
+            })
+        {
+            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
@@ -2118,6 +2220,19 @@ impl App {
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
         self.service_close_admission();
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input())
+        {
+            self.discard_history_local_intents();
+            return 0;
+        }
+        // Embedded History refresh discards only its own hidden live queue.
+        // Defer sibling work until this input frame ends without consuming it.
+        if self.framework_input.get() {
+            return 0;
+        }
         let mut dispatched = self.dispatch_history_controls();
         let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         if let Some(error) = bound.error {
@@ -2372,6 +2487,11 @@ impl App {
         }
         if changed {
             self.invalidate_widget_resource_cache();
+            // Accepted operations can finish from a later model pass without
+            // another broker or native input event. Their progress/terminal
+            // transition may change document-dependent operations, so refresh
+            // the broker surface from this lifecycle boundary as well.
+            self.publish_action_surface();
         }
         changed
     }
@@ -2387,7 +2507,9 @@ impl App {
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .map_or_else(Vec::new, |cache| {
+                cache.resources.clone().unwrap_or_default()
+            });
         resources.extend(self.history_local_resources());
         let cached_open_resources = {
             self.actions
@@ -2490,7 +2612,9 @@ impl App {
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key && cache.permission_generation == generation)
-            .map_or_else(Vec::new, |cache| cache.resources.clone());
+            .map_or_else(Vec::new, |cache| {
+                cache.resources.clone().unwrap_or_default()
+            });
         resources.extend(self.history_local_resources());
         let lazy_resource_ids = self
             .actions
