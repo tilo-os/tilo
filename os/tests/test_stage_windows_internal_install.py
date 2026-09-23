@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -97,6 +99,16 @@ class StageTests(unittest.TestCase):
         self.assertEqual(record["target_free_extent"], value["target_free_extent"])
         self.assertEqual(record["staging"], staged)
         self.assertEqual(record["development_backend"]["sha256"], "d" * 64)
+        runner = stage.make_live_runner(value, staged, "d" * 64).decode()
+        self.assertIn("--internal-source-root-partuuid '00000000-0000-0000-0000-000000000004'", runner)
+        self.assertIn("--new-root-partuuid '00000000-0000-0000-0000-000000000008'", runner)
+        self.assertIn("--expect-partition \"00000000-0000-0000-0000-000000000006:57344:4096\"", runner)
+        self.assertNotIn("account_password=", runner)
+        if os.name != "nt":
+            with tempfile.TemporaryDirectory() as temporary:
+                script = Path(temporary) / "runner.sh"; script.write_text(runner)
+                result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
