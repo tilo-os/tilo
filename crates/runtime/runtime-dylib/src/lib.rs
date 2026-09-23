@@ -71,6 +71,7 @@ pub use tilo_user_identity;
 pub use tiny_skia;
 pub use typst;
 pub use typst_assets;
+pub use typst_layout;
 pub use typst_pdf;
 pub use typst_render;
 pub use ui;
