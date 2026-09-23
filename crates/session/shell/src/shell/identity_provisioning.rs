@@ -10,7 +10,8 @@
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use rand_core::RngCore;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
@@ -809,7 +810,7 @@ pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> 
             ))
         })?;
     let mut id = [0u8; 16];
-    rand_core::OsRng.fill_bytes(&mut id);
+    UnwrapErr(SysRng).fill_bytes(&mut id);
     pairing_channel_at(root.join("pairing-broker").join(hex::encode(id)))
 }
 
@@ -884,7 +885,6 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;
@@ -909,7 +909,7 @@ mod tests {
     }
 
     fn fixture_record() -> IdentityRecord {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         IdentityRecord::from_threshold_identity(
             &id,
@@ -1369,7 +1369,7 @@ mod tests {
     fn full_dkg_crosses_only_the_pinned_tls_broker() {
         let tmp = TmpDir::new("pairing-full-tls");
         let authority = pairing_channel_at(tmp.0.join("authority")).unwrap();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut bootstrap = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (host_session, host_round1) = bootstrap.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let mut host = ui::widget::identity_flow::add_device_host::AddDeviceHostScreen::new();

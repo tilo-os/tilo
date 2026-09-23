@@ -32,6 +32,7 @@ filesystem = [
     "dep:blake3",
     "dep:futures-util",
     "dep:rand",
+    "dep:getrandom",
     "dep:fuser",
 ]
 
@@ -78,6 +79,7 @@ iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 qdoc = { path = "../../doc/qdoc", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
+getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
 # only (raster images + EPUB covers — pure Rust, no native deps): the OS

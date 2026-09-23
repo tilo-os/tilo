@@ -15,7 +15,8 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rand::RngCore as _;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand::Rng as _;
 
 const SATELLITE: &str = "/usr/bin/xwayland-satellite";
 const FREERDP: &str = "/usr/bin/xfreerdp";
@@ -196,7 +197,7 @@ fn private_runtime_root() -> Result<PathBuf, String> {
 fn private_launch_root(runtime: &Path) -> Result<PathBuf, String> {
     for _ in 0..DISPLAY_ATTEMPTS {
         let mut nonce = [0_u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let candidate = runtime.join(format!("launch-{}", hex::encode(nonce)));
         match fs::create_dir(&candidate) {
             Ok(()) => {
@@ -218,7 +219,7 @@ fn private_launch_root(runtime: &Path) -> Result<PathBuf, String> {
 
 fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> {
     let mut random = [0_u8; 2];
-    rand::rngs::OsRng.fill_bytes(&mut random);
+    UnwrapErr(SysRng).fill_bytes(&mut random);
     let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
     for offset in 0..DISPLAY_ATTEMPTS {
         let display = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
@@ -246,7 +247,7 @@ fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> 
 /// in argv. Xauthority uses network byte order and length-prefixed fields.
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
     let mut cookie = [0_u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut cookie);
+    UnwrapErr(SysRng).fill_bytes(&mut cookie);
     let mut contents = Vec::with_capacity(64);
     push_u16(&mut contents, u16::MAX); // FamilyWild
     push_field(&mut contents, &[]);

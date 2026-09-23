@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use ed25519_dalek::{Signer, Verifier};
-use rand::{RngCore as _, rngs::OsRng};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::{
@@ -205,7 +205,7 @@ impl PendingPeerChallenges {
         ttl_ns: u64,
     ) -> Result<PeerAuthChallenge, PeerAuthError> {
         let mut nonce = [0u8; 32];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut nonce)
             .map_err(|_| PeerAuthError::Randomness)?;
         self.register(nonce, now_ns, ttl_ns)

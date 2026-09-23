@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use collab_types::{ChannelId, Role, generate_keypair};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_ui::State;
 use tilo_ui::a11y::{Action, Role as AccessRole};
@@ -103,7 +103,7 @@ fn themes() -> Vec<(&'static str, Theme)> {
 /// a minted invite for both invite screens, and a name plus typed code so
 /// every field paints its populated state rather than a placeholder.
 fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFlowError> {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let mut flow = IdentityFlow::new(store);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
 

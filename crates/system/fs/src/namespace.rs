@@ -2812,7 +2812,7 @@ mod tests {
             FileVersionId, FileVersionV1,
         };
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use getrandom::{SysRng, rand_core::UnwrapErr};
 
         let mut ns = Namespace::new("a").unwrap();
         let source_ino = ns
@@ -2843,7 +2843,7 @@ mod tests {
                 1,
             ));
         }
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: collab_types::Ed25519PublicKey([9; 32]),
             device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),

@@ -18,7 +18,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use registry_server::{
     AppState, ModerationService, PublisherAllowlist, PublisherRow, ServerIdentity, Storage,
     bind_and_run,
@@ -51,7 +51,7 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     let tmp = tempfile::tempdir().expect("tempdir");
     let storage = Storage::open(tmp.path()).expect("open storage");
 
-    let owner_key = SigningKey::generate(&mut OsRng);
+    let owner_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let identity = ServerIdentity {
         owner_pubkey_hex: hex::encode(owner_key.verifying_key().to_bytes()),
         name: "test registry".into(),
@@ -60,8 +60,8 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     };
     storage.save_identity(&identity).expect("save identity");
 
-    let publisher = SigningKey::generate(&mut OsRng);
-    let outsider = SigningKey::generate(&mut OsRng);
+    let publisher = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let outsider = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut allow = PublisherAllowlist::empty();
     allow.upsert(PublisherRow {
         pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
@@ -675,7 +675,7 @@ async fn publisher_cannot_hijack_another_publishers_entry() {
     // A different allowlisted publisher (we'll add one on the fly)
     // tries to update the same package_id. Simulate by asking the
     // storage layer to add the outsider as a full member.
-    let second = SigningKey::generate(&mut OsRng);
+    let second = SigningKey::generate(&mut UnwrapErr(SysRng));
     // Use the CLI-equivalent path: modify allowlist via server
     // restart is heavy; instead sign a change with a mismatched
     // publisher pubkey — the entry-level sig now doesn't verify

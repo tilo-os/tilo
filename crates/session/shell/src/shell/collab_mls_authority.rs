@@ -3,6 +3,7 @@
 //! No app-facing RPC accepts these values. The workspace authority constructs
 //! typed commands containing only random handles registered by [`MlsVaultProvider`].
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -201,7 +202,7 @@ impl SecretServiceMlsVault {
             Err(error) if registry_path.exists() => return Err(error),
             Err(_) => {
                 let mut bytes = Zeroizing::new([0_u8; 32]);
-                rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, bytes.as_mut());
+                rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), bytes.as_mut());
                 secret_service_store(&locator, bytes.as_ref())?;
                 let verified = secret_service_load(&locator)?;
                 if verified.as_ref() != bytes.as_ref() {
@@ -476,7 +477,7 @@ impl MlsVaultProvider for SecretServiceMlsVault {
 
 fn random_capability() -> [u8; 32] {
     let mut bytes = [0_u8; 32];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut bytes);
     bytes
 }
 

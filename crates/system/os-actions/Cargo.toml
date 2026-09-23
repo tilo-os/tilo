@@ -23,6 +23,7 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
+getrandom.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
 tilo-crypto = { path = "../tilo-crypto" }

@@ -11,7 +11,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::TryRng as _};
 
 use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
@@ -381,7 +381,7 @@ fn handle(
                     .unwrap_or_default()
                     .as_secs();
                 let mut nonce = [0_u8; 16];
-                OsRng.try_fill_bytes(&mut nonce).map_err(|error| {
+                SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
                     crate::moderation_client::ModerationClientError::Identity(error.to_string())
                 })?;
                 let request = crate::moderation_client::sign_with_runtime_identity(
@@ -538,7 +538,7 @@ fn submit_report(
     let envelope_bytes = serde_json::to_vec(envelope)
         .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
     let mut nonce = [0_u8; 16];
-    OsRng.try_fill_bytes(&mut nonce).map_err(|error| {
+    SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
         crate::moderation_client::ModerationClientError::Identity(error.to_string())
     })?;
     let request = crate::moderation_client::sign_with_runtime_identity(

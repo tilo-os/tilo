@@ -48,7 +48,7 @@ use std::collections::BTreeMap;
 
 use frost_ed25519::keys::KeyPackage;
 use frost_ed25519::keys::PublicKeyPackage;
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use zeroize::Zeroizing;
 
 use collab_types::{Ed25519PublicKey, Signature, canonical_bytes};
@@ -92,7 +92,10 @@ pub struct ThresholdIdentity {
 // vs. `SingleDevice`'s 32-byte `SigningKey`; not boxed to balance
 // sizes, since `Threshold` is the steady state and reads should stay
 // pointer-chase free.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Threshold is the steady state; boxing it would add a pointer chase to every read"
+)]
 pub(crate) enum InnerKey {
     /// 1-of-1 bootstrap: a plain Ed25519 signing key in dalek (seed-shaped)
     /// form, so the 32 bytes persisted are the 32 bytes expanded back into
@@ -281,7 +284,7 @@ impl ThresholdIdentity {
     /// [`Self::bootstrap_single_device`] followed by
     /// [`Self::single_device_seed`]; kept standalone for callers (the
     /// compositor's first-boot hook) that only want bytes to write.
-    pub fn bootstrap_single_device_seed<R: CryptoRng + RngCore>(
+    pub fn bootstrap_single_device_seed<R: CryptoRng + ?Sized>(
         rng: &mut R,
     ) -> ([u8; 32], Ed25519PublicKey) {
         let sk = ed25519_dalek::SigningKey::generate(rng);
@@ -299,7 +302,7 @@ impl ThresholdIdentity {
     /// Infallible today (returns `Result` for symmetry with the
     /// threshold-mode constructors); reserved for a future RNG
     /// failure path.
-    pub fn bootstrap_single_device<R: CryptoRng + RngCore>(
+    pub fn bootstrap_single_device<R: CryptoRng + ?Sized>(
         rng: &mut R,
     ) -> Result<Self, ThresholdError> {
         let signing_key = ed25519_dalek::SigningKey::generate(rng);
@@ -350,7 +353,7 @@ impl ThresholdIdentity {
     ///
     /// Returns an error if `message` cannot be canonically encoded,
     /// or anything [`Self::sign_raw`] can return.
-    pub fn sign<V: serde::Serialize, R: CryptoRng + RngCore>(
+    pub fn sign<V: serde::Serialize, R: CryptoRng + ?Sized>(
         &self,
         message: &V,
         rng: &mut R,
@@ -368,7 +371,7 @@ impl ThresholdIdentity {
     /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
     /// in threshold mode — use [`Self::sign_round1`]/
     /// [`Self::sign_round2`] instead.
-    pub fn sign_raw<R: CryptoRng + RngCore>(
+    pub fn sign_raw<R: CryptoRng + ?Sized>(
         &self,
         bytes: &[u8],
         rng: &mut R,
@@ -397,7 +400,7 @@ impl ThresholdIdentity {
     /// Returns an error if `DkgSession::start` rejects the requested
     /// `(new_threshold, new_total_devices, this_share_index_in_new_group)`
     /// parameters (e.g. a threshold greater than the device count).
-    pub fn begin_enrolment<R: CryptoRng + RngCore>(
+    pub fn begin_enrolment<R: CryptoRng + ?Sized>(
         &mut self,
         this_share_index_in_new_group: u16,
         new_threshold: u16,
@@ -439,7 +442,7 @@ impl ThresholdIdentity {
     ///
     /// Returns [`ThresholdError::DkgStateMisuse`] if this identity is
     /// in single-device mode.
-    pub fn sign_round1<R: CryptoRng + RngCore>(
+    pub fn sign_round1<R: CryptoRng + ?Sized>(
         &self,
         rng: &mut R,
     ) -> Result<SigningRound1, ThresholdError> {

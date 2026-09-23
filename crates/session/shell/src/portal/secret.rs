@@ -11,7 +11,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use zbus::interface;
@@ -95,7 +96,7 @@ impl SecretStore {
             return decode(existing);
         }
         let mut secret = [0_u8; SECRET_BYTES];
-        OsRng.fill_bytes(&mut secret);
+        UnwrapErr(SysRng).fill_bytes(&mut secret);
         state.values.insert(app_id.into(), hex::encode(secret));
         if let Err(error) = self.commit(&state) {
             state.values.remove(app_id);
@@ -142,7 +143,7 @@ fn load_or_create_key(path: &std::path::Path) -> Option<Zeroizing<[u8; SECRET_BY
     }
     private_fs::directory(key_path.parent()?).ok()?;
     let mut key = Zeroizing::new([0; SECRET_BYTES]);
-    OsRng.fill_bytes(key.as_mut());
+    UnwrapErr(SysRng).fill_bytes(key.as_mut());
     // `false` means a concurrent starter published first; everyone uses the
     // key that won, so re-read rather than returning ours.
     private_fs::create_atomic(&key_path, key.as_ref()).ok()?;
@@ -167,7 +168,7 @@ fn read_key(path: &std::path::Path) -> std::io::Result<Zeroizing<[u8; SECRET_BYT
 fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
     let mut nonce = [0; NONCE_BYTES];
-    OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let encrypted = cipher.encrypt(<&XNonce>::from(&nonce), plaintext).ok()?;
     let mut out = Vec::with_capacity(STORE_MAGIC.len() + nonce.len() + encrypted.len());
     out.extend_from_slice(STORE_MAGIC);

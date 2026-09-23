@@ -32,7 +32,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
@@ -247,7 +247,7 @@ impl Compositor {
     /// identity empty correctly activates OOBE, which must withhold focus.
     fn seed_identity(runtime_dir: &Path) -> PathBuf {
         let identity_dir = runtime_dir.join("config/tilo/identity");
-        let identity = ThresholdIdentity::bootstrap_single_device(&mut OsRng)
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut UnwrapErr(SysRng))
             .expect("create clipboard fixture identity");
         let record = IdentityRecord::from_threshold_identity(
             &identity,

@@ -2967,6 +2967,7 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
         let (cancel, _receiver) = tokio::sync::watch::channel(false);
@@ -3134,8 +3135,7 @@ mod tests {
         capabilities: DeviceCapabilities,
         label: &str,
     ) -> (ed25519_dalek::SigningKey, DeviceCert) {
-        use rand_core::OsRng;
-        let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -3729,10 +3729,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn actors_announce_identity_when_a_neighbor_connects() {
-        use rand_core::OsRng;
-
-        let root_a = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let root_b = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root_a = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let root_b = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
         let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
         let expected_a = cert_a.device_public_key;
@@ -3850,9 +3848,8 @@ mod tests {
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let other_root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
         let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
         let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
@@ -4043,8 +4040,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_actors_exchange_through_authenticated_workspace_host() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
         let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
@@ -4105,8 +4101,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let a_public = a_key.verifying_key().to_bytes();
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
@@ -4218,8 +4213,7 @@ mod tests {
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
         let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(

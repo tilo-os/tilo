@@ -27,7 +27,7 @@
 
 use ed25519_dalek::Signer;
 use ed25519_dalek::Verifier;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -156,7 +156,7 @@ pub enum VerifyError {
 /// public)`; the secret type is `ed25519_dalek::SigningKey` (no newtype),
 /// intentionally not `Serialize` to discourage accidental wire exposure.
 pub fn generate_keypair() -> (ed25519_dalek::SigningKey, Ed25519PublicKey) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let signing = ed25519_dalek::SigningKey::generate(&mut rng);
     let verifying = signing.verifying_key();
     (signing, Ed25519PublicKey(verifying.to_bytes()))

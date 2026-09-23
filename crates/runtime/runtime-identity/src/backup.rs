@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
@@ -349,12 +349,8 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
     validate_passphrase(passphrase)?;
     let mut salt = [0_u8; SALT_LEN];
     let mut nonce = [0_u8; NONCE_LEN];
-    OsRng
-        .try_fill_bytes(&mut salt)
-        .map_err(|error| random_error(&error))?;
-    OsRng
-        .try_fill_bytes(&mut nonce)
-        .map_err(|error| random_error(&error))?;
+    SysRng.try_fill_bytes(&mut salt).map_err(random_error)?;
+    SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
 
     let mut key = derive_key(
         passphrase,
@@ -592,9 +588,7 @@ fn remove_exact_new_backup(destination: &Path, expected: &[u8]) -> io::Result<()
 fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     for _ in 0..16 {
         let mut nonce = [0_u8; 16];
-        OsRng
-            .try_fill_bytes(&mut nonce)
-            .map_err(|error| random_error(&error))?;
+        SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
         let candidate = parent.join(format!(".tilo-identity-backup-{}.tmp", hex::encode(nonce)));
         if !candidate.exists() {
             return Ok(candidate);
@@ -692,7 +686,7 @@ fn invalid_backup() -> io::Error {
     )
 }
 
-fn random_error(error: &rand_core::Error) -> io::Error {
+fn random_error(error: getrandom::Error) -> io::Error {
     io::Error::other(format!(
         "operating-system randomness is unavailable: {error}"
     ))

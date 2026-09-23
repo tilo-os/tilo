@@ -38,7 +38,7 @@ app-registry = { path = "../app-registry" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-rand.workspace = true
+getrandom.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 

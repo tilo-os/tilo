@@ -1234,7 +1234,7 @@ impl ProtocolHandler for ManagementProtocol {
         )
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
         let ack = auth::build_hello_ack(
             self.own_cert.clone(),
             &self.own_sk,
@@ -1389,8 +1389,8 @@ impl ProtocolHandler for DiscoveryProtocol {
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
         {
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut nonce);
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut nonce);
         }
         let ack = auth::build_hello_ack(
             self.own_cert.clone(),
@@ -1560,8 +1560,8 @@ async fn handle_conn(
     // 2. Reply with HelloAck.
     let mut server_nonce = [0u8; 32];
     {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut server_nonce);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut server_nonce);
     }
     let ack = auth::build_hello_ack(
         ctx.own_cert.clone(),

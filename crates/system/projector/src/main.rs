@@ -39,8 +39,9 @@ use fcast_sender_sdk::device::{
     TrackList,
 };
 use fcast_sender_sdk::{DeviceDiscovererEventHandler, url_format_ip_addr};
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use mdns_sd::ServiceEvent;
-use rand::{RngCore, rngs::OsRng};
+use rand::Rng;
 use tilo_projector::{
     CaptureProfile, DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionProtocol, VideoPacket,
@@ -695,7 +696,7 @@ fn random_media_token() -> String {
     use std::fmt::Write as _;
 
     let mut bytes = [0u8; 24];
-    OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     let mut token = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         let _ = write!(token, "{byte:02x}");

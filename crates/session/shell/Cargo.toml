@@ -78,7 +78,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 rustls.workspace = true
 rcgen.workspace = true
 chrono = { workspace = true, default-features = true }
@@ -198,10 +198,10 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 # Host-side identity lifecycle: new records are moved into Secret Service (or
 # the explicitly reported private-file fallback) before the ceremony returns.
 runtime-identity = { path = "../../runtime/runtime-identity" }
-# `firstboot` calls `rand_core::OsRng` for identity key generation.
-# Version matched to `threshold-identity`'s direct dep (rand_core 0.6,
-# which frost-ed25519 consumes) so the workspace collapses to one copy.
-rand_core = { workspace = true, features = ["getrandom"] }
+# Identity key generation draws from getrandom's `SysRng`; `rand_core`
+# names the RNG traits ed25519-dalek and threshold-identity take.
+getrandom.workspace = true
+rand_core.workspace = true
 # The shell serves the SDK-facing Cap'n Proto broker interface
 # natively. `runtime-collab` provides the generated schema types and
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
@@ -253,7 +253,6 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 [dev-dependencies]
 runtime-portal = { path = "../../runtime/runtime-portal" }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
-rand_08 = { package = "rand", version = "0.8" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true

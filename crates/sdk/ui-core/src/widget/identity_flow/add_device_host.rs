@@ -19,7 +19,8 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::Ed25519PublicKey;
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use vello::Scene;
@@ -156,7 +157,7 @@ impl AddDeviceHostScreen {
         initiator_pk: Ed25519PublicKey,
     ) -> Result<(), IdentityFlowError> {
         let mut nonce = [0u8; 16];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let payload = PairingPayload::new(nonce, &initiator_pk, &host_identity_round1)?;
         let code = derive_pairing_code(&nonce);
         let json = payload.to_json_bytes()?;
@@ -272,7 +273,7 @@ impl AddDeviceHostScreen {
             IdentityFlowError::DecodeFailed("DKG produced no round-2 packet for share 2".into())
         })?;
         session.receive_round2(&[reply])?;
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut identity =
             threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         identity.adopt_dkg_outcome(session)?;
@@ -627,11 +628,10 @@ impl Widget for AddDeviceHostScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
     use threshold_identity::ThresholdIdentity;
 
     fn fixture_host() -> (AddDeviceHostScreen, [u8; 16]) {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let mut s = AddDeviceHostScreen::new();
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn pairer_reply_with_wrong_mac_is_rejected() {
         let (mut s, nonce) = fixture_host();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         let reply = EnrolmentRound2 {
@@ -720,7 +720,7 @@ mod tests {
     fn host_retries_contended_round2_publication_without_regenerating_identity() {
         let (mut host, nonce) = fixture_host();
         let payload = host.handshake().unwrap().payload.clone();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut pairer_session, pairer_round1) =
             pairer.begin_enrolment(2, 2, 2, &mut rng).unwrap();

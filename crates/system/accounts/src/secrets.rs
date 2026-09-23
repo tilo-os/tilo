@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -556,7 +556,7 @@ fn random_index(bound: usize) -> Result<usize, BrokerError> {
     let zone = u16::MAX - (u16::MAX % bound);
     loop {
         let mut bytes = [0u8; 2];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut bytes)
             .map_err(|_| BrokerError::Randomness)?;
         let value = u16::from_ne_bytes(bytes);
