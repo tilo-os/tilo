@@ -23,6 +23,8 @@ path = "src/lib.rs"
 # on `SignedOp` names the same identifier this
 # crate keys its groups by.
 collab-types = { path = "../collab-types" }
+# Crash-safe, owner-only state replacement.
+atomic-file = { path = "../../system/atomic-file" }
 
 # OpenMLS. Pin the minor version so an upstream API change receives an
 # explicit review before it changes this crate's public surface.

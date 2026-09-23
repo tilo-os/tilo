@@ -786,7 +786,6 @@ impl PairingHandshake {
         nonce: &[u8; 16],
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
-        use std::io::Write;
         let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
@@ -819,20 +818,7 @@ impl PairingHandshake {
             let _ = std::fs::remove_file(&lock);
             return false;
         };
-        let tmp = backend.root.join(format!(
-            ".{}.{}.tmp",
-            hex::encode(nonce),
-            std::process::id()
-        ));
-        let written = private_fs::rewrite(&tmp)
-            .and_then(|mut file| {
-                file.write_all(&bytes)?;
-                file.sync_all()
-            })
-            .and_then(|()| std::fs::rename(&tmp, &path))
-            .and_then(|()| private_fs::sync_directory(&backend.root))
-            .is_ok();
-        let _ = std::fs::remove_file(&tmp);
+        let written = private_fs::write_atomic(&path, &bytes).is_ok();
         let _ = std::fs::remove_file(&lock);
         written
     }
@@ -1495,7 +1481,7 @@ impl InviteRedemptionAuthority {
     }
 
     fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
-        use std::io::{Read, Write};
+        use std::io::Read;
         let path = self.root.join("authority-key");
         let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
             let file = match private_fs::read(&path) {
@@ -1519,28 +1505,16 @@ impl InviteRedemptionAuthority {
         } else {
             let mut key = zeroize::Zeroizing::new([0; 32]);
             OsRng.fill_bytes(&mut *key);
-            let mut random = [0; 16];
-            OsRng.fill_bytes(&mut random);
-            let temporary = self
-                .root
-                .join(format!(".authority-key-{}.tmp", hex::encode(random)));
-            let mut file = private_fs::create_new(&temporary)?;
-            file.write_all(&*key)?;
-            file.sync_all()?;
-            let published = std::fs::hard_link(&temporary, &path);
-            let _ = std::fs::remove_file(&temporary);
-            match published {
-                Ok(()) => {
-                    private_fs::sync_directory(&self.root)?;
-                    zeroize::Zeroizing::new(key.to_vec())
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing()?
-                    .ok_or_else(|| {
-                        IdentityFlowError::Io(std::io::Error::other(
-                            "published invite authority key disappeared",
-                        ))
-                    })?,
-                Err(error) => return Err(error.into()),
+            // Publication never replaces a concurrently created key; the
+            // loser adopts the winner's.
+            if private_fs::create_atomic(&path, &*key)? {
+                zeroize::Zeroizing::new(key.to_vec())
+            } else {
+                read_existing()?.ok_or_else(|| {
+                    IdentityFlowError::Io(std::io::Error::other(
+                        "published invite authority key disappeared",
+                    ))
+                })?
             }
         };
         let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {

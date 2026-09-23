@@ -23,6 +23,8 @@ pdf = ["dep:pdfium-render"]
 video = ["dep:media", "media/decode"]
 
 [dependencies]
+# Crash-safe replacement of on-disk thumbnails.
+atomic-file = { path = "../../system/atomic-file" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers.
