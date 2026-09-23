@@ -784,6 +784,17 @@ impl Widget for Card {
                 child.apply_layout(taffy, child_node, card_origin);
             }
         }
+        // Taffy can cap an auto-height flex card at its available viewport
+        // height while still placing nonshrinking controls beyond that cap.
+        // Paint and expose the full measured content, including bottom inset.
+        if let Some(bottom) = self
+            .children
+            .iter()
+            .map(|child| child.get_rect().y1)
+            .reduce(f64::max)
+        {
+            self.rect.y1 = self.rect.y1.max(bottom + f64::from(CARD_PADDING));
+        }
     }
 
     fn draw(
@@ -998,6 +1009,14 @@ impl Widget for ViewportStage {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
                 child.apply_layout(taffy, child_node, own_origin);
             }
+        }
+        if let Some(card) = self.children.get(1) {
+            // The trailing centring spacer may itself end at the viewport
+            // edge. Only the card's overflow should enlarge scroll extent.
+            self.rect.y1 = self
+                .rect
+                .y1
+                .max(card.get_rect().y1 + f64::from(VIEWPORT_PADDING));
         }
     }
 
