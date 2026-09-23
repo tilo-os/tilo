@@ -117,10 +117,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             // sandboxes so an app comes up already scaled.
             ui_scale: factor(&["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"]),
         },
-        locale: ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
-            .into_iter()
-            .filter_map(|name| std::env::var(name).ok())
-            .find(|value| crate::i18n::is_usable_locale(value)),
+        locale: crate::i18n::locale_from_vars(|name| std::env::var(name).ok()),
         diagnostics: crate::host::RunnerDiagnostics {
             debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
             perf_log: set("QUICK_UI_PERF"),
