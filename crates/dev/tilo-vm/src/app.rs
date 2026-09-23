@@ -432,7 +432,7 @@ impl App {
                 profile,
             }) => self.swap(slot, component, &from, builder, profile.as_deref()),
             Some(Command::Input { slot, action }) => self.input(slot, action),
-            Some(Command::Rollback { slot, to }) => {
+            Some(Command::Rollback { slot, to, .. }) => {
                 let slot = self.slot_name(slot)?;
                 let vm = self.resolve_vm(None)?;
                 let mut remote = self.connect(&vm)?;
@@ -448,14 +448,14 @@ impl App {
                     "tilo-vm status",
                 ]))
             }
-            Some(Command::Logs { slot, lines }) => {
+            Some(Command::Logs { slot, lines, .. }) => {
                 let slot = self.slot_name(slot)?;
                 let vm = self.resolve_vm(None)?;
                 let result = self.connect(&vm)?.call(Logs { slot, lines })?;
                 Ok(Outcome::new(result.text.clone(), json!(result)))
             }
             Some(Command::Seat(command)) => self.seat(command),
-            Some(Command::Shot { slot, output }) => self.shot(slot, &output),
+            Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Gc {
                 dry_run,
@@ -1998,7 +1998,7 @@ impl App {
     fn seat(&mut self, command: SeatCommand) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
         match command {
-            SeatCommand::Claim { slot, steal } => {
+            SeatCommand::Claim { slot, steal, .. } => {
                 let slot = self.slot_name(slot)?;
                 let owner = self
                     .worktree
@@ -2020,7 +2020,7 @@ impl App {
                 Ok(Outcome::new(text, json!(result))
                     .next(&["tilo-vm vm shot", "tilo-vm seat release"]))
             }
-            SeatCommand::Release { slot } => {
+            SeatCommand::Release { slot, .. } => {
                 let slot = self.slot_name(slot)?;
                 let result = self
                     .connect(&vm)?
@@ -2493,6 +2493,7 @@ mod tests {
         let error = app
             .run(Some(Command::Logs {
                 slot: Some("a".into()),
+                slot_flag: None,
                 lines: 1,
             }))
             .err()

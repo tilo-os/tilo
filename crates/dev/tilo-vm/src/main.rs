@@ -9,7 +9,7 @@ use tilo_vm::hypervisor::SystemRunner;
 use tilo_vm::receipt::Receipt;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse().normalized();
     let cwd = std::env::current_dir().unwrap_or_default();
     let worktree = Worktree::detect(&cwd);
     // Receipts go to the worktree's target/, or a per-user dir outside one.

@@ -285,6 +285,40 @@ impl Apply for SystemdApply {
         })
     }
 
+    fn wait_session_ready(&mut self, slot: &str) -> Result<(), String> {
+        // Restart=always turns a failing start into active/activating flapping,
+        // so the unit has to stay active under one main process for a while.
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+        let unit = crate::apply::session_unit(slot);
+        let started = std::time::Instant::now();
+        let mut stable: Option<(std::time::Instant, String)> = None;
+        loop {
+            let state = self.unit_state(&unit);
+            let main = Command::new("systemctl")
+                .args(["show", "--property=MainPID", "--value", &unit])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .unwrap_or_default();
+            if state == "active" && main != "0" && !main.is_empty() {
+                match &stable {
+                    Some((since, pid)) if *pid == main => {
+                        if since.elapsed() >= SETTLE {
+                            return Ok(());
+                        }
+                    }
+                    _ => stable = Some((std::time::Instant::now(), main)),
+                }
+            } else {
+                stable = None;
+            }
+            if started.elapsed() >= TIMEOUT {
+                return Err(state);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
         let unit = crate::apply::session_unit(slot);
         let output = Command::new("systemctl")

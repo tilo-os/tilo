@@ -23,10 +23,10 @@ PAMName=greetd
 # bwrap refuse to start apps directly from the compositor). tilo-vmd checks
 # CapAmb and CapEff of the running session against zero.
 CapabilityBoundingSet=~CAP_WAKE_ALARM
-# A greetd session runs in a user domain; tilo-vmd checks the session's
-# SELinux domain (default unconfined_t, `tilo-vmd rpc --expect-domain`).
-# Provisional until the real greetd domain is confirmed on a booted image:
-#SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+# A greetd session runs in a login user's domain; a system unit would otherwise
+# run as unconfined_service_t. tilo-vmd checks the session's domain
+# (default unconfined_t, `tilo-vmd rpc --expect-domain`).
+SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
 Environment=TILO_VM_BACKEND=headless
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user

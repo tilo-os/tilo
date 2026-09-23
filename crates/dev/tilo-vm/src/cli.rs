@@ -20,6 +20,40 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+impl Cli {
+    /// `--slot <name>` and a positional slot mean the same thing; fold the flag
+    /// into the positional so the rest of the tool sees one field.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        fn fold(slot: &mut Option<String>, flag: &mut Option<String>) {
+            if slot.is_none() {
+                *slot = flag.take();
+            }
+        }
+        match &mut self.command {
+            Some(
+                Command::Rollback {
+                    slot, slot_flag, ..
+                }
+                | Command::Logs {
+                    slot, slot_flag, ..
+                }
+                | Command::Shot {
+                    slot, slot_flag, ..
+                },
+            ) => fold(slot, slot_flag),
+            Some(Command::Seat(
+                SeatCommand::Claim {
+                    slot, slot_flag, ..
+                }
+                | SeatCommand::Release { slot, slot_flag },
+            )) => fold(slot, slot_flag),
+            _ => {}
+        }
+        self
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the current VM (and why), your slot, its generation and session, and what to do next.
@@ -82,6 +116,9 @@ pub enum Command {
     )]
     Rollback {
         slot: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
         /// Generation to switch to; default is the one before the current.
         #[arg(long)]
         to: Option<u64>,
@@ -90,6 +127,9 @@ pub enum Command {
     #[command(after_help = "Examples:\n  tilo-vm logs\n  tilo-vm logs -n 500 review-a")]
     Logs {
         slot: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: u32,
     },
@@ -102,6 +142,9 @@ pub enum Command {
     )]
     Shot {
         slot: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
         #[arg(short, long, default_value = "target/tilo-vm-shot.png")]
         output: PathBuf,
     },
@@ -340,13 +383,21 @@ pub enum SeatCommand {
     )]
     Claim {
         slot: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
         /// Take seat0 even if another slot holds it.
         #[arg(long)]
         steal: bool,
     },
     /// Give seat0 back to greetd; the slot returns to its own seat.
     #[command(after_help = "Examples:\n  tilo-vm seat release")]
-    Release { slot: Option<String> },
+    Release {
+        slot: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
+        slot_flag: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -354,6 +405,32 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn every_slot_command_takes_the_slot_flag() {
+        for args in [
+            &["tilo-vm", "rollback", "--slot", "a"][..],
+            &["tilo-vm", "logs", "--slot", "a"],
+            &["tilo-vm", "shot", "--slot", "a"],
+            &["tilo-vm", "seat", "claim", "--slot", "a"],
+            &["tilo-vm", "seat", "release", "--slot", "a"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap().normalized();
+            let slot = match cli.command {
+                Some(
+                    Command::Rollback { slot, .. }
+                    | Command::Logs { slot, .. }
+                    | Command::Shot { slot, .. },
+                ) => slot,
+                Some(Command::Seat(
+                    SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                )) => slot,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
+        }
+        assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
+    }
 
     #[test]
     fn every_subcommand_has_a_purpose_and_examples() {

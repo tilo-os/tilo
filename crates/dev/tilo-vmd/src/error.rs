@@ -56,6 +56,8 @@ pub enum DaemonError {
     Apply { step: String, detail: String },
     #[error("slot '{slot}' session differs from a greetd session: {detail}")]
     SessionParity { slot: String, detail: String },
+    #[error("slot '{slot}' session did not start (unit is {state}); its journal ends with:\n{log}")]
+    SessionFailed { slot: String, state: String, log: String },
     #[error("no component '{name}' in the synced os/components.toml")]
     UnknownComponent { name: String, known: Vec<String> },
     #[error("no app 'apps/{dir}' (with a tilo-app.toml) in the synced sources")]
@@ -110,7 +112,7 @@ impl DaemonError {
             | Self::NoSession(_)
             | Self::HeadlessInput(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
-            Self::Apply { .. } | Self::SessionParity { .. } => code::APPLY,
+            Self::Apply { .. } | Self::SessionParity { .. } | Self::SessionFailed { .. } => code::APPLY,
             Self::Io { .. } => code::IO,
             Self::Job { .. } => code::JOB,
             Self::ToolMissing { .. } => code::TOOL,
@@ -118,6 +120,7 @@ impl DaemonError {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per error variant")]
     pub fn hint(&self) -> String {
         match self {
             Self::VersionMismatch { client, daemon } if client > daemon => {
@@ -186,6 +189,9 @@ impl DaemonError {
                 "slot session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting"
                     .into()
             }
+            Self::SessionFailed { slot, .. } => format!(
+                "the journal above names the cause; after fixing it: tilo-vm slot restart {slot}   (full log: tilo-vm logs {slot})"
+            ),
             Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
             Self::UnknownApp { known, .. } if known.is_empty() => {
                 "apps live in apps/<dir>/tilo-app.toml; check the name, then rerun the swap".into()
@@ -251,6 +257,7 @@ impl DaemonError {
             | Self::Busy(_)
             | Self::Apply { .. }
             | Self::SessionParity { .. }
+            | Self::SessionFailed { .. }
             | Self::RegistryAuth { .. }
             | Self::Io { .. } => Some("tilo-vm guide troubleshooting"),
         }
@@ -341,6 +348,11 @@ mod tests {
                 slot: "a".into(),
                 detail: "CapAmb 800000000".into(),
             },
+            DaemonError::SessionFailed {
+                slot: "a".into(),
+                state: "activating".into(),
+                log: "PAM failed: Authentication failure".into(),
+            },
             DaemonError::UnknownComponent {
                 name: "x".into(),
                 known: vec!["shell".into()],
@@ -404,6 +416,7 @@ mod tests {
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }
                 | DaemonError::SessionParity { .. }
+                | DaemonError::SessionFailed { .. }
                 | DaemonError::UnknownComponent { .. }
                 | DaemonError::UnknownApp { .. }
                 | DaemonError::SourceMissing(_)
