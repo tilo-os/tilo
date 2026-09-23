@@ -3,6 +3,7 @@
 //! numbering parts a from-scratch document lacks.
 
 use super::container::DocxContainer;
+use crate::codecs::xml_escape::{escape_attr, push_text};
 use crate::export::InlinePlan;
 use crate::format::CodecError;
 use crate::model::DocRef;
@@ -716,32 +717,9 @@ fn color_hex(c: &str) -> String {
     c.trim_start_matches('#').to_ascii_uppercase()
 }
 
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 fn inject_before(s: &mut String, needle: &str, frag: &str) {
     if let Some(pos) = s.rfind(needle) {
         s.insert_str(pos, frag);
-    }
-}
-
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
     }
 }
 
@@ -830,7 +808,7 @@ fn run_content(text: &str) -> String {
         if !buf.is_empty() {
             out.push_str(r#"<w:t xml:space="preserve">"#);
             for c in buf.chars() {
-                push_escaped(out, c);
+                push_text(out, c);
             }
             out.push_str("</w:t>");
             buf.clear();
@@ -905,7 +883,7 @@ fn del_run_content(text: &str) -> String {
         if !buf.is_empty() {
             out.push_str(r#"<w:delText xml:space="preserve">"#);
             for c in buf.chars() {
-                push_escaped(out, c);
+                push_text(out, c);
             }
             out.push_str("</w:delText>");
             buf.clear();

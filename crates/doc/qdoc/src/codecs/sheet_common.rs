@@ -1,8 +1,9 @@
 //! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the bounded OPC/ODF
-//! ZIP container (reusing the hardened [`crate::codecs::safety`] reader) and XML
-//! escaping. Every byte of untrusted spreadsheet input enters through
-//! [`SheetPackage::read`], so the same zip-bomb / entry-count / DTD-XXE guards the
-//! document codecs enforce apply verbatim to spreadsheets.
+//! ZIP container (reusing the hardened [`crate::codecs::safety`] reader) and
+//! prefix-insensitive XML name/attribute access. Every byte of untrusted
+//! spreadsheet input enters through [`SheetPackage::read`], so the same zip-bomb /
+//! entry-count / DTD-XXE guards the document codecs enforce apply verbatim to
+//! spreadsheets.
 
 use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::{CodecError, Confidence};
@@ -120,20 +121,4 @@ pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Opt
         }
     }
     None
-}
-
-/// Escape a string for XML text content or a double-quoted attribute value.
-pub(crate) fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }

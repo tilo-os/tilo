@@ -4,6 +4,7 @@
 //! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
 //! simple form and the complex `w:instrText` form.
 
+use crate::codecs::xml_escape::push_text;
 use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
@@ -345,15 +346,6 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
 /// Whether character `i` of `b` is a page-number field placeholder.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
@@ -374,7 +366,7 @@ fn render_block(b: &BlockView) -> String {
         if !buf.is_empty() {
             out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
             for c in buf.chars() {
-                push_escaped(out, c);
+                push_text(out, c);
             }
             out.push_str("</w:t></w:r>");
             buf.clear();

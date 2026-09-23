@@ -5,8 +5,9 @@
 //! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
 
 use crate::codecs::sheet_common::{
-    SheetPackage, SheetProvider, attr_local, end_local_name, local_name, xml_escape,
+    SheetPackage, SheetProvider, attr_local, end_local_name, local_name,
 };
+use crate::codecs::xml_escape::escape_attr_quotes;
 use crate::format::{CodecError, Confidence};
 use crate::sheet::snapshot::CellType;
 use crate::sheet::{CellInput, CellView, SheetView, Workbook, WorkbookSnapshot};
@@ -349,7 +350,7 @@ fn table_xml(sheet: &SheetView) -> String {
     }
     format!(
         r#"<table:table table:name="{}"><table:table-column table:number-columns-repeated="{}"/>{}</table:table>"#,
-        xml_escape(&sheet.name),
+        escape_attr_quotes(&sheet.name),
         max_col,
         rows_xml
     )
@@ -359,24 +360,24 @@ fn cell_xml(cell: &CellView) -> String {
     let formula_attr = cell
         .formula
         .as_deref()
-        .map(|f| format!(r#" table:formula="{}""#, xml_escape(f)))
+        .map(|f| format!(r#" table:formula="{}""#, escape_attr_quotes(f)))
         .unwrap_or_default();
     let style_attr = cell
         .style
         .as_deref()
-        .map(|s| format!(r#" table:style-name="{}""#, xml_escape(s)))
+        .map(|s| format!(r#" table:style-name="{}""#, escape_attr_quotes(s)))
         .unwrap_or_default();
     let (value_attrs, body): (String, String) = match cell.cell_type {
         CellType::Number => (
             format!(
                 r#" office:value-type="float" office:value="{}""#,
-                xml_escape(&cell.value)
+                escape_attr_quotes(&cell.value)
             ),
-            format!("<text:p>{}</text:p>", xml_escape(&cell.value)),
+            format!("<text:p>{}</text:p>", escape_attr_quotes(&cell.value)),
         ),
         CellType::Text => (
             r#" office:value-type="string""#.to_string(),
-            format!("<text:p>{}</text:p>", xml_escape(&cell.value)),
+            format!("<text:p>{}</text:p>", escape_attr_quotes(&cell.value)),
         ),
         CellType::Bool => {
             let b = if cell.value.eq_ignore_ascii_case("true") || cell.value == "1" {
@@ -391,7 +392,7 @@ fn cell_xml(cell: &CellView) -> String {
         }
         CellType::Error => (
             r#" office:value-type="float" calcext:value-type="error""#.to_string(),
-            format!("<text:p>{}</text:p>", xml_escape(&cell.value)),
+            format!("<text:p>{}</text:p>", escape_attr_quotes(&cell.value)),
         ),
         CellType::Empty => (String::new(), String::new()),
     };
@@ -401,20 +402,20 @@ fn cell_xml(cell: &CellView) -> String {
 fn meta_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
     if let Some(v) = props.get("title") {
-        let _ = write!(fields, "<dc:title>{}</dc:title>", xml_escape(v));
+        let _ = write!(fields, "<dc:title>{}</dc:title>", escape_attr_quotes(v));
     }
     if let Some(v) = props.get("author") {
-        let _ = write!(fields, "<dc:creator>{}</dc:creator>", xml_escape(v));
+        let _ = write!(fields, "<dc:creator>{}</dc:creator>", escape_attr_quotes(v));
     }
     if let Some(v) = props.get("created") {
         let _ = write!(
             fields,
             "<meta:creation-date>{}</meta:creation-date>",
-            xml_escape(v)
+            escape_attr_quotes(v)
         );
     }
     if let Some(v) = props.get("modified") {
-        let _ = write!(fields, "<dc:date>{}</dc:date>", xml_escape(v));
+        let _ = write!(fields, "<dc:date>{}</dc:date>", escape_attr_quotes(v));
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
