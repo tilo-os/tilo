@@ -73,3 +73,68 @@ pub fn describe_exit(code: Option<i32>) -> Result<(), String> {
         None => Err("the Windows command was terminated".into()),
     }
 }
+
+#[cfg(windows)]
+pub use imp::{disable_fast_startup, restart_now, restart_to_firmware_settings};
+
+#[cfg(windows)]
+mod imp {
+    use std::time::Duration;
+
+    use super::super::sys;
+    use super::{describe_exit, disable_fast_startup_program, firmware_settings_program};
+    use crate::setup::staging::windows::scripts;
+
+    /// UAC waits for the person; allow them time to read the prompt.
+    const ELEVATION_TIMEOUT: Duration = Duration::from_secs(600);
+    const OUTPUT_LIMIT: usize = 64 * 1024;
+
+    fn run_elevated(inner: &str) -> Result<(), String> {
+        let powershell = sys::system_executable(sys::POWERSHELL)?;
+        let outer = scripts::elevated(&powershell.to_string_lossy(), inner);
+        let out = bounded_command::run_os(
+            &powershell,
+            &scripts::powershell_args(&outer),
+            None,
+            OUTPUT_LIMIT,
+            ELEVATION_TIMEOUT,
+        )
+        .map_err(|error| error.to_string())?;
+        describe_exit(out.status.code())
+    }
+
+    /// Restart into the firmware setup screen (for turning Secure Boot off).
+    /// Suspends BitLocker for one restart first when it is on; see the module
+    /// docs. `bitlocker_protected` is [`HostFacts::bitlocker_protected`].
+    ///
+    /// [`HostFacts::bitlocker_protected`]: crate::setup::staging::probe::HostFacts
+    pub fn restart_to_firmware_settings(bitlocker_protected: bool) -> Result<(), String> {
+        let drive = sys::windows_drive().map_err(|e| e.to_string())?;
+        run_elevated(&firmware_settings_program(drive, bitlocker_protected))
+    }
+
+    /// Turn off hibernation and Fast Startup, then prove it took effect.
+    pub fn disable_fast_startup() -> Result<(), String> {
+        run_elevated(&disable_fast_startup_program())?;
+        let observed = sys::hibernation_observation();
+        if super::super::facts::hibernation_active(observed.0, observed.1, observed.2) {
+            return Err("Windows still reports hibernation or Fast Startup as enabled".into());
+        }
+        Ok(())
+    }
+
+    /// Restart Windows now. Staging already set `BootNext`, so the firmware
+    /// starts the Tilo installer once.
+    pub fn restart_now() -> Result<(), String> {
+        let shutdown = sys::system_executable(sys::SHUTDOWN)?;
+        let out = bounded_command::run_os(
+            &shutdown,
+            &["/r", "/t", "0"],
+            None,
+            OUTPUT_LIMIT,
+            Duration::from_secs(30),
+        )
+        .map_err(|error| error.to_string())?;
+        describe_exit(out.status.code())
+    }
+}
