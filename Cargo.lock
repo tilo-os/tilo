@@ -503,7 +503,6 @@ dependencies = [
  "blake3",
  "bounded-command",
  "clap",
- "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
  "launcher",
@@ -517,6 +516,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-net",
  "toml 1.0.6+spec-1.1.0",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -1505,7 +1505,6 @@ dependencies = [
  "automerge",
  "base64 0.22.1",
  "blake3",
- "dirs 6.0.0",
  "libc",
  "pollster",
  "reqwest 0.13.2",
@@ -1523,6 +1522,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zip",
 ]
 
@@ -2003,7 +2003,6 @@ name = "chat"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "dirs 6.0.0",
  "gstreamer",
  "gstreamer-app",
  "image",
@@ -2023,6 +2022,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -4206,6 +4206,7 @@ dependencies = [
  "vello",
  "winit",
  "xattr",
+ "xdg-paths",
  "zeroize",
  "zip",
 ]
@@ -4474,7 +4475,6 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "capnpc",
- "dirs 6.0.0",
  "format-provider-wit",
  "futures",
  "notify",
@@ -4488,6 +4488,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wat",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -8627,6 +8628,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]

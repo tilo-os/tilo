@@ -217,7 +217,7 @@ fn classify_trap<E: std::fmt::Display + std::fmt::Debug>(e: &E) -> CodecError {
 /// Cache dir for wasmtime's on-disk compilation cache. Lives under
 /// `$XDG_CACHE_HOME/tilo/wasmtime/` (≈`~/.cache/tilo/wasmtime/`).
 fn cache_dir() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("tilo").join("wasmtime"))
+    xdg_paths::cache_dir().map(|d| d.join("tilo").join("wasmtime"))
 }
 
 /// Spawn a Tokio task that bumps the engine's epoch counter once per

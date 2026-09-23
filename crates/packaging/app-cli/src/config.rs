@@ -134,7 +134,7 @@ pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::config_dir().map(|d| d.join("tilo-store"))
+    xdg_paths::AppDirs::new("tilo-store").config()
 }
 
 /// Cache dir (`$XDG_CACHE_HOME/tilo-store`). Downloaded `.tapp`s are
@@ -143,7 +143,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CACHE_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::cache_dir().map(|d| d.join("tilo-store"))
+    xdg_paths::AppDirs::new("tilo-store").cache()
 }
 
 /// The path `registries.toml` lives at, when a config dir resolves.
