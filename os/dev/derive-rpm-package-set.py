@@ -13,6 +13,7 @@ import shlex
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SOURCES = (
     "os/Containerfile",
+    "os/Containerfile.dev",
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-relay/Containerfile",

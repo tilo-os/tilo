@@ -25,6 +25,7 @@ on:
       - os/dev/install-cached-cosign.sh
       - os/dev/configure-cosign-kms.sh
       - ".forgejo/actions/install-cosign/**"
+      - os/Containerfile.dev
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
@@ -53,6 +54,7 @@ env:
     os/dev/promote-native-index.py
     os/dev/install-cached-cosign.sh
     os/dev/configure-cosign-kms.sh
+    os/Containerfile.dev
     os/Containerfile.host
     os/dev/composefs/Containerfile
     os/containers/tilo-relay/Containerfile

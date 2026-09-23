@@ -212,16 +212,18 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              f"of its packages ({', '.join(component.packages)}) builds",
                              "fix the name in `bins` (and the matching `from`), or add the package "
                              "that owns the bin to `packages`.")
-        for feature in component.features:
-            package, _, name = feature.rpartition("/")
-            if not package or package not in component_packages:
-                report.error(where, f"feature {feature!r} must be qualified with one of the component's "
-                             f"packages ({', '.join(component_packages[:6])}...)",
-                             'write it as "<package>/<feature>".')
-            elif package in packages and name not in packages[package].features:
-                report.error(where, f"feature {feature!r}: package {package!r} declares no feature {name!r}",
-                             f"add it to [features] in {packages[package].directory.relative_to(report.repo)}"
-                             "/Cargo.toml or drop it from `features`.")
+        for key, features in (("features", component.features), ("dev_features", component.dev_features)):
+            for feature in features:
+                package, _, name = feature.rpartition("/")
+                if not package or package not in component_packages:
+                    report.error(where, f"{key} entry {feature!r} must be qualified with one of the "
+                                 f"component's packages ({', '.join(component_packages[:6])}...)",
+                                 'write it as "<package>/<feature>".')
+                elif package in packages and name not in packages[package].features:
+                    report.error(where, f"{key} entry {feature!r}: package {package!r} declares no feature "
+                                 f"{name!r}",
+                                 f"add it to [features] in {packages[package].directory.relative_to(report.repo)}"
+                                 f"/Cargo.toml or drop it from `{key}`.")
 
 
 def check_units(report: Report, manifest, containerfile_text: str) -> None:
@@ -246,7 +248,11 @@ def check_units(report: Report, manifest, containerfile_text: str) -> None:
 def check_containerfile(report: Report, manifest, installer, containerfile: Path, thin_script: Path) -> None:
     relative = containerfile.relative_to(report.repo)
     parsed = instructions(containerfile)
-    files = manifest.files()
+    # Dev-only components (files in `dev-*` layers) are os/Containerfile.dev's;
+    # tools/policy/check_dev_image_contract.py keeps them out of this image.
+    production = manifest.production_components()
+    files = [entry for component in production for entry in component.files]
+    dev_layers = {e.layer for e in manifest.files() if e.dev_only}
     direct = {(e.source, e.to): e for e in files if e.layer == installer.DIRECT_LAYER and e.source}
     layers = {e.layer for e in files if e.layer != installer.DIRECT_LAYER}
     consumed: dict[str, list[int]] = {}
@@ -264,6 +270,10 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                     report.error(where, f"COPY --from={INSTALL_STAGE} {source} {destination} does not copy "
                                  "one whole manifest layer",
                                  f"copy a layer as a tree: COPY --from={INSTALL_STAGE} /image/<layer>/ /")
+                    continue
+                if match.group(1) in dev_layers:
+                    # Reported with the dev-image contract's reasoning by
+                    # check_dev_image_contract.py; not a manifest-drift error.
                     continue
                 if match.group(1) not in layers:
                     report.error(where, f"layer {match.group(1)!r} is copied but no os/components.toml "
@@ -315,7 +325,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                      "--by-layer --all")
 
     # Build/stage drift: what the builder compiles and stages versus the manifest.
-    release = [c for c in manifest.components if c.profile == "release"]
+    release = [c for c in production if c.profile == "release"]
     declared_bins = {b: c.name for c in release for b in c.bins}
     declared_outputs = {e.source for e in files if e.source and not e.source.startswith("/")}
     builder_runs = [i for i in parsed if i.stage == "builder" and i.words and i.words[0].upper() == "RUN"]
