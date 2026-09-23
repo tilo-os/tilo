@@ -1073,7 +1073,7 @@ fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
-            Nonce::from_slice(&nonce),
+            <&Nonce>::from(&nonce),
             Payload {
                 msg: token.as_bytes(),
                 aad: &[PAIR_DOMAIN, &recipient].concat(),
@@ -1104,7 +1104,7 @@ fn decrypt_pair_offer(
     );
     let plaintext = ChaCha20Poly1305::new((&key).into())
         .decrypt(
-            Nonce::from_slice(&offer.nonce),
+            <&Nonce>::from(&offer.nonce),
             Payload {
                 msg: &offer.ciphertext,
                 aad: &[PAIR_DOMAIN, &recipient_public].concat(),
@@ -1145,7 +1145,7 @@ fn encrypt_request(
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
-            Nonce::from_slice(&nonce),
+            <&Nonce>::from(&nonce),
             Payload {
                 msg: &postcard::to_stdvec(request)?,
                 aad: &ephemeral_public_key,
@@ -1174,7 +1174,7 @@ fn decrypt_request(
     let key = request_key(shared.as_bytes(), encrypted.ephemeral_public_key);
     let plaintext = ChaCha20Poly1305::new((&key).into())
         .decrypt(
-            Nonce::from_slice(&encrypted.nonce),
+            <&Nonce>::from(&encrypted.nonce),
             Payload {
                 msg: &encrypted.ciphertext,
                 aad: &encrypted.ephemeral_public_key,
@@ -1212,7 +1212,7 @@ fn encrypt_response(
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
-            Nonce::from_slice(&nonce),
+            <&Nonce>::from(&nonce),
             Payload {
                 msg: &postcard::to_stdvec(response)?,
                 aad: &response_aad(token_nonce, recipient),
@@ -1239,7 +1239,7 @@ fn decrypt_response(
     let key = response_key(shared.as_bytes(), token_nonce, recipient);
     let plaintext = ChaCha20Poly1305::new((&key).into())
         .decrypt(
-            Nonce::from_slice(&encrypted.nonce),
+            <&Nonce>::from(&encrypted.nonce),
             Payload {
                 msg: &encrypted.ciphertext,
                 aad: &response_aad(token_nonce, recipient),
