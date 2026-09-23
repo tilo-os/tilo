@@ -212,6 +212,49 @@ class InternalModeGuardTests(unittest.TestCase):
         self.assertEqual(facts['INTERNAL_STAGING_ROOT_PARTUUID'], ROOT_UUID)
         self.assertEqual(facts['INTERNAL_HOST_OS'], 'windows')
 
+    def udevless(self, sfdisk_table):
+        """lsblk without a udev database: every GPT identity field is empty,
+        and a fake sfdisk on PATH reports the GPT itself."""
+        document = lsblk_document()
+        disk = document['blockdevices'][0]
+        table = {'label': 'gpt', 'id': disk['ptuuid'], 'partitions': []}
+        disk['pttype'] = disk['ptuuid'] = None
+        for child in disk['children']:
+            table['partitions'].append({'node': child['name'], 'uuid': child['partuuid'].upper(),
+                                        'type': child['parttype'].upper()})
+            child['partuuid'] = child['parttype'] = child['pttype'] = child['ptuuid'] = None
+        sfdisk_table(table)
+        self.fixture.set_lsblk(document)
+        tools = self.fixture.root / 'bin'
+        tools.mkdir(exist_ok=True)
+        fake = tools / 'sfdisk'
+        fake.write_text('#!%s\nimport json\nprint(json.dumps(%r))\n'
+                        % (sys.executable, {'partitiontable': table}))
+        fake.chmod(0o755)
+        env = self.fixture.env()
+        env['PATH'] = str(tools) + os.pathsep + env['PATH']
+        return env
+
+    def run_check(self, env):
+        saved = self.fixture.env
+        self.fixture.env = lambda: env
+        try:
+            return self.fixture.check()
+        finally:
+            self.fixture.env = saved
+
+    # Catches the guard depending on udev: in a container or early boot lsblk
+    # reports no GPT identities, and the facts must then come from the GPT.
+    def test_identities_missing_from_lsblk_are_read_from_the_gpt(self):
+        result = self.run_check(self.udevless(lambda table: None))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('INTERNAL_DISK_GUID=' + DISK_GUID, result.stdout)
+
+    def test_a_gpt_that_disagrees_with_lsblk_is_refused(self):
+        def swap(table):
+            table['id'] = '99999999-2222-4333-8444-555555555555'
+        self.assertRefused(self.run_check(self.udevless(swap)), 'disk GUID differs')
+
     def test_whole_disk_and_prepared_modes_are_refused_on_the_live_disk(self):
         for mode in ('erase', 'prepared'):
             self.assertRefused(self.fixture.check(mode=mode), 'accepts only guided alongside')

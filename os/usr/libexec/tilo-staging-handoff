@@ -375,7 +375,42 @@ def lsblk_disk(disk):
     devices = [item for item in data.get('blockdevices', []) if item.get('name') == disk]
     if len(devices) != 1 or devices[0].get('type') != 'disk':
         raise Refusal('%s is not exactly one whole disk' % disk)
-    return devices[0]
+    return with_gpt_facts(devices[0], disk)
+
+
+def with_gpt_facts(node, disk):
+    """Fill GPT identities lsblk left empty (no udev database) from sfdisk.
+
+    lsblk takes PTTYPE/PTUUID/PARTUUID/PARTTYPE from udev; without a udev
+    database (early boot, containers) they come back empty. sfdisk reads the
+    same facts from the GPT itself. Only missing fields are filled; a field
+    both tools report must agree, or the disk is refused.
+    """
+    children = node.get('children') or []
+    wanted = [node.get('pttype'), node.get('ptuuid')]
+    wanted += [c.get(k) for c in children for k in ('partuuid', 'parttype')]
+    if all(wanted):
+        return node
+    table = json.loads(run(['sfdisk', '--json', disk]).stdout).get('partitiontable', {})
+
+    def fill(target, key, value):
+        value = str(value or '').lower()
+        have = str(target.get(key) or '').lower()
+        if have and value and have != value:
+            raise Refusal('lsblk and the GPT disagree about %s of %s' % (key, target.get('name')))
+        if not have:
+            target[key] = value
+
+    fill(node, 'pttype', table.get('label'))
+    fill(node, 'ptuuid', table.get('id'))
+    by_node = {part.get('node'): part for part in table.get('partitions', [])}
+    for child in children:
+        part = by_node.get(child.get('name'))
+        if part is None:
+            raise Refusal('the GPT of %s does not list %s' % (disk, child.get('name')))
+        fill(child, 'partuuid', part.get('uuid'))
+        fill(child, 'parttype', part.get('type'))
+    return node
 
 
 def number(node, key):
