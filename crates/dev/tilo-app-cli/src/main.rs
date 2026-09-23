@@ -1109,7 +1109,7 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
         let manifest_path = app.join("Cargo.toml");
         let manifest = std::fs::read_to_string(&manifest_path)
             .with_context(|| format!("reading {}", manifest_path.display()))?
-            .parse::<toml::Value>()
+            .parse::<toml::Table>()
             .with_context(|| format!("parsing {}", manifest_path.display()))?;
         let package = manifest
             .get("package")
