@@ -3,6 +3,7 @@
 //! `<w:footnoteReference w:id="N"/>`/`<w:endnoteReference w:id="N"/>`. This maps a note
 //! onto a `note-ref` marker in body text plus its content in the `notes` container.
 
+use crate::codecs::xml_escape::push_text;
 use crate::model::{DocMut, DocRef, NoteKind, materialize_notes};
 use crate::snapshot::{BlockView, NoteView};
 use quick_xml::events::Event;
@@ -143,15 +144,6 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
 /// Render a note's paragraphs as `w:footnote`/`w:endnote` inner XML (plain text + tabs/
 /// breaks; richer inline styling in notes is not modeled).
 fn render_note_body(blocks: &[BlockView]) -> String {
@@ -163,7 +155,7 @@ fn render_note_body(blocks: &[BlockView]) -> String {
             if !buf.is_empty() {
                 out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
                 for c in buf.chars() {
-                    push_escaped(out, c);
+                    push_text(out, c);
                 }
                 out.push_str("</w:t></w:r>");
                 buf.clear();

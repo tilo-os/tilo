@@ -5,8 +5,9 @@
 //! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
 
 use crate::codecs::sheet_common::{
-    SheetPackage, SheetProvider, attr_local, end_local_name, local_name, xml_escape,
+    SheetPackage, SheetProvider, attr_local, end_local_name, local_name,
 };
+use crate::codecs::xml_escape::escape_attr_quotes;
 use crate::format::{CodecError, Confidence};
 use crate::sheet::snapshot::CellType;
 use crate::sheet::{CellInput, Workbook};
@@ -314,7 +315,10 @@ fn parse_worksheet(
 
 /// Resolves one parsed `<c>` cell into a [`CellInput`] and writes it (skipped if it
 /// carries no value/formula/style — the grid is sparse); `t="s"` resolves against `sst`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one parsed <c> element's attributes and body, flushed together"
+)]
 fn flush_cell(
     wb: &mut Workbook,
     sheet_id: &str,
@@ -436,7 +440,7 @@ fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
         let _ = write!(
             sheets,
             r#"<sheet name="{}" sheetId="{n}" r:id="rIdSheet{n}"/>"#,
-            xml_escape(&sheet.name),
+            escape_attr_quotes(&sheet.name),
         );
     }
     format!(
@@ -496,33 +500,36 @@ fn cell_xml(cell: &crate::sheet::CellView) -> String {
     let s_attr = cell
         .style
         .as_deref()
-        .map(|s| format!(r#" s="{}""#, xml_escape(s)))
+        .map(|s| format!(r#" s="{}""#, escape_attr_quotes(s)))
         .unwrap_or_default();
     let f_xml = cell
         .formula
         .as_deref()
-        .map(|f| format!("<f>{}</f>", xml_escape(f)))
+        .map(|f| format!("<f>{}</f>", escape_attr_quotes(f)))
         .unwrap_or_default();
     let has_formula = cell.formula.is_some();
 
     // Value serialization + the `t` attribute per cell type: a formula's string result
     // uses `t="str"` (a cached formula string), a literal string uses `t="inlineStr"`.
     let (t_attr, body): (&str, String) = match cell.cell_type {
-        CellType::Number => ("", format!("{f_xml}<v>{}</v>", xml_escape(&cell.value))),
+        CellType::Number => (
+            "",
+            format!("{f_xml}<v>{}</v>", escape_attr_quotes(&cell.value)),
+        ),
         CellType::Bool => (" t=\"b\"", format!("{f_xml}<v>{}</v>", bool01(&cell.value))),
         CellType::Error => (
             " t=\"e\"",
-            format!("{f_xml}<v>{}</v>", xml_escape(&cell.value)),
+            format!("{f_xml}<v>{}</v>", escape_attr_quotes(&cell.value)),
         ),
         CellType::Text if has_formula => (
             " t=\"str\"",
-            format!("{f_xml}<v>{}</v>", xml_escape(&cell.value)),
+            format!("{f_xml}<v>{}</v>", escape_attr_quotes(&cell.value)),
         ),
         CellType::Text => (
             " t=\"inlineStr\"",
             format!(
                 r#"<is><t xml:space="preserve">{}</t></is>"#,
-                xml_escape(&cell.value)
+                escape_attr_quotes(&cell.value)
             ),
         ),
         CellType::Empty => ("", f_xml),
@@ -539,23 +546,23 @@ fn minimal_styles_xml() -> String {
 fn core_props_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
     if let Some(v) = props.get("title") {
-        let _ = write!(fields, "<dc:title>{}</dc:title>", xml_escape(v));
+        let _ = write!(fields, "<dc:title>{}</dc:title>", escape_attr_quotes(v));
     }
     if let Some(v) = props.get("author") {
-        let _ = write!(fields, "<dc:creator>{}</dc:creator>", xml_escape(v));
+        let _ = write!(fields, "<dc:creator>{}</dc:creator>", escape_attr_quotes(v));
     }
     if let Some(v) = props.get("created") {
         let _ = write!(
             fields,
             r#"<dcterms:created xsi:type="dcterms:W3CDTF">{}</dcterms:created>"#,
-            xml_escape(v)
+            escape_attr_quotes(v)
         );
     }
     if let Some(v) = props.get("modified") {
         let _ = write!(
             fields,
             r#"<dcterms:modified xsi:type="dcterms:W3CDTF">{}</dcterms:modified>"#,
-            xml_escape(v)
+            escape_attr_quotes(v)
         );
     }
     format!(

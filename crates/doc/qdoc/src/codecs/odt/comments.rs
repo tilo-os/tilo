@@ -3,6 +3,7 @@
 //! also emits `<office:annotation-end office:name="…"/>` at the range end, tied to the
 //! start via the shared `office:name`. This maps onto a `comment` mark over the body range.
 
+use crate::codecs::xml_escape::{escape_attr, escape_text, push_text};
 use crate::model::DocMut;
 use crate::snapshot::{BlockView, CommentView};
 use quick_xml::events::Event;
@@ -146,23 +147,6 @@ fn annotation_meta(raw: &str) -> (String, String) {
     (author, date)
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        push_escaped(&mut out, c);
-    }
-    out
-}
-
 /// Render a comment's paragraphs as the body `text:p` sequence; only plain text + tabs/breaks are modeled.
 fn render_comment_body(blocks: &[BlockView]) -> String {
     let mut out = String::new();
@@ -172,7 +156,7 @@ fn render_comment_body(blocks: &[BlockView]) -> String {
             match c {
                 '\t' => out.push_str("<text:tab/>"),
                 '\n' => out.push_str("<text:line-break/>"),
-                _ => push_escaped(&mut out, c),
+                _ => push_text(&mut out, c),
             }
         }
         out.push_str("</text:p>");
@@ -201,19 +185,4 @@ pub(super) fn render_annotation_end(comment: &CommentView) -> String {
         r#"<office:annotation-end office:name="{}"/>"#,
         escape_attr(&comment.id)
     )
-}
-
-/// Escape a string for use inside a double-quoted XML attribute value.
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }

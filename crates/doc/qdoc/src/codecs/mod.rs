@@ -20,6 +20,7 @@ pub mod rtf;
 pub mod safety;
 pub mod sheet_common;
 pub mod xlsx;
+pub mod xml_escape;
 
 pub use docx::DocxCodec;
 pub use html::HtmlCodec;
