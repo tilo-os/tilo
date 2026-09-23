@@ -247,6 +247,12 @@ def build_plan(image: Path, receipt: dict, snapshot: dict, free_start: int, free
         },
         "reviewed_extent": {"offset_bytes": free_start, "size_bytes": free_size},
         "target_free_extent": {"offset_bytes": free_start, "size_bytes": target_free_size},
+        "target_partitions": [
+            {"role": "final-esp", "partuuid": str(uuid.uuid4()), "type_guid": ESP_GUID,
+             "offset_bytes": free_start, "size_bytes": 2 * GIB},
+            {"role": "final-root", "partuuid": str(uuid.uuid4()), "type_guid": TILO_ROOT_GUID,
+             "offset_bytes": free_start + 2 * GIB, "size_bytes": target_free_size - 2 * GIB},
+        ],
         "staging": [
             {"role": "staging-root", "type_guid": TILO_ROOT_GUID,
              "offset_bytes": staging_root_start, "size_bytes": root["size_bytes"],
