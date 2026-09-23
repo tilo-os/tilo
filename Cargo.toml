@@ -333,7 +333,7 @@ base32 = "0.5"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
-zip = { version = "4.6", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
