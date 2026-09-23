@@ -64,9 +64,13 @@ export SOURCE_DATE_EPOCH
 mkdir -p "$TMPDIR"
 export TMPDIR
 
+rpms_ref="$(sed -n 's/^RPMS_REF=//p' "$TILO_OS_DIR/rpms-snapshot.env")"
+[ -n "$rpms_ref" ] || die "os/rpms-snapshot.env pins no RPMS_REF"
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 podman build -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
+  --build-arg "RPMS_REF=$rpms_ref" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   "${_extra_build_args[@]}" \
