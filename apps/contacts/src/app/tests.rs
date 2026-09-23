@@ -415,7 +415,7 @@ fn narrow_frame_resolves_single_pane_push() {
     assert!(app.narrow, "a narrow viewport resolves to single-pane push");
     assert_eq!(
         app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "a fresh narrow frame opens to the list"
     );
 }
@@ -492,7 +492,7 @@ fn narrow_selection_pushes_detail_then_back_returns_to_list() {
     // Snap the push to the detail pane (as a row selection would) and
     // confirm the pushed-detail frame renders without panicking.
     app.shots_show_detail();
-    assert_eq!(app.push.pane(), Pane::Detail);
+    assert_eq!(app.push.pane(), PushPane::Detail);
     drive_frame(&mut app, 480, 860);
     // The Back affordance must be laid out (hittable) in the pushed pane.
     assert!(
@@ -988,13 +988,13 @@ impl Harness {
 fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     let mut h = Harness::new(460, 880);
     assert!(h.app.narrow);
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
     // Press a list row → the detail pane is pushed in.
     let row = h.row_center(1);
     assert!(h.press_left(row));
     assert_eq!(
         h.app.push.pane(),
-        Pane::Detail,
+        PushPane::Detail,
         "selecting pushes the detail in"
     );
     h.relayout();
@@ -1007,7 +1007,7 @@ fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     assert!(h.press_left(back));
     assert_eq!(
         h.app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "Back returns to the full-width list"
     );
 }
@@ -1366,13 +1366,13 @@ fn keyboard_context_menu_keys_open_selected_contacts_canonical_actions() {
 fn enter_opens_the_selected_contact_in_narrow_push_navigation() {
     let mut h = Harness::new(420, 800);
     assert!(h.app.narrow, "phone width uses push navigation");
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
 
     assert!(
         h.press_named(NamedKey::Enter),
         "Enter opens the selected contact"
     );
-    assert_eq!(h.app.push.pane(), Pane::Detail);
+    assert_eq!(h.app.push.pane(), PushPane::Detail);
 }
 
 /// The context-menu Favorite item flips the contact's flag, persists it to
