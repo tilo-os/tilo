@@ -673,6 +673,11 @@ class ExportImageTests(unittest.TestCase):
             self.assertEqual((tree / 'EFI/BOOT/BOOTX64.EFI').read_bytes(), prepared)
             self.assertEqual((tree / 'EFI/Linux/bootc/bootc_composefs-fixture.efi').read_bytes(), prepared)
             self.assertEqual((tree / 'loader/loader.conf').read_text(), 'timeout 0\n')
+            # The staging helper overwrites these in place; they must exist,
+            # be exactly the reserved size, and hold only spaces.
+            for placeholder in bundle.STAGING_PLACEHOLDERS:
+                self.assertEqual((tree / placeholder).read_bytes(),
+                                 b' ' * bundle.STAGING_PLACEHOLDER_BYTES)
             self.assertEqual(esp['filesystem_uuid'], '1234-ABCD')
             self.assertEqual(esp['byte_size'], esp['minimum_partition_bytes'])
             boot = manifest['boot_binding']
