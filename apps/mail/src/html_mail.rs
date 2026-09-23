@@ -107,35 +107,10 @@ pub fn content_filter_json(block_remote: bool) -> String {
     }
 }
 
-/// Minimal standard base64 (RFC 4648) encoder — no dependency for one use.
+/// Standard, padded base64 (RFC 4648 §4) on one line, as a `data:` URL needs.
 fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    /// Map one 6-bit group to its alphabet character. The `& 63` here is what
-    /// bounds the index: it yields `0..=63`, and `TABLE` is exactly 64 bytes,
-    /// so the lookup is total. Any "fallback" character would silently emit
-    /// wrong base64, so the bound is enforced here rather than guessed at.
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`& 63` yields 0..=63 and TABLE is exactly 64 bytes, so this index is total; a fallback character would silently corrupt the encoding"
-    )]
-    fn sym(six_bits: u32) -> char {
-        char::from(TABLE[(six_bits & 63) as usize])
-    }
-
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        // `chunks(3)` never yields an empty chunk, so `first()` is always Some.
-        let b0 = u32::from(chunk.first().copied().unwrap_or(0));
-        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
-        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(sym(n >> 18));
-        out.push(sym(n >> 12));
-        out.push(if chunk.len() > 1 { sym(n >> 6) } else { '=' });
-        out.push(if chunk.len() > 2 { sym(n) } else { '=' });
-    }
-    out
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 
 #[cfg(test)]
@@ -193,7 +168,10 @@ mod tests {
         assert!(url.starts_with("data:text/html;charset=utf-8;base64,"));
         let b64 = url.trim_start_matches("data:text/html;charset=utf-8;base64,");
         // Round-trips back to a document that embeds the mail body + the CSP.
-        let decoded = String::from_utf8(base64_decode(b64)).unwrap();
+        let decoded = String::from_utf8(
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap(),
+        )
+        .unwrap();
         assert!(decoded.contains("<p>Hello &amp; welcome</p>"));
         assert!(decoded.contains("Content-Security-Policy"));
     }
@@ -232,42 +210,5 @@ mod tests {
         let long = base64_encode(&[0x5a_u8; 300]);
         assert_eq!(long.len(), 400);
         assert!(!long.contains(['\r', '\n']));
-    }
-
-    /// Test-only decoder to prove the data URL round-trips.
-    fn base64_decode(s: &str) -> Vec<u8> {
-        fn val(c: u8) -> Option<u32> {
-            match c {
-                b'A'..=b'Z' => Some(u32::from(c - b'A')),
-                b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
-                b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
-                b'+' => Some(62),
-                b'/' => Some(63),
-                _ => None,
-            }
-        }
-        let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
-        let mut out = Vec::new();
-        for chunk in bytes.chunks(4) {
-            let mut n = 0u32;
-            let mut cnt = 0;
-            for &c in chunk {
-                if let Some(v) = val(c) {
-                    n = (n << 6) | v;
-                    cnt += 1;
-                }
-            }
-            n <<= 6 * (4 - cnt);
-            if cnt >= 2 {
-                out.push((n >> 16) as u8);
-            }
-            if cnt >= 3 {
-                out.push((n >> 8) as u8);
-            }
-            if cnt >= 4 {
-                out.push(n as u8);
-            }
-        }
-        out
     }
 }

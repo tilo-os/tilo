@@ -47,6 +47,10 @@ taffy.workspace = true
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
+# OAuth PKCE (S256 challenge, RFC 7636) and the base64 encodings it, XOAUTH2
+# and the sandboxed HTML data: URL use.
+sha2.workspace = true
+base64.workspace = true
 
 # Live IMAP and SMTP for the account engine. These are optional and gated by
 # `live`; the default build uses the offline backend.
