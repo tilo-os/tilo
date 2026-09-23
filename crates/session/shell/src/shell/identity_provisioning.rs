@@ -125,7 +125,7 @@ impl PairingBrokerServer {
         let identity_path = identity_dir.join(BROKER_IDENTITY_FILE);
         let identity = match read_private_file(&identity_path, MAX_BROKER_IDENTITY_BYTES)? {
             Some(bytes) => decode_broker_identity(&bytes)?,
-            None => create_broker_identity(identity_dir, &identity_path)?,
+            None => create_broker_identity(&identity_path)?,
         };
         // `with_single_cert` below proves that the stored private key matches
         // the pinned certificate. Corruption is never "repaired" by rotating
@@ -156,7 +156,7 @@ impl PairingBrokerServer {
         let identity_path = identity_dir.join(BROKER_IDENTITY_FILE);
         let identity = match read_private_file(&identity_path, MAX_BROKER_IDENTITY_BYTES)? {
             Some(bytes) => decode_broker_identity(&bytes)?,
-            None => create_broker_identity(identity_dir, &identity_path)?,
+            None => create_broker_identity(&identity_path)?,
         };
         Self::start_with_material(
             authority,
@@ -345,10 +345,7 @@ fn decode_broker_identity(bytes: &[u8]) -> io::Result<StoredBrokerIdentity> {
     Ok(identity)
 }
 
-fn create_broker_identity(
-    identity_dir: &Path,
-    identity_path: &Path,
-) -> io::Result<StoredBrokerIdentity> {
+fn create_broker_identity(identity_path: &Path) -> io::Result<StoredBrokerIdentity> {
     use std::os::unix::fs::OpenOptionsExt;
     let certified = rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()])
         .map_err(io::Error::other)?;
@@ -365,38 +362,22 @@ fn create_broker_identity(
             "generated pairing TLS identity is too large",
         ));
     }
-    let mut random = [0u8; 16];
-    rand_core::OsRng.fill_bytes(&mut random);
-    let temporary = identity_dir.join(format!(".broker-identity-{}.tmp", hex::encode(random)));
-    let result = (|| {
-        let mut file = OpenOptions::new()
+    // Hard-linking the complete, synced inode never replaces a concurrently
+    // created identity. The loser loads the winner, keeping one stable pin
+    // even if two shell instances race during startup.
+    let owner_only = |temporary: &Path| {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        // A hard link publishes the complete inode without replacing a
-        // concurrently-created identity. The loser loads the winner, keeping
-        // one stable pin even if two shell instances race during startup.
-        match std::fs::hard_link(&temporary, identity_path) {
-            Ok(()) => {
-                OpenOptions::new()
-                    .read(true)
-                    .open(identity_dir)?
-                    .sync_all()?;
-                Ok(identity)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let stored = read_private_file(identity_path, MAX_BROKER_IDENTITY_BYTES)?
-                    .ok_or_else(|| io::Error::other("published TLS identity disappeared"))?;
-                decode_broker_identity(&stored)
-            }
-            Err(error) => Err(error),
-        }
-    })();
-    let _ = std::fs::remove_file(&temporary);
-    result
+            .open(temporary)
+    };
+    if atomic_file::create_with_temp_opener(identity_path, &bytes, owner_only)? {
+        return Ok(identity);
+    }
+    let stored = read_private_file(identity_path, MAX_BROKER_IDENTITY_BYTES)?
+        .ok_or_else(|| io::Error::other("published TLS identity disappeared"))?;
+    decode_broker_identity(&stored)
 }
 
 impl Drop for PairingBrokerServer {

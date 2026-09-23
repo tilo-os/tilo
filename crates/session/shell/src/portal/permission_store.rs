@@ -9,10 +9,6 @@
 use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -155,44 +151,15 @@ impl PermissionStoreBackend {
 impl PermissionStoreData {
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let state = atomic_file::json::load_or_default(&path);
         Self {
             state: Arc::new(Mutex::new(state)),
             path: Arc::new(path),
         }
     }
     fn commit(&self, state: &StoreFile) -> zbus::fdo::Result<()> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| failed("permission-store state path has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|e| failed(&format!("cannot create permission-store directory: {e}")))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|e| failed(&format!("cannot protect permission-store directory: {e}")))?;
-        let bytes = serde_json::to_vec(state)
-            .map_err(|e| failed(&format!("cannot encode permission store: {e}")))?;
-        let temporary = self.path.with_extension("tmp");
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|e| failed(&format!("cannot create permission store: {e}")))?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|e| failed(&format!("cannot protect permission store: {e}")))?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| failed(&format!("cannot write permission store: {e}")))?;
-        fs::rename(&temporary, self.path.as_ref())
-            .map_err(|e| failed(&format!("cannot commit permission store: {e}")))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| failed(&format!("cannot sync permission store: {e}")))
+        atomic_file::json::write_private(&self.path, state)
+            .map_err(|e| failed(&format!("cannot commit permission store: {e}")))
     }
 
     fn with_mutation<T>(
