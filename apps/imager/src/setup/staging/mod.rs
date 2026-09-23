@@ -12,6 +12,8 @@ pub mod plan;
 pub mod platform;
 pub mod probe;
 pub mod record;
+#[cfg(any(windows, test))]
+pub mod windows;
 
 /// Every start and size is aligned to this many bytes.
 pub const ALIGN_BYTES: u64 = 1 << 20;
