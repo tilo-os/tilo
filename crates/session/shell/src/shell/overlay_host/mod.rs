@@ -9634,6 +9634,26 @@ impl ShellOverlayHost {
         self.refresh_history_narrative();
     }
 
+    /// Content viewport of the active personal Activity tab. Its surrounding
+    /// group is an ordinary tiled window and therefore owns close, resize,
+    /// reorder, focus and clipping.
+    fn activity_window_rect(&self) -> Option<Rect> {
+        let chrome = self.chrome.as_ref()?;
+        let (strip, group, tab) = {
+            let state = chrome.borrow();
+            crate::shell::tab_binding::active_workspace_activity_tab(&state.tree())?
+        };
+        let row_ptr = *self.group_row_ptrs.get(&strip)?;
+        // SAFETY: `group_row_ptrs` points into the retained content tree and
+        // is read sequentially on the compositor thread; see the field's
+        // ownership contract and the other accessors in this impl.
+        let row: &GroupRow = unsafe { &*row_ptr };
+        row.groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .and_then(|candidate| candidate.content_rect_for_tab(tab))
+    }
+
     fn shortcut_help_button_rect(&self) -> Rect {
         if self.shortcut_help_drawn_rect.area() > 0.0 {
             return self.shortcut_help_drawn_rect;
@@ -10509,28 +10529,8 @@ impl ShellOverlayHost {
                     .chrome
                     .as_ref()
                     .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
-                match commit {
-                    Some(SliderCommit::Brightness(value_pct)) => {
-                        let actions =
-                            crate::shell::search::providers::actions::ValidatedQsActions::new(
-                                self.qs_actions.as_ref(),
-                            );
-                        crate::shell::quick_settings::actions::log_qs_result(
-                            "set_brightness",
-                            actions.set_brightness(value_pct),
-                        );
-                    }
-                    Some(SliderCommit::Volume(value_pct)) => {
-                        let actions =
-                            crate::shell::search::providers::actions::ValidatedQsActions::new(
-                                self.qs_actions.as_ref(),
-                            );
-                        crate::shell::quick_settings::actions::log_qs_result(
-                            "set_volume",
-                            actions.set_volume(value_pct),
-                        );
-                    }
-                    None => {}
+                if let Some(commit) = commit {
+                    self.commit_quick_settings_slider(commit);
                 }
                 if finishing_layout_drag && let Some(chrome) = self.chrome.as_ref() {
                     // `finish_drag` commits the shared reorder controller on
@@ -14049,24 +14049,10 @@ impl ShellOverlayHost {
             }
             commit
         };
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
-            self.qs_actions.as_ref(),
-        );
-        match commit {
-            Some(SliderCommit::Brightness(value_pct)) => {
-                crate::shell::quick_settings::actions::log_qs_result(
-                    "set_brightness",
-                    actions.set_brightness(value_pct),
-                )
-            }
-            Some(SliderCommit::Volume(value_pct)) => {
-                crate::shell::quick_settings::actions::log_qs_result(
-                    "set_volume",
-                    actions.set_volume(value_pct),
-                )
-            }
-            None => return false,
-        }
+        let Some(commit) = commit else {
+            return false;
+        };
+        self.commit_quick_settings_slider(commit);
         *handled = true;
         true
     }
@@ -14075,9 +14061,12 @@ impl ShellOverlayHost {
     /// hardware key. A positive volume adjustment intentionally unmutes an
     /// already-muted sink; otherwise the slider moves while sound stays off.
     fn commit_quick_settings_slider(&mut self, commit: SliderCommit) {
+        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
+        );
         let (label, result, osd) = match commit {
             SliderCommit::Brightness(value_pct) => {
-                let result = self.qs_actions.set_brightness(value_pct);
+                let result = actions.set_brightness(value_pct);
                 (
                     "brightness",
                     result,
@@ -14089,10 +14078,10 @@ impl ShellOverlayHost {
                     .status_bridge
                     .as_ref()
                     .and_then(|bridge| bridge.snapshot().volume);
-                let mut result = self.qs_actions.set_volume(value_pct);
+                let mut result = actions.set_volume(value_pct);
                 let should_unmute = value_pct > 0.0 && previous.is_some_and(|v| v.muted);
                 if result.is_ok() && should_unmute {
-                    result = self.qs_actions.set_mute(false);
+                    result = actions.set_mute(false);
                 }
                 let muted = previous.is_some_and(|v| v.muted) && !should_unmute;
                 if result.is_ok()
@@ -14220,38 +14209,50 @@ impl ShellOverlayHost {
         pending_night_light: Option<bool>,
         pending_power: Option<crate::shell::quick_settings::PowerProfile>,
     ) {
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
-            self.qs_actions.as_ref(),
-        );
         if let Some(v) = pending_wifi {
-            crate::shell::quick_settings::actions::log_qs_result("set_wifi", actions.set_wifi(v));
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_wifi(v);
+            self.finish_quick_settings_action("set_wifi", "Wi-Fi", result);
+            if v {
+                self.qs_refresh.kick_wifi_networks();
+            }
         }
         if let Some(v) = pending_bt {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_bluetooth",
-                actions.set_bluetooth(v),
-            );
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_bluetooth(v);
+            self.finish_quick_settings_action("set_bluetooth", "Bluetooth", result);
         }
         if let Some(v) = pending_wired {
-            crate::shell::quick_settings::actions::log_qs_result("set_wired", actions.set_wired(v));
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_wired(v);
+            self.finish_quick_settings_action("set_wired", "wired network", result);
         }
         if let Some(v) = pending_airplane {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_airplane_mode",
-                actions.set_airplane_mode(v),
-            );
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_airplane_mode(v);
+            self.finish_quick_settings_action("set_airplane_mode", "airplane mode", result);
         }
         if let Some(v) = pending_hotspot {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_hotspot",
-                actions.set_hotspot(v),
-            );
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_hotspot(v);
+            self.finish_quick_settings_action("set_hotspot", "personal hotspot", result);
         }
         if let Some(v) = pending_mobile {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_mobile_broadband",
-                actions.set_mobile_broadband(v),
-            );
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_mobile_broadband(v);
+            self.finish_quick_settings_action("set_mobile_broadband", "mobile broadband", result);
         }
         if let Some(v) = pending_night_light {
             let mut values = serde_json::Map::new();
@@ -14268,10 +14269,11 @@ impl ShellOverlayHost {
                 UiPP::Balanced => ActPP::Balanced,
                 UiPP::Performance => ActPP::Performance,
             };
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_power_profile",
-                actions.set_power_profile(mapped),
-            );
+            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_power_profile(mapped);
+            self.finish_quick_settings_action("set_power_profile", "power mode", result);
         }
     }
 
@@ -18744,6 +18746,7 @@ impl ShellOverlayHost {
         self.room_activity_was_open = visible;
         if visible {
             self.refresh_room_activity();
+            let ra_now = Instant::now();
             let openness = self.room_activity_transition.value(ra_now);
             draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let alpha = openness;

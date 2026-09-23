@@ -160,6 +160,15 @@ pub(crate) fn centred_text_top(row: Rect, h: f64) -> f64 {
     row.center().y - h / 2.0
 }
 
+fn discovery_label_width(row: Rect, glyph: Rect, trailing_reserve: f64) -> f64 {
+    let label_x = glyph.x1 + CONTROL_INSET;
+    // Every discovery row owns two fixed trailing status slots. Individual
+    // panes may reserve more (for example Wi-Fi's connection status), but
+    // never less than the shared glyph/dot geometry requires.
+    let status_slots = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
+    (row.x1 - trailing_reserve.max(status_slots) - label_x).max(1.0)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrillInOutcome {
     #[default]
@@ -188,9 +197,17 @@ impl DrillInList {
     /// dashboard while remaining discoverable with the rest of Wi-Fi.
     pub fn layout_from(&mut self, panel: Rect, row_count: usize, list_top: f64) {
         self.back = Self::back_rect(panel);
+        self.row_count = row_count;
+        self.visible_capacity = Self::capacity(panel, list_top);
+        self.first_visible = self
+            .first_visible
+            .min(row_count.saturating_sub(self.visible_capacity));
+        let visible = self
+            .visible_capacity
+            .min(row_count.saturating_sub(self.first_visible));
         self.rows.clear();
-        self.rows.extend((0..row_count).map(|index| {
-            let y = panel.y0 + list_top + usize_to_f64_lossy(index) * (ROW_HEIGHT + RELATED_GAP);
+        self.rows.extend((0..visible).map(|slot| {
+            let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
             Rect::new(
                 panel.x0 + PANEL_PAD,
                 y,
@@ -198,6 +215,136 @@ impl DrillInList {
                 y + ROW_HEIGHT,
             )
         }));
+    }
+
+    fn capacity(panel: Rect, list_top: f64) -> usize {
+        let available = (panel.height() - list_top - PANEL_PAD).max(0.0);
+        let pitch = ROW_HEIGHT + RELATED_GAP;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "non-negative panel pixels divided by the fixed row pitch fit usize"
+        )]
+        {
+            ((available + RELATED_GAP) / pitch).floor() as usize
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub fn visible_indices(&self) -> std::ops::Range<usize> {
+        self.first_visible..self.first_visible.saturating_add(self.rows.len())
+    }
+
+    /// Pure projection of the current scroll window. Semantic geometry can
+    /// use this before paint without mutating the retained list.
+    pub fn visible_rects(
+        &self,
+        panel: Rect,
+        row_count: usize,
+        list_top: f64,
+    ) -> Vec<(usize, Rect)> {
+        let capacity = Self::capacity(panel, list_top);
+        let first = self.first_visible.min(row_count.saturating_sub(capacity));
+        let visible = capacity.min(row_count.saturating_sub(first));
+        (0..visible)
+            .map(|slot| {
+                let y = panel.y0 + list_top + usize_to_f64_lossy(slot) * (ROW_HEIGHT + RELATED_GAP);
+                (
+                    first.saturating_add(slot),
+                    Rect::new(
+                        panel.x0 + PANEL_PAD,
+                        y,
+                        panel.x1 - PANEL_PAD,
+                        y + ROW_HEIGHT,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    pub fn row_for(&self, index: usize) -> Option<&Rect> {
+        index
+            .checked_sub(self.first_visible)
+            .and_then(|slot| self.rows.get(slot))
+    }
+
+    /// Move the bounded viewport by whole rows. Positive movement reveals
+    /// later entries; negative movement returns toward the first entry.
+    pub fn scroll_by(
+        &mut self,
+        panel: Rect,
+        row_count: usize,
+        list_top: f64,
+        movement: isize,
+    ) -> bool {
+        self.layout_from(panel, row_count, list_top);
+        let max_start = row_count.saturating_sub(self.visible_capacity);
+        let next = if movement.is_negative() {
+            self.first_visible.saturating_sub(movement.unsigned_abs())
+        } else {
+            self.first_visible
+                .saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.first_visible {
+            return false;
+        }
+        self.first_visible = next;
+        self.layout_from(panel, row_count, list_top);
+        true
+    }
+
+    /// Accumulate touchpad fractions until they amount to a whole row.
+    pub fn scroll_wheel(
+        &mut self,
+        panel: Rect,
+        row_count: usize,
+        list_top: f64,
+        rows: f64,
+    ) -> bool {
+        self.wheel_remainder += rows;
+        let whole = self.wheel_remainder.trunc();
+        if whole.abs() < 1.0 {
+            return false;
+        }
+        self.wheel_remainder -= whole;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "wheel input is bounded; only complete accumulated rows are converted"
+        )]
+        self.scroll_by(panel, row_count, list_top, whole as isize)
+    }
+
+    /// Keep keyboard or accessibility focus inside the painted viewport.
+    pub fn ensure_visible(
+        &mut self,
+        panel: Rect,
+        row_count: usize,
+        list_top: f64,
+        index: usize,
+    ) -> bool {
+        self.layout_from(panel, row_count, list_top);
+        if index >= row_count || self.visible_capacity == 0 {
+            return false;
+        }
+        let next = if index < self.first_visible {
+            index
+        } else if index >= self.first_visible.saturating_add(self.visible_capacity) {
+            index
+                .saturating_add(1)
+                .saturating_sub(self.visible_capacity)
+        } else {
+            self.first_visible
+        };
+        if next == self.first_visible {
+            return false;
+        }
+        self.first_visible = next;
+        self.layout_from(panel, row_count, list_top);
+        true
     }
 
     /// The pointer-floor back button in the title band's leading corner, on
@@ -358,8 +505,7 @@ impl DrillInList {
         // a related step. Never let a long SSID or device name paint under
         // those truthful status indicators.
         let label_x = glyph.x1 + CONTROL_INSET;
-        let status_w = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
-        let label_width = (row.x1 - status_w - label_x).max(1.0);
+        let label_width = discovery_label_width(row, glyph, trailing_reserve);
         let size = type_size(text, theme.tokens.typography.scale.sm);
         #[allow(
             clippy::cast_possible_truncation,
@@ -448,11 +594,28 @@ mod tests {
             row,
             0,
             None,
+            0.0,
             "Coffee shop",
         );
         assert_eq!(glyph.width(), f64::from(theme.tokens.metrics.icon_md));
         assert_eq!(glyph.x0, row.x0 + f64::from(theme.tokens.spacing.s3));
         assert!((glyph.center().y - row.center().y).abs() < 1e-9);
+    }
+
+    #[test]
+    fn discovery_label_width_honours_pane_reserve_and_status_floor() {
+        let row = Rect::new(100.0, 200.0, 500.0, 244.0);
+        let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
+        let status_floor = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
+
+        assert_eq!(
+            discovery_label_width(row, glyph, 0.0),
+            discovery_label_width(row, glyph, status_floor)
+        );
+        assert_eq!(
+            discovery_label_width(row, glyph, status_floor + 32.0),
+            discovery_label_width(row, glyph, status_floor) - 32.0
+        );
     }
 
     /// One rhythm (HIG §7b): rows are the Control height on the panel
