@@ -184,14 +184,14 @@ release authority.
 
 The outputs are:
 
-- `code.sandbox.example/qos/tilo-dev:<tag>`: an immutable OCI index. The installed
+- `code.sandbox.example/qos/tilo-vm:<tag>`: an immutable OCI index. The installed
   disk updates from this tag. `latest` moves last, and only forward, for `main`
   and release-tag runs.
-- `tilo-dev-disk/<tag>/tilo-dev-<tag>-<arch>.<format>` in the generic package
+- `tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>` in the generic package
   registry, each with a `.sha256` sidecar. qcow2 uses zstd-compressed clusters,
   which UTM and libvirt read directly. VHDX (Hyper-V) is dynamic and opt-in
   through the `formats` input.
-- `tilo-dev-disk/<tag>/tilo-dev-disk.json`: the tag, source revision, image and
+- `tilo-vm-disk/<tag>/tilo-vm-disk.json`: the tag, source revision, image and
   base digests, and one entry per disk with its arch, format, URL, SHA-256, size
   and virtual size. This manifest is written last and is the commit point for
   the disk package version.
@@ -203,17 +203,17 @@ entry away (`x86_64 aarch64`) and use `runner-disk-100g-arm64`.
 To fetch a disk, use a Forgejo token with package read access:
 
 ```sh
-base=https://code.sandbox.example/api/packages/qos/generic/tilo-dev-disk/$TAG
-curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-dev-disk.json" -o tilo-dev-disk.json
-url=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .url' tilo-dev-disk.json)
-sha=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .sha256' tilo-dev-disk.json)
-curl -fL --retry 3 -C - -H "Authorization: token $FORGEJO_TOKEN" "$url" -o tilo-dev.qcow2
-echo "$sha  tilo-dev.qcow2" | sha256sum --check --strict
+base=https://code.sandbox.example/api/packages/qos/generic/tilo-vm-disk/$TAG
+curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-disk.json" -o tilo-vm-disk.json
+url=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .url' tilo-vm-disk.json)
+sha=$(jq -er '.disks[] | select(.arch == "x86_64" and .format == "qcow2") | .sha256' tilo-vm-disk.json)
+curl -fL --retry 3 -C - -H "Authorization: token $FORGEJO_TOKEN" "$url" -o tilo-vm.qcow2
+echo "$sha  tilo-vm.qcow2" | sha256sum --check --strict
 ```
 
 To find the current tag, read the `org.opencontainers.image.version` label of
-`tilo-dev:latest`, for example
-`skopeo inspect docker://code.sandbox.example/qos/tilo-dev:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
+`tilo-vm:latest`, for example
+`skopeo inspect docker://code.sandbox.example/qos/tilo-vm:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
 
 ## Forgejo-specific rules
 
@@ -235,7 +235,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   `TILO_DESKTOP_RELEASE_AUDIENCE`.
 - Dev VM disk publication uses a package-write integration restricted to
   `dev-disk.yml` manual dispatches on `main` and `v*` tags; store its audience in
-  `TILO_DEV_DISK_RELEASE_AUDIENCE`. Disk uploads go to
+  `TILO_VM_DISK_RELEASE_AUDIENCE`. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the
   in-cluster Forgejo service.
 - Keep remote actions pinned to full commit hashes.
