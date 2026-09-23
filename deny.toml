@@ -4,7 +4,7 @@
 
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:
-# citationberg (Typst 0.14.2) uses 0.38 and zbus_xml (AccessKit 0.34) uses 0.39.
+# citationberg (Typst 0.15.1) uses 0.38 and zbus_xml (AccessKit 0.34) uses 0.39.
 # Direct XML parsers in Tilo are on fixed 0.41; the bans guard below prevents
 # either advisory exception from permitting another old quick-xml edge.
 ignore = [
