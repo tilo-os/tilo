@@ -27,13 +27,13 @@ catches divergence.
 | Kind | Display | Seat | Entered via | Driven by |
 |---|---|---|---|---|
 | Seat 0 | the VM's real virtio-gpu, shown in the hypervisor UI | `seat0` + VT | production greetd, then greeter, then `tilo-session --backend drm` | human, agents |
-| Headful overlay | a `vkms` card created via configfs; costs no GPU | own logind seat (`ID_SEAT` udev tag) | `tilo-dev-session@<overlay>.service` (`PAMName=login`, `Restart=always`), then `tilo-session --backend drm` | per-seat `uinput` devices (real libinput path) + `tilo-control` |
+| Headful overlay | a `vkms` card created via configfs; costs no GPU | own logind seat (`ID_SEAT` udev tag) | `tilo-vm-session@<overlay>.service` (`PAMName=login`, `Restart=always`), then `tilo-session --backend drm` | per-seat `uinput` devices (real libinput path) + `tilo-control` |
 | Headless overlay | offscreen | none | the same unit, then `tilo-session --backend headless` | `tilo-control`, screenshots |
 
 - The DRM backend already scans out through CPU-written dumb buffers
   (`crates/session/shell/src/compositor/backend/drm/mod.rs`), so vkms cards need no
   multi-GPU or PRIME work. Rendering uses the shared render node, or llvmpipe when there is none.
-- `tilo-dev seat claim <overlay>` stops greetd and restarts that overlay's session unit on
+- `tilo-vm seat claim <overlay>` stops greetd and restarts that overlay's session unit on
   `seat0`/vt1. `release` hands the seat back to greetd. Both are normal session restarts.
 - vkms connectors can be added and removed at runtime to exercise hotplug.
 
@@ -41,9 +41,9 @@ catches divergence.
 
 - **Overlay** = a Linux user `tdo-<name>` plus an ordered list of layers on top of base `/usr`,
   plus a kind (`headful`, `headless`), with numbered generations under
-  `/var/lib/tilo-dev/overlays/<name>/`. The overlay records its owner (host, worktree, branch).
+  `/var/lib/tilo-vm/overlays/<name>/`. The overlay records its owner (host, worktree, branch).
 - **Layer** = an immutable, content-addressed sysext directory at
-  `/var/lib/tilo-dev/layers/<sha256>/` (`usr/…` + `usr/lib/extension-release.d/`), with
+  `/var/lib/tilo-vm/layers/<sha256>/` (`usr/…` + `usr/lib/extension-release.d/`), with
   `provenance.json` recording component, source commit, dirty-tree hash, builder image
   digest and cargo profile. Files are deduplicated with reflinks where the filesystem supports them.
 - The overlay's layers are applied with `ExtensionDirectories=` to **both** its session unit
@@ -54,7 +54,7 @@ catches divergence.
 
 ### Swap semantics
 
-`tilo-dev swap [<overlay>] <component> --from worktree|sha:<commit>|layer:<hash>` resolves the
+`tilo-vm swap [<overlay>] <component> --from worktree|sha:<commit>|layer:<hash>` resolves the
 source to a layer, writes a new generation and applies it:
 
 - Session components (shell, launcher, user services, runtime) restart the session normally.
@@ -62,7 +62,7 @@ source to a layer, writes a new generation and applies it:
   shadowing is a production mechanism, so the change is live at the next launch with no restart.
 - VM-wide components are merged with `systemd-sysext refresh` and the affected unit restarts.
 
-`tilo-dev rollback` re-applies the previous generation the same way.
+`tilo-vm rollback` re-applies the previous generation the same way.
 
 ### Component manifest
 
@@ -95,10 +95,10 @@ compiles. A contract check guarantees that production images never enable the fe
 
 ## CLI and guest daemon
 
-- `tilo-dev` is a host CLI, one Rust binary for macOS, Windows and Linux
-  (`crates/dev/tilo-dev`). It reaches the guest daemon `tilo-devd` by JSON-RPC over SSH stdio
-  (`ssh <vm> tilo-devd rpc`). The same transport works on every hypervisor.
-- `tilo-devd` is a system service in the dev image. It owns layers, overlays, generations,
+- `tilo-vm` is a host CLI, one Rust binary for macOS, Windows and Linux
+  (`crates/dev/tilo-vm`). It reaches the guest daemon `tilo-vmd` by JSON-RPC over SSH stdio
+  (`ssh <vm> tilo-vmd rpc`). The same transport works on every hypervisor.
+- `tilo-vmd` is a system service in the dev image. It owns layers, overlays, generations,
   overlay users, vkms seats, `uinput` devices and the session units.
 - Commands:
   - `vm create|list|start|stop|use|ssh|status|upgrade`
@@ -106,16 +106,16 @@ compiles. A contract check guarantees that production images never enable the fe
   - `seat claim|release`, `shot`, `input`, and `control …`, which passes through to the in-VM
     `tilo-control` because AGENTS.md allows only one driving story.
 - Defaults: the overlay name derives from the worktree/branch. The VM comes from
-  `TILO_DEV_VM`, then `.tilo-dev` in the worktree, then `~/.config/tilo-dev/vms.toml`, which a
+  `TILO_VM`, then `.tilo-vm` in the worktree, then `~/.config/tilo-vm/vms.toml`, which a
   human edits to tell agents which VM to use.
 - Every command takes `--json`, is idempotent and writes a receipt under `target/dev-runs/`.
 
 ## Dev image and hosts
 
 - `os/Containerfile.dev` builds `FROM` the production image of the same commit and adds
-  `tilo-devd`, sshd, the builder toolchain, sccache and `dev-overrides` binaries (installed via
+  `tilo-vmd`, sshd, the builder toolchain, sccache and `dev-overrides` binaries (installed via
   the manifest). Its `/usr` is unsealed, so sysext can merge into it. Upgrades are
-  `bootc switch` to a newer `tilo-dev:<tag>`, and overlays survive because they live in `/var`.
+  `bootc switch` to a newer `tilo-vm:<tag>`, and overlays survive because they live in `/var`.
 - CI publishes disk artifacts for x86_64 and aarch64: qcow2 (UTM, libvirt) and VHDX (Hyper-V).
 - Hypervisor adapters are thin and native, and each implements only
   create/start/stop/destroy/ssh-endpoint:
@@ -134,7 +134,9 @@ compiles. A contract check guarantees that production images never enable the fe
 
 ## Revisions after the spike and review
 
-- The per-agent object is called a **slot** (`tilo-dev slot …`, user `tds-<name>`, seat
+- The CLI is `tilo-vm` (daemon `tilo-vmd`), because `tilo-dev` is taken by the `tilo-dev.desktop`
+  session. Slots replace the Fedora 44 loop over time.
+- The per-agent object is called a **slot** (`tilo-vm slot …`, user `tds-<name>`, seat
   `seat-<slot>`). "Overlay" below means slot.
 - The session unit uses `PAMName=greetd` and `SyslogIdentifier=tilo-session-%i`. A swap stops the
   session unit, restarts `user@<uid>`, then starts the session unit. A VM-wide swap also restarts
@@ -142,7 +144,7 @@ compiles. A contract check guarantees that production images never enable the fe
   fixed connector count, and hotplug means toggling connector status. See the spike results.
 - Adapters also expose serial, screenshot, reset and native control (QMP/virsh/COM pipe) for
   debugging before the network is up.
-- Storage: allocated-byte accounting, caps, a free-space floor, and `tilo-dev gc [--dry-run]`.
+- Storage: allocated-byte accounting, caps, a free-space floor, and `tilo-vm gc [--dry-run]`.
   In-VM target dirs are disposable and evicted least-recently-used first. sccache stays the shared cache.
 - Layer provenance records the base digest, source and dirty hashes, the target triple, the
   Cargo.lock hash and the toolchain. Local layers are never promoted, because CI rebuilds from source.
