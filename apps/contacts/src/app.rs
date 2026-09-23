@@ -58,8 +58,8 @@ use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, GroupEntry, Labeled, SortKey,
     group_names_equal, normalize_text, sample_contacts,
 };
-use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
+use ui::widget::{PushNav, PushPane};
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
@@ -1560,7 +1560,7 @@ impl ContactsApp {
     /// slide animation so a headless frame captures the settled pushed
     /// detail rather than one mid-transition.
     pub fn shots_show_detail(&mut self) {
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
     }
 
     /// Snap into the New Contact form for `--shots` (placeholders + the
@@ -1571,7 +1571,7 @@ impl ContactsApp {
     /// form rather than the list.
     pub fn shots_new_contact(&mut self) {
         self.begin_new_contact();
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
     }
 
     /// Snap the EDIT form open on the selected contact for `--shots`, so a
@@ -1580,7 +1580,7 @@ impl ContactsApp {
     pub fn shots_edit_contact(&mut self) {
         if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
             self.begin_edit(c, false);
-            self.push.snap(Pane::Detail);
+            self.push.snap(PushPane::Detail);
         }
     }
 
@@ -1593,7 +1593,7 @@ impl ContactsApp {
             // The form opens unfocused; land the keyboard on the first field so
             // the shot captures the focus ring where Tab-navigation begins.
             self.focus_form_slot(Slot::First);
-            self.push.snap(Pane::Detail);
+            self.push.snap(PushPane::Detail);
         }
     }
 
@@ -2436,7 +2436,7 @@ impl ContactsApp {
         self.search.set_text("");
         self.set_group_filter(Some(group));
         if self.narrow {
-            self.push.show_list();
+            self.push.show_master();
         }
         self.dirty = true;
         Ok(())
@@ -2506,7 +2506,7 @@ impl ContactsApp {
             return false;
         };
 
-        let anchor = if !self.narrow || self.push.pane() == Pane::List {
+        let anchor = if !self.narrow || self.push.pane() == PushPane::Master {
             let ids = self.visible_ids();
             let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
                 return false;
@@ -3089,7 +3089,7 @@ impl ContactsApp {
         // narrow. The choice is driven purely from the allocated width.
         let scale = self.layout_scale();
         let avail_w = content.width();
-        self.narrow = PushNav::is_narrow_at(avail_w, self.text_scale);
+        self.narrow = crate::responsive::is_narrow_at(avail_w, self.text_scale);
         if self.narrow {
             // Single-pane push: the list and detail each fill the whole
             // content width and slide horizontally as one swaps for the
@@ -7763,8 +7763,8 @@ impl Widget for ContactsApp {
                     ),
             ]);
 
-        let list_is_visible = !self.narrow || self.push.pane() == Pane::List;
-        let detail_is_visible = !self.narrow || self.push.pane() == Pane::Detail;
+        let list_is_visible = !self.narrow || self.push.pane() == PushPane::Master;
+        let detail_is_visible = !self.narrow || self.push.pane() == PushPane::Detail;
         let mut children = vec![toolbar];
         if list_is_visible {
             children.extend([search, list_controls, list]);
@@ -8287,7 +8287,7 @@ impl Widget for ContactsApp {
                 true
             }
             ("contacts.back", Action::Activate) if self.narrow => {
-                self.push.show_list();
+                self.push.show_master();
                 self.relayout = true;
                 self.dirty = true;
                 true
@@ -8951,11 +8951,11 @@ impl ContactsApp {
         // Narrow single-pane push: the Back affordance returns to the list.
         // Only hittable while the detail pane is the visible (pushed) slab.
         if self.narrow
-            && self.push.pane() == Pane::Detail
+            && self.push.pane() == PushPane::Detail
             && self.hit.back.width() > 0.0
             && self.hit.back.contains(p)
         {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             self.relayout = true;
             return true;
@@ -10051,12 +10051,12 @@ impl ContactsApp {
             // On a narrow window, leaving the edit form returns to the
             // list (the form lived in the pushed detail pane).
             if self.narrow {
-                self.push.show_list();
+                self.push.show_master();
                 self.relayout = true;
             }
-        } else if self.narrow && self.push.pane() == Pane::Detail {
+        } else if self.narrow && self.push.pane() == PushPane::Detail {
             // Back out of the pushed detail pane to the list.
-            self.push.show_list();
+            self.push.show_master();
             self.relayout = true;
         } else {
             self.search.set_focus(false);
@@ -10941,7 +10941,7 @@ mod local_layout_tests {
         assert!(app.narrow, "a narrow viewport resolves to single-pane push");
         assert_eq!(
             app.push.pane(),
-            Pane::List,
+            PushPane::Master,
             "a fresh narrow frame opens to the list"
         );
     }
@@ -10956,7 +10956,7 @@ mod local_layout_tests {
         // Snap the push to the detail pane (as a row selection would) and
         // confirm the pushed-detail frame renders without panicking.
         app.shots_show_detail();
-        assert_eq!(app.push.pane(), Pane::Detail);
+        assert_eq!(app.push.pane(), PushPane::Detail);
         drive_frame(&mut app, 480, 860);
         // The Back affordance must be laid out (hittable) in the pushed pane.
         assert!(
@@ -11443,13 +11443,13 @@ mod local_layout_tests {
     fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
         let mut h = Harness::new(460, 880);
         assert!(h.app.narrow);
-        assert_eq!(h.app.push.pane(), Pane::List);
+        assert_eq!(h.app.push.pane(), PushPane::Master);
         // Press a list row → the detail pane is pushed in.
         let row = h.row_center(1);
         assert!(h.press_left(row));
         assert_eq!(
             h.app.push.pane(),
-            Pane::Detail,
+            PushPane::Detail,
             "selecting pushes the detail in"
         );
         h.relayout();
@@ -11462,7 +11462,7 @@ mod local_layout_tests {
         assert!(h.press_left(back));
         assert_eq!(
             h.app.push.pane(),
-            Pane::List,
+            PushPane::Master,
             "Back returns to the full-width list"
         );
     }

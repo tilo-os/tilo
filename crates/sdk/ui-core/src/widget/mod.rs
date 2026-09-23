@@ -2376,7 +2376,7 @@ mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod nav_split;
 pub use nav_split::{
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushPane, SplitLayout,
+    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushNav, PushPane, SplitLayout,
     SplitMode,
 };
 mod app_shell;
