@@ -8490,12 +8490,11 @@ impl BooksApp {
                 // One line, ellipsized to the column: the slot above the
                 // rule is a single line box, so a long title must not wrap
                 // into the rule.
-                let head = ellipsize(
-                    tr,
+                let head = tr.elide_to_width_weighted(
                     &ch.title.to_uppercase(),
                     running_header_px(),
+                    geom.content_w,
                     TextWeight::Semibold,
-                    f64::from(geom.content_w),
                 );
                 tr.draw_text_weighted(
                     scene,
@@ -9597,7 +9596,12 @@ impl BooksApp {
 
         let auth = format!("   {}", book.author);
         let (aw, _) = tr.measure(&auth, 13.0, None);
-        let full_title = ellipsize(tr, &book.title, 16.0, TextWeight::Semibold, avail);
+        let full_title = tr.elide_to_width_weighted(
+            &book.title,
+            16.0,
+            ui::num::f32_of_f64(avail),
+            TextWeight::Semibold,
+        );
         let (tw, _) = tr.measure_weighted(&full_title, 16.0, None, TextWeight::Semibold);
         // Only show the author if title + author both fit comfortably.
         let show_author = f64::from(tw) + f64::from(aw) <= avail && book.title == full_title;
@@ -12157,39 +12161,6 @@ fn page_for_block(layout: &ChapterLayout, block: usize) -> usize {
         }
     }
     page
-}
-
-/// Truncate `text` with a trailing ellipsis so it fits within `max_w` at the
-/// given size/weight. Returns the full string when it already fits.
-fn ellipsize(
-    tr: &mut TextRenderer,
-    text: &str,
-    size: f32,
-    weight: TextWeight,
-    max_w: f64,
-) -> String {
-    if f64::from(tr.measure_weighted(text, size, None, weight).0) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut hi = chars.len();
-    // Binary-search the longest prefix that fits with an ellipsis appended.
-    let mut best = String::from("…");
-    let mut lo = 0;
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars
-            .get(..mid)
-            .map_or_else(String::new, |s| s.iter().collect())
-            + "…";
-        if f64::from(tr.measure_weighted(&candidate, size, None, weight).0) <= max_w {
-            best = candidate;
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    best
 }
 
 /// Blit a decoded cover into `rect` with cover-fit cropping and a rounded

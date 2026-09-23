@@ -3688,7 +3688,7 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
             format!("{source}  ·  {}", a.summary)
         };
         let meta_w = (lr.star_rect.x0 - 8.0 - text_x).max(60.0) as f32;
-        let meta_text = elide(tr, &meta, 12.5, meta_w);
+        let meta_text = tr.elide_to_width(&meta, 12.5, meta_w);
         let (_, meta_h) = tr.measure(&meta_text, 12.5, None);
 
         let sp = &theme.tokens.spacing;
@@ -4412,25 +4412,6 @@ fn draw_chrome_button(
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
     f64::from(tr.measure(s, size, None).0)
-}
-
-/// Truncate `s` with an ellipsis so it fits in `max_w` on a single line.
-fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> String {
-    if tr.measure(s, size, None).0 <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        let mut probe = out.clone();
-        probe.push(ch);
-        probe.push('…');
-        if tr.measure(&probe, size, None).0 > max_w {
-            out.push('…');
-            return out;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// Weight-aware single-line truncation. Measures with the SAME `weight` the

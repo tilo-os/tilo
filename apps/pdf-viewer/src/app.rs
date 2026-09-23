@@ -8034,7 +8034,7 @@ mod tests {
         let mut tr = ui::text_render::TextRenderer::new();
         let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
         // Measured and painted Semibold, like `draw_comment_header_row`.
-        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max, TextWeight::Semibold);
+        let shown = tr.elide_to_width_weighted(long, 11.5, hdr.name_max, TextWeight::Semibold);
         let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
         assert!(
             w <= hdr.name_max + 0.5,

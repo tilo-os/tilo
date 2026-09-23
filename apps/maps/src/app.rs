@@ -3058,7 +3058,7 @@ impl MapsApp {
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
-        let name = draw::ellipsize(tr, &poi.name, 18.0, close.x0 - s2 - x);
+        let name = tr.elide_to_width(&poi.name, 18.0, ui::num::f32_of_f64(close.x0 - s2 - x));
         draw::text_w(
             scene,
             tr,
@@ -3604,7 +3604,8 @@ impl MapsApp {
                 12.0,
                 theme.accent_primary,
             );
-            let name = draw::ellipsize(tr, &sel.name, 18.0, right - x - 2.0 * s4);
+            let name =
+                tr.elide_to_width(&sel.name, 18.0, ui::num::f32_of_f64(right - x - 2.0 * s4));
             draw::text_w(
                 scene,
                 tr,

@@ -20,7 +20,7 @@ use ui::widget::Scrollable;
 
 use crate::app::{center_text, draw_checkbox};
 use crate::date;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line};
+use crate::draw_util::{fill_rect, fill_round, stroke_line};
 use crate::metrics;
 use crate::model::{Id, Model, Priority};
 
@@ -416,7 +416,8 @@ fn draw_event_row(
         let mut title_right = row.x1 - m.check_gap;
         if show_location && !event.location.is_empty() {
             let loc_max = (row.width() * LOCATION_MAX_SHARE).max(40.0);
-            let location = elide_to_width(text, &event.location, ROW_META_TEXT, loc_max);
+            let location =
+                text.elide_to_width(&event.location, ROW_META_TEXT, ui::num::f32_of_f64(loc_max));
             let loc_w = f64::from(text.measure(&location, ROW_META_TEXT, None).0);
             let loc_x = row.x1 - m.bar_inset - loc_w;
             text.draw_text(
@@ -430,7 +431,7 @@ fn draw_event_row(
             title_right = loc_x - m.check_gap;
         }
         let title_max = (title_right - title_x).max(40.0);
-        let title = elide_to_width(text, &event.title, ROW_TEXT, title_max);
+        let title = text.elide_to_width(&event.title, ROW_TEXT, ui::num::f32_of_f64(title_max));
         text.draw_text(
             scene,
             &title,
@@ -497,7 +498,7 @@ fn draw_task_row(
         let flag_w = flag.map_or(0.0, |f| f64::from(text.measure(f, ROW_FLAG_TEXT, None).0));
         let flag_x = row.x1 - m.check_gap - flag_w;
         let label_max = (flag_x - m.check_gap - label_x0).max(40.0);
-        let label = elide_to_width(text, &task.title, ROW_TEXT, label_max);
+        let label = text.elide_to_width(&task.title, ROW_TEXT, ui::num::f32_of_f64(label_max));
         text.draw_text(
             scene,
             &label,

@@ -57,8 +57,8 @@ use crate::date;
 use crate::doc::CalDoc;
 use crate::draw_util::PaintContext;
 use crate::draw_util::{
-    elide_to_width, fill_rect, fill_round, hairline, panel, row_ground, selected_row,
-    selection_fill, stroke_line, stroke_round,
+    fill_rect, fill_round, hairline, panel, row_ground, selected_row, selection_fill, stroke_line,
+    stroke_round,
 };
 use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
@@ -5031,11 +5031,10 @@ impl CalendarApp {
             let col = color.color(theme);
             if *all_day {
                 card(scene, t, chip, radius, col);
-                let line = elide_to_width(
-                    tr,
+                let line = tr.elide_to_width(
                     title,
                     MONTH_CHIP_TEXT,
-                    chip.width() - 2.0 * MONTH_CHIP_INSET,
+                    ui::num::f32_of_f64(chip.width() - 2.0 * MONTH_CHIP_INSET),
                 );
                 tr.draw_text(
                     scene,
@@ -5055,11 +5054,10 @@ impl CalendarApp {
                     &Circle::new(Point::new(chip.x0 + dot_x + dot_r, chip.center().y), dot_r),
                 );
                 let label = format!("{} {}", date::fmt_time(start), title);
-                let line = elide_to_width(
-                    tr,
+                let line = tr.elide_to_width(
                     &label,
                     MONTH_CHIP_TEXT,
-                    chip.width() - timed_text_x - MONTH_CHIP_INSET,
+                    ui::num::f32_of_f64(chip.width() - timed_text_x - MONTH_CHIP_INSET),
                 );
                 tr.draw_text(
                     scene,
@@ -5806,7 +5804,11 @@ impl CalendarApp {
                 &Circle::new(Point::new(r.x0 + 16.0, r.center().y), 5.0),
             );
             let label = self.calendar_label(e.calendar_id.as_ref());
-            let disp = elide_to_width(tr, &label, 14.0, (r.width() - 56.0).max(0.0));
+            let disp = tr.elide_to_width(
+                &label,
+                14.0,
+                ui::num::f32_of_f64((r.width() - 56.0).max(0.0)),
+            );
             tr.draw_text(
                 scene,
                 &disp,
@@ -8136,7 +8138,7 @@ fn draw_field_button(
         card(scene, t, r, radius, bg);
     }
     let text_max = (r.width() - if trailing_caret { 40.0 } else { 24.0 }).max(0.0);
-    let disp = elide_to_width(tr, label, 14.0, text_max);
+    let disp = tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(text_max));
     tr.draw_text(
         scene,
         &disp,
@@ -10331,12 +10333,15 @@ mod local_layout_tests {
         let full = "Team standup with the whole design org";
         // Given room for the whole string, it comes back untouched (no ellipsis).
         let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
-        assert_eq!(elide_to_width(&mut tr, full, 11.0, roomy), full);
+        assert_eq!(
+            tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(roomy)),
+            full
+        );
         // Under a tight budget it must ellipsize AND the result must measure
         // within the budget — proving the cut is width-driven, not a fixed
         // character count that could still overflow.
         let tight = 60.0;
-        let cut = elide_to_width(&mut tr, full, 11.0, tight);
+        let cut = tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(tight));
         assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
         assert!(cut.chars().count() < full.chars().count());
         assert!(
@@ -10375,7 +10380,7 @@ mod local_layout_tests {
             .map(|e| e.title.clone())
             .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
             .expect("demo has a title too long for a narrow week column");
-        let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
+        let drawn = tr.elide_to_width(&long, 11.0, ui::num::f32_of_f64(block_text_w));
         assert!(
             drawn.ends_with('…'),
             "narrow week title ellipsized: {drawn:?}"

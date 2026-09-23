@@ -1039,20 +1039,7 @@ pub(super) fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
 /// and drawing at 13px under-elides, and the overflow lands wherever the
 /// caller's clip happens to be.
 pub(super) fn elide_at(s: &str, max_px: f32, size: f32, tr: &mut TextRenderer) -> String {
-    let (w, _) = tr.measure(s, size, None);
-    if w <= max_px {
-        return s.to_string();
-    }
-    let mut chars: Vec<char> = s.chars().collect();
-    while chars.len() > 1 {
-        chars.pop();
-        let candidate: String = chars.iter().collect::<String>() + "…";
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if cw <= max_px {
-            return candidate;
-        }
-    }
-    "…".to_string()
+    tr.elide_to_width(s, size, max_px)
 }
 
 /// Choose a ruler tick spacing (seconds) so labels stay ~70px apart.

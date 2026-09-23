@@ -212,38 +212,3 @@ pub(crate) fn stroke_line(
         &Line::new(start, end),
     );
 }
-
-/// Elide against shaped glyph widths rather than a character-count guess.
-pub(crate) fn elide_to_width(
-    text: &mut TextRenderer,
-    value: &str,
-    size: f32,
-    max_width: f64,
-) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-    if f64::from(text.measure(value, size, None).0) <= max_width {
-        return value.to_string();
-    }
-    let chars: Vec<char> = value.chars().collect();
-    let mut low = 0usize;
-    let mut high = chars.len().saturating_sub(1);
-    while low < high {
-        let middle = (low + high).div_ceil(2);
-        let candidate: String = chars
-            .get(..middle)
-            .unwrap_or(&[])
-            .iter()
-            .chain(std::iter::once(&'…'))
-            .collect();
-        if f64::from(text.measure(&candidate, size, None).0) <= max_width {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
-    let mut output: String = chars.get(..low).unwrap_or(&[]).iter().collect();
-    output.push('…');
-    output
-}
