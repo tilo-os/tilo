@@ -472,6 +472,11 @@ inherits = "release"
 [profile.demo.package.shell]
 debug-assertions = true
 
+# The headless harnesses point a demo-profile launcher at their own app store
+# and runtime bundle; those overrides are gated on debug assertions too.
+[profile.demo.package.launcher]
+debug-assertions = true
+
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
