@@ -8,8 +8,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -111,11 +109,8 @@ impl SecretStore {
             .path
             .parent()
             .ok_or_else(|| failed("secret state path has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|e| failed(&format!("cannot create secret directory: {e}")))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        private_fs::directory(parent)
             .map_err(|e| failed(&format!("cannot protect secret directory: {e}")))?;
-        let temporary = self.path.with_extension("tmp");
         let plaintext = Zeroizing::new(
             serde_json::to_vec(state)
                 .map_err(|e| failed(&format!("cannot encode secret store: {e}")))?,
@@ -126,23 +121,8 @@ impl SecretStore {
             .ok_or_else(|| failed("secret encryption key is unavailable"))?;
         let sealed =
             seal_store(key, &plaintext).ok_or_else(|| failed("cannot encrypt secret store"))?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|e| failed(&format!("cannot create secret store: {e}")))?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|e| failed(&format!("cannot protect secret store: {e}")))?;
-        file.write_all(&sealed)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| failed(&format!("cannot write secret store: {e}")))?;
-        fs::rename(&temporary, self.path.as_ref())
-            .map_err(|e| failed(&format!("cannot commit secret store: {e}")))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| failed(&format!("cannot sync secret store: {e}")))
+        private_fs::write_atomic(self.path.as_ref(), &sealed)
+            .map_err(|e| failed(&format!("cannot write secret store: {e}")))
     }
 }
 
@@ -150,36 +130,38 @@ fn key_path(path: &std::path::Path) -> PathBuf {
     path.with_extension("key")
 }
 
+/// Load the store key, minting one only when none exists yet.
+///
+/// A key that is present but unreadable, malformed or not private is never
+/// replaced: a new key would orphan every secret sealed under the old one.
 fn load_or_create_key(path: &std::path::Path) -> Option<Zeroizing<[u8; SECRET_BYTES]>> {
     let key_path = key_path(path);
-    if let Ok(bytes) = fs::read(&key_path) {
-        if bytes.len() != SECRET_BYTES {
-            return None;
-        }
-        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).ok()?;
-        let mut key = Zeroizing::new([0; SECRET_BYTES]);
-        key.copy_from_slice(&bytes);
-        return Some(key);
+    match read_key(&key_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        existing => return existing.ok(),
     }
-    let parent = key_path.parent()?;
-    fs::create_dir_all(parent).ok()?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).ok()?;
+    private_fs::directory(key_path.parent()?).ok()?;
     let mut key = Zeroizing::new([0; SECRET_BYTES]);
     OsRng.fill_bytes(key.as_mut());
-    let temporary = key_path.with_extension("key.tmp");
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)
-        .ok()?;
-    file.write_all(key.as_ref()).ok()?;
-    file.sync_all().ok()?;
-    fs::rename(temporary, &key_path).ok()?;
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .ok()?;
-    Some(key)
+    // `false` means a concurrent starter published first; everyone uses the
+    // key that won, so re-read rather than returning ours.
+    private_fs::create_atomic(&key_path, key.as_ref()).ok()?;
+    read_key(&key_path).ok()
+}
+
+fn read_key(path: &std::path::Path) -> std::io::Result<Zeroizing<[u8; SECRET_BYTES]>> {
+    use std::io::Read;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(SECRET_BYTES));
+    private_fs::read(path)?.read_to_end(&mut bytes)?;
+    let mut key = Zeroizing::new([0; SECRET_BYTES]);
+    if bytes.len() != SECRET_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "secret store key has the wrong length",
+        ));
+    }
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
 
 fn seal_store(key: &[u8; SECRET_BYTES], plaintext: &[u8]) -> Option<Vec<u8>> {
@@ -274,6 +256,7 @@ fn decode(encoded: &str) -> zbus::fdo::Result<[u8; SECRET_BYTES]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     #[test]
     fn app_secret_persists_and_is_separate() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,5 +281,47 @@ mod tests {
             fs::metadata(key_path(&p)).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn existing_key_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("secrets.json");
+        let key = key_path(&p);
+
+        // Public access: refused rather than trusted or rewritten.
+        fs::write(&key, [7_u8; SECRET_BYTES]).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_or_create_key(&p).is_none());
+        assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
+        assert!(
+            SecretStore::at_path(&p)
+                .secret_for("org.example.One")
+                .is_err()
+        );
+        assert_eq!(fs::read(&key).unwrap(), [7_u8; SECRET_BYTES]);
+
+        // Wrong length: refused and left in place.
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&key, [7_u8; 3]).unwrap();
+        assert!(load_or_create_key(&p).is_none());
+        assert_eq!(fs::read(&key).unwrap(), [7_u8; 3]);
+    }
+
+    #[test]
+    fn concurrent_first_starts_share_one_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(dir.path().join("secrets.json"));
+        let keys: Vec<[u8; SECRET_BYTES]> = (0..8)
+            .map(|_| {
+                let p = Arc::clone(&p);
+                std::thread::spawn(move || *load_or_create_key(&p).expect("key"))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(keys.iter().all(|key| *key == keys[0]));
+        assert_eq!(fs::read(key_path(&p)).unwrap(), keys[0]);
     }
 }
