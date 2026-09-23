@@ -33,6 +33,37 @@ pub enum ImportOperation {
     SetFolderConnected { folder_id: String },
 }
 
+impl ImportOperation {
+    pub(super) const fn kind(&self) -> OperationKind {
+        match self {
+            Self::PrepareReview
+            | Self::StartReviewedBatch
+            | Self::LaterAll
+            | Self::Start { .. }
+            | Self::Retry { .. }
+            | Self::Cancel { .. }
+            | Self::ResolveFolder { .. }
+            | Self::PickFolderDestination { .. }
+            | Self::SetFolderCopy { .. }
+            | Self::SetFolderLater { .. }
+            | Self::SetFolderConnected { .. } => OperationKind::Effect,
+            _ => OperationKind::View,
+        }
+    }
+
+    pub(super) const fn background(&self) -> bool {
+        matches!(
+            self,
+            Self::PrepareReview
+                | Self::StartReviewedBatch
+                | Self::Start { .. }
+                | Self::Retry { .. }
+                | Self::ResolveFolder { .. }
+                | Self::PickFolderDestination { .. }
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportStatusPhase {
@@ -185,25 +216,30 @@ fn result_spec() -> ResultSpec {
 
 fn immediate(id: &str, label_key: &str, operation: ImportOperation) -> ActionSpec {
     let label = strings::t(label_key);
-    ActionSpec::operation(
-        id,
-        label.clone(),
-        OperationKind::View,
-        IMPORT_OPERATION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        ActionSpec::typed_operation(
-            id,
-            label,
-            "",
-            OperationKind::View,
-            IMPORT_OPERATION_TYPE,
-            Vec::new(),
-            move |_| encode(&operation),
-        )
-    })
-    .returns(result_spec())
+    let kind = operation.kind();
+    let background = operation.background();
+    let cancellable = !matches!(&operation, ImportOperation::PrepareReview);
+    let mut action =
+        ActionSpec::operation(id, label.clone(), kind, IMPORT_OPERATION_TYPE, &operation)
+            .unwrap_or_else(|_| {
+                ActionSpec::typed_operation(
+                    id,
+                    label,
+                    "",
+                    kind,
+                    IMPORT_OPERATION_TYPE,
+                    Vec::new(),
+                    move |_| encode(&operation),
+                )
+            })
+            .returns(result_spec());
+    if kind == OperationKind::Effect {
+        action.contract.tags.push("tilo.local-device-only".into());
+    }
+    if background {
+        action = action.execution(tilo_actions::ExecutionMode::Background { cancellable });
+    }
+    action
 }
 
 fn available(action: ActionSpec, is_available: bool, code: &str, reason_key: &str) -> ActionSpec {
@@ -492,6 +528,95 @@ const fn flag(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_actions_are_local_device_effects_with_background_completion() {
+        let start = immediate(
+            "start",
+            "imager-import-action-start",
+            ImportOperation::Start {
+                operation_id: "copy-1".into(),
+            },
+        );
+        assert_eq!(start.kind, OperationKind::Effect);
+        assert!(
+            start
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "tilo.local-device-only")
+        );
+        assert_eq!(
+            start.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: true }
+        );
+
+        let mode = immediate(
+            "one-time-copy",
+            "imager-import-action-folder-copy",
+            ImportOperation::SetFolderCopy {
+                folder_id: "folder-1".into(),
+            },
+        );
+        assert_eq!(mode.kind, OperationKind::Effect);
+        assert!(
+            mode.contract
+                .tags
+                .iter()
+                .any(|tag| tag == "tilo.local-device-only")
+        );
+
+        let review = immediate(
+            "prepare-review",
+            "imager-import-action-prepare-review",
+            ImportOperation::PrepareReview,
+        );
+        assert_eq!(review.kind, OperationKind::Effect);
+        assert_eq!(
+            review.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false }
+        );
+        assert!(
+            review
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "tilo.local-device-only")
+        );
+
+        let resolve = immediate(
+            "review-destination",
+            "imager-import-action-review-destination",
+            ImportOperation::ResolveFolder {
+                folder_id: "folder-1".into(),
+            },
+        );
+        assert_eq!(resolve.kind, OperationKind::Effect);
+        assert_eq!(
+            resolve.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: true }
+        );
+        let destination = immediate(
+            "choose-destination",
+            "imager-import-action-choose-folder-destination",
+            ImportOperation::PickFolderDestination {
+                folder_id: "folder-1".into(),
+            },
+        );
+        assert_eq!(destination.kind, OperationKind::Effect);
+        assert!(matches!(
+            destination.contract.execution,
+            tilo_actions::ExecutionMode::Background { .. }
+        ));
+
+        let observe = immediate(
+            "read-status",
+            "imager-import-action-read-status",
+            ImportOperation::Observe,
+        );
+        assert_eq!(observe.kind, OperationKind::View);
+        assert!(observe.contract.tags.is_empty());
+    }
 
     #[test]
     fn import_action_presentation_uses_the_active_host_locale_catalog() {
