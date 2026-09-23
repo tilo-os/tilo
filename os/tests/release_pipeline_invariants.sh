@@ -115,6 +115,7 @@ if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq 'for directory in "${runtime_dirs[@]}"' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'mkfs.vfat -n TILO_SBTEST' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq "expect_log 'Access Denied'" "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'AAVMF_CODE.ms.fd' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'virtio-blk-device,drive=esp' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq -- '-nic none -nographic -no-reboot' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \

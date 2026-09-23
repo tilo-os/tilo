@@ -34,7 +34,15 @@ case "$arch" in
     ;;
   aarch64)
     for directory in /usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64; do
-      if [ -f "$directory/QEMU_EFI-pflash.raw" ]; then
+      if [ -f "$directory/AAVMF_CODE.ms.fd" ] \
+         && [ -f "$directory/AAVMF_VARS.fd" ]; then
+        # Ubuntu's generic AAVMF_CODE.fd omits authenticated Secure Boot
+        # variables. Use its Secure-Boot-capable code with the blank variable
+        # template so this probe starts in setup mode and enrolls Tilo's keys.
+        firmware_code="$directory/AAVMF_CODE.ms.fd"
+        firmware_vars="$directory/AAVMF_VARS.fd"
+        break
+      elif [ -f "$directory/QEMU_EFI-pflash.raw" ]; then
         firmware_code="$directory/QEMU_EFI-pflash.raw"
         firmware_vars="$directory/vars-template-pflash.raw"
         break
