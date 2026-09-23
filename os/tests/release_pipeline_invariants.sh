@@ -103,6 +103,15 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
+if grep -Fq -- '- name: Verify the signed RPM snapshot input' "$kernel_workflow" \
+   && grep -Fq 'cosign verify --key keys/cosign.pub "$RPMS_REF"' "$kernel_workflow" \
+   && grep -Fq './os/dev/derive-rpm-package-set.py --arch x86_64' "$kernel_workflow" \
+   && grep -Fq './os/dev/derive-rpm-package-set.py --arch aarch64' "$kernel_workflow" \
+   && grep -Fq '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' "$kernel_workflow"; then
+  ok 'kernel compilation authenticates the exact multiarch RPM snapshot input'
+else
+  bad 'kernel compilation can start from an unauthenticated RPM snapshot input'
+fi
 if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq 'apt_firmware=ovmf' "$kernel_workflow" \
    && grep -Fq 'fedora_firmware=edk2-aarch64' "$kernel_workflow" \
@@ -120,7 +129,9 @@ if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq -- '-nic none -nographic -no-reboot' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v modinfo >/dev/null' "$repo/os/kernel/tests/test-rpm.sh" \
-   && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh"; then
+   && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh" \
+   && grep -Fq 'command -v zstd >/dev/null' "$repo/os/kernel/tests/boot-smoke.sh" \
+   && grep -Fq 'kernel/drivers/net/dummy.ko.zst' "$repo/os/kernel/tests/boot-smoke.sh"; then
   ok 'native kernel acceptance installs modinfo, firmware and EFI-image tools on apt and dnf runners'
 else
   bad 'native kernel acceptance can invoke missing module or Secure Boot VM dependencies'
@@ -134,8 +145,12 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
-   && grep -Fq 'kernel inputs changed during promotion; refusing stale push' "$kernel_workflow" \
-   && grep -Fq "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$kernel_workflow" \
+   && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow" \
+   && grep -Fq 'automation/kernel-snapshot-${snapshot_digest:0:16}' "$kernel_workflow" \
+   && grep -Fq 'python3 os/dev/open-kernel-snapshot-pr.py' "$kernel_workflow" \
+   && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
+   && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
+   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'" "$kernel_workflow" \
    && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-boot "$(uname -m)"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'aarch64) image=arch/arm64/boot/Image' "$repo/os/kernel/build-support.sh" \
