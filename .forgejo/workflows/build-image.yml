@@ -73,7 +73,15 @@ jobs:
             publish=true
           fi
           if [[ $publish == true ]]; then
-            matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            else
+              # A protected manual main publication uses the same native,
+              # large-disk fleet as the proven integration build. Its VM gate
+              # already falls back to TCG inside Kata when KVM is unavailable.
+              # Tags retain the dedicated release fleet above.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+            fi
           else
             # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
             # can fill during export. Use the larger disk lane for this build.
@@ -131,6 +139,43 @@ jobs:
 
       - name: Require the selected native OS architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+
+      - name: Ensure the signed OCI inspector is available
+        run: |
+          set -euo pipefail
+          if command -v skopeo >/dev/null; then
+            exit 0
+          fi
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y skopeo
+          else
+            echo '::error::native OS runner must provide skopeo, apt-get, or dnf'
+            exit 1
+          fi
+          command -v skopeo >/dev/null
+
+      - name: Require a compositor-capable native publication host
+        if: needs.plan.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          sudo -n true
+          command -v apt-get >/dev/null || command -v dnf >/dev/null
+          rendernode="$(compgen -G '/dev/dri/renderD*' | head -n 1 || true)"
+          test -n "$rendernode" && test -c "$rendernode" \
+            && test -r "$rendernode" && test -w "$rendernode" || {
+              echo '::error::OS publication requires a readable/writable DRI render node for the installed compositor gate'
+              exit 1
+            }
+          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+            echo '::notice::OS publication will use KVM acceleration'
+          else
+            echo '::notice::OS publication will use the bounded QEMU TCG fallback'
+          fi
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -375,17 +420,25 @@ jobs:
           }
           cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
           digest="${RPMS_REF##*@}"
-          package_set_sha256="$(./os/dev/derive-rpm-package-set.py | sort -u | sha256sum | cut -d' ' -f1)"
+          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
+          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
           provenance="$(cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$RPMS_REF")"
           printf '%s' "$provenance" | jq -e --arg digest "$digest" \
-            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" '
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" \
+            --arg package_arm64_sha256 "$package_arm64_sha256" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
                   ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
                     or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
                   and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
                   and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
+                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
                 )
