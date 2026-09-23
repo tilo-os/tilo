@@ -29,6 +29,33 @@ pub enum SetupOperation {
     Next,
     Back,
     OpenImports,
+    StartInternalDownload,
+    PauseInternalDownload,
+    ResumeInternalDownload,
+    CancelInternalDownload,
+    DiscardInternalDownload,
+    ReleaseInternalDownload,
+    /// Tilo size in whole GiB, within the reviewed bounds.
+    SetInternalTargetSize {
+        gib: i64,
+    },
+    /// Install (or continue) exactly the plan with this digest.
+    InstallInternal {
+        reviewed: String,
+    },
+    RestartInternal,
+    RestartInternalLater,
+    /// Arm the unfinished operation with this ID again.
+    RetryInternal {
+        operation_id: String,
+    },
+    /// Remove the unfinished operation with this ID.
+    RemoveInternal {
+        operation_id: String,
+    },
+    InternalFirmwareSettings,
+    InternalDisableFastStartup,
+    RecheckInternal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -78,12 +105,64 @@ pub struct AvailabilityProjection {
     pub choose_folder: bool,
 }
 
+/// Which Full Tilo installation commands may run now.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent availability flag per published action"
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct InternalAvailability {
+    pub start_download: bool,
+    pub pause_download: bool,
+    pub resume_download: bool,
+    pub cancel_download: bool,
+    pub discard_download: bool,
+    pub release_download: bool,
+    pub set_target_size: bool,
+    pub install: bool,
+    pub restart: bool,
+    pub restart_later: bool,
+    pub retry: bool,
+    pub remove: bool,
+    pub firmware_settings: bool,
+    pub disable_fast_startup: bool,
+    pub recheck: bool,
+}
+
+/// Path-free state of the Full Tilo installation on this computer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct InternalProjection {
+    /// `gated`, `checking`, `no-release`, `unsupported` or `ready`.
+    pub readiness: &'static str,
+    pub on_review: bool,
+    /// Download worker phase (`none` before any download).
+    pub download: &'static str,
+    pub target_gib: Option<u64>,
+    pub min_gib: Option<u64>,
+    pub max_gib: Option<u64>,
+    /// Digest `setup.internal.install` must name; changes with the plan.
+    pub reviewed: Option<String>,
+    pub shrink_bytes: Option<u64>,
+    pub staging_bytes: Option<u64>,
+    /// Stable blocker IDs from the host probe.
+    pub blockers: Vec<&'static str>,
+    /// `idle`, `running`, `succeeded` or `failed`.
+    pub run: &'static str,
+    /// Helper action of the latest run (`stage`, `arm`, `remove`).
+    pub run_action: Option<&'static str>,
+    pub failure: Option<String>,
+    /// Unfinished staging operation the resume card offers.
+    pub pending_operation: Option<String>,
+    pub availability: InternalAvailability,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SetupProjection {
     pub page: &'static str,
     pub selection: SelectionProjection,
     pub review: ReviewProjection,
     pub availability: AvailabilityProjection,
+    pub internal: InternalProjection,
 }
 
 impl SetupProjection {
@@ -329,6 +408,203 @@ fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) ->
     .with_action(select)
 }
 
+fn internal_action(
+    id: &str,
+    label_key: &str,
+    operation: SetupOperation,
+    available: bool,
+    code: &str,
+    reason_key: &str,
+) -> ActionSpec {
+    with_availability(
+        immediate(id, &super::strings::t(label_key), operation),
+        available,
+        code,
+        &super::strings::t(reason_key),
+    )
+}
+
+/// Full Tilo installation resource: one action per visible command.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one declarative list keeps every published command beside its gate"
+)]
+fn internal_resource(state: &InternalProjection) -> Resource {
+    let a = state.availability;
+    let (review_code, review_reason) = if state.on_review {
+        (
+            "internal_unavailable",
+            "imager-setup-internal-error-command-unavailable",
+        )
+    } else {
+        (
+            "full_os_review_only",
+            "imager-setup-internal-error-not-review",
+        )
+    };
+    let download = |id: &str, label: &str, operation: SetupOperation, available: bool| {
+        internal_action(id, label, operation, available, review_code, review_reason)
+    };
+    let set_size = ActionSpec::typed_operation(
+        "setup.internal.set-target-size",
+        super::strings::t("imager-setup-action-internal-set-target-size"),
+        "64",
+        OperationKind::View,
+        SETUP_OPERATION_TYPE,
+        vec![ActionParam::required_owned(
+            "gib",
+            ParamType::Integer,
+            super::strings::t("imager-setup-param-internal-target-gib"),
+        )],
+        |args| {
+            encode(&SetupOperation::SetInternalTargetSize {
+                gib: args.integer("gib").unwrap_or(-1),
+            })
+        },
+    )
+    .returns(result_spec());
+    let set_size = with_availability(
+        set_size,
+        a.set_target_size,
+        review_code,
+        &super::strings::t(review_reason),
+    );
+    let operation = state.pending_operation.clone().unwrap_or_default();
+    Resource::new(
+        "imager.setup.internal",
+        "imager.setup.internal",
+        super::strings::t("imager-setup-resource-internal"),
+    )
+    .with_presentation(ResourcePresentation {
+        detail: Some(super::strings::t_args(
+            "imager-setup-detail-internal",
+            &[
+                ("readiness", state.readiness.into()),
+                ("download", state.download.into()),
+                ("run", state.run.into()),
+                (
+                    "blockers",
+                    if state.blockers.is_empty() {
+                        "none".to_string()
+                    } else {
+                        state.blockers.join(", ")
+                    }
+                    .into(),
+                ),
+            ],
+        )),
+        badge: Some(super::strings::t("imager-setup-badge-internal")),
+        preview: None,
+    })
+    .with_action(download(
+        "setup.internal.download",
+        "imager-setup-action-start-download",
+        SetupOperation::StartInternalDownload,
+        a.start_download,
+    ))
+    .with_action(download(
+        "setup.internal.pause-download",
+        "imager-setup-action-pause-download",
+        SetupOperation::PauseInternalDownload,
+        a.pause_download,
+    ))
+    .with_action(download(
+        "setup.internal.resume-download",
+        "imager-setup-action-resume-download",
+        SetupOperation::ResumeInternalDownload,
+        a.resume_download,
+    ))
+    .with_action(download(
+        "setup.internal.cancel-download",
+        "imager-setup-action-cancel-download",
+        SetupOperation::CancelInternalDownload,
+        a.cancel_download,
+    ))
+    .with_action(download(
+        "setup.internal.discard-download",
+        "imager-setup-action-discard-download",
+        SetupOperation::DiscardInternalDownload,
+        a.discard_download,
+    ))
+    .with_action(download(
+        "setup.internal.release-download",
+        "imager-setup-action-release-download",
+        SetupOperation::ReleaseInternalDownload,
+        a.release_download,
+    ))
+    .with_action(set_size)
+    .with_action(internal_action(
+        "setup.internal.install",
+        "imager-setup-action-internal-install",
+        SetupOperation::InstallInternal {
+            reviewed: state.reviewed.clone().unwrap_or_default(),
+        },
+        a.install,
+        review_code,
+        review_reason,
+    ))
+    .with_action(internal_action(
+        "setup.internal.restart",
+        "imager-setup-action-internal-restart",
+        SetupOperation::RestartInternal,
+        a.restart,
+        "internal_not_staged",
+        "imager-setup-internal-error-no-restart",
+    ))
+    .with_action(internal_action(
+        "setup.internal.restart-later",
+        "imager-setup-action-internal-restart-later",
+        SetupOperation::RestartInternalLater,
+        a.restart_later,
+        "internal_not_staged",
+        "imager-setup-internal-error-no-restart",
+    ))
+    .with_action(internal_action(
+        "setup.internal.retry",
+        "imager-setup-action-internal-retry",
+        SetupOperation::RetryInternal {
+            operation_id: operation.clone(),
+        },
+        a.retry,
+        "internal_no_pending",
+        "imager-setup-internal-error-no-pending",
+    ))
+    .with_action(internal_action(
+        "setup.internal.remove",
+        "imager-setup-action-internal-remove",
+        SetupOperation::RemoveInternal {
+            operation_id: operation,
+        },
+        a.remove,
+        "internal_no_pending",
+        "imager-setup-internal-error-no-pending",
+    ))
+    .with_action(internal_action(
+        "setup.internal.firmware-settings",
+        "imager-setup-action-internal-firmware-settings",
+        SetupOperation::InternalFirmwareSettings,
+        a.firmware_settings,
+        "remedy_unavailable",
+        "imager-setup-internal-error-remedy-unavailable",
+    ))
+    .with_action(internal_action(
+        "setup.internal.disable-fast-startup",
+        "imager-setup-action-internal-disable-fast-startup",
+        SetupOperation::InternalDisableFastStartup,
+        a.disable_fast_startup,
+        "remedy_unavailable",
+        "imager-setup-internal-error-remedy-unavailable",
+    ))
+    .with_action(internal_action(
+        "setup.internal.recheck",
+        "imager-setup-action-internal-recheck",
+        SetupOperation::RecheckInternal,
+        a.recheck,
+        "internal_unavailable",
+        "imager-setup-internal-error-unavailable",
+    ))
+}
+
 /// Build the path-free, live resource projection for the setup root.
 #[must_use]
 pub fn resource(state: &SetupProjection) -> Resource {
@@ -552,7 +828,13 @@ pub fn resource(state: &SetupProjection) -> Resource {
             "imports_not_on_page",
             "Folder imports are available on the experience and review pages",
         ))
-        .with_children([selection, suggestions, review, availability])
+        .with_children([
+            selection,
+            suggestions,
+            review,
+            availability,
+            internal_resource(&state.internal),
+        ])
 }
 
 const fn yes_no(value: bool) -> &'static str {
