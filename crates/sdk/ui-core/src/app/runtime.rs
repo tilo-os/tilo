@@ -90,8 +90,6 @@ pub(super) struct ActionRuntime {
         Option<(super::action_directory_snapshot::DirectoryWitness, String)>,
     pub(super) action_directory_snapshot:
         Option<super::action_directory_snapshot::ActionDirectorySnapshot>,
-    #[cfg(test)]
-    pub(super) action_surface_publication_attempts: u64,
     pub(super) bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -102,6 +100,8 @@ pub(super) struct ActionRuntime {
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    #[cfg(test)]
+    pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
     pub(super) action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Background operations admitted by the retained widget tree.
@@ -133,8 +133,6 @@ impl ActionRuntime {
             bound_broker_route_for_test: None,
             action_directory_stamp: None,
             action_directory_snapshot: None,
-            #[cfg(test)]
-            action_surface_publication_attempts: 0,
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
@@ -142,6 +140,8 @@ impl ActionRuntime {
             permission_generation: Cell::new(0),
             last_control_availability: None,
             last_published_actions: None,
+            #[cfg(test)]
+            action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
