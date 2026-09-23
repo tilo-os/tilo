@@ -27,7 +27,7 @@ video = ["dep:media", "media/decode"]
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers.
 zip.workspace = true
-roxmltree = "0.20"
+roxmltree.workspace = true
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
 # In-memory LRU in front of the on-disk cache.
