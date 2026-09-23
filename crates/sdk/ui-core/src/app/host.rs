@@ -7797,10 +7797,15 @@ mod semantic_tree_app_tests {
             ..tilo_actions::ActionContract::default()
         });
         let mut app = lazy_app(
-            Resource::new("test.private-folder", "test.private-folder", "Private folder")
-                .with_action(action),
+            Resource::new(
+                "test.private-folder",
+                "test.private-folder",
+                "Private folder",
+            )
+            .with_action(action),
         );
-        let address = tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
+        let address =
+            tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
         let remote = app.invoke_resource_action(
             ResourceInvocation::new(&address, "agent:Scribe")
                 .broker_admitted(true)
@@ -7812,13 +7817,14 @@ mod semantic_tree_app_tests {
         ));
 
         let actor = app.collaboration.local_author.0.clone();
-        assert!(app
-            .invoke_resource_action(
+        assert!(
+            app.invoke_resource_action(
                 ResourceInvocation::new(&address, &actor)
                     .broker_admitted(true)
                     .invocation(Some(tilo_actions::InvocationId::new())),
             )
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]

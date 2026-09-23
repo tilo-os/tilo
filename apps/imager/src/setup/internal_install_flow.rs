@@ -1367,7 +1367,7 @@ pub(super) mod tests {
             original_firmware: OriginalFirmware {
                 boot_order: vec!["0001".into()],
                 boot_next: None,
-                entries: Default::default(),
+                entries: std::collections::BTreeMap::default(),
             },
             owned_boot_entry: None,
             bundle: None,

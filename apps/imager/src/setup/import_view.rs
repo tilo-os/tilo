@@ -2912,9 +2912,7 @@ impl Widget for ImportApp {
                 },
             }
         } else if pending.cancellation_requested
-            || states
-                .iter()
-                .any(|state| *state == Some(OperationState::Cancelled))
+            || states.contains(&Some(OperationState::Cancelled))
         {
             tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
