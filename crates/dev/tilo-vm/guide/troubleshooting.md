@@ -16,8 +16,10 @@ before that needs the same step. The error prints the exact command;
 is older, `tilo-vm vm upgrade`; if `tilo-vm` is older, rebuild it with
 `cargo install --locked --path crates/dev/tilo-vm`.
 
-**No tilo-vmd / no tilo-control.** The VM runs a production image. Move it to
-a dev image: `tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>`.
+**No tilo-vmd / no tilo-control.** The VM runs a production image (or any
+non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
+`vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
+Move it to a dev image: `tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>`.
 
 **Session is failed or inactive.** `tilo-vm logs`, then
 `tilo-vm slot restart`. A bad build usually shows in the first lines;
