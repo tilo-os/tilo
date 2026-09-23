@@ -16,9 +16,14 @@
 //! client use the explicit owner-only local fallback so recovery and tests do
 //! not silently lose an authenticator vault.
 //! Windows uses user-scoped DPAPI with a private, atomically published
-//! `vault.key.dpapi` file. A missing or damaged key is never replaced when
-//! ciphertext already exists. Legacy private keys migrate only after a
+//! `vault.key.dpapi` file. Legacy private keys migrate only after a
 //! verified DPAPI restore; DPAPI failure never falls back to plaintext.
+//!
+//! Sealing and key custody are shared with the accounts vault through the
+//! `secret-vault` crate. Under every custody a key that exists but cannot be
+//! read is never replaced, no key is minted while `vault.enc` exists without
+//! one, and a new local key is published with an exclusive create, so
+//! concurrent first launches converge on the one key that reached disk.
 //!
 //! # Migration
 //!
@@ -33,13 +38,8 @@
 //! bounded retry.
 
 use std::path::{Path, PathBuf};
-#[cfg(not(windows))]
-use std::time::Duration;
 
-#[cfg(windows)]
-mod windows;
-
-use rand_core::{OsRng, RngCore as _};
+use secret_vault::{Custody as KeyCustody, KEY_LEN, VaultFormat, VaultKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -53,15 +53,15 @@ struct VaultFile {
 
 const VAULT_VERSION: u32 = 1;
 
-/// Magic + format byte prefixing every sealed vault, so a stray file or a
-/// format bump is detected before we hand bytes to the AEAD.
-const SEAL_MAGIC: &[u8; 4] = b"QOAV";
-const SEAL_FORMAT: u8 = 1;
-
-/// XChaCha20-Poly1305 nonce width (192-bit / 24-byte extended nonce).
-const NONCE_LEN: usize = 24;
-/// Symmetric key width (256-bit).
-const KEY_LEN: usize = 32;
+/// The persisted identity of the authenticator vault. Every value here is
+/// part of the on-disk format and of where its key is held.
+const FORMAT: VaultFormat = VaultFormat {
+    name: "authenticator",
+    magic: b"QOAV",
+    secret_service_label: "Tilo authenticator vault",
+    secret_service_attributes: &[("application", "Tilo"), ("purpose", "totp-vault")],
+    dpapi_entropy: b"Tilo Authenticator vault key v1",
+};
 
 // This is thread-local so storage failure injection remains deterministic even
 // when the test harness runs unrelated authenticator tests in parallel.  It is
@@ -74,16 +74,6 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn force_save_failure_for_test(fail: bool) {
     FORCE_SAVE_FAILURE.with(|forced| forced.set(fail));
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KeyCustody {
-    #[cfg(not(windows))]
-    SecretService,
-    #[cfg(any(not(windows), test))]
-    LocalFile,
-    #[cfg(windows)]
-    Windows,
 }
 
 /// Resolve `$XDG_DATA_HOME/tilo-authenticator`, then Windows `LocalAppData` or
@@ -113,12 +103,6 @@ pub fn data_dir() -> Option<PathBuf> {
 /// checks against.
 pub fn vault_path() -> Option<PathBuf> {
     data_dir().map(|d| d.join("vault.enc"))
-}
-
-/// Path of the symmetric key file.
-#[cfg(any(not(windows), test))]
-fn key_path_in(dir: &Path) -> PathBuf {
-    dir.join("vault.key")
 }
 
 /// Path of the legacy plaintext vault, migrated + removed on first load.
@@ -261,268 +245,24 @@ fn parse_vault(plaintext: &[u8]) -> std::io::Result<Vault> {
 }
 
 /// Read the vault key from `dir`, generating + persisting a fresh random
-/// one the first time. Returns `None` only when the key can neither be read
-/// nor created (a read-only or malformed data dir), in which case the
-/// caller degrades to in-memory-only.
-///
-/// This is the single point of key custody — see the module docs for the
-/// keyring seam that will replace the local key file.
-fn load_or_create_key(dir: &Path, custody: KeyCustody) -> Option<Zeroizing<[u8; KEY_LEN]>> {
-    match custody {
-        #[cfg(not(windows))]
-        KeyCustody::SecretService => secret_service_key(dir),
-        #[cfg(any(not(windows), test))]
-        KeyCustody::LocalFile => local_file_key(dir),
-        #[cfg(windows)]
-        KeyCustody::Windows => windows::load_or_create_key(dir)
-            .map_err(|error| {
-                tracing::warn!(%error, "authenticator: Windows key custody unavailable");
-            })
-            .ok(),
-    }
+/// one the first time. Returns `None` when the key can neither be read nor
+/// safely created, in which case the caller degrades to in-memory-only: an
+/// existing key that cannot be read is never replaced, and no key is minted
+/// while `vault.enc` exists without one.
+fn load_or_create_key(dir: &Path, custody: KeyCustody) -> Option<VaultKey> {
+    FORMAT.load_or_create_key(dir, custody)
 }
 
-#[cfg(windows)]
 fn key_custody() -> KeyCustody {
-    KeyCustody::Windows
+    KeyCustody::for_session()
 }
 
-#[cfg(not(windows))]
-fn key_custody() -> KeyCustody {
-    let available = bounded_command::run(
-        "secret-tool",
-        &["--version"],
-        None,
-        256,
-        Duration::from_secs(2),
-    )
-    .is_ok_and(|output| output.status.success());
-    if available {
-        KeyCustody::SecretService
-    } else {
-        KeyCustody::LocalFile
-    }
-}
-
-#[cfg(not(windows))]
-fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
-    match lookup_secret_service_key() {
-        Ok(Some(key)) => return Some(key),
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(%error, "authenticator: Secret Service lookup failed; refusing local fallback");
-            return None;
-        }
-    }
-
-    let local_path = key_path_in(dir);
-    let (key, migrated) = match std::fs::read(&local_path) {
-        Ok(bytes) if bytes.len() == KEY_LEN => {
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            key.copy_from_slice(&bytes);
-            (key, true)
-        }
-        Ok(_) => {
-            tracing::warn!("authenticator: local vault key is malformed; not replacing it");
-            return None;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            OsRng.try_fill_bytes(key.as_mut_slice()).ok()?;
-            (key, false)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "authenticator: local vault key could not be read for migration");
-            return None;
-        }
-    };
-
-    if let Err(error) = store_secret_service_key(&key) {
-        tracing::warn!(%error, "authenticator: Secret Service key creation failed");
-        return None;
-    }
-    match lookup_secret_service_key() {
-        Ok(Some(stored)) if stored.as_ref() == key.as_ref() => {
-            if migrated && let Err(error) = std::fs::remove_file(&local_path) {
-                tracing::warn!(%error, "authenticator: migrated vault key but could not remove local copy");
-            }
-            Some(key)
-        }
-        _ => {
-            tracing::warn!("authenticator: Secret Service did not return the stored key");
-            None
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
-    let output = bounded_command::run(
-        "secret-tool",
-        &["lookup", "application", "Tilo", "purpose", "totp-vault"],
-        None,
-        256,
-        Duration::from_secs(5),
-    )
-    .map_err(|error| format!("Secret Service lookup failed: {error}"))?;
-    if !output.status.success() {
-        return if output.stderr.is_empty() {
-            Ok(None)
-        } else {
-            Err("Secret Service refused or could not retrieve the vault key".to_string())
-        };
-    }
-    let encoded = String::from_utf8(output.stdout)
-        .map_err(|_| "Secret Service returned non-UTF-8 key material".to_string())?;
-    if encoded.trim().is_empty() {
-        Ok(None)
-    } else {
-        decode_key(encoded.trim()).map(Some)
-    }
-}
-
-#[cfg(not(windows))]
-fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
-    let encoded = Zeroizing::new(encode_key(key));
-    let output = bounded_command::run(
-        "secret-tool",
-        &[
-            "store",
-            "--label=Tilo authenticator vault",
-            "application",
-            "Tilo",
-            "purpose",
-            "totp-vault",
-        ],
-        Some(encoded.as_bytes()),
-        256,
-        Duration::from_secs(5),
-    )
-    .map_err(|error| format!("Secret Service store failed: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err("Secret Service refused or could not store the vault key".to_string())
-    }
-}
-
-#[cfg(any(not(windows), test))]
-fn encode_key(key: &[u8; KEY_LEN]) -> String {
-    use std::fmt::Write as _;
-    let mut encoded = String::with_capacity(KEY_LEN * 2);
-    for byte in key {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
-#[cfg(any(not(windows), test))]
-fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
-    if encoded.len() != KEY_LEN * 2 {
-        return Err("Secret Service key has the wrong length".into());
-    }
-    let mut key = Zeroizing::new([0u8; KEY_LEN]);
-    for (byte, pair) in key.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
-        let &[hi, lo] = pair else {
-            return Err("Secret Service key is not hexadecimal".into());
-        };
-        let high = hex_nibble(hi)?;
-        let low = hex_nibble(lo)?;
-        *byte = high
-            .checked_mul(16)
-            .and_then(|value| value.checked_add(low))
-            .ok_or_else(|| "Secret Service key is not hexadecimal".to_string())?;
-    }
-    Ok(key)
-}
-
-#[cfg(any(not(windows), test))]
-fn hex_nibble(byte: u8) -> Result<u8, String> {
-    char::from(byte)
-        .to_digit(16)
-        .and_then(|value| u8::try_from(value).ok())
-        .ok_or_else(|| "Secret Service key is not hexadecimal".into())
-}
-
-#[cfg(any(not(windows), test))]
-fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
-    let path = key_path_in(dir);
-    match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() == KEY_LEN => {
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            key.copy_from_slice(&bytes);
-            Some(key)
-        }
-        // A file exists but isn't a well-formed key: refuse to clobber it,
-        // since regenerating would strand any vault it already sealed.
-        Ok(_) => {
-            tracing::warn!("authenticator: vault key file is malformed; not overwriting");
-            None
-        }
-        Err(_) => {
-            let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            if OsRng.try_fill_bytes(key.as_mut_slice()).is_err() {
-                return None;
-            }
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                tracing::warn!(error = %e, "authenticator: could not create data dir for key");
-                return None;
-            }
-            if write_key_file(&path, &key).is_err() {
-                tracing::warn!("authenticator: vault key write failed");
-                return None;
-            }
-            Some(key)
-        }
-    }
-}
-
-/// Seal `plaintext` under `key`: `MAGIC || format || nonce(24) || AEAD`.
-/// Returns `None` if the CSPRNG or the cipher fails.
 fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
-    use chacha20poly1305::aead::Aead;
-    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce_bytes), plaintext)
-        .ok()?;
-
-    let mut out = Vec::with_capacity(SEAL_MAGIC.len() + 1 + NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(SEAL_MAGIC);
-    out.push(SEAL_FORMAT);
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ciphertext);
-    Some(out)
+    FORMAT.seal(key, plaintext)
 }
 
-/// Open a blob produced by [`seal`], returning the plaintext (zeroized on
-/// drop). `None` on any framing mismatch or authentication failure — a
-/// tampered or truncated file never yields bytes.
 fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    use chacha20poly1305::aead::Aead;
-    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-
-    let rest = blob.strip_prefix(SEAL_MAGIC)?;
-    let (&format, rest) = rest.split_first()?;
-    if format != SEAL_FORMAT || rest.len() < NONCE_LEN {
-        return None;
-    }
-    let (nonce_bytes, ciphertext) = rest.split_at(NONCE_LEN);
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    cipher
-        .decrypt(XNonce::from_slice(nonce_bytes), ciphertext)
-        .ok()
-        .map(Zeroizing::new)
-}
-
-/// Write the key file atomically, restricted to `0600` before it is ever
-/// visible at its final path.
-#[cfg(any(not(windows), test))]
-fn write_key_file(path: &Path, key: &[u8; KEY_LEN]) -> std::io::Result<()> {
-    atomic_file::write_with_mode(path, key, 0o600)
+    FORMAT.open(key, blob)
 }
 
 /// Fresh-install check: true when no vault has been persisted yet, so the
@@ -694,7 +434,7 @@ mod tests {
     #[test]
     fn windows_interrupted_migration_preserves_keys_if_ciphertext_is_corrupt() {
         let dir = temp_dir();
-        let key = windows::load_or_create_key(&dir).unwrap();
+        let key = load_or_create_key(&dir, key_custody()).unwrap();
         private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
         private_fs::create_atomic(&dir.join("vault.enc"), b"damaged vault").unwrap();
         assert!(load_at_checked(&dir, key_custody()).is_err());
@@ -716,7 +456,7 @@ mod tests {
 
         let dir = temp_dir();
         assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        let key = windows::load_or_create_key(&dir).unwrap();
+        let key = load_or_create_key(&dir, key_custody()).unwrap();
         private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
         let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
         let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
@@ -737,6 +477,184 @@ mod tests {
         );
         assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Written by the implementation that predates the shared `secret-vault` crate. The
+    // on-disk format must stay readable: these bytes are what existing users have.
+    const LEGACY_KEY: &str = "c9df09f1db44ccd3ec5a2faf50e7276ab216492f4393fbc0657f858f3b67669b";
+    const LEGACY_VAULT: &str = concat!(
+        "514f4156017b7647917454de11136c24a35c28e8d85166a880e87309ecb8f2e2",
+        "6af9ab277aecb0f6a67d3ae878ab760bf4bf002c28e9b1cda6c780f93f6ba8a1",
+        "3771a9a4cc5210ad27018a38eaa18c2f61311ac7f365573f4890791127695dc3",
+        "9a1ce65d3f47d20d6520d04abdf6cd0993ea3eed144532af1dae01bd37b0856d",
+        "8207e484e6e8015ed7bb5292e07b5e2fcbef7bccd2c281c1e44727ea345ada46",
+        "2a1b89ef7da0c581d5ddad68ee5097d0d09a0b7562a2a53c58d32cb3e4953d49",
+        "a3a371acdb427828864bb4af50d3a36485f8e3ac5f1c1cf830c32c0c936b78c6",
+        "7ea2012d5b4af54ef4e08945731798b32c308252a59d3c5446e3bab592bb0fa7",
+        "38d580",
+    );
+    // `seal(&[0x42; KEY_LEN], b"tilo authenticator known answer")` from the same implementation.
+    const LEGACY_BLOB: &str = concat!(
+        "514f4156013167e6c9c0727220a09abf8529ab69ffaccaf6fe2925e6884e9ae1",
+        "cc009de167689f2b086d0378def6c8be215b59618a75daff64de0e8b59a38973",
+        "d1a668b1559972f956191d6f",
+    );
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn legacy_fixture_vault() -> Vault {
+        let mut vault = Vault::new();
+        let mut account = Account::blank(uuid::Uuid::from_u128(
+            0x0123_4567_89ab_cdef_0123_4567_89ab_cdef,
+        ));
+        account.issuer = "Fixture Issuer".into();
+        account.label = "ada@example.com".into();
+        account.secret = "JBSWY3DPEHPK3PXP".into();
+        vault.upsert(account);
+        vault
+    }
+
+    #[test]
+    fn known_answer_blob_from_the_previous_implementation_opens() {
+        let blob = unhex(LEGACY_BLOB);
+        assert_eq!(&blob[..5], b"QOAV\x01");
+        assert_eq!(
+            open(&[0x42; KEY_LEN], &blob).unwrap().as_slice(),
+            b"tilo authenticator known answer"
+        );
+        assert!(open(&[0x43; KEY_LEN], &blob).is_none());
+    }
+
+    #[test]
+    fn vault_written_by_the_previous_implementation_loads_and_resaves() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), &unhex(LEGACY_KEY)).unwrap();
+        std::fs::write(dir.join("vault.enc"), unhex(LEGACY_VAULT)).unwrap();
+        let expected = legacy_fixture_vault().ordered();
+
+        let loaded = load_at_checked(&dir, KeyCustody::LocalFile).unwrap();
+        assert_eq!(loaded.ordered(), expected);
+        assert!(save_at_with_custody(&dir, &loaded, KeyCustody::LocalFile));
+        assert_eq!(
+            load_at_checked(&dir, KeyCustody::LocalFile)
+                .unwrap()
+                .ordered(),
+            expected
+        );
+        assert_eq!(
+            std::fs::read(dir.join("vault.key")).unwrap(),
+            unhex(LEGACY_KEY),
+            "reopening must keep the existing key"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_key_is_never_replaced_and_its_vault_survives() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let vault = legacy_fixture_vault();
+        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+        let key_path = dir.join("vault.key");
+        let key = std::fs::read(&key_path).unwrap();
+        let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
+
+        // A directory in the key's place fails every read, whatever the
+        // caller's privileges (a mode-000 file is still readable by root).
+        std::fs::remove_file(&key_path).unwrap();
+        std::fs::create_dir(&key_path).unwrap();
+        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+        assert!(!save_at_with_custody(
+            &dir,
+            &Vault::new(),
+            KeyCustody::LocalFile
+        ));
+        assert!(key_path.is_dir(), "the unreadable key must not be replaced");
+        assert_eq!(std::fs::read_dir(&key_path).unwrap().count(), 0);
+        std::fs::remove_dir(&key_path).unwrap();
+        std::fs::write(&key_path, &key).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(std::fs::read(&key_path).unwrap(), key);
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
+        assert_eq!(
+            load_at_checked(&dir, KeyCustody::LocalFile)
+                .unwrap()
+                .ordered(),
+            vault.ordered()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_key_never_rekeys_an_existing_vault() {
+        let dir = temp_dir();
+        assert!(save_at_with_custody(
+            &dir,
+            &legacy_fixture_vault(),
+            KeyCustody::LocalFile
+        ));
+        let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
+        std::fs::remove_file(dir.join("vault.key")).unwrap();
+
+        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+        assert!(!save_at_with_custody(
+            &dir,
+            &Vault::new(),
+            KeyCustody::LocalFile
+        ));
+        assert!(
+            !dir.join("vault.key").exists(),
+            "no replacement key is minted"
+        );
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_first_saves_share_one_key() {
+        for _ in 0..8 {
+            let dir = temp_dir();
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            // Spawn every participant before joining: interleaving spawn/join
+            // would deadlock the barrier.
+            let mut workers = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let dir = dir.clone();
+                let gate = std::sync::Arc::clone(&gate);
+                workers.push(std::thread::spawn(move || {
+                    gate.wait();
+                    let key = load_or_create_key(&dir, KeyCustody::LocalFile).unwrap();
+                    let saved =
+                        save_at_with_custody(&dir, &legacy_fixture_vault(), KeyCustody::LocalFile);
+                    (key, saved)
+                }));
+            }
+            let results: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let persisted = std::fs::read(dir.join("vault.key")).unwrap();
+            assert!(
+                results
+                    .iter()
+                    .all(|(key, saved)| { *saved && key.as_slice() == persisted.as_slice() })
+            );
+            assert_eq!(
+                load_at_checked(&dir, KeyCustody::LocalFile)
+                    .unwrap()
+                    .ordered(),
+                legacy_fixture_vault().ordered()
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -763,7 +681,7 @@ mod tests {
         // The sealed blob is not the plaintext.
         assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
         // It carries the magic header.
-        assert_eq!(&blob[..4], SEAL_MAGIC.as_slice());
+        assert_eq!(&blob[..4], FORMAT.magic.as_slice());
         // Round-trips under the same key.
         assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
         // A different key can't open it.
@@ -773,14 +691,6 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 0x01;
         assert!(open(&key, &tampered).is_none());
-    }
-
-    #[test]
-    fn secret_service_key_encoding_round_trips_and_rejects_bad_material() {
-        let key = [0xa5; KEY_LEN];
-        assert_eq!(decode_key(&encode_key(&key)).unwrap().as_ref(), &key);
-        assert!(decode_key("short").is_err());
-        assert!(decode_key(&"z".repeat(KEY_LEN * 2)).is_err());
     }
 
     #[test]

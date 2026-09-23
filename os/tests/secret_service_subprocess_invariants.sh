@@ -4,7 +4,6 @@ set -euo pipefail
 readonly consumers=(
   crates/system/accounts/src/vault.rs
   crates/system/secret-vault/src/lib.rs
-  apps/totp/src/storage.rs
   crates/runtime/runtime-identity/src/secure_store.rs
   crates/session/shell/src/shell/collab_mls_authority.rs
 )
