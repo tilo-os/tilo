@@ -56,7 +56,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 # XDG data-dir resolution for on-disk persistence of the workspace document.
-dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 # Read image headers for workspace attachments and encode demo thumbnails for
 # the shared `ui::ImageStore`.
 # Attachment bytes hydrate through qdoc's content-addressed blob store; no

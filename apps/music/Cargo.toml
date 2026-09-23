@@ -32,6 +32,7 @@ lyrics = ["dep:reqwest", "dep:tilo-net"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 dirs.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: document-mutating library edits (playlist create/rename/

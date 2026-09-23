@@ -148,10 +148,7 @@ mod platform {
             if file_id(&loaded_file)? != compiler.file_id {
                 return None;
             }
-            let base = std::env::var_os("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .or_else(dirs::cache_dir)?;
+            let base = xdg_paths::env_dir("XDG_CACHE_HOME").or_else(xdg_paths::cache_dir)?;
             let directory = base.join("tilo").join("dx12-shaders");
             private_fs::directory(&directory).ok()?;
             // One bounded file per app, so updates replace stale revisions and
