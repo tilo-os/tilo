@@ -169,23 +169,9 @@ pub fn timestamp_name() -> String {
     // Civil-date conversion (proleptic Gregorian) — avoids pulling in chrono.
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;
-    let (y, mo, d) = civil_from_days(days);
+    let (y, mo, d) = ui::date::civil_from_days(days);
     let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     format!("{y:04}{mo:02}{d:02}_{hh:02}{mm:02}{ss:02}_{millis:03}")
-}
-
-/// Days since Unix epoch → (year, month, day). Howard Hinnant's algorithm.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -261,14 +247,5 @@ mod tests {
             .is_err()
         );
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn civil_date_matches_known_epoch() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(1), (1970, 1, 2));
-        assert_eq!(civil_from_days(31), (1970, 2, 1));
-        // 18_809 days after the epoch is 2021-07-01.
-        assert_eq!(civil_from_days(18_809), (2021, 7, 1));
     }
 }
