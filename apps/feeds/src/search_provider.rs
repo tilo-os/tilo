@@ -161,7 +161,7 @@ fn article_subtitle(article: &Article, feed: &Feed) -> String {
 }
 
 impl CatalogSearchProvider for FeedsSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Feeds"
     }
 

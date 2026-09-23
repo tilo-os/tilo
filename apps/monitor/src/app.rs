@@ -518,7 +518,7 @@ impl MonitorProcessSearchProvider {
 }
 
 impl CatalogSearchProvider for MonitorProcessSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Processes"
     }
 

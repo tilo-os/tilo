@@ -226,7 +226,7 @@ fn media_text(item: &MediaItem) -> &str {
 }
 
 impl CatalogSearchProvider for ProjectSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Video editor"
     }
 
