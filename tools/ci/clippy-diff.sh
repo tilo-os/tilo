@@ -5,8 +5,9 @@
 # base and HEAD. HEAD compiler failures are fatal; existing sites may disappear,
 # but new sites may not appear. If the base itself does not compile, retain every
 # diagnostic it emitted before failing and compare HEAD against that partial
-# baseline. Any HEAD diagnostic absent from the partial baseline still fails,
-# while a pull request may repair a broken integration branch.
+# baseline. Diagnostics remain enforceable only for packages that completed at
+# least one base artifact; dependent packages the compiler never reached cannot
+# provide evidence that a HEAD diagnostic is new.
 
 set -uo pipefail
 
@@ -218,7 +219,7 @@ else
     : >"$base_json"
 fi
 
-python3 - "$base_json" "$head_json" "$base_tree" "$root" "$base_compiled" "$changed_paths" <<'PY'
+python3 - "$base_json" "$head_json" "$base_tree" "$root" "$base_compiled" "$changed_paths" "$base_metadata" <<'PY'
 import collections
 import json
 import pathlib
@@ -280,6 +281,21 @@ def diagnostics(path, tree, path_map=None):
     return fingerprints, examples
 
 
+def completed_packages(path):
+    packages = set()
+    with open(path, encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("reason") == "compiler-artifact":
+                package = record.get("package_id")
+                if package:
+                    packages.add(package)
+    return packages
+
+
 changed = set()
 renames = {}
 for line in pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").splitlines():
@@ -298,15 +314,40 @@ base, _ = diagnostics(sys.argv[1], sys.argv[3], renames)
 head, examples = diagnostics(sys.argv[2], sys.argv[4])
 introduced = head - base
 if sys.argv[5] != "true":
-    # An early compiler error can prevent Clippy from visiting unchanged files,
-    # so a partial baseline cannot prove those diagnostics are new. Continue to
-    # reject every diagnostic in a file the branch changed; unchanged base code
-    # remains the base branch's responsibility until it compiles again.
+    # An early compiler error can prevent Clippy from visiting entire dependent
+    # packages. A missing diagnostic in one of those packages is not evidence
+    # that HEAD introduced it. Keep enforcing the diff for changed files in
+    # packages that produced a completed compiler artifact, and for new packages
+    # that have no base baseline to preserve.
+    metadata = json.load(open(sys.argv[7], encoding="utf-8"))
+    compiled = completed_packages(sys.argv[1])
+    package_roots = []
+    for package in metadata["packages"]:
+        manifest = pathlib.Path(package["manifest_path"]).resolve()
+        relative_manifest = manifest.relative_to(pathlib.Path(sys.argv[3]).resolve()).as_posix()
+        head_manifest = renames.get(relative_manifest, relative_manifest)
+        package_roots.append((pathlib.PurePosixPath(head_manifest).parent, package["id"]))
+    package_roots.sort(key=lambda entry: len(entry[0].parts), reverse=True)
+
+    def base_package_for(file_name):
+        path = pathlib.PurePosixPath(file_name)
+        for root, package in package_roots:
+            if path == root or root in path.parents:
+                return package
+        return None
+
     introduced = collections.Counter(
         {
             fingerprint: count
             for fingerprint, count in introduced.items()
-            if fingerprint[1] == "<no-span>" or fingerprint[1] in changed
+            if fingerprint[1] == "<no-span>"
+            or (
+                fingerprint[1] in changed
+                and (
+                    base_package_for(fingerprint[1]) is None
+                    or base_package_for(fingerprint[1]) in compiled
+                )
+            )
         }
     )
 if not introduced:
