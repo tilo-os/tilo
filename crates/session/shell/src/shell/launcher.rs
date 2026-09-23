@@ -3144,13 +3144,23 @@ mod tests {
         }
     }
 
-    /// What the spawned launcher's environment will say about `name`:
-    /// `Some(None)` is an explicit removal, `None` is "inherited unchanged".
-    fn launcher_env_entry(command: &std::process::Command, name: &str) -> Option<Option<String>> {
-        command
+    /// What the spawned launcher's environment will say about a variable.
+    #[derive(Debug, PartialEq, Eq)]
+    enum LauncherEnv {
+        Inherited,
+        Removed,
+        Set(String),
+    }
+
+    fn launcher_env_entry(command: &std::process::Command, name: &str) -> LauncherEnv {
+        match command
             .get_envs()
             .find(|(key, _)| *key == std::ffi::OsStr::new(name))
-            .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        {
+            None => LauncherEnv::Inherited,
+            Some((_, None)) => LauncherEnv::Removed,
+            Some((_, Some(value))) => LauncherEnv::Set(value.to_string_lossy().into_owned()),
+        }
     }
 
     #[test]
@@ -3161,13 +3171,13 @@ mod tests {
         for name in launcher::dev_env::DEV_OVERRIDE_VARS {
             assert_eq!(
                 launcher_env_entry(&command, name),
-                Some(None),
+                LauncherEnv::Removed,
                 "{name} must be removed from the launcher's environment",
             );
         }
         assert_eq!(
             launcher_env_entry(&command, "XDG_RUNTIME_DIR"),
-            Some(Some("/run/user/1000".to_string())),
+            LauncherEnv::Set("/run/user/1000".to_string()),
         );
         // The overlay the developer session relies on is covered by the list.
         for name in [
@@ -3193,9 +3203,12 @@ mod tests {
         apply_launch_env_with(&mut command, &env, true);
         assert_eq!(
             launcher_env_entry(&command, "TILO_RUNTIME_BUNDLE_DIR"),
-            Some(Some("/dev/runtime".to_string())),
+            LauncherEnv::Set("/dev/runtime".to_string()),
         );
-        assert_eq!(launcher_env_entry(&command, "TILO_JIT_ENTITLED_FILE"), None);
+        assert_eq!(
+            launcher_env_entry(&command, "TILO_JIT_ENTITLED_FILE"),
+            LauncherEnv::Inherited
+        );
     }
 
     #[test]
