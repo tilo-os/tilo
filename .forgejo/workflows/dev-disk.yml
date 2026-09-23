@@ -269,9 +269,12 @@ jobs:
           set -euo pipefail
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
+          rpms_ref=$(sed -n 's/^RPMS_REF=//p' os/rpms-snapshot.env)
+          test -n "$rpms_ref" || { echo '::error::os/rpms-snapshot.env pins no RPMS_REF'; exit 1; }
           podman build \
             --file os/Containerfile.dev \
             --build-arg "BASE_IMAGE=$BASE_CHILD" \
+            --build-arg "RPMS_REF=$rpms_ref" \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --label "org.opencontainers.image.version=$DEV_TAG" \
             --label "org.opencontainers.image.revision=$SOURCE_REVISION" \

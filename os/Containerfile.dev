@@ -48,11 +48,11 @@
 # a CI image (code.podesta.ai/qos/tilo:<tag> or @sha256:...), or the unsealed
 # `rootfs` target of os/Containerfile.
 ARG BASE_IMAGE=localhost/tilo:latest
-# The frozen RPM snapshot the production image was built from. It must equal
-# RPMS_REF in os/rpms-snapshot.env, which tools/policy/check_dev_image_contract.py
-# checks, so a build of any commit installs what that commit's production
-# builder installed.
-ARG RPMS_REF=code.podesta.ai/qos/rpms@sha256:2caf1fe6010a981f7465754029ffdb92e4ae114246bdbb582d622fe4869c43fa
+# The frozen RPM snapshot the production image was built from. Like
+# os/Containerfile, this has no default: os/dev/build-dev-image.sh and
+# .forgejo/workflows/dev-disk.yml pass RPMS_REF from os/rpms-snapshot.env, so a
+# build of any commit installs what that commit's production builder installed.
+ARG RPMS_REF
 
 FROM ${RPMS_REF} AS rpms
 
