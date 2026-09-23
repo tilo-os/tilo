@@ -503,7 +503,7 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(parent, key) else {
             return false;
         };
-        read_bool(doc, &tombstones, &id.to_string()).unwrap_or(false)
+        read_bool(doc, &tombstones, id.to_string()).unwrap_or(false)
     }
 
     fn read_markers(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<Marker> {

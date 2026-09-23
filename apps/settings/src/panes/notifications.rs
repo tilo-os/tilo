@@ -764,43 +764,43 @@ impl NotificationsPane {
         let now = unix_now();
         for app in &self.apps {
             let rule = self.prefs.per_app.entry(app.id.clone()).or_default();
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "banners"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "banners"))
                 && rule.banners != Some(value)
             {
                 rule.banners = Some(value);
                 changed = true;
             }
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "previews"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "previews"))
                 && rule.previews != Some(value)
             {
                 rule.previews = Some(value);
                 changed = true;
             }
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "sounds"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "sounds"))
                 && rule.sounds != Some(value)
             {
                 rule.sounds = Some(value);
                 changed = true;
             }
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "badges"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "badges"))
                 && rule.badges != Some(value)
             {
                 rule.badges = Some(value);
                 changed = true;
             }
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "priority"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "priority"))
                 && rule.priority != value
             {
                 rule.priority = value;
                 changed = true;
             }
-            if let Some(value) = read_bool(state, root, &app_key(&app.id, "priority_contacts"))
+            if let Some(value) = read_bool(state, root, app_key(&app.id, "priority_contacts"))
                 && rule.priority_contacts != value
             {
                 rule.priority_contacts = value;
                 changed = true;
             }
-            if let Some(label) = read_str(state, root, &app_key(&app.id, "mute"))
+            if let Some(label) = read_str(state, root, app_key(&app.id, "mute"))
                 && let Some(seconds) = mute_seconds(&label)
                 && self.mute_labels.get(&app.id).map(String::as_str) != Some(label.as_str())
             {

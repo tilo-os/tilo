@@ -2232,9 +2232,9 @@ impl NetworkPane {
                 continue;
             }
             let config = IpConfiguration {
-                automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic"))
+                automatic: read_bool(state, root, ipv4_key(&profile.uuid, "automatic"))
                     .unwrap_or(false),
-                addresses: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "address"))
+                addresses: read_str_or_text(state, root, ipv4_key(&profile.uuid, "address"))
                     .into_iter()
                     .flat_map(|value| {
                         value
@@ -2246,9 +2246,9 @@ impl NetworkPane {
                             .collect::<Vec<_>>()
                     })
                     .collect(),
-                gateway: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "gateway"))
+                gateway: read_str_or_text(state, root, ipv4_key(&profile.uuid, "gateway"))
                     .filter(|v| !v.trim().is_empty()),
-                dns: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "dns"))
+                dns: read_str_or_text(state, root, ipv4_key(&profile.uuid, "dns"))
                     .into_iter()
                     .flat_map(|value| {
                         value
@@ -2361,7 +2361,7 @@ impl NetworkPane {
             let requested_metered = match read_str_or_text(
                 state,
                 root,
-                &format!("network.profile.metered.{}", profile.uuid),
+                format!("network.profile.metered.{}", profile.uuid),
             )
             .as_deref()
             {
@@ -2373,7 +2373,7 @@ impl NetworkPane {
             let requested_mac = match read_str_or_text(
                 state,
                 root,
-                &format!("network.profile.mac.{}", profile.uuid),
+                format!("network.profile.mac.{}", profile.uuid),
             )
             .as_deref()
             {
@@ -2385,7 +2385,7 @@ impl NetworkPane {
             let requested_proxy_url = read_str_or_text(
                 state,
                 root,
-                &format!("network.profile.proxy.{}", profile.uuid),
+                format!("network.profile.proxy.{}", profile.uuid),
             )
             .filter(|s| !s.trim().is_empty());
             let requested_proxy =
@@ -2557,7 +2557,7 @@ impl NetworkPane {
         let requested_profiles: Vec<String> = self
             .vpns
             .iter()
-            .filter(|vpn| read_bool(state, root, &Self::vpn_studio_key(&vpn.name)).unwrap_or(false))
+            .filter(|vpn| read_bool(state, root, Self::vpn_studio_key(&vpn.name)).unwrap_or(false))
             .map(|vpn| vpn.name.clone())
             .collect();
         for profile in requested_profiles {
@@ -3434,7 +3434,7 @@ mod tests {
                 profile: Some("Work VPN".into()),
             }]
         );
-        assert!(!read_bool(&doc, &root, &NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false));
+        assert!(!read_bool(&doc, &root, NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false));
     }
 
     #[test]
@@ -3490,7 +3490,7 @@ mod tests {
             read_str_or_text(
                 &doc,
                 &automerge::ROOT,
-                &format!("network.profile.metered.{}", wifi.uuid)
+                format!("network.profile.metered.{}", wifi.uuid)
             )
             .as_deref(),
             Some("Metered")
@@ -3499,16 +3499,16 @@ mod tests {
             read_str_or_text(
                 &doc,
                 &automerge::ROOT,
-                &format!("network.profile.proxy.{}", wifi.uuid)
+                format!("network.profile.proxy.{}", wifi.uuid)
             )
             .as_deref(),
             Some("https://proxy.example/pac")
         );
         assert!(
-            !read_bool(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "automatic")).unwrap_or(false)
+            !read_bool(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "automatic")).unwrap_or(false)
         );
         assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "address")).as_deref(),
+            read_str_or_text(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "address")).as_deref(),
             Some("192.0.2.44/24")
         );
     }
