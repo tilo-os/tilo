@@ -1,0 +1,44 @@
+[Unit]
+Description=Recognise a Tilo installer staged on this disk by Tilo Imager
+# ONLY on the installer live medium. On USB media there is no staging ESP and
+# this publishes nothing; the installer then behaves exactly as before.
+ConditionKernelCommandLine=tilo.install
+ConditionPathExists=/sys/firmware/efi/efivars
+# /run/tilo-installer exists (and is labelled) once the setup unit has run;
+# the unprivileged installer UI reads the validated copy after greetd starts.
+After=local-fs.target tilo-installer-setup.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Reads LoaderDevicePartUUID, mounts the booted ESP read-only in this unit's
+# private namespace, and publishes a validated copy of its handoff. It never
+# writes to a disk or a firmware variable. A malformed handoff is reported to
+# the UI through handoff.error and never blocks the installer.
+ExecStart=/usr/libexec/tilo-staging-handoff detect --out /run/tilo-installer/handoff.json --error /run/tilo-installer/handoff.error
+ExecStartPost=-/usr/sbin/restorecon -RF /run/tilo-installer
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/tilo-installer
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
