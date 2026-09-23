@@ -1856,7 +1856,7 @@ impl Widget for DeviceMeshPane {
             if read_bool(state, root, &revoke_key) == Some(true) {
                 let _ = state.put(root, &revoke_key, false);
                 if self.personal_remove_armed.remove(&device.key) {
-                    let reason = read_str(state, root, &personal_device_key("reason", &device.key))
+                    let reason = read_str(state, root, personal_device_key("reason", &device.key))
                         .map_or(RevocationReason::Retired, |label| revocation_reason(&label));
                     match crate::device_fleet::revoke(device.key, reason) {
                         Ok(()) => {
@@ -1879,7 +1879,7 @@ impl Widget for DeviceMeshPane {
             let rename_key = peer_key("rename", &peer.device_node_id);
             if read_bool(state, root, &rename_key) == Some(true) {
                 let _ = state.put(root, &rename_key, false);
-                if let Some(label) = read_str(state, root, &peer_key("name", &peer.device_node_id))
+                if let Some(label) = read_str(state, root, peer_key("name", &peer.device_node_id))
                     && tilo_relay::valid_home_peer_label(&label)
                 {
                     self.start_home_peer_command(&peer, "home-peer-rename", Some(label.trim()));
@@ -2414,7 +2414,7 @@ mod tests {
 
         assert!(pane.personal_remove_armed.contains(&key));
         assert_eq!(
-            read_str(&doc, &automerge::ROOT, &personal_device_key("reason", &key)).as_deref(),
+            read_str(&doc, &automerge::ROOT, personal_device_key("reason", &key)).as_deref(),
             Some("Retired")
         );
     }

@@ -1632,7 +1632,7 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             key,
             "Not muted, For 1 hour, For 8 hours, For 24 hours",
             &["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
-            read_str_or_text(doc, &ROOT, &format!("notifications.app.{app_id}.mute"))
+            read_str_or_text(doc, &ROOT, format!("notifications.app.{app_id}.mute"))
                 .unwrap_or_else(|| "Not muted".into()),
         ));
         sec = sec.with_child(resource);

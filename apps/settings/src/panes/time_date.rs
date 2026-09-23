@@ -1168,7 +1168,7 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            read_str_or_text(&doc, &root, &draft_key(TIMEZONE_KEY)).as_deref(),
+            read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
             Some("Europe/Berlin")
         );
         assert!(map.needs_commit(), "a real timezone choice is durable");

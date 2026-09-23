@@ -1913,7 +1913,7 @@ impl AudioPane {
             self.dispatch_stream(state, root, s);
         }
         for hw in &self.graph.hardware {
-            let Some(choice) = read_str_or_text(state, root, &device_profile_key(hw.id)) else {
+            let Some(choice) = read_str_or_text(state, root, device_profile_key(hw.id)) else {
                 continue;
             };
             if self.last_device_profile.get(&hw.id) == Some(&choice) {
@@ -2609,7 +2609,7 @@ Video
         );
         // The stream on the default sink seeds its picker to "Default".
         assert_eq!(
-            read_str_or_text(&doc, &root, &stream_sink_key(84)).as_deref(),
+            read_str_or_text(&doc, &root, stream_sink_key(84)).as_deref(),
             Some(FOLLOW_DEFAULT)
         );
     }
