@@ -23,6 +23,7 @@ use super::{
 };
 
 use crate::time::Duration;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1251,7 +1252,7 @@ impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
 
 fn harness_document_signer() -> SdkDocumentSigner {
     SdkDocumentSigner::Harness(Box::new(ed25519_dalek::SigningKey::generate(
-        &mut rand_core::OsRng,
+        &mut UnwrapErr(SysRng),
     )))
 }
 

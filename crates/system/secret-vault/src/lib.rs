@@ -43,7 +43,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
@@ -120,7 +120,7 @@ impl VaultFormat {
         use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
+        SysRng.try_fill_bytes(&mut nonce_bytes).ok()?;
         let cipher = XChaCha20Poly1305::new(<&Key>::from(key));
         let ciphertext = cipher
             .encrypt(<&XNonce>::from(&nonce_bytes), plaintext)
@@ -213,7 +213,7 @@ impl VaultFormat {
                     return None;
                 }
                 let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                OsRng.try_fill_bytes(key.as_mut_slice()).ok()?;
+                SysRng.try_fill_bytes(key.as_mut_slice()).ok()?;
                 (key, false)
             }
             Err(error) => {
@@ -323,7 +323,7 @@ impl VaultFormat {
                     return None;
                 }
                 let mut key = Zeroizing::new([0u8; KEY_LEN]);
-                if OsRng.try_fill_bytes(key.as_mut_slice()).is_err() {
+                if SysRng.try_fill_bytes(key.as_mut_slice()).is_err() {
                     return None;
                 }
                 if let Err(error) = std::fs::create_dir_all(dir) {

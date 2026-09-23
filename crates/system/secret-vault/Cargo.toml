@@ -14,10 +14,10 @@ path = "src/lib.rs"
 private-fs = { path = "../private-fs" }
 bounded-command = { path = "../bounded-command" }
 tracing.workspace = true
-# XChaCha20-Poly1305 seals the vault; `rand_core`'s OsRng draws keys and
+# XChaCha20-Poly1305 seals the vault; getrandom's `SysRng` draws keys and
 # per-write nonces from the OS CSPRNG; `zeroize` wipes keys and plaintext.
 chacha20poly1305.workspace = true
-rand_core = { workspace = true, features = ["getrandom"] }
+getrandom.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]

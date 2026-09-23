@@ -190,6 +190,7 @@ tilo-actions = { path = "../../collab/actions" }
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned
 # to the same major as `tilo-collab-types`.
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
@@ -226,11 +227,9 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
 serde_bytes.workspace = true
 thiserror.workspace = true
-# The identity-flow screens need a `CryptoRng + RngCore` compatible with
-# `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
-# directly (rather than reaching through `rand`) keeps the requirement
-# visible at the manifest level.
-rand_core = { workspace = true, features = ["getrandom"] }
+# The identity-flow screens hand a `rand_core` `CryptoRng` to
+# threshold-identity and ed25519-dalek; OS randomness comes from getrandom.
+rand_core.workspace = true
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
 # adapter bridges our exported tree into the event loop and, via its default
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs

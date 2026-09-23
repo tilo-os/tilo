@@ -24,9 +24,9 @@ tracing.workspace = true
 # Settings app does, so every app agrees on one directory.
 dirs.workspace = true
 
-# `rand_core`'s OsRng draws generated passwords from the OS CSPRNG; `zeroize`
-# wipes decrypted plaintext from the heap.
-rand_core = { workspace = true, features = ["getrandom"] }
+# getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
+# `zeroize` wipes decrypted plaintext from the heap.
+getrandom.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true

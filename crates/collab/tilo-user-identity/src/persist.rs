@@ -27,6 +27,7 @@
 //! root (or the reader for an injected/test store) and never reachable by
 //! anyone outside that group.
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
@@ -633,7 +634,7 @@ pub fn load_or_create_device_key(
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             paths.ensure_directories()?;
-            let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+            let sk = SigningKey::generate(&mut UnwrapErr(SysRng));
             let created = publish_device_key_no_clobber(path, &sk)?;
             // Always reload the final path.  When a simultaneous creator won
             // the atomic claim, returning our locally generated key would

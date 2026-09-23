@@ -22,6 +22,7 @@ name = "runtime_identity"
 path = "src/lib.rs"
 
 [dependencies]
+getrandom.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
@@ -42,7 +43,7 @@ libc.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
 argon2.workspace = true
-rand_core = { workspace = true, features = ["getrandom"] }
+rand_core.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true

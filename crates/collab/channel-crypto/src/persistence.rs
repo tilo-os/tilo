@@ -9,11 +9,12 @@ use std::path::Path;
 
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use openmls::prelude::{GroupId, MlsGroup, SignatureScheme};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider as _;
-use rand::RngCore as _;
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -116,7 +117,7 @@ impl ChannelGroup {
         let cipher = XChaCha20Poly1305::new_from_slice(&key.0)
             .map_err(|_| Error::StateCrypto("invalid vault key"))?;
         let mut nonce = [0_u8; NONCE_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let ciphertext = cipher
             .encrypt(
                 <&XNonce>::from(&nonce),

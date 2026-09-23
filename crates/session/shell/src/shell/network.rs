@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use rand_core::RngCore;
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -3125,7 +3126,7 @@ impl ShellNetwork {
         }
         let mut transfer_id = [0_u8; 16];
         while transfer_id == [0; 16] {
-            rand_core::OsRng.fill_bytes(&mut transfer_id);
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
         }
         let ws = personal_continuity_topic_id(&user_public_key);
         if !self.join_topic(ws) {
@@ -3355,7 +3356,7 @@ impl ShellNetwork {
 
         let mut request_id = [0; 16];
         while request_id == [0; 16] {
-            rand_core::OsRng.fill_bytes(&mut request_id);
+            UnwrapErr(SysRng).fill_bytes(&mut request_id);
         }
         let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
             request_id,

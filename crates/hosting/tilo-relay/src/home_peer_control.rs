@@ -1,5 +1,6 @@
 //! Polkit-facing, narrowly scoped home-peer configuration broker.
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::os::unix::process::CommandExt as _;
@@ -167,7 +168,7 @@ fn service(action: &str, unit: &str) -> anyhow::Result<()> {
 
 fn export_local_home_peer(identity_root: &Path, workspace_ids: &[u64]) -> anyhow::Result<Vec<u8>> {
     let mut random = [0_u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut random);
+    getrandom::rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut random);
     let temp_dir = PathBuf::from(format!(
         "/etc/tilo/.home-peer-export-{}-{}",
         std::process::id(),

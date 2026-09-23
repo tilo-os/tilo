@@ -11,7 +11,8 @@ use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
-use rand::RngCore as _;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_relay::HomePeerRegistration;
@@ -1061,7 +1062,7 @@ fn pair_offer_key(
 
 fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
     let mut seed = [0_u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut seed);
+    UnwrapErr(SysRng).fill_bytes(&mut seed);
     let ephemeral = x25519_dalek::StaticSecret::from(seed);
     let ephemeral_public_key = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
     let recipient_public = VerifyingKey::from_bytes(&recipient)?
@@ -1070,7 +1071,7 @@ fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8
     let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(recipient_public));
     let key = pair_offer_key(shared.as_bytes(), recipient, ephemeral_public_key);
     let mut nonce = [0_u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
             <&Nonce>::from(&nonce),
@@ -1133,7 +1134,7 @@ fn encrypt_request(
     issuer_device_public_key: [u8; 32],
 ) -> anyhow::Result<(Vec<u8>, x25519_dalek::StaticSecret)> {
     let mut seed = [0_u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut seed);
+    UnwrapErr(SysRng).fill_bytes(&mut seed);
     let ephemeral = x25519_dalek::StaticSecret::from(seed);
     let ephemeral_public_key = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
     let issuer_public = VerifyingKey::from_bytes(&issuer_device_public_key)?
@@ -1142,7 +1143,7 @@ fn encrypt_request(
     let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(issuer_public));
     let key = request_key(shared.as_bytes(), ephemeral_public_key);
     let mut nonce = [0_u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
             <&Nonce>::from(&nonce),
@@ -1202,14 +1203,14 @@ fn encrypt_response(
     recipient_ephemeral_public_key: [u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
     let mut ephemeral_seed = [0_u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut ephemeral_seed);
+    UnwrapErr(SysRng).fill_bytes(&mut ephemeral_seed);
     let ephemeral = x25519_dalek::StaticSecret::from(ephemeral_seed);
     let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(
         recipient_ephemeral_public_key,
     ));
     let key = response_key(shared.as_bytes(), token_nonce, recipient);
     let mut nonce = [0_u8; 12];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut nonce);
     let ciphertext = ChaCha20Poly1305::new((&key).into())
         .encrypt(
             <&Nonce>::from(&nonce),
@@ -1899,7 +1900,7 @@ fn handle_solicitation(
     }
     if selected.is_none() {
         let mut nonce = [0_u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let issued_at_ns = now_ns()?;
         let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
         let capabilities = match kind {

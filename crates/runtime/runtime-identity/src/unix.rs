@@ -977,7 +977,7 @@ impl SigningIdentity {
     ///
     /// Returns [`NotAvailable`] when this is not a host-local threshold share,
     /// the identity lock is poisoned, or FROST round-one setup fails.
-    pub fn threshold_sign_round1<R: rand_core::CryptoRng + rand_core::RngCore>(
+    pub fn threshold_sign_round1<R: rand_core::CryptoRng + ?Sized>(
         &self,
         rng: &mut R,
     ) -> Result<SigningRound1, NotAvailable> {
@@ -1624,6 +1624,7 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn secret_service_unavailability_has_a_typed_classification() {
@@ -1954,7 +1955,7 @@ mod tests {
 
     #[test]
     fn real_threshold_share_restores_and_participates_in_broker_rounds() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();

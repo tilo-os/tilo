@@ -27,8 +27,9 @@ use collab_types::{
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
 };
 use ed25519_dalek::SigningKey as DalekSigningKey;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use hmac::{Hmac, KeyInit, Mac};
-use rand_core::{OsRng, RngCore};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
@@ -1506,7 +1507,7 @@ impl InviteRedemptionAuthority {
             bytes
         } else {
             let mut key = zeroize::Zeroizing::new([0; 32]);
-            OsRng.fill_bytes(&mut *key);
+            UnwrapErr(SysRng).fill_bytes(&mut *key);
             // Publication never replaces a concurrently created key; the
             // loser adopts the winner's.
             if private_fs::create_atomic(&path, &*key)? {
@@ -1586,7 +1587,7 @@ impl InviteRedemptionAuthority {
         let key = self.master_key()?;
         let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
         let mut nonce = [0; 24];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let digest = Sha512::digest(capability);
         let mut aad = Vec::with_capacity(72);
         aad.extend_from_slice(&digest);
@@ -1903,7 +1904,7 @@ fn mint_invite_at(
 ) -> Result<InviteEnvelope, IdentityFlowError> {
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
-    OsRng.fill_bytes(&mut capability);
+    UnwrapErr(SysRng).fill_bytes(&mut capability);
     let expires_unix = expires_at
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(u64::MAX, |d| d.as_secs());
@@ -2043,9 +2044,9 @@ impl RecoveryChallenge {
                 words.len()
             )));
         }
-        // Fisher–Yates directly on RngCore — avoids rand 0.8's SliceRandom.
+        // Fisher–Yates directly on the OS RNG; no `rand` dependency needed.
         let mut positions: Vec<usize> = (1..=24).collect();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         for i in (1..positions.len()).rev() {
             let j = (rng.next_u32() as usize)
                 .checked_rem(i.saturating_add(1))
@@ -2808,7 +2809,7 @@ mod tests {
     #[test]
     fn pairing_payload_round_trip() {
         let nonce = [9u8; 16];
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let payload = PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
@@ -3123,7 +3124,7 @@ mod tests {
 
     #[test]
     fn identity_record_json_round_trip() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec = IdentityRecord::from_threshold_identity(
             &id,
@@ -3152,7 +3153,7 @@ mod tests {
     fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
         use ed25519_dalek::{Signer, Verifier, VerifyingKey};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec = IdentityRecord::from_threshold_identity(
             &id,
@@ -3190,7 +3191,7 @@ mod tests {
     fn identity_record_round_trips_back_into_a_signing_identity() {
         use collab_types::verify_event;
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec =
             IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], crate::time::wall())
@@ -3230,7 +3231,7 @@ mod tests {
 
     #[test]
     fn memory_store_round_trip() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec = IdentityRecord::from_threshold_identity(
             &id,
@@ -3268,7 +3269,7 @@ mod tests {
     fn pairing_handshake_publishes_the_complete_pairer_exchange_atomically() {
         let hs = PairingHandshake::new();
         let nonce = [0xAB; 16];
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut identity = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = identity.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         let round2 = EnrolmentRound2 {
@@ -3324,7 +3325,7 @@ mod tests {
         use threshold_identity::SigningRound1Commitment;
 
         // Host and pairer each bootstrap, then begin enrolment toward a 2-of-2 group.
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut host = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut host_session, host_round1) = host.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();

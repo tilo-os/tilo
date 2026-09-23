@@ -45,7 +45,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::OwnedValue;
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -722,7 +723,7 @@ impl NotificationBridge {
 fn random_nonzero_token() -> [u8; 16] {
     let mut token = [0; 16];
     while token == [0; 16] {
-        OsRng.fill_bytes(&mut token);
+        UnwrapErr(SysRng).fill_bytes(&mut token);
     }
     token
 }

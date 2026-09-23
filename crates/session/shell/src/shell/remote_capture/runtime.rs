@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Instant;
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 
 use crate::portal::CaptureBroker;
 use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
@@ -1215,7 +1216,7 @@ fn availability_supports(availability: RemoteCaptureAvailability, kind: RemoteCa
 fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
     loop {
         let mut id = [0; 16];
-        OsRng.fill_bytes(&mut id);
+        UnwrapErr(SysRng).fill_bytes(&mut id);
         if id != [0; 16] && !exists(&id) {
             return id;
         }
