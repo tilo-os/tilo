@@ -711,12 +711,16 @@ impl Widget for Card {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
         // Card is a vertical flex container. Let its height grow with its
-        // controls instead of allowing Taffy to shrink form fields and the
-        // recovery acknowledgement to zero when Review is taller than the
-        // viewport. The surrounding Scrollable handles that overflow.
+        // controls instead of allowing Taffy to collapse form fields and the
+        // recovery acknowledgement when Review is taller than the viewport.
+        // ActionButton's zero flex basis and growth are for horizontal nav
+        // rows; as direct children of this column they must use intrinsic
+        // height. The surrounding Scrollable handles vertical overflow.
         for &child_node in &child_nodes {
             if let Ok(style) = taffy.style(child_node) {
                 let mut style = style.clone();
+                style.flex_basis = Dimension::auto();
+                style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
                 let _ = taffy.set_style(child_node, style);
             }
