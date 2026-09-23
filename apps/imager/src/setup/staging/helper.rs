@@ -18,8 +18,8 @@ use super::handoff::{self, Handoff};
 use super::plan::{Basis, Plan};
 use super::platform::{Disk, NewPartition, Partition, Platform};
 use super::record::{
-    OriginalFirmware, OwnedBootEntry, Record, RecordStatus, RecordStore, ReleaseRef, Step,
-    StepState,
+    OriginalFirmware, OwnedBootEntry, Record, RecordStatus, RecordStore, RecordedBundle,
+    RecordedComponent, ReleaseRef, Step, StepState,
 };
 
 pub const STAGING_HELPER_ARG: &str = "--tilo-staging-helper";
@@ -382,7 +382,7 @@ pub fn execute(
     };
     match request.action {
         Action::Stage => engine.stage(authority),
-        Action::Arm => engine.arm(authority),
+        Action::Arm => engine.arm(),
         Action::Remove => engine.remove(),
     }
 }
@@ -1571,6 +1571,21 @@ impl Engine<'_> {
             ));
             self.save()?;
         }
+        if self.record().bundle.is_none() {
+            let facts = self.facts();
+            let bundle = RecordedBundle {
+                esp: RecordedComponent {
+                    byte_size: facts.esp.byte_size,
+                    sha256: facts.esp.sha256.clone(),
+                },
+                root: RecordedComponent {
+                    byte_size: facts.root.byte_size,
+                    sha256: facts.root.sha256.clone(),
+                },
+            };
+            self.record_mut().bundle = Some(bundle);
+            self.save()?;
+        }
         if self.record().state(Step::RemoveEsp).is_some()
             || self.record().state(Step::RemoveRoot).is_some()
         {
@@ -1585,19 +1600,36 @@ impl Engine<'_> {
         self.write_record_copy()
     }
 
-    fn arm(&mut self, authority: &dyn ReleaseAuthority) -> Result<(), Refusal> {
-        self.resolve_release(authority)?;
+    /// Authorised by the root-owned record alone: the request's manifest
+    /// and component paths are ignored (the UI sends them empty, and the
+    /// download may be gone). Readback is checked against the digests the
+    /// record captured when `stage` verified the bundle.
+    fn arm(&mut self) -> Result<(), Refusal> {
         self.record = self.load_record()?;
         let staged = self.record.as_ref().is_some_and(|r| {
             Step::STAGE[..8].iter().all(|s| r.is_done(*s))
                 && Step::REMOVE.iter().all(|s| r.state(*s).is_none())
         });
-        if !staged {
+        let bundle = self.record.as_ref().and_then(|r| r.bundle.clone());
+        let (true, Some(bundle)) = (staged, bundle) else {
             return Err(Refusal::new(
                 codes::NOT_STAGED,
                 "nothing complete is staged to arm",
             ));
-        }
+        };
+        let component = |c: &RecordedComponent| super::bundle::ComponentFacts {
+            byte_size: c.byte_size,
+            sha256: c.sha256.clone(),
+            minimum_partition_bytes: c.byte_size,
+        };
+        let release = &self.record().release;
+        self.facts = Some(BundleFacts {
+            release_id: release.release_id.clone(),
+            architecture: release.architecture.clone(),
+            esp: component(&bundle.esp),
+            root: component(&bundle.root),
+            efi_path: self.plan().boot_entry.loader_path.replace('\\', "/"),
+        });
         self.firmware_preconditions()?;
         for step in [
             Step::CreateEsp,
