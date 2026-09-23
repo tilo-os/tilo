@@ -2,7 +2,12 @@
 //! timecodes, "time ago" labels, compact counts, and month/weekday names.
 //!
 //! [`bytes`] uses IEC binary units while [`bytes_si`] uses SI decimal units, so
-//! callers choose an unambiguous convention.
+//! callers choose an unambiguous convention. The platform's rule, shared with
+//! Files, Disks and the Storage pane: anything stored or transferred (files,
+//! downloads, caches, packages, drives and partitions) uses [`bytes_si`], the
+//! way drives are sold and file managers count; memory uses [`bytes`]. A flow
+//! whose requirements are themselves stated in binary units (the installer's
+//! GiB partition minimums) stays binary throughout so its numbers compare.
 //!
 //! Month/weekday lookups are index-based (not string-keyed) so a caller
 //! wiring `fluent` in can map the index to a translated string without this
@@ -27,8 +32,8 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Format a byte count with **base-1000 SI decimal units** (`B`, `kB`, `MB`,
-/// `GB`, `TB`, …), for callers that report a decimal
-/// quantity. Most callers want [`bytes`].
+/// `GB`, `TB`, …), for anything stored or transferred (see the module docs).
+/// Memory uses [`bytes`].
 ///
 /// ```
 /// use tilo_ui::format::bytes_si;

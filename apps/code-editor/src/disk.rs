@@ -66,8 +66,8 @@ impl std::fmt::Display for LoadError {
             LoadError::TooLarge(n) => write!(
                 f,
                 "file is {} — too large to open as text (limit {})",
-                human_bytes(*n),
-                human_bytes(MAX_TEXT_BYTES)
+                ui::format::bytes_si(*n),
+                ui::format::bytes_si(MAX_TEXT_BYTES)
             ),
             LoadError::NotText => write!(f, "not a text file"),
         }
@@ -191,22 +191,6 @@ pub const IGNORED_DIRS: &[&str] = &[
 /// type-gated test lets it through and it shows up as an openable source file.
 pub fn is_ignored_dir(name: &str) -> bool {
     IGNORED_DIRS.contains(&name)
-}
-
-/// Format a byte count for a message a person reads.
-pub fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n} {}", UNITS[0])
-    } else {
-        format!("{v:.1} {}", UNITS.get(u).unwrap_or(&"?"))
-    }
 }
 
 /// The absolute, symlink-resolved form of `path`, falling back to the input
@@ -348,9 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn human_bytes_reads_naturally() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(2048), "2.0 KB");
-        assert_eq!(human_bytes(8 * 1024 * 1024), "8.0 MB");
+    fn too_large_message_uses_si_units() {
+        let message = LoadError::TooLarge(MAX_TEXT_BYTES + 1).to_string();
+        assert!(
+            message.ends_with("too large to open as text (limit 8.4 MB)"),
+            "{message}"
+        );
     }
 }

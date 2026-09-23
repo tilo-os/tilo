@@ -657,7 +657,7 @@ impl OfflinePanel {
         } else {
             format!(
                 "≈ {estimate} tiles ({})",
-                fmt_bytes(u64::from(estimate) * 18_000)
+                ui::format::bytes_si(u64::from(estimate) * 18_000)
             )
         };
         draw::text(
@@ -695,7 +695,7 @@ impl OfflinePanel {
             scene,
             text,
             transform,
-            &format!("Cached on disk: {}", fmt_bytes(self.cache_bytes)),
+            &format!("Cached on disk: {}", ui::format::bytes_si(self.cache_bytes)),
             left,
             y,
             12.0,
@@ -881,18 +881,6 @@ fn draw_trash(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
 
 fn vmid_scaled(y: f64, height: f64, size: f32, text_scale: f64) -> f64 {
     y + (height - f64::from(size) * text_scale) / 2.0 - 1.0
-}
-
-fn fmt_bytes(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
-    } else if bytes >= 1_000_000 {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1} KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 #[cfg(test)]

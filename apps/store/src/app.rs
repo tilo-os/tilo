@@ -264,15 +264,10 @@ fn publisher_identity_lines(item: &StoreItem) -> Vec<String> {
 }
 
 fn format_size(bytes: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
     if bytes == 0 {
         return "Size not published".into();
     }
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    }
+    ui::format::bytes_si(bytes)
 }
 
 /// A compact, printable status detail for the visible progress/error surface.
