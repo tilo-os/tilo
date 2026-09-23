@@ -18257,7 +18257,6 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "fluent",
  "qdoc",
  "qdoc-pdf",
  "regex",
@@ -18268,7 +18267,6 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "unic-langid",
  "url",
  "vello",
  "winit",
