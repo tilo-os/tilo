@@ -881,6 +881,89 @@ mod tests {
     }
 
     #[test]
+    fn sha256_matches_nist_multi_block_vectors() {
+        // FIPS 180-4 example vectors that cross the one-block padding boundary
+        // (56 bytes needs a second block for the length) and span two blocks.
+        assert_eq!(
+            hex(&sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        assert_eq!(
+            hex(&sha256(
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+            )),
+            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+        );
+        assert_eq!(
+            hex(&sha256(&vec![b'a'; 1_000_000])),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn base64_variants_differ_only_in_alphabet_and_padding() {
+        // 0xfb 0xff 0xbf hits both alphabet-specific sextets (62 and 63).
+        assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
+        assert_eq!(base64_standard(&[0xfb, 0xff, 0xbf]), "+/+/");
+        assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
+        assert_eq!(base64_standard(&[0xfb, 0xff]), "+/8=");
+        assert_eq!(base64url_nopad(&[0xfb]), "-w");
+        assert_eq!(base64_standard(&[0xfb]), "+w==");
+        // Neither encoder wraps long output into lines.
+        let long = [0xa5_u8; 300];
+        assert_eq!(base64url_nopad(&long).len(), 400);
+        assert_eq!(base64_standard(&long).len(), 400);
+        assert!(!base64_standard(&long).contains(['\r', '\n']));
+    }
+
+    #[test]
+    fn xoauth2_sasl_matches_google_documentation_vector() {
+        // The worked example in Google's XOAUTH2 protocol documentation.
+        assert_eq!(
+            xoauth2_sasl(
+                "someuser@example.com",
+                "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
+            ),
+            "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
+        );
+    }
+
+    #[test]
+    fn percent_encode_keeps_only_the_rfc3986_unreserved_set() {
+        assert_eq!(percent_encode("AZaz09-_.~"), "AZaz09-_.~");
+        assert_eq!(
+            percent_encode("a b+c/d?e=f&g%h:i@j"),
+            "a%20b%2Bc%2Fd%3Fe%3Df%26g%25h%3Ai%40j"
+        );
+        // Non-ASCII is encoded byte-by-byte as upper-case UTF-8 escapes.
+        assert_eq!(percent_encode("café ☕"), "caf%C3%A9%20%E2%98%95");
+        assert_eq!(percent_encode("*!'()"), "%2A%21%27%28%29");
+    }
+
+    #[test]
+    fn google_authorization_url_is_pinned_byte_for_byte() {
+        let req = AuthRequest {
+            provider: OAuthProvider::Google,
+            client_id: "cid.apps.googleusercontent.com".into(),
+            redirect_uri: "http://127.0.0.1:8080/oauth".into(),
+            pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            state: "xyz 123".into(),
+            login_hint: "person@gmail.com".into(),
+        };
+        assert_eq!(
+            req.authorization_url(),
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid.apps.googleusercontent.com\
+             &response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth\
+             &scope=https%3A%2F%2Fmail.google.com%2F\
+             &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\
+             &code_challenge_method=S256&state=xyz%20123&access_type=offline\
+             &prompt=consent&login_hint=person%40gmail.com"
+        );
+    }
+
+    #[test]
     fn generate_yields_valid_verifier_and_matching_challenge() {
         let p = Pkce::generate();
         // RFC 7636: verifier length 43..=128 after base64url of 32 bytes = 43.
