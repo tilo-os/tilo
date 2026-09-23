@@ -253,6 +253,11 @@ pub trait Hypervisor {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
+    /// Is the VM running, as the hypervisor sees it? `None` when the adapter
+    /// cannot tell.
+    fn running(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
+        None
+    }
     fn serial(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
@@ -324,6 +329,101 @@ impl Libvirt {
     }
 }
 
+/// Where `create` writes the libvirt domain definition: beside the VM disk.
+pub fn domain_xml_path(disk: &str) -> String {
+    format!("{disk}.xml")
+}
+
+/// Text safe inside an XML element or a quoted attribute.
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&apos;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The libvirt domain for `vm`, defined with `virsh define`. That needs only
+/// libvirt's QEMU driver: no storage or network driver, no virt-install.
+///
+/// UEFI without Secure Boot (local dev images may carry an unsigned kernel),
+/// user-mode networking through passt with the SSH port forwarded, SPICE and
+/// virtio video for virt-manager, and `root_key` as the SMBIOS type 11
+/// credential systemd turns into root's `authorized_keys`. KVM with the
+/// host's CPU, or TCG with the emulator's widest CPU when `emulated`.
+///
+/// # Errors
+/// The VM has no `disk`.
+pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
+    let arch = vm.entry.arch.as_deref().unwrap_or(std::env::consts::ARCH);
+    let (machine, features) = match arch {
+        "x86_64" => ("q35", "<acpi/><apic/>"),
+        _ => ("virt", "<acpi/>"),
+    };
+    let (domain_type, cpu) = if vm.entry.emulated {
+        ("qemu", "maximum")
+    } else {
+        ("kvm", "host-passthrough")
+    };
+    let e = xml_escape;
+    Ok(format!(
+        "<domain type='{domain_type}'>
+  <name>{name}</name>
+  <memory unit='MiB'>{memory}</memory>
+  <vcpu>{cpus}</vcpu>
+  <os firmware='efi'>
+    <type arch='{arch}' machine='{machine}'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='secure-boot'/>
+      <feature enabled='no' name='enrolled-keys'/>
+    </firmware>
+    <smbios mode='sysinfo'/>
+  </os>
+  <sysinfo type='smbios'>
+    <oemStrings>
+      <entry>{credential}</entry>
+    </oemStrings>
+  </sysinfo>
+  <features>{features}</features>
+  <cpu mode='{cpu}'/>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='{disk}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <interface type='user'>
+      <backend type='passt'/>
+      <model type='virtio'/>
+      <portForward proto='tcp'><range start='{port}' to='22'/></portForward>
+    </interface>
+    <serial type='pty'/>
+    <console type='pty'/>
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+    <graphics type='spice' autoport='yes'/>
+    <video><model type='virtio'/></video>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+  </devices>
+</domain>
+",
+        name = e(vm.name),
+        memory = vm.memory(),
+        cpus = vm.cpus(),
+        arch = e(arch),
+        credential = e(&sshkey::smbios_credential(root_key)),
+        disk = e(vm.disk()?),
+        port = vm.ssh_port(),
+    ))
+}
+
 impl CommandLine {
     #[must_use]
     fn args_from(mut self, args: &[&str]) -> Self {
@@ -338,56 +438,11 @@ impl Hypervisor for Libvirt {
     }
 
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        let xml_path = domain_xml_path(vm.disk()?);
+        std::fs::write(&xml_path, domain_xml(vm, root_key)?)
+            .map_err(CliError::io(format!("write {xml_path}")))?;
         let mut commands: Vec<CommandLine> = overlay_disk(vm)?.into_iter().collect();
-        let mut install = CommandLine::new(
-            "virt-install",
-            &[
-                "--connect",
-                vm.entry.uri.as_deref().unwrap_or("qemu:///session"),
-                "--name",
-                vm.name,
-            ],
-        )
-        .arg("--memory")
-        .arg(vm.memory().to_string())
-        .arg("--vcpus")
-        .arg(vm.cpus().to_string())
-        .args_from(&[
-            "--import",
-            "--osinfo",
-            "detect=on,require=off",
-            "--boot",
-            "uefi",
-        ])
-        .arg("--disk")
-        .arg(format!("path={},format=qcow2,bus=virtio", vm.disk()?))
-        // Provisional: passt port forwarding needs libvirt >= 9.2 and virt-install >= 4.1.
-        .arg("--network")
-        .arg(format!("passt,portForward={}:22", vm.ssh_port()))
-        .args_from(&[
-            "--graphics",
-            "spice",
-            "--video",
-            "virtio",
-            "--serial",
-            "pty",
-            "--noautoconsole",
-            "--noreboot",
-        ])
-        // SMBIOS type 11: systemd imports it as the credential that becomes
-        // root's authorized_keys.
-        .arg("--sysinfo")
-        .arg(format!(
-            "type=smbios,oemStrings.entry0={}",
-            sshkey::smbios_credential(root_key)
-        ));
-        if let Some(arch) = &vm.entry.arch {
-            install = install.arg("--arch").arg(arch.clone());
-            if vm.entry.emulated {
-                install = install.args_from(&["--virt-type", "qemu"]);
-            }
-        }
-        commands.push(install);
+        commands.push(Self::virsh(vm, &["define", &xml_path]));
         Ok(commands)
     }
 
@@ -418,6 +473,15 @@ impl Hypervisor for Libvirt {
             credentials: Some("SMBIOS type 11 OEM string"),
             control: Some("virsh"),
         }
+    }
+
+    fn running(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        // Names only, so the answer does not depend on virsh's locale.
+        let output = runner
+            .output(&Self::virsh(vm, &["list", "--name", "--state-running"]))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.lines().any(|l| l.trim() == vm.name))
     }
 
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
@@ -772,6 +836,130 @@ mod tests {
         }
     }
 
+    fn vm_xml(entry: &VmEntry) -> String {
+        domain_xml(&Vm { name: "dev", entry }, KEY).unwrap()
+    }
+
+    #[test]
+    fn domain_xml_for_x86_64() {
+        let entry = VmEntry {
+            arch: Some("x86_64".into()),
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        for part in [
+            "<domain type='kvm'>",
+            "<name>dev</name>",
+            "<memory unit='MiB'>4096</memory>",
+            "<vcpu>2</vcpu>",
+            "<os firmware='efi'>",
+            "<type arch='x86_64' machine='q35'>hvm</type>",
+            "<feature enabled='no' name='secure-boot'/>",
+            "<smbios mode='sysinfo'/>",
+            "<features><acpi/><apic/></features>",
+            "<cpu mode='host-passthrough'/>",
+            "<driver name='qemu' type='qcow2' discard='unmap'/>",
+            "<source file='/vms/dev.qcow2'/>",
+            "<target dev='vda' bus='virtio'/>",
+            "<backend type='passt'/>",
+            "<portForward proto='tcp'><range start='2223' to='22'/></portForward>",
+            "<serial type='pty'/>",
+            "<graphics type='spice' autoport='yes'/>",
+            "<video><model type='virtio'/></video>",
+            "<rng model='virtio'>",
+        ] {
+            assert!(xml.contains(part), "no {part} in\n{xml}");
+        }
+        assert!(
+            xml.contains(&format!(
+                "<entry>io.systemd.credential.binary:ssh.authorized_keys.root={}</entry>",
+                sshkey::encoded(KEY)
+            )),
+            "{xml}"
+        );
+        assert!(!xml.contains("machine='virt'"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_for_aarch64() {
+        let entry = VmEntry {
+            arch: Some("aarch64".into()),
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        assert!(xml.contains("<domain type='kvm'>"), "{xml}");
+        assert!(
+            xml.contains("<type arch='aarch64' machine='virt'>hvm</type>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<os firmware='efi'>"), "{xml}");
+        assert!(xml.contains("<features><acpi/></features>"), "{xml}");
+        assert!(!xml.contains("<apic/>"), "{xml}");
+        assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_when_emulated_uses_tcg() {
+        let entry = VmEntry {
+            arch: Some("aarch64".into()),
+            emulated: true,
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        assert!(xml.starts_with("<domain type='qemu'>"), "{xml}");
+        assert!(xml.contains("<cpu mode='maximum'/>"), "{xml}");
+        assert!(!xml.contains("host-passthrough"), "{xml}");
+        assert!(xml.contains("machine='virt'"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_escapes_every_value() {
+        let entry = VmEntry {
+            arch: Some("x86_64".into()),
+            disk: Some("/vms/it's <a> & \"b\".qcow2".into()),
+            ..entry()
+        };
+        let xml = domain_xml(
+            &Vm {
+                name: "a&b<c>",
+                entry: &entry,
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(xml.contains("<name>a&amp;b&lt;c&gt;</name>"), "{xml}");
+        assert!(
+            xml.contains("<source file='/vms/it&apos;s &lt;a&gt; &amp; &quot;b&quot;.qcow2'/>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn libvirt_create_writes_the_domain_beside_the_disk_and_defines_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let entry = VmEntry {
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let create = Libvirt.create(&vm, KEY).unwrap();
+        let displayed: Vec<String> = create.iter().map(CommandLine::display).collect();
+        assert_eq!(
+            displayed,
+            [
+                format!("qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 {disk}"),
+                format!("virsh --connect qemu:///session define {disk}.xml"),
+            ]
+        );
+        let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+        assert_eq!(written, domain_xml(&vm, KEY).unwrap());
+        assert!(displayed.iter().all(|c| !c.contains("virt-install")));
+    }
+
     #[test]
     fn libvirt_commands() {
         let entry = entry();
@@ -779,25 +967,6 @@ mod tests {
             name: "dev",
             entry: &entry,
         };
-        let create = Libvirt.create(&vm, KEY).unwrap();
-        assert_eq!(
-            create[0].display(),
-            "qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 /vms/dev.qcow2"
-        );
-        let install = create[1].display();
-        assert!(install.starts_with(
-            "virt-install --connect qemu:///session --name dev --memory 4096 --vcpus 2 --import"
-        ));
-        assert!(install.contains("--disk path=/vms/dev.qcow2,format=qcow2,bus=virtio"));
-        assert!(install.contains("--network passt,portForward=2223:22"));
-        assert!(
-            install.contains(&format!(
-                "--sysinfo type=smbios,oemStrings.entry0=io.systemd.credential.binary:ssh.authorized_keys.root={}",
-                sshkey::encoded(KEY)
-            )),
-            "{install}"
-        );
-        assert!(!install.contains("--arch"));
         assert_eq!(
             Libvirt.start(&vm)[0].display(),
             "virsh --connect qemu:///session start dev"
@@ -815,26 +984,14 @@ mod tests {
         );
         let endpoint = Libvirt.ssh_endpoint(&vm, &mut fake("")).unwrap();
         assert_eq!((endpoint.host.as_str(), endpoint.port), ("127.0.0.1", 2223));
-    }
-
-    #[test]
-    fn libvirt_emulation_is_explicit() {
-        let entry = VmEntry {
-            arch: Some("aarch64".into()),
-            emulated: true,
-            ..entry()
-        };
-        let install = Libvirt
-            .create(
-                &Vm {
-                    name: "arm",
-                    entry: &entry,
-                },
-                KEY,
-            )
-            .unwrap()[1]
-            .display();
-        assert!(install.contains("--arch aarch64 --virt-type qemu"));
+        let mut runner = fake("other\ndev\n\n");
+        assert_eq!(Libvirt.running(&vm, &mut runner), Some(true));
+        assert_eq!(
+            runner.0[0].display(),
+            "virsh --connect qemu:///session list --name --state-running"
+        );
+        assert_eq!(Libvirt.running(&vm, &mut fake("dev2\n")), Some(false));
+        assert_eq!(Utm.running(&vm, &mut fake("")), None);
     }
 
     #[test]
@@ -863,8 +1020,10 @@ mod tests {
 
     #[test]
     fn disks_are_made_with_the_qemu_img_resolved_at_creation() {
+        let dir = tempfile::tempdir().unwrap();
         let entry = VmEntry {
             qemu_img: Some("/usr/bin/qemu-img".into()),
+            disk: Some(dir.path().join("dev.qcow2").display().to_string()),
             ..entry()
         };
         let vm = Vm {
@@ -987,8 +1146,11 @@ mod tests {
 
     #[test]
     fn capabilities_match_the_optional_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
         let entry = VmEntry {
             template: Some("Tilo Dev".into()),
+            disk: Some(disk.clone()),
             ..entry()
         };
         let vm = Vm {
@@ -1005,11 +1167,15 @@ mod tests {
                 "{name} shot"
             );
             assert_eq!(caps.reset, a.reset(&vm).is_some(), "{name} reset");
-            let passes_key = a.create(&vm, KEY).unwrap().iter().any(|c| {
+            let _ = std::fs::remove_file(domain_xml_path(&disk));
+            let in_args = a.create(&vm, KEY).unwrap().iter().any(|c| {
                 c.args
                     .iter()
                     .any(|arg| arg.contains("io.systemd.credential"))
             });
+            let in_domain = std::fs::read_to_string(domain_xml_path(&disk))
+                .is_ok_and(|xml| xml.contains("io.systemd.credential"));
+            let passes_key = in_args || in_domain;
             assert_eq!(caps.credentials.is_some(), passes_key, "{name} credentials");
             assert_eq!(
                 caps.control.is_some(),
