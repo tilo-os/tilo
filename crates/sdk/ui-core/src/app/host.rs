@@ -8,6 +8,12 @@
 /// keeps only the channel ends to ship frames and recycle scene buffers.
 struct AppHandler {
     app: App,
+    animation_schedule: animation_schedule::AnimationSchedule,
+    native_scenario: Option<crate::native_scenario::Scenario>,
+    native_input_ids: Vec<usize>,
+    native_input_origin: Option<Instant>,
+    native_input_pointer_passthrough: bool,
+    native_input_route_isolation: bool,
     /// `None` until the first `resumed` — every modern platform gates window
     /// creation behind an `ActiveEventLoop`.
     window: Option<Arc<Window>>,
@@ -31,6 +37,7 @@ struct AppHandler {
     primary_frames_sent: u64,
     primary_frames_completed: u64,
     last_primary_frame_presented: u64,
+    primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
     /// until that exact-or-newer frame is reported Presented by the worker.
     floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
@@ -107,13 +114,6 @@ struct ImeWindowState {
     height: u32,
 }
 
-#[derive(Clone, Copy)]
-struct IdleWake {
-    visual_work: bool,
-    collaboration_connected: bool,
-    scheduled_deadline: Option<Instant>,
-}
-
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
 fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboRect>) {
@@ -137,7 +137,14 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<std::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
+    let __prof_resources = app.profiler.as_ref().map(|_| std::time::Instant::now());
     app.refresh_control_action_availability();
+    if let Some(p) = app.profiler.as_mut() {
+        p.record_since(
+            crate::profiling::Pass::ResourceAvailability,
+            __prof_resources,
+        );
+    }
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -148,8 +155,22 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
-    crate::widget::native_view_frame_start(app.root_widget.as_mut());
-    if app.history_layout.is_none_or(|layout| layout.app_visible) {
+    if let Some(history) = &mut app.history {
+        history.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
+        crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.root_widget.draw_with_presence(
             scene,
             transform,
@@ -163,7 +184,12 @@ fn draw_frame_content(
     // Widgets whose visual extent escapes their layout box (an open
     // `Dropdown`, a popover) composite above every later-drawn sibling here.
     // No-op by default.
-    if app.history_layout.is_none_or(|layout| layout.app_visible) {
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
         app.root_widget.draw_overlay(
             scene,
             transform,
@@ -270,9 +296,6 @@ fn draw_visible_tooltip(
     );
 }
 
-/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
-/// Only active in `App::debug_mode` — draws each widget's layout rect and a
-/// depth-cycled label over the frame just rendered.
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     fn draw_debug_recursive(
         widget: &dyn Widget,
@@ -382,6 +405,7 @@ fn run_layout_pass(
         app.layout_close_dialog(logical);
         return Some((true, 0, 0));
     }
+    app.refresh_framework_history(logical.0);
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
@@ -446,10 +470,8 @@ fn run_layout_pass(
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
             } else {
-                // Anonymous retained widgets have no identity by which state
-                // could safely cross to a replacement. If the same live
-                // widget survived the rebuild, recover only its newly
-                // admitted node from the focus flags it still owns.
+                // Anonymous retained widgets keep their own state. Resolve a
+                // current admitted focus path; the old NodeId is invalid here.
                 app.focused_node = unsafe {
                     CompositionFocus::current(
                         &app.layout.node_map,
@@ -503,12 +525,27 @@ fn run_layout_pass(
         app.layout.last_layout_logical = None;
         return None;
     }
+    if app.settle_history_presentation() {
+        let root = app.layout.root_node?;
+        return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
+    }
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
     if (structure_rebuilt || recomposed)
+        && app
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
         && let Some(host) = native_host
     {
         crate::widget::mount_native_views(app.root_widget.as_mut(), host);
+    }
+    if app
+        .history
+        .as_ref()
+        .is_some_and(|history| !history.live_interactive())
+    {
+        crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -539,8 +576,9 @@ fn run_layout_pass(
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    create_window_render_prepared(window, transparent, None)
+    create_window_render_prepared(window, transparent, None, proxy)
 }
 
 pub(crate) struct PreparedRenderer {
@@ -595,6 +633,7 @@ fn create_window_render_prepared(
     window: &Arc<Window>,
     transparent: bool,
     prepared: Option<PreparedRenderer>,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
     tilo_startup_metrics::mark("window-render-context-start");
     let size = window.inner_size();
@@ -648,7 +687,16 @@ fn create_window_render_prepared(
         _ => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
-    let render = spawn_render_thread(render_cx, surface, renderer)?;
+    let window_id = window.id();
+    let render = spawn_render_thread(
+        render_cx,
+        surface,
+        renderer,
+        Arc::new(move || {
+            // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
+            let _ = proxy.send_event(UserEvent::RenderReady(window_id));
+        }),
+    )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
 }
@@ -682,12 +730,13 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
 fn begin_window_render_init(
     window: Arc<Window>,
     transparent: bool,
+    proxy: EventLoopProxy<UserEvent>,
 ) -> Result<mpsc::Receiver<Result<RenderThreadHandle, String>>, String> {
     let (result_tx, result_rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("floating-render-init".into())
         .spawn(move || {
-            let result = create_window_render(&window, transparent);
+            let result = create_window_render(&window, transparent, proxy);
             // The surface may have been permanently closed while a slow GPU
             // backend was still probing. In that case, stop the newly-created
             // render worker here so its surface is dropped before `window`.
@@ -701,7 +750,161 @@ fn begin_window_render_init(
     Ok(result_rx)
 }
 
+fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
+    for cursor in app.state.collab.cursors.values() {
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(14.0, 14.0));
+        path.line_to(Point::new(6.0, 16.0));
+        path.line_to(Point::new(0.0, 22.0));
+        path.close_path();
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+        )]
+        let cursor_transform =
+            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            cursor_transform,
+            cursor.color,
+            None,
+            &path,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            cursor_transform,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            None,
+            &path,
+        );
+
+        app.text_renderer.draw_text(
+            scene,
+            &cursor.name,
+            10.0,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            {
+                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
+                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
+                name_transform
+            },
+            None,
+        );
+    }
+}
+
 impl AppHandler {
+    fn handle_routed_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let _entry = self.app.enter_wake_scope();
+        if render_probe_event(&event) {
+            let auxiliary_event = self
+                .floating_windows
+                .iter()
+                .any(|surface| surface.window.id() == window_id)
+                || self
+                    .audience_presentation
+                    .as_ref()
+                    .is_some_and(|audience| audience.window.id() == window_id);
+            if auxiliary_event
+                && self.primary_retry.request_probe()
+                && let Some(primary) = &self.window
+            {
+                primary.request_redraw();
+            }
+
+            if self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+                && self.primary_retry.request_probe()
+                && let Some(window) = &self.window
+            {
+                window.request_redraw();
+            }
+            if let Some(surface) = self
+                .floating_windows
+                .iter_mut()
+                .find(|surface| surface.window.id() == window_id)
+                && surface
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+            {
+                surface.window.request_redraw();
+            }
+            if let Some(audience) = self
+                .audience_presentation
+                .as_mut()
+                .filter(|audience| audience.window.id() == window_id)
+                && audience
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+            {
+                audience.window.request_redraw();
+            }
+        }
+
+        if self
+            .audience_presentation
+            .as_ref()
+            .is_some_and(|audience| audience.window.id() == window_id)
+        {
+            self.handle_audience_window_event(event);
+            return;
+        }
+        if let Some(index) = self
+            .floating_windows
+            .iter()
+            .position(|surface| surface.window.id() == window_id)
+        {
+            self.handle_native_floating_window_event(index, event);
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if window.id() == window_id {
+            self.handle_primary_window_event(event_loop, &window, event);
+        }
+    }
+    fn visible_auxiliary_needs_shared_root(&self) -> bool {
+        self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.known_occluded())
+        }) || self.audience_presentation.as_ref().is_some_and(|audience| {
+            audience
+                .render
+                .as_ref()
+                .is_none_or(|render| !render.retry.known_occluded())
+        })
+    }
+    fn route_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+        origin: native_input_isolation::EventOrigin,
+    ) {
+        native_input_isolation::dispatch(
+            self.native_input_route_isolation,
+            origin,
+            event,
+            |event| {
+                self.handle_routed_window_event(event_loop, window_id, event);
+            },
+        );
+    }
     /// Called before showing the window on Windows, and from the first
     /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
     /// initial focus events. `Err` is returned, not panicked, since every step here can
@@ -715,6 +918,7 @@ impl AppHandler {
                         window,
                         false,
                         Some(prepared),
+                        self.a11y_proxy.clone(),
                     )?);
                     return Ok(());
                 }
@@ -726,7 +930,11 @@ impl AppHandler {
                 }
             }
         }
-        self.render = Some(create_window_render(window, false)?);
+        self.render = Some(create_window_render(
+            window,
+            false,
+            self.a11y_proxy.clone(),
+        )?);
         Ok(())
     }
 
@@ -853,7 +1061,11 @@ impl AppHandler {
         };
         if audience.render.is_none() {
             if audience.render_init.is_none() {
-                match begin_window_render_init(audience.window.clone(), false) {
+                match begin_window_render_init(
+                    audience.window.clone(),
+                    false,
+                    self.a11y_proxy.clone(),
+                ) {
                     Ok(init) => audience.render_init = Some(init),
                     Err(error) => tracing::warn!(%error, "could not start audience renderer"),
                 }
@@ -881,30 +1093,35 @@ impl AppHandler {
         let Some(render) = audience.render.as_mut() else {
             return false;
         };
-        let mut followup = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented => {}
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => followup = true,
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
+                    render.retry.observe(outcome, Instant::now());
+                }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        let mut scene = match render.scene_pool.try_recv() {
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return true,
+            Err(_) => return false,
+        }
+        let (mut scene, mut damage_regions) = match render.buffers.try_recv() {
             Ok(scene) => scene,
             Err(mpsc::TryRecvError::Empty) => {
-                if followup {
-                    audience.window.request_redraw();
-                }
                 return true;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 tracing::warn!("audience render worker exited");
                 return false;
             }
-        };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            tracing::warn!("audience render worker damage pool exited");
-            return false;
         };
         damage_regions.clear();
         let size = audience.window.inner_size();
@@ -928,6 +1145,7 @@ impl AppHandler {
         if render
             .render_tx
             .send(RenderRequest::Frame {
+                cpu_frame_id: None,
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
@@ -941,9 +1159,6 @@ impl AppHandler {
                 "audience render worker stopped; returning to the single-output fallback"
             );
             return false;
-        }
-        if followup {
-            audience.window.request_redraw();
         }
         true
     }
@@ -1223,7 +1438,11 @@ impl AppHandler {
         }
         if surface.render.is_none() {
             if surface.render_init.is_none() {
-                match begin_window_render_init(surface.window.clone(), true) {
+                match begin_window_render_init(
+                    surface.window.clone(),
+                    true,
+                    self.a11y_proxy.clone(),
+                ) {
                     Ok(init) => surface.render_init = Some(init),
                     Err(error) => {
                         tracing::warn!(%error, id = %surface.id, "floating surface renderer failed");
@@ -1255,19 +1474,30 @@ impl AppHandler {
         let Some(render) = surface.render.as_mut() else {
             return false;
         };
-        let mut followup = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented => {}
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => followup = true,
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
+                    render.retry.observe(outcome, Instant::now());
+                }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        let Ok(mut scene) = render.scene_pool.recv() else {
-            return false;
-        };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            return false;
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return true,
+            Err(_) => return false,
+        }
+        let (mut scene, mut damage_regions) = match render.buffers.try_recv() {
+            Ok(buffers) => buffers,
+            Err(mpsc::TryRecvError::Empty) => return true,
+            Err(mpsc::TryRecvError::Disconnected) => return false,
         };
         damage_regions.clear();
         // Every pooled scene is either newly seeded or reset by the worker
@@ -1287,6 +1517,7 @@ impl AppHandler {
         if render
             .render_tx
             .send(RenderRequest::Frame {
+                cpu_frame_id: None,
                 scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
@@ -1297,9 +1528,6 @@ impl AppHandler {
             .is_err()
         {
             return false;
-        }
-        if followup {
-            surface.window.request_redraw();
         }
         true
     }
@@ -1377,7 +1605,22 @@ impl AppHandler {
         clippy::too_many_lines,
         reason = "the frame handshake shares render state, timing locals, and early exits"
     )]
+    /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
+    /// Body unchanged from the original inline arm — see `window_event` for the
+    /// event-loop plumbing this is called from. The layout pass, draw pass,
+    /// legacy cursor drawing, and debug-outline drawing are further split
+    /// into [`run_layout_pass`], [`draw_frame_content`], [`draw_legacy_cursors`]
+    /// and [`draw_debug_outlines`] respectively; what remains is a single
+    /// frame's render-thread handshake (acquire scene, draw, send, log) whose
+    /// phases share `render`/`app`/`scene`/timing locals and several early
+    /// `return`s — further fragmenting it risks changing frame-timing or
+    /// error-path behaviour with no clippy/cargo loop available here to
+    /// verify against.
+    #[allow(clippy::too_many_lines, reason = "see doc comment above")]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        let native_redraw_entry = self
+            .native_input_origin
+            .map(|origin| (origin, Instant::now()));
         // Capture only the initial frame attempts, not steady-state redraws.
         // An early return leaves its final marker absent rather than inventing
         // a completed stage. A later successful submission ends capture.
@@ -1399,6 +1642,10 @@ impl AppHandler {
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
         }
+        let visible_sibling = self.visible_auxiliary_needs_shared_root();
+        if visible_sibling {
+            self.primary_retry.keep_shared_cadence(Instant::now());
+        }
         let Some(render) = self.render.as_mut() else {
             return;
         };
@@ -1411,9 +1658,18 @@ impl AppHandler {
             match outcome {
                 FrameOutcome::Presented => {
                     self.last_primary_frame_presented = self.primary_frames_completed;
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
-                FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
-                    needs_followup_redraw = true;
+                FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
                 FrameOutcome::SurfaceGone => {
                     surface_gone = true;
@@ -1465,6 +1721,21 @@ impl AppHandler {
             tracing::info!("drawing surface is gone; closing the window");
             event_loop.exit();
             return;
+        }
+        // Do not consume sync/layout/dirty state unless a finite render buffer
+        // is available. Worker completion wakes this window if admission defers.
+        match crate::render_thread::prepare_frame(
+            &mut self.primary_retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(_) => {
+                tracing::error!("ui-render thread died; closing window");
+                event_loop.exit();
+                return;
+            }
         }
         let app = &mut self.app;
 
@@ -1530,6 +1801,10 @@ impl AppHandler {
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
+        if app.root_widget.take_window_close_intent() {
+            event_loop.exit();
+            return;
+        }
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
@@ -1591,20 +1866,17 @@ impl AppHandler {
         // independent native floating surfaces.
         floating_content_changed |= app.root_widget.needs_redraw() || app.history_needs_redraw();
 
-        // Bounded CPU↔GPU backpressure belongs immediately before scene
-        // encoding. Model update, sync and layout above can overlap the
-        // worker presenting the previous frame instead of waiting for a
-        // recycled encoder before doing any useful CPU work.
-        let Ok(mut scene) = render.scene_pool.recv() else {
+        // Admission reserved this pair before state updates. Taking it cannot
+        // wait on GPU work; aborted layouts retain it in the handle for retry.
+        let __prof_pool_wait = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
             tracing::error!("ui-render thread died; closing window");
             event_loop.exit();
             return;
         };
-        let Ok(mut damage_regions) = render.damage_pool.recv() else {
-            tracing::error!("ui-render damage pool died; closing window");
-            event_loop.exit();
-            return;
-        };
+        if let Some(p) = app.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::ScenePoolWait, __prof_pool_wait);
+        }
         damage_regions.clear();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
@@ -1623,8 +1895,12 @@ impl AppHandler {
         } else {
             None
         };
+        crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+
+        let __prof_presence = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        draw_legacy_cursors(app, &mut scene, transform);
 
         // A pointer that arrived on a desktop scope is the
         // compositor's to draw, and the helper skips it — see
@@ -1700,14 +1976,48 @@ impl AppHandler {
             interaction_now,
         );
 
+        if let Some(p) = app.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
+        }
+
+        let mut native_main_stages = (self.native_input_origin.is_some()
+            && crate::render_thread::timing::enabled())
+        .then(MainStages::default);
+        record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
+
         // Folds in any `handle_event` time banked since last frame.
         if let (Some(p), Some(start)) = (app.profiler.as_mut(), __prof_frame_start) {
             p.commit_frame(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
+            if !self.native_input_ids.is_empty() {
+                let cpu_frame_id = p.history().back().map(|sample| sample.frame);
+                crate::native_scenario::log::emit_json(
+                    "qos-native-frame",
+                    serde_json::json!({
+                        "cpu_frame_id": cpu_frame_id,
+                        "input_ids": std::mem::take(&mut self.native_input_ids),
+                        "frame_commit_us": self.native_input_origin.map(|origin| origin.elapsed().as_micros()),
+                        // Capture after drawing: layout may clamp scroll state.
+                        // Input-time effects alone cannot prove the frame used it.
+                        "state": app.native_input_snapshot(),
+                    }),
+                );
+            }
+        } else {
+            record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
+        crate::webview::frame_trace::finish_scene(
+            app.profiler
+                .as_ref()
+                .and_then(|p| p.history().back())
+                .map(|sample| sample.frame),
+        );
+        record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
             draw_debug_outlines(app, &mut scene, transform);
         }
+        record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -1734,6 +2044,7 @@ impl AppHandler {
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
         app.root_widget.mark_drawn();
+        record_main_stage(&mut native_main_stages, MainStage::AfterDamageMarkDrawn);
 
         // `update_if_active` only builds + sends when an AT is
         // attached, so this is free on the common no-reader path.
@@ -1744,6 +2055,7 @@ impl AppHandler {
                 crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
             });
         }
+        record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
 
         // Painted last, after the frame timing was committed above,
         // so the HUD's own cost never enters its numbers.
@@ -1765,6 +2077,11 @@ impl AppHandler {
             }
         }
         let req = RenderRequest::Frame {
+            cpu_frame_id: app
+                .profiler
+                .as_ref()
+                .and_then(|profiler| profiler.history().back())
+                .map(|sample| sample.frame),
             scene,
             width,
             height,
@@ -1772,7 +2089,50 @@ impl AppHandler {
             damage_regions,
             full_redraw: full_redraw_required,
         };
-        if render.render_tx.send(req).is_err() {
+        record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
+        if let Some((origin, entered)) = native_redraw_entry {
+            // All three values use the input timeline's monotonic origin.
+            // This is a CPU submit attempt, not GPU/display completion.
+            crate::native_scenario::log::emit_json(
+                "qos-native-redraw",
+                serde_json::json!({
+                    "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                    "redraw_enter_us": entered.duration_since(origin).as_micros(),
+                    "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
+                    "submit_attempt_us": origin.elapsed().as_micros(),
+                }),
+            );
+        }
+        record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
+        let send_cpu_frame_id = match &req {
+            RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
+            RenderRequest::Shutdown => None,
+        };
+        let (send_result, send_bounds) = crate::render_thread::timing::around(
+            self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+            || render.render_tx.send(req),
+        );
+        if let Some(bounds) = send_bounds {
+            crate::native_scenario::log::emit_json(
+                "qos-native-send",
+                serde_json::json!({
+                    "cpu_frame_id": send_cpu_frame_id,
+                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                    "send_ok": send_result.is_ok(),
+                }),
+            );
+        }
+        if let Some(stages) = native_main_stages {
+            crate::native_scenario::log::emit_json(
+                "qos-native-main-stages",
+                stages.row(send_cpu_frame_id),
+            );
+        }
+        if send_result.is_err() {
             tracing::error!("ui-render thread receiver closed; exiting");
             event_loop.exit();
             return;
@@ -1837,6 +2197,11 @@ impl AppHandler {
             return;
         }
         let app = &mut self.app;
+        let history_input = app.history_controls_event(&event, window.scale_factor());
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &app.framework_input,
+            history_input,
+        );
         let detected_interaction = if self.dispatching_touch_pointer {
             None
         } else {
@@ -1861,8 +2226,13 @@ impl AppHandler {
         if let Some(environment) = detected_interaction {
             app.set_interaction_environment(environment);
         }
+        if history_input {
+            app.dispatch_framework_history_event(&event, window.scale_factor());
+            window.request_redraw();
+            return;
+        }
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
-        // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
+        // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
         // want to see whether moves arrive at all.
         match &event {
@@ -2027,14 +2397,31 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let entry = if let Some(binding) = app
+                    let binding = app
                         .focused_node
                         .and_then(|node| app.bindings.binding_for(node))
-                    {
+                        .or_else(|| app.root_widget.callback_binding());
+                    let owned_target = binding.is_some()
+                        || app
+                            .focused_node
+                            .is_some_and(|node| app.bindings.owns_document(node));
+                    let entry = if let Some(binding) = binding {
                         binding
                             .history_request(&mut app.state.doc, request)
                             .ok()
                             .flatten()
+                    } else if let Some(owner) = app
+                        .focused_node
+                        .and_then(|node| app.bindings.legacy_for(node))
+                    {
+                        crate::bound_dispatch::legacy_history_request(
+                            &owner,
+                            request,
+                            &app.permission_ctx,
+                            &app.collaboration.local_author,
+                        )
+                        .ok()
+                        .flatten()
                     } else {
                         match request {
                             crate::undo::UndoRequest::Undo => app.state.undo_as(
@@ -2050,7 +2437,7 @@ impl AppHandler {
                         }
                     };
                     if let Some(entry) = entry {
-                        if entry.instance_id.is_some() {
+                        if owned_target {
                             app.needs_sync = true;
                             app.layout.layout_dirty = true;
                         } else {
@@ -2216,9 +2603,9 @@ impl AppHandler {
             }
         }
 
-        if !handled && app.activate_focused_control_key(&event) {
-            handled = true;
-        }
+        // If no widget consumed Enter/Space (text inputs do), activate
+        // the focused control the same way a mouse click would.
+        app.handle_unconsumed_activation_key(&event, &mut handled);
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:
@@ -2391,6 +2778,23 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// `UserEvent` injection keeps the ordinary window dispatch after admission.
+    fn injected_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        self.route_window_event(
+            event_loop,
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Injected,
+        );
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
     // DeviceId is opaque and the dispatch chain never inspects it (same
@@ -2402,8 +2806,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         let _entry = self.app.enter_wake_scope();
         let event = match event {
+            UserEvent::RenderReady(id) => {
+                if let Some(window) = self.window.as_ref().filter(|window| window.id() == id) {
+                    window.request_redraw();
+                } else if let Some(surface) = self
+                    .floating_windows
+                    .iter()
+                    .find(|surface| surface.window.id() == id)
+                {
+                    surface.window.request_redraw();
+                } else if let Some(audience) = self
+                    .audience_presentation
+                    .as_ref()
+                    .filter(|audience| audience.window.id() == id)
+                {
+                    audience.window.request_redraw();
+                }
+                return;
+            }
             UserEvent::Wake(wake) => {
                 if self.app.accept_wake(&wake)
+                    && wake.requires_sync()
                     && let Some(window) = self.window.as_ref()
                 {
                     window.request_redraw();
@@ -2416,32 +2839,93 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let window_id = window.id();
+        let mut effect_before = None;
+        let event = match event {
+            UserEvent::NativeScenarioInput(packet) => {
+                if self.native_input_origin.is_none() {
+                    let size = window.inner_size();
+                    crate::native_scenario::log::emit_json(
+                        "qos-native-window",
+                        serde_json::json!({
+                            "scale_factor": window.scale_factor(),
+                            "physical_width": size.width,
+                            "physical_height": size.height,
+                            "pointer_passthrough": self.native_input_pointer_passthrough,
+                            "input_route_isolation": self.native_input_route_isolation,
+                        }),
+                    );
+                }
+                self.native_input_origin.get_or_insert(packet.origin);
+                let (now, dispatch_host) = crate::native_scenario::host_clock::sample();
+                crate::native_scenario::log::emit_json(
+                    "qos-native-input",
+                    serde_json::json!({
+                        "id": packet.id,
+                        "warmup": packet.warmup,
+                        "input": packet.input,
+                        "scheduled_us": packet.scheduled_at.duration_since(packet.origin).as_micros(),
+                        "sent_us": packet.sent_at.duration_since(packet.origin).as_micros(),
+                        "dispatch_start_us": now.duration_since(packet.origin).as_micros(),
+                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "sent_host_lo_s": packet.sent_host.map(|bounds| bounds.lo_s),
+                        "sent_host_hi_s": packet.sent_host.map(|bounds| bounds.hi_s),
+                        "dispatch_host_lo_s": dispatch_host.map(|bounds| bounds.lo_s),
+                        "dispatch_host_hi_s": dispatch_host.map(|bounds| bounds.hi_s),
+                        "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
+                    }),
+                );
+                effect_before = self
+                    .app
+                    .native_input_snapshot()
+                    .map(|value| (packet.id, value));
+                self.native_input_ids.push(packet.id);
+                match packet.input {
+                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
+                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
+                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
+                    crate::native_scenario::Input::Character { value } => {
+                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
+                    }
+                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                }
+            }
+            other => other,
+        };
         match event {
             UserEvent::Hover { x, y } => {
                 let ev = WindowEvent::CursorMoved {
                     device_id: unsafe { std::mem::zeroed() },
                     position: PhysicalPosition::new(x, y),
                 };
-                self.window_event(event_loop, window_id, ev);
+                self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
                 let moved = WindowEvent::CursorMoved {
                     device_id: unsafe { std::mem::zeroed() },
                     position: PhysicalPosition::new(x, y),
                 };
-                self.window_event(event_loop, window_id, moved);
+                self.injected_window_event(event_loop, window_id, moved);
                 let press = WindowEvent::MouseInput {
                     device_id: unsafe { std::mem::zeroed() },
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 };
-                self.window_event(event_loop, window_id, press);
+                self.injected_window_event(event_loop, window_id, press);
                 let release = WindowEvent::MouseInput {
                     device_id: unsafe { std::mem::zeroed() },
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 };
-                self.window_event(event_loop, window_id, release);
+                self.injected_window_event(event_loop, window_id, release);
+            }
+            UserEvent::Key(key) => {
+                for state in [ElementState::Pressed, ElementState::Released] {
+                    self.injected_window_event(
+                        event_loop,
+                        window_id,
+                        crate::synthetic_input::key_event(&key, state),
+                    );
+                }
             }
             UserEvent::Wheel { dx, dy } => {
                 let ev = WindowEvent::MouseWheel {
@@ -2449,7 +2933,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
                     phase: winit::event::TouchPhase::Moved,
                 };
-                self.window_event(event_loop, window_id, ev);
+                self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
@@ -2458,7 +2942,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
-            UserEvent::Wake(_) => {}
+            UserEvent::Wake(_) | UserEvent::NativeScenarioInput(_) | UserEvent::RenderReady(_) => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -2488,19 +2972,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                     device_id: unsafe { std::mem::zeroed() },
                                     position: PhysicalPosition::new(px, py),
                                 };
-                                self.window_event(event_loop, window_id, moved);
+                                self.injected_window_event(event_loop, window_id, moved);
                                 let press = WindowEvent::MouseInput {
                                     device_id: unsafe { std::mem::zeroed() },
                                     state: ElementState::Pressed,
                                     button: MouseButton::Left,
                                 };
-                                self.window_event(event_loop, window_id, press);
+                                self.injected_window_event(event_loop, window_id, press);
                                 let release = WindowEvent::MouseInput {
                                     device_id: unsafe { std::mem::zeroed() },
                                     state: ElementState::Released,
                                     button: MouseButton::Left,
                                 };
-                                self.window_event(event_loop, window_id, release);
+                                self.injected_window_event(event_loop, window_id, release);
                             }
                             window.request_redraw();
                         }
@@ -2508,6 +2992,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
+        }
+        if let Some((id, before)) = effect_before {
+            crate::native_scenario::log::emit_json(
+                "qos-native-effect",
+                serde_json::json!({
+                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
+                }),
+            );
         }
     }
 
@@ -2536,12 +3028,30 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .with_decorations(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+        // Optional profiling placement keeps concurrent benchmark windows from
+        // completely occluding one another. Platform window managers may ignore it.
+        let window_attributes = match std::env::var("QOS_PROFILE_WINDOW_POSITION")
+            .ok()
+            .and_then(|value| crate::profiling::profile_window_position(&value))
+        {
+            Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+            None => window_attributes,
+        };
+        // Benchmarks can keep their own windows above unrelated desktop apps.
+        // This does not change normal application window ordering.
+        let window_attributes = if std::env::var("QOS_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+            window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+        } else {
+            window_attributes
+        };
         // See `resolve_app_id`: a shared id collapses per-app compositor
         // lookups.
         #[cfg(target_os = "linux")]
         let window_attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID")
+                .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
+                .ok();
             let app_id = resolve_app_id(
                 self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
@@ -2569,6 +3079,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
         tilo_startup_metrics::mark("primary-window-created");
+        self.native_input_pointer_passthrough = false;
+        self.native_input_route_isolation = false;
+        if std::env::var("QOS_PROFILE_POINTER_PASSTHROUGH").as_deref() == Ok("1")
+            && std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1")
+            && (self.native_scenario.is_some() || self.native_input_origin.is_some())
+        {
+            // Physical pointer movement must not replace the scripted hover.
+            // Scripted inputs still use the normal UserEvent dispatch route.
+            if let Err(error) = window.set_cursor_hittest(false) {
+                eprintln!("Native benchmark pointer isolation failed: {error}");
+                event_loop.exit();
+                return;
+            }
+            self.native_input_pointer_passthrough = true;
+            self.native_input_route_isolation = true;
+        }
         // Some backends only honour the icon post-creation; a no-op on
         // Wayland compositors that source it from the app_id instead.
         window.set_window_icon(icon);
@@ -2583,10 +3109,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
-        // Windows otherwise exposes an empty white client area while GPU
-        // pipelines compile. Prepare those before revealing the window; the
-        // normal visible-window redraw path still submits its first frame.
-        #[cfg(target_os = "windows")]
+        #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
             event_loop.exit();
@@ -2597,7 +3120,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         tilo_startup_metrics::mark("primary-window-show-done");
 
         self.app.layout.layout_dirty = true;
-        // On Wayland GPU init is deferred to first `RedrawRequested`: the
+        // GPU init deferred to first `RedrawRequested` (`init_render`): the
         // ~50ms surface+device init here would block `resumed`'s seat
         // wiring — on mutter that intermittently left the toplevel
         // unfocused with dead input on first launch.
@@ -2643,29 +3166,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let _entry = self.app.enter_wake_scope();
-        if self
-            .audience_presentation
-            .as_ref()
-            .is_some_and(|audience| audience.window.id() == window_id)
-        {
-            self.handle_audience_window_event(event);
-            return;
-        }
-        if let Some(index) = self
-            .floating_windows
-            .iter()
-            .position(|surface| surface.window.id() == window_id)
-        {
-            self.handle_native_floating_window_event(index, event);
-            return;
-        }
-        let Some(window) = self.window.clone() else {
-            return;
-        };
-        if window.id() == window_id {
-            self.handle_primary_window_event(event_loop, &window, event);
-        }
+        self.route_window_event(
+            event_loop,
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Platform,
+        );
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -2674,17 +3180,339 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
-
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
             return;
         };
+        // Conservative shared-root fallback: hidden primary work may stay at
+        // 60Hz while a visible auxiliary depends on its update/sync projection.
+        // Only all-known-occluded surfaces receive full idle backoff.
+        if self.visible_auxiliary_needs_shared_root() {
+            self.primary_retry.keep_shared_cadence(Instant::now());
+        }
+        // Once admission defers, periodic animation/startup demand must not
+        // spin redraw events against the busy worker. Keep updating dirty state;
+        // the worker's armed completion callback requests the next paint.
+        let mut auxiliary_retry_at: Option<Instant> = None;
+        for (aux_window, render) in self
+            .floating_windows
+            .iter()
+            .filter(|surface| !surface.suspended)
+            .map(|surface| (&surface.window, surface.render.as_ref()))
+            .chain(
+                self.audience_presentation
+                    .iter()
+                    .map(|audience| (&audience.window, audience.render.as_ref())),
+            )
+        {
+            if let Some(deadline) = render.and_then(|render| render.retry.deadline()) {
+                auxiliary_retry_at =
+                    Some(auxiliary_retry_at.map_or(deadline, |prior| prior.min(deadline)));
+                if deadline <= Instant::now() && auxiliary_redraw_allowed(render) {
+                    aux_window.request_redraw();
+                }
+            }
+        }
+        let auxiliary_retry_due =
+            auxiliary_retry_at.is_some_and(|deadline| deadline <= Instant::now());
+        let retry_now = Instant::now();
+        let primary_blocked_until = self
+            .primary_retry
+            .occlusion_blocked(retry_now)
+            .then(|| self.primary_retry.deadline())
+            .flatten();
+        let any_render_available = primary_blocked_until.is_none()
+            || self.floating_windows.iter().any(|surface| {
+                !surface.suspended
+                    && surface
+                        .render
+                        .as_ref()
+                        .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            })
+            || self.audience_presentation.as_ref().is_some_and(|audience| {
+                audience
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            });
+        let retry_at = self.primary_retry.deadline();
+        let retry_due = retry_at.is_some_and(|deadline| deadline <= Instant::now());
+        let redraw_deferred = self
+            .render
+            .as_ref()
+            .is_some_and(|render| render.buffers.redraw_deferred())
+            || retry_at.is_some_and(|deadline| Instant::now() < deadline);
+        let request_primary_redraw = || {
+            if !redraw_deferred {
+                window.request_redraw();
+            }
+        };
+        if retry_due {
+            request_primary_redraw();
+        }
         self.sync_ime(&window);
-        let host_needs_fast_pump = self.pump_idle_host_integrations(event_loop, &window);
-        self.pump_idle_app_services(&window);
-        let mut wake = self.pump_idle_animation(&window);
-        wake.visual_work |= host_needs_fast_pump;
-        Self::configure_idle_control_flow(event_loop, wake);
+        if self.last_primary_frame_presented > 0
+            && let Some(scenario) = self.native_scenario.take()
+        {
+            crate::native_scenario::log::emit_json(
+                "qos-native-scenario",
+                serde_json::json!({
+                    "name": scenario.name, "steps": scenario.steps.len(),
+                    "warmup_steps": scenario.warmup_steps, "interval_us": scenario.interval_us,
+                    "event": "started_after_first_worker_presentation",
+                }),
+            );
+            let proxy = self.a11y_proxy.clone();
+            if let Err(error) = crate::native_scenario::spawn(scenario, move |packet| {
+                proxy
+                    .send_event(UserEvent::NativeScenarioInput(packet))
+                    .is_ok()
+            }) {
+                crate::native_scenario::log::emit_json(
+                    "qos-native-scenario",
+                    serde_json::json!({"event":"failed", "error":error}),
+                );
+                event_loop.exit();
+            }
+        }
+
+        if self.app.pump_floating_surface_service() {
+            self.app.invalidate_widget_resource_cache();
+            self.app.layout.layout_dirty = true;
+            request_primary_redraw();
+        }
+        if self.apply_floating_host_messages(event_loop) {
+            self.app.invalidate_widget_resource_cache();
+            request_primary_redraw();
+        }
+        self.sync_native_floating_geometry();
+        if self.recover_stalled_floating_windows() {
+            request_primary_redraw();
+        }
+        // `RedrawRequested` polls the asynchronous renderer setup. The shell
+        // keeps showing its live transfer proxy in the meantime, so these
+        // frames are cheap but essential: the first real buffer should take
+        // ownership as soon as it is ready, without waiting for fresh input.
+        for surface in &self.floating_windows {
+            if !surface.suspended
+                && !surface.adopted
+                && auxiliary_redraw_allowed(surface.render.as_ref())
+            {
+                surface.window.request_redraw();
+            }
+        }
+        let awaiting_primary_first_present = primary_startup_pump_needed(
+            self.primary_frames_sent,
+            self.last_primary_frame_presented,
+        );
+        if awaiting_primary_first_present {
+            request_primary_redraw();
+        }
+        // This runs before the ordinary fullscreen reconciliation below. If a
+        // real second output appears, the root is notified first and keeps
+        // the local window as the presenter dashboard; if it disappears the
+        // existing fullscreen path immediately becomes the safe fallback.
+        self.sync_audience_presentation(event_loop, &window);
+        if let Some(audience) = self.audience_presentation.as_ref()
+            && audience.render_init.is_some()
+        {
+            // Poll the worker result without ever blocking the presenter
+            // event loop; this is short-lived only while GPU setup runs.
+            audience.window.request_redraw();
+        }
+        let app = &mut self.app;
+
+        // Catches a compositor reconfigure that changes `inner_size()`
+        // without delivering `Resized`.
+        if let Some(prev) = app.layout.last_frame_size
+            && window.inner_size() != prev
+        {
+            app.layout.layout_dirty = true;
+            request_primary_redraw();
+        }
+        if app.pump_collab_presence() {
+            request_primary_redraw();
+        }
+        if app.poll_directed_invocations() {
+            app.needs_sync = true;
+            app.layout.layout_dirty = true;
+            request_primary_redraw();
+        }
+        app.publish_playback_handoff();
+
+        // Keep pumping frames while any "just typed" highlighter mark is
+        // still fading, so the taper animates instead of freezing.
+        let typing_now = Instant::now();
+        app.presence_ctx.prune_typing(typing_now);
+        let typing_active = app.presence_ctx.has_active_typing(typing_now);
+        if typing_active {
+            request_primary_redraw();
+        }
+
+        if app.dispatch_control_invocations() != 0 {
+            app.needs_sync = true;
+            app.layout.layout_dirty = true;
+            request_primary_redraw();
+        }
+
+        if app.service_history() {
+            app.needs_sync = true;
+            app.layout.layout_dirty = true;
+            request_primary_redraw();
+        }
+
+        if app.root_widget.needs_commit() {
+            if let Some(origin) = self.native_input_origin {
+                crate::native_scenario::log::emit_json(
+                    "qos-native-commit-redraw",
+                    serde_json::json!({
+                        "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                        "at_us": origin.elapsed().as_micros(),
+                    }),
+                );
+            }
+            app.commit_action();
+            app.root_widget.on_commit();
+            app.needs_sync = true;
+            request_primary_redraw();
+        }
+
+        // Level-triggered rather than hooked into individual mutations:
+        // widgets write to the document from many places.
+        if let Err(error) = app.autosave_tick() {
+            crate::diag!("[app] component autosave tick refused: {error:?}");
+        }
+
+        if app.reconcile_fullscreen(&window) {
+            request_primary_redraw();
+        }
+
+        // Run both: Settings' open Appearance pane may intentionally override
+        // the file-level base with its richer live accessibility intent.
+        let configured_changed = app.reconcile_configured_theme();
+        let appearance_changed = app.reconcile_appearance();
+        if configured_changed || appearance_changed {
+            app.needs_sync = true;
+            request_primary_redraw();
+        }
+
+        // The active page/view can change during `sync` (e.g. the initial
+        // auto-select), which the post-event broadcast above wouldn't catch.
+        app.broadcast_location_presence();
+        app.broadcast_view_presence();
+
+        // Run here too, not only `RedrawRequested`, since painting isn't
+        // guaranteed — a background tab, or a first frame behind a shader
+        // compile.
+        if app.record_tick() {
+            request_primary_redraw();
+        }
+
+        // Without this a first peer with no input never re-syncs to seed its
+        // doc after the grace window, so a late joiner diverges.
+        if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
+            app.needs_sync = true;
+            request_primary_redraw();
+        }
+
+        app.broadcast_doc_delta();
+
+        // Flag drained by the draw handler, not here — just pump a redraw.
+        if app.root_widget.take_structure_dirty() {
+            app.layout.structure_dirty = true;
+            request_primary_redraw();
+        }
+
+        let scheduled_deadline = crate::close_admission::wake_deadline(
+            app.root_widget.next_wake_deadline(),
+            app.close_admission.save_waiting,
+            Instant::now(),
+        );
+        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        if scheduled_due {
+            app.needs_sync = true;
+            request_primary_redraw();
+        }
+
+        // A hover tooltip is not motion, so it reveals even under
+        // reduce-motion — requested independently of the animation pump.
+        let tooltip_pending = app.input.tooltip_host.needs_frame();
+        if tooltip_pending {
+            request_primary_redraw();
+        }
+
+        // Reduced motion lets the loop go idle since animated widgets
+        // already paint their resting state.
+        let needs_frame = app.root_widget.needs_animation_frame();
+        let (animation_due, animation_deadline) = self.animation_schedule.poll(
+            Instant::now(),
+            any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
+        );
+        if animation_due {
+            app.needs_sync = true;
+            // Forces `apply_layout` since an animation tick (e.g. momentum
+            // fling) can reposition content without an input event.
+            app.layout.layout_dirty = true;
+            request_primary_redraw();
+            for surface in &self.floating_windows {
+                if auxiliary_redraw_allowed(surface.render.as_ref()) {
+                    surface.window.request_redraw();
+                }
+            }
+            if let Some(audience) = self.audience_presentation.as_ref()
+                && auxiliary_redraw_allowed(audience.render.as_ref())
+            {
+                audience.window.request_redraw();
+            }
+        }
+
+        // A background pump can run while its visible projection is stable.
+        // Redrawing only on a changed snapshot avoids full-scene GPU work on
+        // every otherwise-idle collaboration wake.
+        if let Some(tick) = app.presence.frame_tick.as_mut()
+            && tick(&mut app.presence_ctx)
+        {
+            request_primary_redraw();
+        }
+
+        // `Wait` sleeps until real input, zero CPU; escalate to a bounded
+        // ~60 Hz tick only while something no winit event surfaces on its
+        // own needs draining — a live collab socket, or a root still
+        // wanting another frame.
+        let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && !surface.adopted
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(Instant::now()))
+        });
+        let retry_at = retry_at.into_iter().chain(auxiliary_retry_at).min();
+        // Widget deadlines are serviced by sync/redraw. While occluded they can
+        // be delayed by at most the 250ms probe cap; independent history, record,
+        // autosave and collaboration work above continues on its existing doors.
+        let demand = crate::render_thread::retry::WakeDemand {
+            model: app.collaboration.manager.is_connected(),
+            typing: typing_active,
+            primary_startup: awaiting_primary_first_present,
+            tooltip: tooltip_pending,
+            widget_due: scheduled_due,
+            animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
+            auxiliary_startup: awaiting_floating_pixels,
+            retry_due: retry_due || auxiliary_retry_due,
+        };
+        match crate::render_thread::retry::next_wake(
+            Instant::now(),
+            primary_blocked_until,
+            any_render_available,
+            demand,
+            scheduled_deadline,
+            retry_at,
+            animation_deadline,
+        ) {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
     }
 }
 
@@ -2784,7 +3612,7 @@ impl AppHandler {
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => {
-                if self.app.admit_native_close_request() {
+                if self.app.request_close() && self.app.finish_close_if_ready() {
                     event_loop.exit();
                 } else {
                     window.request_redraw();
@@ -2843,176 +3671,6 @@ impl AppHandler {
             self.handle_other_window_event(window, pointer_event);
         }
         self.dispatching_touch_pointer = false;
-    }
-
-    fn pump_idle_host_integrations(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Arc<Window>,
-    ) -> bool {
-        if self.app.pump_floating_surface_service() {
-            self.app.invalidate_widget_resource_cache();
-            self.app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-        if self.apply_floating_host_messages(event_loop) {
-            self.app.invalidate_widget_resource_cache();
-            window.request_redraw();
-        }
-        self.sync_native_floating_geometry();
-        if self.recover_stalled_floating_windows() {
-            window.request_redraw();
-        }
-        // Poll renderer setup while the shell keeps its live transfer proxy.
-        for surface in &self.floating_windows {
-            if !surface.suspended && !surface.adopted {
-                surface.window.request_redraw();
-            }
-        }
-        let awaiting_primary_first_present = primary_startup_pump_needed(
-            self.primary_frames_sent,
-            self.last_primary_frame_presented,
-        );
-        if awaiting_primary_first_present {
-            window.request_redraw();
-        }
-        // Reconcile a real audience output before fullscreen fallback.
-        self.sync_audience_presentation(event_loop, window);
-        if let Some(audience) = self.audience_presentation.as_ref()
-            && audience.render_init.is_some()
-        {
-            audience.window.request_redraw();
-        }
-        awaiting_primary_first_present
-            || self
-                .floating_windows
-                .iter()
-                .any(|surface| !surface.suspended && !surface.adopted)
-    }
-
-    fn pump_idle_app_services(&mut self, window: &Arc<Window>) {
-        let app = &mut self.app;
-        // Catch compositor reconfiguration without a Resized event.
-        if let Some(previous) = app.layout.last_frame_size
-            && window.inner_size() != previous
-        {
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-        if app.pump_collab_presence() {
-            window.request_redraw();
-        }
-        if app.poll_directed_invocations() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-        app.publish_playback_handoff();
-        if app.dispatch_control_invocations() != 0 {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-        if app.service_history() {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-        if app.root_widget.needs_commit() {
-            app.commit_action();
-            app.root_widget.on_commit();
-            app.needs_sync = true;
-            window.request_redraw();
-        }
-        if let Err(error) = app.autosave_tick() {
-            crate::diag!("[app] component autosave tick refused: {error:?}");
-        }
-        if app.reconcile_fullscreen(window) {
-            window.request_redraw();
-        }
-        let configured_changed = app.reconcile_configured_theme();
-        let appearance_changed = app.reconcile_appearance();
-        if configured_changed || appearance_changed {
-            app.needs_sync = true;
-            window.request_redraw();
-        }
-        app.broadcast_location_presence();
-        app.broadcast_view_presence();
-        if app.record_tick() {
-            window.request_redraw();
-        }
-        if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
-            app.needs_sync = true;
-            window.request_redraw();
-        }
-        app.broadcast_doc_delta();
-        if app.root_widget.take_structure_dirty() {
-            app.layout.structure_dirty = true;
-            window.request_redraw();
-        }
-    }
-
-    fn pump_idle_animation(&mut self, window: &Arc<Window>) -> IdleWake {
-        let app = &mut self.app;
-        let now = Instant::now();
-        app.presence_ctx.prune_typing(now);
-        let typing_active = app.presence_ctx.has_active_typing(now);
-        if typing_active {
-            window.request_redraw();
-        }
-        let scheduled_deadline = crate::close_admission::wake_deadline(
-            app.root_widget.next_wake_deadline(),
-            app.close_admission.save_waiting,
-            now,
-        );
-        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= now);
-        if scheduled_due {
-            app.needs_sync = true;
-            window.request_redraw();
-        }
-        let tooltip_pending = app.input.tooltip_host.needs_frame();
-        if tooltip_pending {
-            window.request_redraw();
-        }
-        let needs_frame = app.root_widget.needs_animation_frame();
-        if needs_frame && !app.theme.reduce_motion {
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-            for surface in &self.floating_windows {
-                surface.window.request_redraw();
-            }
-            if let Some(audience) = self.audience_presentation.as_ref() {
-                audience.window.request_redraw();
-            }
-        }
-        if let Some(tick) = app.presence.frame_tick.as_mut()
-            && tick(&mut app.presence_ctx)
-        {
-            window.request_redraw();
-        }
-        IdleWake {
-            visual_work: animation_pump_needed(needs_frame, app.theme.reduce_motion)
-                || tooltip_pending
-                || typing_active
-                || scheduled_due,
-            collaboration_connected: app.collaboration.manager.is_connected(),
-            scheduled_deadline,
-        }
-    }
-
-    fn configure_idle_control_flow(event_loop: &ActiveEventLoop, wake: IdleWake) {
-        match idle_pump_deadline(
-            Instant::now(),
-            wake.visual_work,
-            wake.collaboration_connected,
-            wake.scheduled_deadline,
-        ) {
-            IdlePumpCadence::Deadline(deadline) => {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
-            IdlePumpCadence::Wait => event_loop.set_control_flow(ControlFlow::Wait),
-        }
     }
 }
 
@@ -3316,11 +3974,10 @@ mod pointer_broadcast_tests {
         let app_state = State::load(&base_bytes).unwrap();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
-        let route =
-            crate::collaboration::RouteSpec::app("snapshot-merge-test", uuid::Uuid::from_u128(1));
+        let route = crate::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: route.clone(),
-            epoch: uuid::Uuid::from_u128(2),
+            epoch: uuid::Uuid::new_v4(),
         });
         {
             let doc = &mut app.state_mut_for_test().doc;
@@ -3329,10 +3986,8 @@ mod pointer_broadcast_tests {
             };
             doc.put(&m, "a", 10).unwrap();
         }
-        app.commit_action();
 
         let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
-        peer.set_actor(automerge::ActorId::from(b"snapshot-merge-peer".as_slice()));
         let Ok(Some((automerge::Value::Object(ObjType::Map), pm))) = peer.get(&ROOT, "m") else {
             panic!("m exists")
         };
@@ -3343,21 +3998,14 @@ mod pointer_broadcast_tests {
             collab_types::DocumentMutation::Snapshot(incoming)
                 .encode()
                 .unwrap(),
-            collab_types::document_artifact_id(
-                &route.app_id,
-                &route.cluster_id.to_string(),
-                route.record.as_deref().unwrap_or(""),
-            ),
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-            collab_types::document_attestation_id(
-                &route.app_id,
-                &route.cluster_id.to_string(),
-                route.record.as_deref().unwrap_or(""),
-            ),
+            collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::OpClass::Splice,
             std::time::SystemTime::UNIX_EPOCH,
             0,
         );
+        app.state.commit_action(None, None);
         app.apply_signed_document_envelope(&envelope, None);
 
         // A replace would drop "a".
@@ -4234,6 +4882,32 @@ mod focus_trap_tests {
     }
 
     #[test]
+    fn container_overlay_traps_tab_in_its_controls() {
+        use crate::widget::{Column, Container};
+        let root = Column::new()
+            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(
+                Container::new()
+                    .with_focus_trap()
+                    .with_child(Box::new(TwoKids::new())),
+            ));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        app.init_layout();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(app.focusable_order.len(), 2);
+        assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
+        app.set_focused_node(Some(first));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(second));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(first));
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(second));
+    }
+
+    #[test]
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
@@ -5007,6 +5681,36 @@ mod action_palette_tests {
         }
     }
 
+    include!("../resource_projection_tests.rs");
+
+    #[test]
+    fn control_refresh_without_action_bindings_does_not_materialize_catalog() {
+        use std::sync::atomic::Ordering;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        for _ in 0..3 {
+            app.invalidate_widget_resource_cache();
+            app.refresh_control_action_availability();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        app.actions.last_control_availability = Some((
+            app.resource_cache_key(),
+            app.actions.permission_generation.get(),
+        ));
+        app.refresh_control_action_availability();
+        assert!(app.actions.last_control_availability.is_none());
+        // Discovery still sees the complete surface on demand.
+        assert!(
+            app.collect_resources()
+                .iter()
+                .any(|r| r.id.as_str() == "test.cache:1")
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn resource_tree_is_materialized_once_per_exact_generation() {
         use std::sync::atomic::Ordering;
@@ -5154,7 +5858,8 @@ mod action_palette_tests {
                     "focused chrome input must never reach consuming app content"
                 );
                 assert!(!handled, "Button leaves activation to the native fallback");
-                assert!(app.activate_focused_control_key(&event));
+                app.handle_unconsumed_activation_key(&event, &mut handled);
+                assert!(handled);
                 assert_eq!(app.dispatch_control_invocations(), 1);
                 assert_eq!(app.action_palette().is_some(), open_search);
                 assert_eq!(app.document_history.is_open(), !open_search);
@@ -6175,10 +6880,12 @@ mod semantic_tree_app_tests {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
         Bump,
+        Reset,
         HostBump,
         SetLabel(String),
     }
     const COUNTER_TYPE: &str = "test.counter";
+    const ASYNC_COUNTER_TYPE: &str = "test.async-counter";
 
     #[derive(Clone)]
     struct LargeDirectoryProvider {
@@ -6285,6 +6992,9 @@ mod semantic_tree_app_tests {
                     };
                     doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
                 }
+                CounterAction::Reset => {
+                    doc.put(&ROOT, "n", ScalarValue::Int(0))?;
+                }
                 CounterAction::SetLabel(s) => {
                     doc.put(&ROOT, "label", s.as_str())?;
                 }
@@ -6308,9 +7018,17 @@ mod semantic_tree_app_tests {
         lazy_resource: Option<Resource>,
         directory_provider: Option<LargeDirectoryProvider>,
         directory_roots: usize,
+        post_bump_reset: bool,
+        async_bump: bool,
+        pending_bump: Option<tilo_actions::InvocationId>,
+        resource_result: Option<tilo_actions::InvocationUpdate>,
     }
 
     fn counter_resource(destructive: bool) -> Resource {
+        counter_resource_with_reset(destructive, false)
+    }
+
+    fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resource {
         let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
             .unwrap()
             .requiring(PermissionRequirement::Write);
@@ -6319,7 +7037,7 @@ mod semantic_tree_app_tests {
         } else {
             bump
         };
-        Resource::new("test.counter", "test.counter", "Counter")
+        let resource = Resource::new("test.counter", "test.counter", "Counter")
             .with_action(bump)
             .with_action(
                 ActionSpec::immediate(
@@ -6363,7 +7081,16 @@ mod semantic_tree_app_tests {
                     EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
                         .unwrap()
                 },
-            ))
+            ));
+        if reset_visible {
+            resource.with_action(
+                ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset)
+                    .unwrap()
+                    .requiring(PermissionRequirement::Write),
+            )
+        } else {
+            resource
+        }
     }
 
     impl CounterCard {
@@ -6380,7 +7107,23 @@ mod semantic_tree_app_tests {
                 lazy_resource: None,
                 directory_provider: None,
                 directory_roots: 1,
+                post_bump_reset: false,
+                async_bump: false,
+                pending_bump: None,
+                resource_result: None,
             }
+        }
+
+        fn with_post_bump_reset() -> Self {
+            let mut card = Self::new();
+            card.post_bump_reset = true;
+            card
+        }
+
+        fn with_async_post_bump_reset() -> Self {
+            let mut card = Self::with_post_bump_reset();
+            card.async_bump = true;
+            card
         }
 
         fn with_lazy_resource(resource: Resource) -> Self {
@@ -6390,6 +7133,10 @@ mod semantic_tree_app_tests {
                 lazy_resource: Some(resource),
                 directory_provider: None,
                 directory_roots: 1,
+                post_bump_reset: false,
+                async_bump: false,
+                pending_bump: None,
+                resource_result: None,
             }
         }
 
@@ -6404,10 +7151,40 @@ mod semantic_tree_app_tests {
             card.directory_roots = count;
             card
         }
+
+        fn current_resource(&self, doc: &automerge::AutoCommit) -> Resource {
+            let resource = counter_resource_with_reset(
+                self.destructive,
+                self.post_bump_reset && counter_in_doc(doc) > 0,
+            );
+            if self.async_bump {
+                resource.with_action(
+                    ActionSpec::operation(
+                        "async-bump",
+                        "Asynchronous bump",
+                        OperationKind::Effect,
+                        ASYNC_COUNTER_TYPE,
+                        &(),
+                    )
+                    .unwrap()
+                    .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+                    .returns(tilo_actions::ResultSpec::Job),
+                )
+            } else {
+                resource
+            }
+        }
     }
     impl Widget for CounterCard {
         fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
             self.button.sync(s, p);
+            if let Some(invocation) = self.pending_bump.take() {
+                CounterAction::Bump.apply(s).unwrap();
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                });
+            }
         }
         fn build_layout(
             &mut self,
@@ -6450,16 +7227,16 @@ mod semantic_tree_app_tests {
         fn get_rect(&self) -> KurboRect {
             KurboRect::ZERO
         }
-        fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
             self.lazy_resource
                 .is_none()
-                .then(|| counter_resource(self.destructive))
+                .then(|| self.current_resource(doc))
                 .into_iter()
                 .collect()
         }
         fn action_directory_resource_page(
             &self,
-            _doc: &automerge::AutoCommit,
+            doc: &automerge::AutoCommit,
             cursor: &[u8],
             max_results: usize,
         ) -> Option<crate::widget::ActionDirectoryResourcePage> {
@@ -6471,7 +7248,7 @@ mod semantic_tree_app_tests {
             let resources = (offset..end)
                 .map(|index| {
                     if index == 0 {
-                        counter_resource(self.destructive)
+                        self.current_resource(doc)
                     } else {
                         Resource::new(
                             format!("test.counter:{index}"),
@@ -6498,14 +7275,14 @@ mod semantic_tree_app_tests {
                 exhausted: end >= self.directory_roots,
             })
         }
-        fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+        fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
             if let Some(resource) = self.lazy_resource.as_ref().filter(|resource| {
                 find_action_resource(std::slice::from_ref(resource), id).is_some()
             }) {
                 return Some(resource.clone());
             }
             if id == "test.counter" {
-                return Some(counter_resource(self.destructive));
+                return Some(self.current_resource(doc));
             }
             id.strip_prefix("test.counter:")
                 .and_then(|suffix| suffix.parse::<usize>().ok())
@@ -6536,7 +7313,40 @@ mod semantic_tree_app_tests {
                 .unwrap_or_default()
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &[COUNTER_TYPE]
+            &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
+        }
+        fn start_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            kind: tilo_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
+                self.pending_bump = Some(invocation);
+                return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+            }
+            self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
+        }
+        fn poll_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            _cancellation_requested: bool,
+            _doc: &automerge::AutoCommit,
+            _path: &automerge::ObjId,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            if self
+                .resource_result
+                .as_ref()
+                .is_some_and(|update| update.invocation() == invocation)
+            {
+                self.resource_result.take()
+            } else {
+                None
+            }
         }
         fn invoke_resource_operation_v2(
             &mut self,
@@ -6581,7 +7391,11 @@ mod semantic_tree_app_tests {
     }
 
     fn counter(app: &App) -> i64 {
-        match app.state.doc.get(&ROOT, "n") {
+        counter_in_doc(&app.state.doc)
+    }
+
+    fn counter_in_doc(doc: &automerge::AutoCommit) -> i64 {
+        match doc.get(&ROOT, "n") {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         }
@@ -6755,6 +7569,97 @@ mod semantic_tree_app_tests {
                 .and_then(|entry| entry.author.as_ref()),
             Some(&crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
+        );
+    }
+
+    #[test]
+    fn broker_invocation_republishes_a_document_dependent_action_surface() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .all(|descriptor| descriptor.address.action != "reset"),
+            "reset is unavailable before the counter changes"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 42,
+            resource: "test.counter".into(),
+            action: "bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+
+        assert_eq!(counter(&app), 1, "the directed document action ran");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the post-mutation surface exposes the newly valid reset action"
+        );
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "the broker event batch republishes without waiting for native window input"
+        );
+    }
+
+    #[test]
+    fn accepted_broker_invocation_republishes_when_its_terminal_update_arrives() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 43,
+            resource: "test.counter".into(),
+            action: "async-bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+        assert_eq!(counter(&app), 0, "admission alone does not mutate");
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .map(|pending| pending.wire_id),
+            Some(43),
+            "Accepted remains pending until the widget reports a terminal update"
+        );
+
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "the later model pass applied the job");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the terminal document now exposes reset"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        assert!(
+            app.poll_directed_invocations(),
+            "the terminal update arrived"
+        );
+        assert!(app.actions.directed_invocations.is_empty());
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "terminal lifecycle polling republishes without native input"
         );
     }
 
@@ -7538,6 +8443,8 @@ mod semantic_tree_app_tests {
         assert_eq!(presses.get(), 0);
     }
 
+    include!("action_directory_snapshot_tests.rs");
+
     fn directory_query(
         revision: impl Into<String>,
         parent_resource: impl Into<String>,
@@ -7979,6 +8886,28 @@ mod wake_integration_tests {
         app.needs_sync = false;
         assert!(!app.accept_wake(&current));
         assert!(!app.needs_sync);
+    }
+
+    #[test]
+    fn collaboration_queue_wake_does_not_force_document_sync() {
+        let (scope, rx) = bound_scope();
+        let handle = scope.handle();
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            scope,
+            State::new(),
+            Box::new(crate::widget::Text::new("root")),
+        );
+        app.needs_sync = false;
+        handle.notify_events();
+        assert!(app.accept_wake(&rx.try_recv().unwrap()));
+        assert!(!app.needs_sync);
+        app.needs_sync = true;
+        handle.notify_events();
+        assert!(app.accept_wake(&rx.try_recv().unwrap()));
+        assert!(
+            app.needs_sync,
+            "queue wake must not erase an earlier model invalidation"
+        );
     }
 
     #[test]
@@ -8798,14 +9727,6 @@ mod bound_component_tests {
         app.close_admission.save_waiting = true;
         app.close_admission.save_local = Some(close_probe);
         app.close_components();
-        // The target was revoked while its canonical operation was Accepted.
-        // The actual poll path must turn refusal into recoverable close UI.
-        app.poll_directed_invocations();
-        assert!(matches!(app.close_admission.save_result, Some(Err(_))));
-        app.service_close_admission();
-        assert!(!app.close_admission.save_waiting);
-        assert!(!app.close_admission.admitted);
-        assert!(app.close_admission.dialog.is_some());
         assert_eq!(
             CAPTURES.with_borrow(|c| c
                 .iter()
@@ -9038,6 +9959,7 @@ mod bound_component_tests {
         }
     }
 
+    include!("action_directory_snapshot_bound_tests.rs");
     include!("bound_record_sync_tests.rs");
 
     #[test]
