@@ -325,10 +325,15 @@ impl InternalDownloadFlow {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Show a verified download for `--shots`; no worker or data exists.
-    pub(super) fn pose_ready_for_shot(&mut self) {
+    /// Show a verified (or already consumed) download for `--shots`; no
+    /// worker or data exists.
+    pub(super) fn pose_for_shot(&mut self, consumed: bool) {
         self.presentation = presentation_from_facts(
-            WorkerPhase::Ready,
+            if consumed {
+                WorkerPhase::Consumed
+            } else {
+                WorkerPhase::Ready
+            },
             [0, 0],
             None,
             [true, true],
@@ -604,7 +609,7 @@ impl InternalDownloadFlow {
         if self.consumed && status.phase == WorkerPhase::Failed {
             // The download itself stayed verified; the installer helper stopped.
             next.title = crate::setup::strings::t("imager-setup-internal-download-kept");
-            next.details = status.error.clone().unwrap_or_default();
+            next.details = status.error.unwrap_or_default();
         }
         if next == self.presentation {
             return false;
