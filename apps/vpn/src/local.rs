@@ -9,11 +9,8 @@
 //! profile provisioning again.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
-
-use uuid::Uuid;
 
 use crate::model::{ConnId, LocalProfileDetails};
 
@@ -56,27 +53,8 @@ pub fn save<S: std::hash::BuildHasher>(
             "no local state directory is available; local VPN association cannot be saved".into(),
         );
     };
-    let parent = path
-        .parent()
-        .ok_or_else(|| "invalid local VPN state path".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
-    let tmp = parent.join(format!(".vpn-local-profiles-{}.tmp", Uuid::new_v4()));
     let bytes = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    fs::rename(&tmp, &path).map_err(|error| error.to_string())
+    atomic_file::write_private(&path, &bytes).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

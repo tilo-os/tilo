@@ -12,7 +12,6 @@
 //! back into the document.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -1750,38 +1749,8 @@ impl SheetsApp {
         std::thread::Builder::new()
             .name("sheets-persistence-save".into())
             .spawn(move || {
-                let result = (|| {
-                    let parent = path
-                        .parent()
-                        .ok_or_else(|| "workbook path has no parent directory".to_string())?;
-                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-                    // `create_new` avoids trampling an unrelated file, then a
-                    // same-directory rename makes the new, fully flushed image
-                    // visible atomically. A crash can at worst leave our
-                    // bounded, generation-named temporary file behind.
-                    let temporary = parent.join(format!(
-                        ".workbook.automerge-{}-{generation}.tmp",
-                        std::process::id()
-                    ));
-                    let _ = std::fs::remove_file(&temporary);
-                    let write_result = (|| {
-                        let mut file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&temporary)
-                            .map_err(|error| error.to_string())?;
-                        file.write_all(&saved_doc.save())
-                            .map_err(|error| error.to_string())?;
-                        file.sync_all().map_err(|error| error.to_string())?;
-                        drop(file);
-                        std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-                        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
-                    })();
-                    if write_result.is_err() {
-                        let _ = std::fs::remove_file(&temporary);
-                    }
-                    write_result
-                })();
+                let result = atomic_file::write_creating_parent(&path, &saved_doc.save())
+                    .map_err(|error| error.to_string());
                 let _ = tx.send(PersistenceResult::Save {
                     generation,
                     heads: result_heads,
