@@ -38,7 +38,8 @@ pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 pub const BUILTIN_HIGH_RISK: &[&str] = &["so.tilo.browser", "so.tilo.tube", "so.tilo.music"];
 
 /// Environment variable that overrides [`POLICY_PATH`] — for tests to
-/// point at a fixture; production reads the image's file.
+/// point at a fixture; production reads the image's file. Honoured only by
+/// developer builds (see [`crate::dev_env`]).
 pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 
 /// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
@@ -146,8 +147,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path =
-        std::env::var_os(POLICY_PATH_ENV).map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
+    let policy_path = crate::dev_env::dev_override(POLICY_PATH_ENV)
+        .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
         // No policy file: fall back to the compiled-in set rather than to

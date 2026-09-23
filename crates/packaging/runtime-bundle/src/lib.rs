@@ -241,7 +241,19 @@ pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 /// Returns [`BundleError::NoDataDir`] if [`RUNTIME_DIR_ENV`] is unset
 /// and the platform data directory can't be resolved (`XDG_DATA_HOME`/`HOME` unset).
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
-    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
+    bundle_root_from(std::env::var_os(RUNTIME_DIR_ENV))
+}
+
+/// [`bundle_root`] with the override supplied by the caller instead of read
+/// from [`RUNTIME_DIR_ENV`]. The launcher passes only an override its own
+/// build policy allows; `None` (or empty) means the platform data directory.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] if `root_override` is unset and the
+/// platform data directory can't be resolved.
+pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<PathBuf, BundleError> {
+    if let Some(dir) = root_override
         && !dir.is_empty()
     {
         return Ok(PathBuf::from(dir));
@@ -259,6 +271,20 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
 /// Returns [`BundleError::NoDataDir`] under the same condition as [`bundle_root`].
 pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
+}
+
+/// [`default_bundle_path`] under [`bundle_root_from`]'s caller-supplied
+/// override.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] under the same condition as
+/// [`bundle_root_from`].
+pub fn default_bundle_path_from(
+    root_override: Option<std::ffi::OsString>,
+    version: &str,
+) -> Result<PathBuf, BundleError> {
+    Ok(bundle_root_from(root_override)?.join(version))
 }
 
 /// System-wide fallback: `/usr/lib/tilo-runtime/<v>/`.
