@@ -314,6 +314,58 @@ mod tests {
         DeviceId::new(hex::encode(key.verifying_key().to_bytes())).unwrap()
     }
 
+    /// A credential sealed before a crypto-stack upgrade. Devices on
+    /// different builds exchange these envelopes, so Ed25519-to-X25519
+    /// conversion, X25519 agreement and XChaCha20-Poly1305 must stay
+    /// byte-compatible.
+    #[test]
+    fn credential_sealed_by_an_earlier_build_still_opens() {
+        let author_key = SigningKey::from_bytes(&[1; 32]);
+        let laptop_key = SigningKey::from_bytes(&[2; 32]);
+        let author = device(&author_key);
+        let network_id = wifi_network_id("Home", os_actions::WifiSecurity::Wpa3);
+        assert_eq!(
+            hex::encode(network_id),
+            "3acb148a49b7b11b0709306da205cc903420497d6fb8e9efb16a3adac3d1e80c"
+        );
+        let credential = WifiCredential {
+            network_id,
+            ssid: "Home".to_string(),
+            security: os_actions::WifiSecurity::Wpa3,
+            sealed_secret: hex::decode(
+                "0102403831333937373065613837643137356635366133353436366333346337\
+                6563636362386438613931623465653337613235646636306635623866633962\
+                33393428892c4aeb3eaaaa9c33184c2a373f878c6828575dd00a28ceaf913176\
+                8c4a4c0a78addaa6728b4c59c67b027ec859022eb9033aec9fe6082314e9979c\
+                04eed6b2da816b0999b7b7a8aabe11367cbee8e1d624ce30e78133a9de997640\
+                3861383865336464373430396631393566643532646232643363626135643732\
+                6361363730396266316439343132316266333734383830316234306636663563\
+                20780a8c3f9ce8e0221c752624c03a32c2a68c43edbef27ef7660e8433d7770a\
+                2a8c702ed2a4491e05a2644bcf08d0dec0531327a9e2ed7423be26fc02b54021\
+                a8dd77f58615d2bbd239baec431831e46d18e9f86b7ce171cc353872",
+            )
+            .unwrap(),
+            nonce: hex::decode("9ce84bea5719e1eb1c14441d827462389f744fa0088d88d9")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            stamp: FabricStamp {
+                counter: 8,
+                device: author,
+            },
+        };
+        for key in [&author_key, &laptop_key] {
+            assert_eq!(
+                open_wifi_credential(&credential, key).unwrap(),
+                "kat wifi passphrase"
+            );
+        }
+        assert_eq!(
+            open_wifi_credential(&credential, &SigningKey::from_bytes(&[3; 32])),
+            Err(WifiSecretError::NotARecipient)
+        );
+    }
+
     #[test]
     fn each_certified_recipient_can_open_but_an_outsider_cannot() {
         let author_key = SigningKey::from_bytes(&[1; 32]);

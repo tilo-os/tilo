@@ -2721,6 +2721,26 @@ pub(super) mod test_events {
 mod tests {
     use super::*;
 
+    /// Pairing codes and MACs cross two devices that may run different
+    /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.
+    #[test]
+    fn pairing_code_and_mac_match_known_answers() {
+        let nonce = [7_u8; 16];
+        assert_eq!(derive_pairing_code(&nonce), 206_239);
+        let key = derive_pairing_mac_key(&nonce);
+        assert_eq!(
+            hex::encode(key),
+            "280a9ed0cb37e06755677de2b73ba15a51524d6264f78ef9aebd4c2e9eacad77"
+        );
+        let mac = compute_pairing_mac(&key, b"kat-payload");
+        assert_eq!(
+            hex::encode(mac),
+            "7142c6f64bb78c1e90e93269cc63d9d22cce12d1ecd39fc6bead9f36096daab8\
+             b316dc90d0ee6deb7acc9818ce10535dc1df7a7bb72576238836a3e38aba52bd"
+        );
+        assert!(verify_pairing_mac(&key, b"kat-payload", &mac));
+    }
+
     fn fixture_mnemonic() -> String {
         // 24 distinct BIP39 words for deterministic verification.
         "ability abandon able about above absent absorb abstract absurd \

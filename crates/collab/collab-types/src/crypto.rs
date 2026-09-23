@@ -240,6 +240,27 @@ pub fn verify_op(op: &SignedOp) -> Result<(), VerifyError> {
 mod tests {
     use super::*;
 
+    /// Every signed op on the wire and on disk is an Ed25519 signature over
+    /// `canonical_bytes`; pin one signature and its postcard encoding.
+    #[test]
+    fn sign_event_matches_known_answer() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x5e; 32]);
+        let public = Ed25519PublicKey(key.verifying_key().to_bytes());
+        assert_eq!(
+            hex::encode(public.as_bytes()),
+            "8146640f02493af4fbc54fe33388e75dc2c937ae0b7727cc2b2afb1b75199a3e"
+        );
+        let event = ("kat-event", 7_u64);
+        assert_eq!(canonical_bytes(&event).unwrap(), b"\x09kat-event\x07");
+        let expected = "7395c3a6845d8916c0cc16a6f92c3a5c69bee334eac7e76606b582c37fb52ad5\
+                        74222d2f7d9c7aca82dfa32560ba5490bd7db817593d488cb713d352c0656804";
+        let signature = sign_event(&event, &key).unwrap();
+        assert_eq!(hex::encode(signature.as_bytes()), expected);
+        verify_event(&event, &signature, &public).unwrap();
+        let wire = postcard::to_allocvec(&signature).unwrap();
+        assert_eq!(hex::encode(&wire), format!("40{expected}"));
+    }
+
     #[test]
     fn keypair_round_trip_serialise() {
         let (_, pk) = generate_keypair();
