@@ -553,6 +553,32 @@ mod tests {
         assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
     }
 
+    /// The shim's rule list as raw access bits (see
+    /// `landlock::tests::pinned_ruleset_access_sets` for the bit names):
+    /// read-only paths get Execute|ReadFile|ReadDir, read-write paths get
+    /// every ABI-5 right, in argv order with read-only first.
+    #[test]
+    fn pinned_shim_rule_list() {
+        let plan = access_plan(
+            &[PathBuf::from("/usr"), PathBuf::from("/lib")],
+            &[PathBuf::from("/app"), PathBuf::from("/dev/dri")],
+            TARGET_ABI,
+        );
+        let pinned: Vec<(PathBuf, u64)> = plan
+            .iter()
+            .map(|rule| (rule.path.clone(), u64::from(rule.access.bits())))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                (PathBuf::from("/usr"), 0b1101),
+                (PathBuf::from("/lib"), 0b1101),
+                (PathBuf::from("/app"), 0xffff),
+                (PathBuf::from("/dev/dri"), 0xffff),
+            ]
+        );
+    }
+
     #[test]
     fn ordinary_shim_invocations_require_landlock() {
         let parsed = ShimArgs::parse(&["--".into(), "/app".into()]).expect("parse");

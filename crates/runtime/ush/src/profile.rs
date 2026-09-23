@@ -266,6 +266,36 @@ mod tests {
         }
     }
 
+    /// The compiled guest programs, byte for byte. A change to what a guest
+    /// may call fails here and has to be reviewed as a policy change with a
+    /// regenerated golden file. Only x86_64 is pinned: syscall numbers and
+    /// the arch check differ per architecture.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn compiled_guest_programs_match_the_pinned_golden_files() {
+        let cases: [(Profile, &[u8]); 2] = [
+            (
+                Profile::Ush,
+                include_bytes!("../tests/fixtures/seccomp/ush.x86_64.bpf"),
+            ),
+            (
+                Profile::Dsh,
+                include_bytes!("../tests/fixtures/seccomp/dsh.x86_64.bpf"),
+            ),
+        ];
+        for (profile, golden) in cases {
+            let compiled = compile_guest_filter(profile).unwrap();
+            assert!(
+                compiled == golden,
+                "{} compiled to a different BPF program than the pinned one \
+                 ({} bytes vs {} pinned); this is a sandbox policy change",
+                profile.as_str(),
+                compiled.len(),
+                golden.len()
+            );
+        }
+    }
+
     /// `dsh` relaxes the namespace rules and nothing else — a filter that
     /// stopped denying `ptrace` or `bpf` would be a different claim than documented.
     #[test]
