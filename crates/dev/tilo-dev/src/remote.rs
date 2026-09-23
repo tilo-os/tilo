@@ -152,6 +152,88 @@ impl Remote {
     }
 }
 
+/// The guest's VM lock, which VM-wide swaps, gc and upgrades take too.
+pub const VM_LOCK: &str = "/var/lib/tilo-dev/locks/vm.lock";
+
+/// The remote command that takes the VM lock, says so, and holds it until
+/// the connection ends (the VM shutting down ends it).
+pub fn vm_lock_command() -> Vec<String> {
+    vec![format!(
+        "mkdir -p /var/lib/tilo-dev/locks && flock --nonblock {VM_LOCK} sh -c 'echo locked; exec sleep 600'"
+    )]
+}
+
+pub enum LockOutcome {
+    Held(VmLock),
+    /// Another command holds it.
+    Busy,
+    /// The lock could not be asked for (VM down, no SSH).
+    Unreachable(String),
+}
+
+/// Holds the guest's VM lock while alive.
+pub struct VmLock {
+    child: Child,
+}
+
+impl VmLock {
+    /// Wait up to `timeout` for the connection to end, which means the VM
+    /// went down; `true` when it did.
+    pub fn wait_for_shutdown(&mut self, timeout: std::time::Duration) -> bool {
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        false
+    }
+}
+
+impl Drop for VmLock {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Take the guest's VM lock without waiting.
+pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
+    let line = ssh_command(endpoint, key, &vm_lock_command(), false);
+    let spawned = Command::new(&line.program)
+        .args(&line.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return LockOutcome::Unreachable(error.to_string()),
+    };
+    let mut first = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        let _ = std::io::BufRead::read_line(&mut BufReader::new(stdout), &mut first);
+    }
+    if first.trim() == "locked" {
+        return LockOutcome::Held(VmLock { child });
+    }
+    let status = child.wait().ok().and_then(|s| s.code());
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    match status {
+        // flock --nonblock exits 1 when the lock is taken.
+        Some(1) => LockOutcome::Busy,
+        _ => LockOutcome::Unreachable(if stderr.trim().is_empty() {
+            "no answer".into()
+        } else {
+            stderr.trim().to_owned()
+        }),
+    }
+}
+
 impl Drop for Remote {
     fn drop(&mut self) {
         // Closing stdin ends the daemon's loop; reap ssh so no zombie remains.
@@ -184,5 +266,15 @@ mod tests {
         );
         let interactive = ssh_command(&endpoint, None, &[], true);
         assert!(interactive.args.contains(&"-t".to_string()));
+    }
+
+    #[test]
+    fn vm_lock_is_the_one_the_daemon_takes() {
+        let command = vm_lock_command().join(" ");
+        assert!(
+            command.contains("flock --nonblock /var/lib/tilo-dev/locks/vm.lock"),
+            "{command}"
+        );
+        assert!(command.contains("echo locked"));
     }
 }

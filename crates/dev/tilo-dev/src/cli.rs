@@ -33,7 +33,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-dev guide\n  tilo-dev guide swapping\n  tilo-dev guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, driving, storage, platforms, troubleshooting
+        /// quickstart, concepts, swapping, driving, storage, platforms, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -42,17 +42,33 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
-    /// Put a build of a component into a slot and restart what it needs.
+    /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
-        after_help = "Examples:\n  tilo-dev swap shell                      # your slot, built from this worktree\n  tilo-dev swap vm fs                      # VM-wide component into the vm slot\n  tilo-dev swap review-a launcher --from layer:3f9c..."
+        after_help = "Examples:\n  tilo-dev swap shell                      # your slot, built in the VM from this worktree\n  tilo-dev swap vm fs                      # VM-wide component into the vm slot\n  tilo-dev swap app:notes                  # package and install one app; live at its next launch\n  tilo-dev swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-dev swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-dev swap shell --builder host       # build on this Linux host instead\n  tilo-dev swap review-a launcher --from layer:3f9c..."
     )]
     Swap {
-        /// `[SLOT] COMPONENT`; the slot defaults to the one named after your branch.
+        /// `[SLOT] COMPONENT`; the slot defaults to the one named after your
+        /// branch. `app:<dir>` names an app under apps/.
         #[arg(num_args = 1..=2, required = true, value_names = ["SLOT", "COMPONENT"])]
         target: Vec<String>,
-        /// `worktree` (build on this host) or `layer:<hash>` (already in the VM).
+        /// `worktree` (build it), `layer:<hash>` (already in the VM),
+        /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
         from: String,
+        /// Where `--from worktree` builds: `vm` (default; syncs the worktree
+        /// into the VM) or `host` (Linux hosts only).
+        #[arg(long, value_enum)]
+        builder: Option<Builder>,
+    },
+    /// Type, press keys, move and click on a headful slot's own seat (real libinput path).
+    #[command(
+        after_help = "Examples:\n  tilo-dev input key ctrl+alt+t\n  tilo-dev input key super Return\n  tilo-dev input type 'hello world'\n  tilo-dev input move 400 300\n  tilo-dev input click left --at 400 300\n  tilo-dev input --slot review-b click right\n\nHeadless slots have no seat: drive them with tilo-dev control."
+    )]
+    Input {
+        #[arg(long)]
+        slot: Option<String>,
+        #[command(subcommand)]
+        action: InputCommand,
     },
     /// Switch a slot back to an earlier generation.
     #[command(
@@ -94,14 +110,56 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
-    /// Delete generations and layers nothing needs any more.
-    #[command(after_help = "Examples:\n  tilo-dev gc --dry-run\n  tilo-dev gc --keep 2")]
+    /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
+    #[command(
+        after_help = "Examples:\n  tilo-dev gc --dry-run\n  tilo-dev gc --keep 2\n  tilo-dev gc --keep-targets 0   # evict every in-VM build dir not in use"
+    )]
     Gc {
         #[arg(long)]
         dry_run: bool,
         /// Generations to keep per slot besides the current one (default from vms.toml, else 5).
         #[arg(long)]
         keep: Option<u32>,
+        /// In-VM build dirs to keep, most recently used first (default from vms.toml, else 2).
+        #[arg(long)]
+        keep_targets: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Builder {
+    /// Sync the worktree into the VM and build there with the dev image's toolchain.
+    Vm,
+    /// Build on this host with its cargo (Linux only).
+    Host,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InputCommand {
+    /// Press and release key combos in order.
+    #[command(
+        after_help = "Examples:\n  tilo-dev input key ctrl+alt+t\n  tilo-dev input key super\n  tilo-dev input key ctrl+l Return"
+    )]
+    Key {
+        /// Combos like ctrl+alt+t, shift+Tab, super, Return, F5.
+        #[arg(required = true)]
+        combos: Vec<String>,
+    },
+    /// Type text on a US keyboard layout.
+    #[command(after_help = "Examples:\n  tilo-dev input type 'hello world'")]
+    Type { text: String },
+    /// Move the pointer to output pixel X, Y.
+    #[command(after_help = "Examples:\n  tilo-dev input move 400 300")]
+    Move { x: u32, y: u32 },
+    /// Click a button (left, right, middle), optionally at X, Y.
+    #[command(
+        after_help = "Examples:\n  tilo-dev input click\n  tilo-dev input click right --at 400 300"
+    )]
+    Click {
+        #[arg(default_value = "left")]
+        button: String,
+        #[arg(long, num_args = 2, value_names = ["X", "Y"])]
+        at: Option<Vec<u32>>,
     },
 }
 
@@ -133,17 +191,24 @@ pub enum VmCommand {
     /// Is the VM up, reachable, and running a compatible daemon?
     #[command(after_help = "Examples:\n  tilo-dev vm status\n  tilo-dev vm status shared")]
     Status { name: Option<String> },
-    /// Register a VM and create it from a dev image with the host's hypervisor.
+    /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Examples:\n  tilo-dev vm create dev --image ~/images/tilo-dev.qcow2 --disk ~/vms/dev.qcow2\n  tilo-dev vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-dev vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
+        after_help = "Examples:\n  tilo-dev vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-dev vm create dev --tag main-1a2b3c4\n  tilo-dev vm create dev --image ~/images/tilo-dev.qcow2 --disk ~/vms/dev.qcow2\n  tilo-dev vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-dev vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-dev vm start")]
     Start { name: Option<String> },
-    /// Shut the VM down cleanly.
-    #[command(after_help = "Examples:\n  tilo-dev vm stop")]
-    Stop { name: Option<String> },
+    /// Shut the VM down cleanly, once no swap, gc or upgrade is running in it.
+    #[command(
+        after_help = "Examples:\n  tilo-dev vm stop\n  tilo-dev vm stop --force   # even while another command runs"
+    )]
+    Stop {
+        name: Option<String>,
+        /// Do not wait for the VM lock.
+        #[arg(long)]
+        force: bool,
+    },
     /// Move the VM to a newer dev image (bootc); slots survive, they live in /var.
     #[command(
         after_help = "Examples:\n  tilo-dev vm upgrade\n  tilo-dev vm upgrade --image code.podesta.ai/qos/tilo-dev:2026-09-22"
@@ -184,10 +249,13 @@ pub struct CreateArgs {
     /// libvirt, qemu, utm or hyperv (default: the host's native one).
     #[arg(long)]
     pub hypervisor: Option<String>,
-    /// Published dev image to create the VM from.
-    #[arg(long)]
+    /// A local dev disk to create the VM from, instead of downloading one.
+    #[arg(long, conflicts_with = "tag")]
     pub image: Option<String>,
-    /// The VM's own disk.
+    /// Published dev disk tag to download (default: the newest main or release build).
+    #[arg(long)]
+    pub tag: Option<String>,
+    /// The VM's own disk (default: in the platform data dir).
     #[arg(long)]
     pub disk: Option<String>,
     /// Guest architecture (default: the host's).
@@ -295,8 +363,26 @@ mod tests {
         .unwrap();
         assert!(cli.json);
         assert!(
-            matches!(cli.command, Some(Command::Swap { ref target, ref from }) if target.len() == 2 && from == "layer:ab")
+            matches!(cli.command, Some(Command::Swap { ref target, ref from, builder: None }) if target.len() == 2 && from == "layer:ab")
         );
+        let cli =
+            Cli::try_parse_from(["tilo-dev", "swap", "app:notes", "--builder", "host"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                builder: Some(Builder::Host),
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "tilo-dev", "input", "--slot", "b", "click", "right", "--at", "4", "5",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Input { action: InputCommand::Click { ref button, at: Some(ref at) }, .. }) if button == "right" && at == &[4, 5]
+        ));
+        assert!(Cli::try_parse_from(["tilo-dev", "input", "key"]).is_err());
         let cli = Cli::try_parse_from(["tilo-dev", "control", "click", "--x", "1"]).unwrap();
         assert!(
             matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
