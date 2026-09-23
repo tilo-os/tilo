@@ -27,7 +27,7 @@ use collab_types::{
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
 };
 use ed25519_dalek::SigningKey as DalekSigningKey;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
@@ -473,7 +473,8 @@ type HmacSha512 = Hmac<Sha512>;
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
-    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha512 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     let bytes = mac.finalize().into_bytes();
     let mut out = [0u8; 64];
@@ -493,7 +494,8 @@ pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> bool {
-    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha512 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     mac.verify_slice(tag).is_ok()
 }

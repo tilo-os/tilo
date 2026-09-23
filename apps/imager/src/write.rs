@@ -259,7 +259,7 @@ fn target_lock_name(target: &TargetDrive) -> String {
             || format!("path:{}", target.dev_path()),
             |id| format!("id:{id}"),
         );
-    format!("{:x}", Sha256::digest(identity.as_bytes()))
+    hex::encode(Sha256::digest(identity.as_bytes()))
 }
 
 #[cfg(unix)]
@@ -526,7 +526,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_sha256 {
-        let actual = format!("{:x}", hash.finalize());
+        let actual = hex::encode(hash.finalize());
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -578,7 +578,7 @@ fn hash_source_exact(
             "source image became larger after review",
         ));
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// Re-read `dst` and compare it against `src`, [`CHUNK`] bytes at a time, over
@@ -836,7 +836,7 @@ fn run_job_file_bound(
         .source
         .expected_sha256
         .as_deref()
-        .is_some_and(|expected| !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected))
+        .is_some_and(|expected| !hex::encode(digest.finalize()).eq_ignore_ascii_case(expected))
     {
         return JobResult::WriteFailed(
             "source image no longer matches its signed release catalog".into(),
@@ -1176,7 +1176,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     if request_bytes.len() > 1024 * 1024 {
         return Err("write helper request is unexpectedly large".into());
     }
-    let actual_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    let actual_digest = hex::encode(Sha256::digest(&request_bytes));
     if expected_digest.len() != 64
         || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
         || !actual_digest.eq_ignore_ascii_case(expected_digest)
@@ -1405,7 +1405,7 @@ fn run_privileged_helper(
     request_file.flush()?;
     request_file.sync_all()?;
     drop(request_file);
-    let request_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    let request_digest = hex::encode(Sha256::digest(&request_bytes));
     let executable = helper_executable()?;
     let mut child = elevated_helper_command(
         &executable,

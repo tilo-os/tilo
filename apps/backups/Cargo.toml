@@ -28,6 +28,7 @@ xdg-paths = { path = "../../crates/system/xdg-paths" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
 vello.workspace = true

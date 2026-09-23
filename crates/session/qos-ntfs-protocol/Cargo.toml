@@ -9,6 +9,7 @@ publish = false
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+hex.workspace = true
 sha2.workspace = true
 
 [lints]

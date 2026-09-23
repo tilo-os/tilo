@@ -166,7 +166,7 @@ impl GateConfig {
 
     fn verify_source(&self, contents: &str) -> Result<(), String> {
         use sha2::{Digest, Sha256};
-        if format!("{:x}", Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
+        if hex::encode(Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
             return Err("native input gate scenario byte hash mismatch".into());
         }
         Ok(())
@@ -485,7 +485,7 @@ mod tests {
             } else {
                 inherited.as_raw_fd()
             };
-            let mut config = serde_json::json!({"fd":fd,"run_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenario_sha256":format!("{:x}", Sha256::digest(contents.as_bytes()))});
+            let mut config = serde_json::json!({"fd":fd,"run_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenario_sha256":hex::encode(Sha256::digest(contents.as_bytes()))});
             mutate(&mut config);
             let output = directory.path().join("output.log");
             let file = std::fs::File::create(&output).unwrap();
