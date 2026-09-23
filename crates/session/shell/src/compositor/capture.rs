@@ -2313,17 +2313,11 @@ mod tests {
             .and_then(|group| group.active_host_mut())
             .expect("target Notes host");
         let mut notes = crate::shell::notes_app::NotesApp::with_seed(long_note);
-        notes.prime_complete_content_for_test(target_host.get_rect());
+        notes.prime_complete_content_for_test(Rect::new(0.0, 0.0, 700.0, 400.0));
         target_host.replace_content(ui::widget::TileContent::App(Box::new(notes)));
         // This test exercises compositor capture, not record custody. Keep its
-        // Notes fixture hermetic and expose it for one draw so the app can
-        // measure the complete semantic canvas before it moves offscreen.
-        let _ = frame_builder
-            .host_mut()
-            .group_row_mut_for_tests(strip_id)
-            .expect("live strip row")
-            .scroll_group_into_view(target_group);
-        frame_builder.relayout();
+        // Notes fixture hermetic and prime its semantic canvas before the shell
+        // moves the hosted group wholly offscreen.
         assert!(
             frame_builder
                 .host_mut()
