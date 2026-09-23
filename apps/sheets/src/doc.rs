@@ -21,6 +21,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
 use crate::settings::DocSettings;
@@ -227,10 +228,7 @@ impl SheetsDoc {
     /// Active sheet index (clamped to a valid sheet when out of range).
     pub fn active_index(doc: &mut AutoCommit) -> usize {
         let wb = Self::wb_map(doc);
-        let raw = match doc.get(&wb, "active") {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0),
-            _ => 0,
-        };
+        let raw = read_i64_coerced(doc, &wb, "active").unwrap_or(0);
         let count = Self::sheet_count(doc).max(1);
         (raw.max(0) as usize).min(count - 1)
     }
@@ -263,13 +261,7 @@ impl SheetsDoc {
         let Ok(Some((Value::Object(ObjType::Map), sheet))) = doc.get(&sheets, idx) else {
             return None;
         };
-        match doc.get(&sheet, "resource_id") {
-            Ok(Some((Value::Scalar(value), _))) => value
-                .to_str()
-                .map(str::to_string)
-                .or_else(|| Some(sheet.to_string())),
-            _ => Some(sheet.to_string()),
-        }
+        Some(read_str(doc, &sheet, "resource_id").unwrap_or_else(|| sheet.to_string()))
     }
 
     /// Resolve a durable sheet identity to its current list position. This is
@@ -441,10 +433,7 @@ impl SheetsDoc {
     /// A sheet's tab colour, stored as a palette index. `None` means no colour.
     pub fn sheet_color(doc: &mut AutoCommit, idx: usize) -> Option<u32> {
         let sheet = Self::sheet_map(doc, idx)?;
-        match doc.get(&sheet, "color") {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().map(|n| n as u32),
-            _ => None,
-        }
+        read_i64_coerced(doc, &sheet, "color").map(|n| n as u32)
     }
 
     /// Set (or clear, with `None`) a sheet's tab colour palette index.
@@ -474,13 +463,9 @@ impl SheetsDoc {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let name = match doc.get(&sheets, i) {
-                Ok(Some((Value::Object(ObjType::Map), sheet))) => match doc.get(&sheet, "name") {
-                    Ok(Some((Value::Scalar(v), _))) => v
-                        .to_str()
-                        .map(std::string::ToString::to_string)
-                        .unwrap_or_default(),
-                    _ => String::new(),
-                },
+                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
+                    read_str(doc, &sheet, "name").unwrap_or_default()
+                }
                 _ => String::new(),
             };
             out.push(if name.is_empty() {
@@ -540,21 +525,14 @@ impl SheetsDoc {
         }
     }
 
-    fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
-            _ => None,
-        }
-    }
-
     /// Read the per-document locale overrides from the CRDT. Absent fields
     /// mean "inherit the global default".
     pub fn doc_settings(doc: &mut AutoCommit) -> DocSettings {
         let s = Self::settings_map(doc);
         DocSettings {
-            currency: Self::read_str(doc, &s, "currency").and_then(|c| Currency::from_code(&c)),
-            date_format: Self::read_str(doc, &s, "date_format").and_then(|v| parse_date_style(&v)),
-            time_format: Self::read_str(doc, &s, "time_format").and_then(|v| parse_time_style(&v)),
+            currency: read_str(doc, &s, "currency").and_then(|c| Currency::from_code(&c)),
+            date_format: read_str(doc, &s, "date_format").and_then(|v| parse_date_style(&v)),
+            time_format: read_str(doc, &s, "time_format").and_then(|v| parse_time_style(&v)),
         }
     }
 
@@ -595,13 +573,9 @@ impl SheetsDoc {
         };
         let key = Self::cell_key(addr);
         match doc.get(&cells, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), cell))) => match doc.get(&cell, "raw") {
-                Ok(Some((Value::Scalar(v), _))) => v
-                    .to_str()
-                    .map(std::string::ToString::to_string)
-                    .unwrap_or_default(),
-                _ => String::new(),
-            },
+            Ok(Some((Value::Object(ObjType::Map), cell))) => {
+                read_str(doc, &cell, "raw").unwrap_or_default()
+            }
             _ => String::new(),
         }
     }
@@ -642,7 +616,7 @@ impl SheetsDoc {
                 else {
                     continue;
                 };
-                let value = |key: &str| Self::read_str(doc, &chart, key);
+                let value = |key: &str| read_str(doc, &chart, key);
                 let number = |key: &str| {
                     doc.get(&chart, key)
                         .ok()
@@ -744,7 +718,7 @@ impl SheetsDoc {
             for reply_id in ids {
                 if let Ok(Some((Value::Object(ObjType::Map), reply))) =
                     doc.get(&replies, reply_id.as_str())
-                    && Self::read_str(doc, &reply, "parent_id").as_deref() == Some(id)
+                    && read_str(doc, &reply, "parent_id").as_deref() == Some(id)
                 {
                     let _ = doc.delete(&replies, reply_id);
                 }
@@ -765,7 +739,7 @@ impl SheetsDoc {
                 else {
                     continue;
                 };
-                let value = |key: &str| Self::read_str(doc, &object, key);
+                let value = |key: &str| read_str(doc, &object, key);
                 let number = |key: &str| {
                     doc.get(&object, key)
                         .ok()
@@ -776,7 +750,7 @@ impl SheetsDoc {
                         })
                         .and_then(|v| u32::try_from(v).ok())
                 };
-                let resolved = matches!(doc.get(&object, "resolved"), Ok(Some((Value::Scalar(v), _))) if v.to_bool().unwrap_or(false));
+                let resolved = read_bool(doc, &object, "resolved").unwrap_or(false);
                 let (Some(author), Some(body), Some(c0), Some(r0), Some(c1), Some(r1)) = (
                     value("author"),
                     value("body"),
@@ -797,8 +771,8 @@ impl SheetsDoc {
                         if let Ok(Some((Value::Object(ObjType::Map), reply))) =
                             doc.get(&reply_map, reply_id.as_str())
                             && let (Some(author), Some(body)) = (
-                                Self::read_str(doc, &reply, "author"),
-                                Self::read_str(doc, &reply, "body"),
+                                read_str(doc, &reply, "author"),
+                                read_str(doc, &reply, "body"),
                             )
                         {
                             replies.push(CommentReply {
@@ -835,9 +809,9 @@ impl SheetsDoc {
                     continue;
                 };
                 let (Some(parent_id), Some(author), Some(body)) = (
-                    Self::read_str(doc, &reply, "parent_id"),
-                    Self::read_str(doc, &reply, "author"),
-                    Self::read_str(doc, &reply, "body"),
+                    read_str(doc, &reply, "parent_id"),
+                    read_str(doc, &reply, "author"),
+                    read_str(doc, &reply, "body"),
                 ) else {
                     continue;
                 };
@@ -918,13 +892,7 @@ impl SheetsDoc {
         let Some(sheet) = Self::sheet_map(doc, idx) else {
             return snap;
         };
-        snap.name = match doc.get(&sheet, "name") {
-            Ok(Some((Value::Scalar(v), _))) => v
-                .to_str()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
+        snap.name = read_str(doc, &sheet, "name").unwrap_or_default();
         let Ok(Some((Value::Object(ObjType::Map), cells))) = doc.get(&sheet, "cells") else {
             return snap;
         };
@@ -936,16 +904,13 @@ impl SheetsDoc {
             else {
                 continue;
             };
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "raw")
-                && let Some(s) = v.to_str()
+            if let Some(s) = read_str(doc, &cell, "raw")
                 && !s.is_empty()
             {
-                snap.raw.insert(addr, s.to_string());
+                snap.raw.insert(addr, s);
             }
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "fmt")
-                && let Some(s) = v.to_str()
-            {
-                let f = CellFormat::from_str_with(s, default_currency);
+            if let Some(s) = read_str(doc, &cell, "fmt") {
+                let f = CellFormat::from_str_with(&s, default_currency);
                 if f != CellFormat::General {
                     snap.fmt.insert(addr, f);
                 }

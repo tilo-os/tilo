@@ -17,7 +17,7 @@
 //!    stays in the engine; the widget only mirrors what the chrome
 //!    displays.
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -3112,34 +3112,21 @@ impl BrowserWidget {
     /// event writes the document here: `BrowserAction` is the sole mutation
     /// path, preserving action history and collaboration attribution.
     fn sync_settings_from_document(&mut self, state: &AutoCommit, root: &ObjId) {
-        fn boolean(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-            state
-                .get(root, key)
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.to_bool())
-        }
-        fn text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-            let (value, object) = state.get(root, key).ok()??;
-            matches!(value, Value::Object(automerge::ObjType::Text))
-                .then(|| state.text(&object).ok())
-                .flatten()
-        }
+        use ui::doc::{read_bool, read_text};
 
         let mut next = self.settings.clone();
-        if let Some(enabled) = boolean(state, root, crate::settings::ADBLOCK_PATH) {
+        if let Some(enabled) = read_bool(state, root, crate::settings::ADBLOCK_PATH) {
             next.adblock_enabled = enabled;
         }
-        if let Some(enabled) = boolean(state, root, crate::settings::CLEAR_ON_EXIT_PATH) {
+        if let Some(enabled) = read_bool(state, root, crate::settings::CLEAR_ON_EXIT_PATH) {
             next.clear_on_exit = enabled;
         }
-        if let Some(value) = text(state, root, crate::settings::HOMEPAGE_PATH)
+        if let Some(value) = read_text(state, root, crate::settings::HOMEPAGE_PATH)
             && is_supported_web_url(&value)
         {
             next.homepage = value;
         }
-        if let Some(value) = text(state, root, crate::settings::SEARCH_ENGINE_PATH)
+        if let Some(value) = read_text(state, root, crate::settings::SEARCH_ENGINE_PATH)
             && is_supported_web_url(&value)
         {
             next.search_engine = value;

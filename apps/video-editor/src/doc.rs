@@ -21,6 +21,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_number, read_scalar, read_str};
 use uuid::Uuid;
 
 use crate::curve::{Channel, Curve, CurvePoint, Spline};
@@ -52,53 +53,12 @@ impl VideoDoc {
         }
     }
 
-    fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::F64(f) => Some(*f),
-                ScalarValue::Int(i) => Some(*i as f64),
-                ScalarValue::Uint(u) => Some(*u as f64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
+    /// An `Int`, a `Uint` reinterpreted as `i64`, or an `F64` truncated.
     fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Int(i) => Some(*i),
-                ScalarValue::Uint(u) => Some(*u as i64),
-                ScalarValue::F64(f) => Some(*f as i64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-    /// A boolean whose absence means `default` rather than `false` — for a
-    /// field added after documents were already being written, where the old
-    /// shape's silence has a meaning of its own.
-    fn get_bool_or(doc: &AutoCommit, obj: &ObjId, key: &str, default: bool) -> bool {
-        match doc.get(obj, key) {
-            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
-                automerge::ScalarValue::Boolean(b) => *b,
-                _ => default,
-            },
-            _ => default,
-        }
-    }
-
-    fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-        matches!(
-            doc.get(obj, key),
-            Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true))
-        )
-    }
-    fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
+        match read_scalar(doc, obj, key)? {
+            ScalarValue::Int(i) => Some(i),
+            ScalarValue::Uint(u) => Some(u as i64),
+            ScalarValue::F64(f) => Some(f as i64),
             _ => None,
         }
     }
@@ -543,7 +503,7 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(parent, key) else {
             return false;
         };
-        Self::get_bool(doc, &tombstones, &id.to_string())
+        read_bool(doc, &tombstones, &id.to_string()).unwrap_or(false)
     }
 
     fn read_markers(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<Marker> {
@@ -562,10 +522,10 @@ impl VideoDoc {
                 };
                 Some(Marker {
                     id,
-                    t: Self::get_f64(doc, &marker, "t").unwrap_or(0.0),
-                    name: Self::get_str(doc, &marker, "name").unwrap_or_else(|| "Marker".into()),
+                    t: read_number(doc, &marker, "t").unwrap_or(0.0),
+                    name: read_str(doc, &marker, "name").unwrap_or_else(|| "Marker".into()),
                     palette: Self::get_i64(doc, &marker, "palette").unwrap_or(0) as u8,
-                    note: Self::get_str(doc, &marker, "note").unwrap_or_default(),
+                    note: read_str(doc, &marker, "note").unwrap_or_default(),
                 })
             })
             .collect();
@@ -595,8 +555,8 @@ impl VideoDoc {
                     Self::get_i64(doc, &effect, "ordinal").unwrap_or(i64::MAX),
                     ClipEffect {
                         id,
-                        kind: EffectKind::from_str(&Self::get_str(doc, &effect, "kind")?)?,
-                        amount: Self::get_f64(doc, &effect, "amount").unwrap_or(0.0),
+                        kind: EffectKind::from_str(&read_str(doc, &effect, "kind")?)?,
+                        amount: read_number(doc, &effect, "amount").unwrap_or(0.0),
                     },
                 ))
             })
@@ -636,17 +596,17 @@ impl VideoDoc {
         };
         let default = Transform::default();
         Transform {
-            scale_x: Self::get_f64(doc, &map, "scale_x").unwrap_or(default.scale_x),
-            scale_y: Self::get_f64(doc, &map, "scale_y").unwrap_or(default.scale_y),
-            pos_x: Self::get_f64(doc, &map, "pos_x").unwrap_or(default.pos_x),
-            pos_y: Self::get_f64(doc, &map, "pos_y").unwrap_or(default.pos_y),
-            rotation: Self::get_f64(doc, &map, "rotation").unwrap_or(default.rotation),
-            anchor_x: Self::get_f64(doc, &map, "anchor_x").unwrap_or(default.anchor_x),
-            anchor_y: Self::get_f64(doc, &map, "anchor_y").unwrap_or(default.anchor_y),
-            crop_left: Self::get_f64(doc, &map, "crop_left").unwrap_or(default.crop_left),
-            crop_right: Self::get_f64(doc, &map, "crop_right").unwrap_or(default.crop_right),
-            crop_top: Self::get_f64(doc, &map, "crop_top").unwrap_or(default.crop_top),
-            crop_bottom: Self::get_f64(doc, &map, "crop_bottom").unwrap_or(default.crop_bottom),
+            scale_x: read_number(doc, &map, "scale_x").unwrap_or(default.scale_x),
+            scale_y: read_number(doc, &map, "scale_y").unwrap_or(default.scale_y),
+            pos_x: read_number(doc, &map, "pos_x").unwrap_or(default.pos_x),
+            pos_y: read_number(doc, &map, "pos_y").unwrap_or(default.pos_y),
+            rotation: read_number(doc, &map, "rotation").unwrap_or(default.rotation),
+            anchor_x: read_number(doc, &map, "anchor_x").unwrap_or(default.anchor_x),
+            anchor_y: read_number(doc, &map, "anchor_y").unwrap_or(default.anchor_y),
+            crop_left: read_number(doc, &map, "crop_left").unwrap_or(default.crop_left),
+            crop_right: read_number(doc, &map, "crop_right").unwrap_or(default.crop_right),
+            crop_top: read_number(doc, &map, "crop_top").unwrap_or(default.crop_top),
+            crop_bottom: read_number(doc, &map, "crop_bottom").unwrap_or(default.crop_bottom),
         }
     }
 
@@ -669,15 +629,15 @@ impl VideoDoc {
         };
         let default = ChromaKey::default();
         ChromaKey {
-            enabled: Self::get_bool_or(doc, &map, "enabled", default.enabled),
+            enabled: read_bool(doc, &map, "enabled").unwrap_or(default.enabled),
             color: [
-                Self::get_f64(doc, &map, "red").unwrap_or(default.color[0]),
-                Self::get_f64(doc, &map, "green").unwrap_or(default.color[1]),
-                Self::get_f64(doc, &map, "blue").unwrap_or(default.color[2]),
+                read_number(doc, &map, "red").unwrap_or(default.color[0]),
+                read_number(doc, &map, "green").unwrap_or(default.color[1]),
+                read_number(doc, &map, "blue").unwrap_or(default.color[2]),
             ],
-            tolerance: Self::get_f64(doc, &map, "tolerance").unwrap_or(default.tolerance),
-            softness: Self::get_f64(doc, &map, "softness").unwrap_or(default.softness),
-            spill: Self::get_f64(doc, &map, "spill").unwrap_or(default.spill),
+            tolerance: read_number(doc, &map, "tolerance").unwrap_or(default.tolerance),
+            softness: read_number(doc, &map, "softness").unwrap_or(default.softness),
+            spill: read_number(doc, &map, "spill").unwrap_or(default.spill),
         }
     }
 
@@ -705,15 +665,15 @@ impl VideoDoc {
         };
         let default = Mask::default();
         Mask {
-            shape: Self::get_str(doc, &map, "shape")
+            shape: read_str(doc, &map, "shape")
                 .map_or(default.shape, |value| MaskShape::from_str(&value)),
-            x: Self::get_f64(doc, &map, "x").unwrap_or(default.x),
-            y: Self::get_f64(doc, &map, "y").unwrap_or(default.y),
-            w: Self::get_f64(doc, &map, "w").unwrap_or(default.w),
-            h: Self::get_f64(doc, &map, "h").unwrap_or(default.h),
-            rotation: Self::get_f64(doc, &map, "rotation").unwrap_or(default.rotation),
-            feather: Self::get_f64(doc, &map, "feather").unwrap_or(default.feather),
-            invert: Self::get_bool_or(doc, &map, "invert", default.invert),
+            x: read_number(doc, &map, "x").unwrap_or(default.x),
+            y: read_number(doc, &map, "y").unwrap_or(default.y),
+            w: read_number(doc, &map, "w").unwrap_or(default.w),
+            h: read_number(doc, &map, "h").unwrap_or(default.h),
+            rotation: read_number(doc, &map, "rotation").unwrap_or(default.rotation),
+            feather: read_number(doc, &map, "feather").unwrap_or(default.feather),
+            invert: read_bool(doc, &map, "invert").unwrap_or(default.invert),
         }
     }
 
@@ -758,8 +718,8 @@ impl VideoDoc {
                     return None;
                 };
                 Some(CurvePoint::new(
-                    Self::get_f64(doc, &point, "x")?,
-                    Self::get_f64(doc, &point, "y")?,
+                    read_number(doc, &point, "x")?,
+                    read_number(doc, &point, "y")?,
                 ))
             })
             .collect();
@@ -805,7 +765,7 @@ impl VideoDoc {
                 .flatten()
                 .map(|(_, id)| Self::read_spline(doc, &id))
                 .unwrap_or_default(),
-            mix: Self::get_f64(doc, &map, "mix").unwrap_or(1.0),
+            mix: read_number(doc, &map, "mix").unwrap_or(1.0),
         }
         .normalised()
     }
@@ -873,9 +833,9 @@ impl VideoDoc {
                         return None;
                     };
                     Some(Keyframe {
-                        t: Self::get_f64(doc, &entry, "t")?,
-                        v: Self::get_f64(doc, &entry, "v")?,
-                        interp: Self::get_str(doc, &entry, "interp")
+                        t: read_number(doc, &entry, "t")?,
+                        v: read_number(doc, &entry, "v")?,
+                        interp: read_str(doc, &entry, "interp")
                             .map_or(Interp::Linear, |value| Interp::from_str(&value)),
                     })
                 })
@@ -1145,19 +1105,26 @@ impl VideoDoc {
     pub fn load_project(doc: &AutoCommit) -> Project {
         let mut p = Project::new("Untitled");
         if let Ok(Some((Value::Object(ObjType::Map), proj))) = doc.get(&ROOT, "project") {
-            if let Some(n) = Self::get_str(doc, &proj, "name") {
+            if let Some(n) = read_str(doc, &proj, "name") {
                 p.name = n;
             }
-            p.fps = Self::get_f64(doc, &proj, "fps").unwrap_or(30.0);
+            p.fps = read_number(doc, &proj, "fps").unwrap_or(30.0);
             p.width = Self::get_i64(doc, &proj, "width").unwrap_or(1920) as u32;
             p.height = Self::get_i64(doc, &proj, "height").unwrap_or(1080) as u32;
-            p.format_explicit = Self::get_bool(doc, &proj, "format_explicit");
-            p.mark_in = Self::get_f64(doc, &proj, "mark_in");
-            p.mark_out = Self::get_f64(doc, &proj, "mark_out");
-            p.markers =
-                Self::read_markers(doc, &proj, Self::get_str(doc, &proj, "markers").as_deref());
+            p.format_explicit = read_bool(doc, &proj, "format_explicit").unwrap_or(false);
+            p.mark_in = read_number(doc, &proj, "mark_in");
+            p.mark_out = read_number(doc, &proj, "mark_out");
+            p.markers = Self::read_markers(doc, &proj, read_str(doc, &proj, "markers").as_deref());
         }
+        Self::read_media_into(doc, &mut p);
+        Self::read_tracks_into(doc, &mut p);
+        Self::read_clips_into(doc, &mut p);
+        Self::in_a_settled_order(&mut p);
+        p
+    }
 
+    /// Append every media item in the document.
+    fn read_media_into(doc: &AutoCommit, p: &mut Project) {
         if let Ok(Some((Value::Object(ObjType::Map), media))) = doc.get(&ROOT, "media") {
             for key in doc.keys(&media) {
                 let Ok(id) = key.parse::<Uuid>() else {
@@ -1167,36 +1134,36 @@ impl VideoDoc {
                 else {
                     continue;
                 };
-                let name = Self::get_str(doc, &obj, "name").unwrap_or_default();
-                let path = Self::get_str(doc, &obj, "path")
+                let name = read_str(doc, &obj, "name").unwrap_or_default();
+                let path = read_str(doc, &obj, "path")
                     .unwrap_or_else(|| crate::media::workspace_path(&name));
                 p.media.push(MediaItem {
                     id,
                     name,
-                    kind: MediaKind::from_str(
-                        &Self::get_str(doc, &obj, "kind").unwrap_or_default(),
-                    ),
-                    duration: Self::get_f64(doc, &obj, "duration").unwrap_or(0.0),
+                    kind: MediaKind::from_str(&read_str(doc, &obj, "kind").unwrap_or_default()),
+                    duration: read_number(doc, &obj, "duration").unwrap_or(0.0),
                     width: Self::get_i64(doc, &obj, "width").unwrap_or(0) as u32,
                     height: Self::get_i64(doc, &obj, "height").unwrap_or(0) as u32,
-                    fps: Self::get_f64(doc, &obj, "fps").unwrap_or(30.0),
+                    fps: read_number(doc, &obj, "fps").unwrap_or(30.0),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,
                     path,
                     hydration: crate::media::Hydration::from_str(
-                        &Self::get_str(doc, &obj, "hydration").unwrap_or_default(),
+                        &read_str(doc, &obj, "hydration").unwrap_or_default(),
                     ),
                     // Absent for every decoded source, and for any document
                     // written before titles existed.
-                    text: Self::get_str(doc, &obj, "text")
-                        .and_then(|s| serde_json::from_str(&s).ok()),
+                    text: read_str(doc, &obj, "text").and_then(|s| serde_json::from_str(&s).ok()),
                     // Absent in any document written before the mixer could
                     // find a video file's sound. False is the honest default:
                     // it reads as "no sound track was found".
-                    has_audio: Self::get_bool(doc, &obj, "has_audio"),
+                    has_audio: read_bool(doc, &obj, "has_audio").unwrap_or(false),
                 });
             }
         }
+    }
 
+    /// Append every track in the document.
+    fn read_tracks_into(doc: &AutoCommit, p: &mut Project) {
         if let Ok(Some((Value::Object(ObjType::Map), tracks))) = doc.get(&ROOT, "tracks") {
             for key in doc.keys(&tracks) {
                 let Ok(id) = key.parse::<Uuid>() else {
@@ -1208,26 +1175,27 @@ impl VideoDoc {
                 };
                 p.tracks.push(Track {
                     id,
-                    name: Self::get_str(doc, &obj, "name").unwrap_or_default(),
-                    kind: TrackKind::from_str(
-                        &Self::get_str(doc, &obj, "kind").unwrap_or_default(),
-                    ),
+                    name: read_str(doc, &obj, "name").unwrap_or_default(),
+                    kind: TrackKind::from_str(&read_str(doc, &obj, "kind").unwrap_or_default()),
                     index: Self::get_i64(doc, &obj, "index").unwrap_or(0) as u32,
-                    muted: Self::get_bool(doc, &obj, "muted"),
-                    locked: Self::get_bool(doc, &obj, "locked"),
+                    muted: read_bool(doc, &obj, "muted").unwrap_or(false),
+                    locked: read_bool(doc, &obj, "locked").unwrap_or(false),
                     // Absent in documents written before solo existed, which
-                    // `get_bool` reads as false — the right default.
-                    solo: Self::get_bool(doc, &obj, "solo"),
+                    // reads as false — the right default.
+                    solo: read_bool(doc, &obj, "solo").unwrap_or(false),
                     // Absent in every document written before the lane had a
                     // fader. `0.0` is unity and centre, so such a project
                     // plays back at exactly the level it always did rather
                     // than arriving silent or hard-panned.
-                    gain_db: Self::get_f64(doc, &obj, "gain_db").unwrap_or(0.0),
-                    pan: Self::get_f64(doc, &obj, "pan").unwrap_or(0.0),
+                    gain_db: read_number(doc, &obj, "gain_db").unwrap_or(0.0),
+                    pan: read_number(doc, &obj, "pan").unwrap_or(0.0),
                 });
             }
         }
+    }
 
+    /// Append every clip whose track and media ids parse.
+    fn read_clips_into(doc: &AutoCommit, p: &mut Project) {
         if let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") {
             for key in doc.keys(&clips) {
                 let Ok(id) = key.parse::<Uuid>() else {
@@ -1237,8 +1205,8 @@ impl VideoDoc {
                 else {
                     continue;
                 };
-                let track = Self::get_str(doc, &obj, "track").and_then(|s| s.parse::<Uuid>().ok());
-                let media = Self::get_str(doc, &obj, "media").and_then(|s| s.parse::<Uuid>().ok());
+                let track = read_str(doc, &obj, "track").and_then(|s| s.parse::<Uuid>().ok());
+                let media = read_str(doc, &obj, "media").and_then(|s| s.parse::<Uuid>().ok());
                 let (Some(track), Some(media)) = (track, media) else {
                     continue;
                 };
@@ -1246,30 +1214,30 @@ impl VideoDoc {
                     id,
                     track,
                     media,
-                    start: Self::get_f64(doc, &obj, "start").unwrap_or(0.0),
-                    in_point: Self::get_f64(doc, &obj, "in").unwrap_or(0.0),
-                    out_point: Self::get_f64(doc, &obj, "out").unwrap_or(0.0),
-                    opacity: Self::get_f64(doc, &obj, "opacity").unwrap_or(1.0),
-                    volume: Self::get_f64(doc, &obj, "volume").unwrap_or(1.0),
+                    start: read_number(doc, &obj, "start").unwrap_or(0.0),
+                    in_point: read_number(doc, &obj, "in").unwrap_or(0.0),
+                    out_point: read_number(doc, &obj, "out").unwrap_or(0.0),
+                    opacity: read_number(doc, &obj, "opacity").unwrap_or(1.0),
+                    volume: read_number(doc, &obj, "volume").unwrap_or(1.0),
                     transition: Transition::from_str(
-                        &Self::get_str(doc, &obj, "transition").unwrap_or_default(),
+                        &read_str(doc, &obj, "transition").unwrap_or_default(),
                     ),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,
                     filters: Filters {
-                        brightness: Self::get_f64(doc, &obj, "brightness").unwrap_or(0.5),
-                        contrast: Self::get_f64(doc, &obj, "contrast").unwrap_or(0.5),
-                        saturation: Self::get_f64(doc, &obj, "saturation").unwrap_or(0.5),
+                        brightness: read_number(doc, &obj, "brightness").unwrap_or(0.5),
+                        contrast: read_number(doc, &obj, "contrast").unwrap_or(0.5),
+                        saturation: read_number(doc, &obj, "saturation").unwrap_or(0.5),
                     },
-                    fade_in: Self::get_f64(doc, &obj, "fade_in").unwrap_or(0.0),
-                    fade_out: Self::get_f64(doc, &obj, "fade_out").unwrap_or(0.0),
+                    fade_in: read_number(doc, &obj, "fade_in").unwrap_or(0.0),
+                    fade_out: read_number(doc, &obj, "fade_out").unwrap_or(0.0),
                     // Absent before the field existed; 0.0 means "default"
                     // (see Clip::transition_len), not "instant cut".
-                    transition_duration: Self::get_f64(doc, &obj, "transition_duration")
+                    transition_duration: read_number(doc, &obj, "transition_duration")
                         .unwrap_or(0.0),
                     effects: Self::read_effects(
                         doc,
                         &obj,
-                        Self::get_str(doc, &obj, "effects").as_deref(),
+                        read_str(doc, &obj, "effects").as_deref(),
                     ),
                     // Each of these is absent in a document written before it
                     // existed, and each default restores the old behaviour:
@@ -1278,41 +1246,33 @@ impl VideoDoc {
                     transform: Self::read_transform(
                         doc,
                         &obj,
-                        Self::get_str(doc, &obj, "transform").as_deref(),
+                        read_str(doc, &obj, "transform").as_deref(),
                     ),
                     speed: crate::model::Speed {
-                        rate: Self::get_f64(doc, &obj, "speed_rate").unwrap_or(1.0),
-                        reverse: Self::get_bool(doc, &obj, "speed_reverse"),
+                        rate: read_number(doc, &obj, "speed_rate").unwrap_or(1.0),
+                        reverse: read_bool(doc, &obj, "speed_reverse").unwrap_or(false),
                     },
-                    curves: Self::read_curves(
-                        doc,
-                        &obj,
-                        Self::get_str(doc, &obj, "curves").as_deref(),
-                    ),
-                    key: Self::read_key(doc, &obj, Self::get_str(doc, &obj, "key").as_deref()),
-                    mask: Self::read_mask(doc, &obj, Self::get_str(doc, &obj, "mask").as_deref()),
-                    anim: Self::read_animation(
-                        doc,
-                        &obj,
-                        Self::get_str(doc, &obj, "anim").as_deref(),
-                    ),
+                    curves: Self::read_curves(doc, &obj, read_str(doc, &obj, "curves").as_deref()),
+                    key: Self::read_key(doc, &obj, read_str(doc, &obj, "key").as_deref()),
+                    mask: Self::read_mask(doc, &obj, read_str(doc, &obj, "mask").as_deref()),
+                    anim: Self::read_animation(doc, &obj, read_str(doc, &obj, "anim").as_deref()),
                     markers: Self::read_markers(
                         doc,
                         &obj,
-                        Self::get_str(doc, &obj, "markers").as_deref(),
+                        read_str(doc, &obj, "markers").as_deref(),
                     ),
                     // Absent in every document written before links existed,
                     // which reads as "not linked" -- the independent clip that
                     // peer is already editing.
-                    link: Self::get_str(doc, &obj, "link").and_then(|s| s.parse::<Uuid>().ok()),
+                    link: read_str(doc, &obj, "link").and_then(|s| s.parse::<Uuid>().ok()),
                     // Absent before the sound could be split off, which reads
                     // as "this clip still carries its own" -- what that peer
                     // is already playing.
-                    sound_split: Self::get_bool(doc, &obj, "sound_split"),
+                    sound_split: read_bool(doc, &obj, "sound_split").unwrap_or(false),
                     // Absent in any document written before unlinking kept
                     // the group. True there, because a clip that has a group
                     // at all was linked when it was written.
-                    link_follows: Self::get_bool_or(doc, &obj, "link_follows", true),
+                    link_follows: read_bool(doc, &obj, "link_follows").unwrap_or(true),
                 };
                 // Projects written before effect instances had ids receive
                 // deterministic compatibility ids in the projection. A later
@@ -1322,9 +1282,6 @@ impl VideoDoc {
                 p.clips.push(clip);
             }
         }
-
-        Self::in_a_settled_order(&mut p);
-        p
     }
 
     /// Put a freshly-loaded project's collections into an order that does not

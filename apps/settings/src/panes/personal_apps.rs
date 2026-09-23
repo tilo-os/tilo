@@ -2,8 +2,9 @@
 //! here: it is contextual and belongs to the shell's Workspace Settings.
 
 use std::collections::HashMap;
+use ui::doc::read_str;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
@@ -136,16 +137,6 @@ impl PersonalAppsPane {
         crate::widgets::cards(vec![scope, card("Open files and links with", body)])
     }
 
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn draft_key(canonical: &str) -> String {
         format!("{canonical}.edit")
     }
@@ -245,9 +236,9 @@ impl Widget for PersonalAppsPane {
         let mut changed = false;
         for resource in self.resources() {
             let key = Self::key(&resource);
-            let canonical = Self::read_str(state, root, &key);
+            let canonical = read_str(state, root, &key);
             let draft_key = Self::draft_key(&key);
-            let draft = Self::read_str(state, root, &draft_key);
+            let draft = read_str(state, root, &draft_key);
             let Some(option) = canonical.clone() else {
                 continue;
             };
@@ -269,7 +260,7 @@ impl Widget for PersonalAppsPane {
                 continue;
             }
             if let Some(canonical) = canonical
-                && Self::read_str(state, root, &draft_key).as_deref() != Some(&canonical)
+                && read_str(state, root, &draft_key).as_deref() != Some(&canonical)
             {
                 let _ = state.put(root, draft_key, canonical);
             }
@@ -468,13 +459,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html")
-                .as_deref(),
+            read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
             Some("Browser — so.tilo.browser")
         );
         assert_eq!(
-            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.scheme.https")
-                .as_deref(),
+            read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
             Some("Browser — so.tilo.browser")
         );
     }

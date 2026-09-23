@@ -18,6 +18,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_number, read_str};
 
 use crate::model::{
     Article, ContentBlock, Feed, FeedKind, Folder, Id, ReadFont, ReadSettings, ReadTheme, Store,
@@ -55,42 +56,6 @@ impl FeedsDoc {
             "json" => FeedKind::Json,
             "gemini" => FeedKind::Gemini,
             _ => FeedKind::Rss,
-        }
-    }
-
-    fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
-    }
-    fn get_int(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0),
-            _ => 0,
-        }
-    }
-    fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Boolean(b) => *b,
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-    fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str, default: f64) -> f64 {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::F64(f) => *f,
-                ScalarValue::Int(i) => *i as f64,
-                ScalarValue::Uint(u) => *u as f64,
-                _ => default,
-            },
-            _ => default,
         }
     }
 
@@ -209,7 +174,7 @@ impl FeedsDoc {
             for key in keys {
                 if let Ok(Some((Value::Object(ObjType::Map), obj))) =
                     doc.get(&articles, key.as_str())
-                    && Self::get_str(doc, &obj, "feed") == feed_key
+                    && read_str(doc, &obj, "feed").unwrap_or_default() == feed_key
                 {
                     let _ = doc.delete(&articles, key.as_str());
                 }
@@ -286,7 +251,7 @@ impl FeedsDoc {
             let feed_keys: Vec<String> = doc.keys(&feeds).collect();
             for fk in feed_keys {
                 if let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&feeds, fk.as_str())
-                    && Self::get_str(doc, &obj, "folder") == key
+                    && read_str(doc, &obj, "folder").unwrap_or_default() == key
                 {
                     let _ = doc.put(&obj, "folder", "");
                 }
@@ -394,7 +359,11 @@ impl FeedsDoc {
         // font_scale is an f64 — guard with a bit-exact compare rather than the
         // generic put_if_changed, so a NaN would not defeat the equality check.
         let fs = f64::from(s.font_scale);
-        if Self::get_f64(doc, &obj, "font_scale", f64::NAN).to_bits() != fs.to_bits() {
+        if read_number(doc, &obj, "font_scale")
+            .unwrap_or(f64::NAN)
+            .to_bits()
+            != fs.to_bits()
+        {
             let _ = doc.put(&obj, "font_scale", fs);
         }
         ui::doc::put_if_changed(doc, &obj, "font", s.font.as_str());
@@ -407,10 +376,10 @@ impl FeedsDoc {
             return default;
         };
         ReadSettings {
-            font_scale: Self::get_f64(doc, &obj, "font_scale", f64::from(default.font_scale))
-                as f32,
+            font_scale: read_number(doc, &obj, "font_scale")
+                .unwrap_or(f64::from(default.font_scale)) as f32,
             font: {
-                let s = Self::get_str(doc, &obj, "font");
+                let s = read_str(doc, &obj, "font").unwrap_or_default();
                 if s.is_empty() {
                     default.font
                 } else {
@@ -418,7 +387,7 @@ impl FeedsDoc {
                 }
             },
             theme: {
-                let s = Self::get_str(doc, &obj, "theme");
+                let s = read_str(doc, &obj, "theme").unwrap_or_default();
                 if s.is_empty() {
                     default.theme
                 } else {
@@ -444,9 +413,9 @@ impl FeedsDoc {
                 };
                 store.folders.push(Folder {
                     id,
-                    name: Self::get_str(doc, &obj, "name"),
-                    order: Self::get_int(doc, &obj, "order") as u32,
-                    collapsed: Self::get_bool(doc, &obj, "collapsed"),
+                    name: read_str(doc, &obj, "name").unwrap_or_default(),
+                    order: read_i64_coerced(doc, &obj, "order").unwrap_or(0) as u32,
+                    collapsed: read_bool(doc, &obj, "collapsed").unwrap_or(false),
                 });
             }
         }
@@ -458,19 +427,19 @@ impl FeedsDoc {
                 else {
                     continue;
                 };
-                let folder_s = Self::get_str(doc, &obj, "folder");
+                let folder_s = read_str(doc, &obj, "folder").unwrap_or_default();
                 store.feeds.push(Feed {
                     id,
-                    title: Self::get_str(doc, &obj, "title"),
-                    url: Self::get_str(doc, &obj, "url"),
-                    site_url: Self::get_str(doc, &obj, "site_url"),
+                    title: read_str(doc, &obj, "title").unwrap_or_default(),
+                    url: read_str(doc, &obj, "url").unwrap_or_default(),
+                    site_url: read_str(doc, &obj, "site_url").unwrap_or_default(),
                     folder: if folder_s.is_empty() {
                         None
                     } else {
                         folder_s.parse::<Id>().ok()
                     },
-                    order: Self::get_int(doc, &obj, "order") as u32,
-                    kind: Self::kind_from(&Self::get_str(doc, &obj, "kind")),
+                    order: read_i64_coerced(doc, &obj, "order").unwrap_or(0) as u32,
+                    kind: Self::kind_from(&read_str(doc, &obj, "kind").unwrap_or_default()),
                 });
             }
         }
@@ -482,11 +451,11 @@ impl FeedsDoc {
                 else {
                     continue;
                 };
-                let feed_s = Self::get_str(doc, &obj, "feed");
+                let feed_s = read_str(doc, &obj, "feed").unwrap_or_default();
                 let Ok(feed_id) = feed_s.parse::<Id>() else {
                     continue;
                 };
-                let content = Self::get_str(doc, &obj, "content");
+                let content = read_str(doc, &obj, "content").unwrap_or_default();
                 let blocks: Vec<ContentBlock> = serde_json::from_str(&content).unwrap_or_default();
                 let tags = match doc.get(&obj, "tags") {
                     Ok(Some((Value::Object(ObjType::Map), tags_obj))) => {
@@ -506,21 +475,20 @@ impl FeedsDoc {
                     }
                     // Read legacy JSON-scalar documents; the next tag edit
                     // migrates this field to the collaborative map form.
-                    _ => {
-                        serde_json::from_str(&Self::get_str(doc, &obj, "tags")).unwrap_or_default()
-                    }
+                    _ => serde_json::from_str(&read_str(doc, &obj, "tags").unwrap_or_default())
+                        .unwrap_or_default(),
                 };
                 store.articles.push(Article {
                     id,
                     feed_id,
-                    title: Self::get_str(doc, &obj, "title"),
-                    author: Self::get_str(doc, &obj, "author"),
-                    url: Self::get_str(doc, &obj, "url"),
-                    published: Self::get_int(doc, &obj, "published"),
-                    summary: Self::get_str(doc, &obj, "summary"),
+                    title: read_str(doc, &obj, "title").unwrap_or_default(),
+                    author: read_str(doc, &obj, "author").unwrap_or_default(),
+                    url: read_str(doc, &obj, "url").unwrap_or_default(),
+                    published: read_i64_coerced(doc, &obj, "published").unwrap_or(0),
+                    summary: read_str(doc, &obj, "summary").unwrap_or_default(),
                     blocks,
-                    read: Self::get_bool(doc, &obj, "read"),
-                    starred: Self::get_bool(doc, &obj, "starred"),
+                    read: read_bool(doc, &obj, "read").unwrap_or(false),
+                    starred: read_bool(doc, &obj, "starred").unwrap_or(false),
                     tags,
                 });
             }

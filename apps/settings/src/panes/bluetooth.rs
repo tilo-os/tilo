@@ -9,13 +9,14 @@
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts.
 
 use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use taffy::{NodeId, TaffyTree};
 use tilo_bluez::{DeviceInfo, PairOutcome};
+use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
 use vello::Scene;
@@ -485,7 +486,7 @@ impl BluetoothPane {
     }
     fn act(&mut self, state: &mut AutoCommit, root: &ObjId, d: &DeviceInfo, action: &str) {
         let k = key(&d.path, action);
-        if !read_bool(state, root, &k) {
+        if !read_bool(state, root, &k).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, &k, false);
@@ -573,7 +574,7 @@ impl BluetoothPane {
         self.needs_seed = false;
     }
     fn sync_power(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(on) = read_bool_opt(state, root, BT_ENABLED_KEY) else {
+        let Some(on) = read_bool(state, root, BT_ENABLED_KEY) else {
             return;
         };
         if on == self.powered {
@@ -613,7 +614,7 @@ impl BluetoothPane {
         self.structure_dirty = true;
     }
     fn sync_scan(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, SCAN_KEY) {
+        if !read_bool(state, root, SCAN_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, SCAN_KEY, false);
@@ -650,7 +651,7 @@ impl BluetoothPane {
         self.refresh();
     }
     fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REFRESH_KEY) {
+        if read_bool(state, root, REFRESH_KEY).unwrap_or(false) {
             let _ = state.put(root, REFRESH_KEY, false);
             match self.control.devices() {
                 Ok(devices) => {
@@ -680,7 +681,7 @@ impl BluetoothPane {
     fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let snapshot = self.devices.clone();
         for d in &snapshot {
-            if read_bool(state, root, &key(&d.path, "pair")) {
+            if read_bool(state, root, &key(&d.path, "pair")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "pair"), false);
                 if self.pending_pair.is_none() {
                     let control = Arc::clone(&self.control);
@@ -699,7 +700,7 @@ impl BluetoothPane {
                     self.structure_dirty = true;
                 }
             }
-            if read_bool(state, root, &key(&d.path, "cancel")) {
+            if read_bool(state, root, &key(&d.path, "cancel")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "cancel"), false);
                 match self.control.cancel_pairing(&d.path) {
                     Ok(()) => self.notice = Some(format!("Cancelled pairing {}.", d.name)),
@@ -709,12 +710,12 @@ impl BluetoothPane {
             for a in ["connect", "disconnect"] {
                 self.act(state, root, d, a);
             }
-            if read_bool(state, root, &key(&d.path, "details")) {
+            if read_bool(state, root, &key(&d.path, "details")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "details"), false);
                 self.expanded = (self.expanded.as_deref() != Some(&d.path)).then(|| d.path.clone());
                 self.structure_dirty = true;
             }
-            if let Some(v) = read_bool_opt(state, root, &key(&d.path, "trusted"))
+            if let Some(v) = read_bool(state, root, &key(&d.path, "trusted"))
                 && v != d.trusted
             {
                 match self.control.set_trusted(&d.path, v) {
@@ -732,16 +733,17 @@ impl BluetoothPane {
                 }
                 self.refresh();
             }
-            if read_bool(state, root, &key(&d.path, "rename")) {
+            if read_bool(state, root, &key(&d.path, "rename")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "rename"), false);
-                let alias = read_text(state, root, &key(&d.path, "alias")).unwrap_or_default();
+                let alias =
+                    read_str_or_text(state, root, &key(&d.path, "alias")).unwrap_or_default();
                 match self.control.set_alias(&d.path, &alias) {
                     Ok(()) => self.notice = Some(format!("Renamed device to {}.", alias.trim())),
                     Err(e) => self.notice = Some(format!("Could not rename {}: {e}", d.name)),
                 }
                 self.refresh();
             }
-            if read_bool(state, root, &key(&d.path, "forget")) {
+            if read_bool(state, root, &key(&d.path, "forget")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "forget"), false);
                 let local_forget = matches!(
                     self.operation_status.get(),
@@ -930,28 +932,6 @@ impl Widget for BluetoothPane {
                 .composed
                 .as_mut()
                 .is_some_and(|c| c.take_structure_dirty())
-    }
-}
-fn read_bool_opt(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    read_bool_opt(state, root, key).unwrap_or(false)
-}
-fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Object(automerge::ObjType::Text), o))) => state.text(&o).ok(),
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 

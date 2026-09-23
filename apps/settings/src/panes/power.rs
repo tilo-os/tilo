@@ -33,8 +33,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher, PowerProfile};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
@@ -255,7 +256,7 @@ impl PowerPane {
 
     fn restore_authoritative_controls(&self, state: &mut AutoCommit, root: &ObjId) {
         fn restore_text(state: &mut AutoCommit, root: &ObjId, key: &str, value: &str) {
-            if read_str(state, root, key).as_deref() != Some(value) {
+            if read_str_or_text(state, root, key).as_deref() != Some(value) {
                 let _ = state.put(root, key, value);
             }
         }
@@ -826,7 +827,7 @@ impl PowerPane {
 
     /// Power profile → dispatch on change, guarded so it doesn't re-fire.
     fn handle_profile_change(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(label) = read_str(state, root, PROFILE_KEY) else {
+        let Some(label) = read_str_or_text(state, root, PROFILE_KEY) else {
             return;
         };
         let Some(p) = profile_from_label(&label) else {
@@ -877,7 +878,7 @@ impl PowerPane {
     }
 
     fn handle_charge_limit(&mut self, state: &AutoCommit, root: &ObjId) {
-        let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY) else {
+        let Some(label) = read_str_or_text(state, root, CHARGE_LIMIT_KEY) else {
             return;
         };
         let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok()) else {
@@ -935,7 +936,7 @@ impl PowerPane {
             );
         }
 
-        if let Some(label) = read_str(state, root, BLANK_KEY)
+        if let Some(label) = read_str_or_text(state, root, BLANK_KEY)
             && let Some(m) = blank_from_label(&label)
             && m != self.last_prefs.blank_minutes
             && self.operation_is_running(&crate::actions::PowerOperation::SetBlankTimeout {
@@ -953,7 +954,7 @@ impl PowerPane {
             );
         }
 
-        if let Some(label) = read_str(state, root, LOCK_KEY)
+        if let Some(label) = read_str_or_text(state, root, LOCK_KEY)
             && let Some(minutes) = lock_from_label(&label)
             && minutes != self.last_prefs.lock_minutes
             && self.operation_is_running(&crate::actions::PowerOperation::SetLockTimeout {
@@ -971,7 +972,7 @@ impl PowerPane {
             );
         }
 
-        if let Some(label) = read_str(state, root, SUSPEND_KEY)
+        if let Some(label) = read_str_or_text(state, root, SUSPEND_KEY)
             && let Some(m) = suspend_from_label(&label)
             && m != self.last_prefs.suspend_minutes
             && self.operation_is_running(&crate::actions::PowerOperation::SetSuspendTimeout {
@@ -1007,7 +1008,7 @@ impl PowerPane {
                 2u8,
             ),
         ] {
-            if let Some(label) = read_str(state, root, key)
+            if let Some(label) = read_str_or_text(state, root, key)
                 && let Some(minutes) = suspend_from_label(&label)
                 && minutes != current
             {
@@ -1048,7 +1049,7 @@ impl PowerPane {
     /// Lid-close, power-key and critical-battery actions → persisted on
     /// change.
     fn handle_action_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(label) = read_str(state, root, LID_KEY)
+        if let Some(label) = read_str_or_text(state, root, LID_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.lid_close_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetLidAction {
@@ -1064,7 +1065,7 @@ impl PowerPane {
             );
         }
 
-        if let Some(label) = read_str(state, root, POWER_KEY_KEY)
+        if let Some(label) = read_str_or_text(state, root, POWER_KEY_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.power_key_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetPowerKeyAction {
@@ -1080,7 +1081,7 @@ impl PowerPane {
             );
         }
 
-        if let Some(label) = read_str(state, root, CRITICAL_KEY)
+        if let Some(label) = read_str_or_text(state, root, CRITICAL_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.critical_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetCriticalAction {
@@ -1269,27 +1270,6 @@ impl Widget for PowerPane {
     }
 }
 
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1404,7 +1384,7 @@ mod tests {
 
         assert_eq!(pane.profile(), PowerProfile::Balanced);
         assert_eq!(
-            read_str(&doc, &root, PROFILE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, PROFILE_KEY).as_deref(),
             Some("Balanced")
         );
         assert!(
