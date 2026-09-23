@@ -36,7 +36,7 @@ dirs.workspace = true
 # Spreadsheet interchange: calamine reads .xlsx/.ods; rust_xlsxwriter writes
 # .xlsx; the .ods writer is hand-rolled on top of `zip` (a flat-XML archive).
 calamine = "0.36.1"
-rust_xlsxwriter = "0.79"
+rust_xlsxwriter = "0.99.1"
 zip.workspace = true
 uuid.workspace = true
 
