@@ -314,14 +314,18 @@ def main():
         record = load_record(RECORD)
         reclaim(record)
     except Mismatch as error:
-        log('left the installer partitions untouched: %s' % error)
+        # `refused:` and `done` are stable markers: the unit mirrors them to
+        # the console, where the VM round trip (test-internal-install-cycle.sh)
+        # reads them from the serial log.
+        log('refused: left the installer partitions untouched: %s' % error)
         return 1
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         # Kept for the next run, which resumes from whatever state the disk is in.
-        log('stopped before finishing; will resume on the next run: %s' % error)
+        log('incomplete: stopped before finishing; will resume on the next run: %s' % error)
         return 1
     remove_record(RECORD)
     log('returned the temporary installer space to Tilo')
+    log('done')
     return 0
 
 
