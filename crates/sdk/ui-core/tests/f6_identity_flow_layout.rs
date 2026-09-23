@@ -37,30 +37,16 @@ use tilo_ui::a11y::{Action, Role as AccessRole};
 use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget, install_clipboard_backend};
 use tilo_ui::headless::{FrameHarness, SemanticExpectation};
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::QrWidget;
 use tilo_ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityStore, MemoryIdentityStore,
-    configure_invite_broker, mint_invite,
+    mint_invite_for_broker,
 };
 use tilo_ui::winit::dpi::PhysicalPosition;
 use tilo_ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
-
-/// `mint_invite` refuses to run until the shell has installed a redemption
-/// broker (outside the crate's own `cfg(test)` there is no fallback). The
-/// endpoint is never contacted here — the URL only has to parse and verify
-/// — so a loopback address, an opaque certificate and a private temp
-/// directory stand in for the shell's broker. Process-wide, like the real
-/// configuration; a sibling test that already configured one wins.
-fn ensure_invite_broker() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let root =
-            std::env::temp_dir().join(format!("qos-f6-invite-authority-{}", std::process::id()));
-        let _ = configure_invite_broker("127.0.0.1:4433", vec![0x2a; 64], root);
-    });
-}
 
 /// `(screen, test_id, file tag)` for every screen the ceremony can show.
 const SCREENS: &[(IdentityFlowScreen, &str, &str)] = &[
@@ -117,7 +103,6 @@ fn themes() -> Vec<(&'static str, Theme)> {
 /// a minted invite for both invite screens, and a name plus typed code so
 /// every field paints its populated state rather than a placeholder.
 fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFlowError> {
-    ensure_invite_broker();
     let mut rng = OsRng;
     let mut flow = IdentityFlow::new(store);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
@@ -157,16 +142,8 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
     let expires_at = SystemTime::now()
         .checked_add(Duration::from_secs(3600))
         .unwrap_or_else(SystemTime::now);
-    flow.invite_mint
-        .set_channel(ChannelId::new(), "engineering");
-    flow.invite_mint.mint_now(
-        owner_pk,
-        &owner_sk,
-        "Alice",
-        Role::Editor,
-        SystemTime::now(),
-    )?;
-    let env = mint_invite(
+    let authority = tempfile::tempdir()?;
+    let env = mint_invite_for_broker(
         ChannelId::new(),
         "engineering",
         owner_pk,
@@ -174,8 +151,15 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
         "Alice",
         Role::Editor,
         expires_at,
+        "127.0.0.1:4433",
+        vec![0x2a; 64],
+        authority.path(),
     )?;
-    flow.invite_accept.set_url(env.to_url()?);
+    let url = env.to_url()?;
+    flow.invite_mint.last_envelope = Some(env);
+    flow.invite_mint.last_url = Some(url.clone());
+    flow.invite_mint.qr = Some(QrWidget::new(url.as_bytes().to_vec()));
+    flow.invite_accept.set_url(url);
     Ok(flow)
 }
 
@@ -431,7 +415,8 @@ fn identity_fields_are_shared_text_inputs_reached_by_tab_typing_and_paste() {
     flow.set_screen(IdentityFlowScreen::InviteAccept);
     flow.invite_accept.decline();
     let (owner_sk, owner_pk) = generate_keypair();
-    let url = mint_invite(
+    let authority = tempfile::tempdir().expect("private invite authority");
+    let url = mint_invite_for_broker(
         ChannelId::new(),
         "design",
         owner_pk,
@@ -441,6 +426,9 @@ fn identity_fields_are_shared_text_inputs_reached_by_tab_typing_and_paste() {
         SystemTime::now()
             .checked_add(Duration::from_secs(3600))
             .unwrap_or_else(SystemTime::now),
+        "127.0.0.1:4433",
+        vec![0x2a; 64],
+        authority.path(),
     )
     .and_then(|env| env.to_url())
     .expect("mint an invite");
