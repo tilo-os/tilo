@@ -18,6 +18,8 @@ mod blob_state;
 mod blobstore_fixture;
 #[path = "convergence.rs"]
 mod convergence;
+#[path = "docx_header_footer.rs"]
+mod docx_header_footer;
 #[path = "independent_documents.rs"]
 mod independent_documents;
 #[path = "office_entities.rs"]
