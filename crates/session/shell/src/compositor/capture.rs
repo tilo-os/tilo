@@ -2307,14 +2307,14 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        frame_builder
+        let target_host = frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
             .and_then(|group| group.active_host_mut())
-            .expect("target Notes host")
-            .replace_content(ui::widget::TileContent::App(Box::new(
-                crate::shell::notes_app::NotesApp::with_seed(long_note),
-            )));
+            .expect("target Notes host");
+        let mut notes = crate::shell::notes_app::NotesApp::with_seed(long_note);
+        notes.prime_complete_content_for_test(target_host.get_rect());
+        target_host.replace_content(ui::widget::TileContent::App(Box::new(notes)));
         // This test exercises compositor capture, not record custody. Keep its
         // Notes fixture hermetic and expose it for one draw so the app can
         // measure the complete semantic canvas before it moves offscreen.
@@ -2324,22 +2324,6 @@ mod tests {
             .expect("live strip row")
             .scroll_group_into_view(target_group);
         frame_builder.relayout();
-        {
-            let target_host = frame_builder
-                .host_mut()
-                .group_at_for_tests(strip_id, 0)
-                .and_then(|group| group.active_host_mut())
-                .expect("target Notes host");
-            let mut scene = Scene::new();
-            let mut text = ui::text_render::TextRenderer::new();
-            target_host.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &ui::theme::Theme::dark(),
-                &ui::presence::PresenceCtx::default(),
-            );
-        }
         assert!(
             frame_builder
                 .host_mut()
