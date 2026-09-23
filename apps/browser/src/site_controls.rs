@@ -28,16 +28,7 @@ impl Exceptions {
         origin(url).is_some_and(|o| self.0.contains(&o))
     }
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        std::fs::write(&temporary, serde_json::to_vec(&self.0)?)?;
-        let result = std::fs::rename(&temporary, path);
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        result
+        atomic_file::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
     }
     fn load(path: &Path) -> Self {
         if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
