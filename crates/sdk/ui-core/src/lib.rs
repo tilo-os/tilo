@@ -125,6 +125,7 @@ pub mod chrome;
 pub mod clipboard;
 pub mod collaboration;
 pub mod collection_transition;
+pub mod color;
 pub mod color_compat;
 pub mod content_layout;
 mod damage;

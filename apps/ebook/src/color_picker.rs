@@ -10,8 +10,17 @@ use vello::peniko::Color;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::model::{hex_string, hsv_to_rgb, rgb_to_hsv};
 use crate::paint;
+
+/// HSV → the `[r, g, b]` triple schemes persist (see [`ui::color::hsv_to_rgb`]).
+fn hsv_to_rgb(hue: f32, sat: f32, val: f32) -> [u8; 3] {
+    ui::color::to_rgb8(ui::color::hsv_to_rgb(hue, sat, val))
+}
+
+/// Inverse of [`hsv_to_rgb`] (see [`ui::color::rgb_to_hsv`]).
+fn rgb_to_hsv(rgb: [u8; 3]) -> (f32, f32, f32) {
+    ui::color::rgb_to_hsv(Color::from_rgb8(rgb[0], rgb[1], rgb[2]))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PickTarget {
@@ -517,7 +526,7 @@ fn draw_preview(
     crate::chrome::edge(scene, t, fill, swatch, 8.0);
     text.draw_text_weighted(
         scene,
-        &hex_string(rgb),
+        &ui::color::to_hex(Color::from_rgb8(rgb[0], rgb[1], rgb[2])),
         15.0,
         colors.text_primary,
         t * Affine::translate((x + 66.0, y + 9.0)),

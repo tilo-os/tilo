@@ -1,3 +1,4 @@
+use crate::color::{hsl_to_rgb, rgb_to_hsl};
 use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
@@ -312,76 +313,6 @@ impl Colors {
         let light = (l + step * CATEGORICAL_LIGHT_SPREAD).clamp(0.22, 0.78);
         hsl_to_rgb(hue, s, light)
     }
-}
-
-/// sRGB → HSL, hue in degrees. Straight sRGB rather than a perceptual space
-/// — the point here is *separation*, which the cheap conversion does fine.
-#[allow(
-    clippy::many_single_char_names,
-    reason = "r/g/b/h/s/l/max/min/d are the standard RGB<->HSL conversion \
-              variable names used throughout this file's colour math"
-)]
-fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
-    let (r, g, b) = (
-        f32::from(c.r()) / 255.0,
-        f32::from(c.g()) / 255.0,
-        f32::from(c.b()) / 255.0,
-    );
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = f32::midpoint(max, min);
-    let d = max - min;
-    if d <= f32::EPSILON {
-        return (0.0, 0.0, l);
-    }
-    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON);
-    #[allow(
-        clippy::float_cmp,
-        reason = "max is exactly one of r/g/b by construction (f32::max picks one \
-                  of its inputs verbatim), so this selects a branch by identity, \
-                  not by comparing independently-computed floats"
-    )]
-    let h = if max == r {
-        60.0 * (((g - b) / d) % 6.0)
-    } else if max == g {
-        60.0 * ((b - r) / d + 2.0)
-    } else {
-        60.0 * ((r - g) / d + 4.0)
-    };
-    (h.rem_euclid(360.0), s.clamp(0.0, 1.0), l)
-}
-
-#[allow(
-    clippy::many_single_char_names,
-    reason = "h/s/l/c/x/m are the standard HSL<->RGB conversion variable names \
-              used throughout this file's colour math"
-)]
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hp = h.rem_euclid(360.0) / 60.0;
-    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "hp is h.rem_euclid(360.0) / 60.0, always within 0.0..6.0, so the \
-                  truncating cast always lands in 0..=5"
-    )]
-    let (r1, g1, b1) = match hp as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "explicitly clamped to 0.0..=255.0 immediately above the cast"
-    )]
-    let q = |v: f32| (((v + m) * 255.0).round().clamp(0.0, 255.0)) as u8;
-    Color::from_rgb8(q(r1), q(g1), q(b1))
 }
 
 /// A compact description of a full palette, expanded into a coherent
