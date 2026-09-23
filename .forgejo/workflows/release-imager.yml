@@ -98,6 +98,51 @@ jobs:
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
       - name: Install the checksum-pinned image-signature verifier
         run: ./os/dev/install-cached-cosign.sh
+      - name: Install native image-build and full-cycle VM dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            if [ "${{ matrix.arch }}" = x86_64 ]; then
+              native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
+              qemu_binary=qemu-system-x86_64
+              display_device=virtio-vga-gl
+            else
+              native_packages='qemu-efi-aarch64 qemu-system-arm'
+              qemu_binary=qemu-system-aarch64
+              display_device=virtio-gpu-gl-pci
+            fi
+            sudo -n apt-get install -y --no-install-recommends \
+              clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g podman fuse-overlayfs \
+              qemu-system-gui qemu-utils slirp4netns socat tesseract-ocr uidmap $native_packages
+          elif command -v dnf >/dev/null; then
+            if [ "${{ matrix.arch }}" = x86_64 ]; then
+              native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
+              qemu_binary=qemu-system-x86_64
+              display_device=virtio-vga-gl
+            else
+              native_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
+              qemu_binary=qemu-system-aarch64
+              display_device=virtio-gpu-gl-pci
+            fi
+            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns \
+              qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
+          else
+            printf 'unsupported runner OS for installer VM cycle\n' >&2
+            exit 1
+          fi
+          command -v clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat \
+            mtype ntfscp podman qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
+          command -v magick >/dev/null || command -v convert >/dev/null
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            command -v swtpm virt-fw-vars >/dev/null
+          fi
+          "$qemu_binary" -display help | grep -Fq egl-headless
+          "$qemu_binary" -device help | grep -Fq "$display_device"
+          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+          compgen -G '/dev/dri/renderD*' >/dev/null
       - name: Authenticate the native image builder
         env:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
@@ -130,51 +175,6 @@ jobs:
       - name: Remove native image registry credentials
         if: always()
         run: rm -f -- "${REGISTRY_AUTH_FILE:?}"
-      - name: Install native full-cycle VM dependencies
-        run: |
-          set -euo pipefail
-          sudo -n true
-          if command -v apt-get >/dev/null; then
-            export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get update
-            if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
-              qemu_binary=qemu-system-x86_64
-              display_device=virtio-vga-gl
-            else
-              native_packages='qemu-efi-aarch64 qemu-system-arm'
-              qemu_binary=qemu-system-aarch64
-              display_device=virtio-gpu-gl-pci
-            fi
-            sudo -n apt-get install -y --no-install-recommends \
-              clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g qemu-system-gui \
-              qemu-utils socat tesseract-ocr $native_packages
-          elif command -v dnf >/dev/null; then
-            if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
-              qemu_binary=qemu-system-x86_64
-              display_device=virtio-vga-gl
-            else
-              native_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
-              qemu_binary=qemu-system-aarch64
-              display_device=virtio-gpu-gl-pci
-            fi
-            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux \
-              qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
-          else
-            printf 'unsupported runner OS for installer VM cycle\n' >&2
-            exit 1
-          fi
-          command -v clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat \
-            mtype ntfscp qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
-          command -v magick >/dev/null || command -v convert >/dev/null
-          if [ "${{ matrix.arch }}" = x86_64 ]; then
-            command -v swtpm virt-fw-vars >/dev/null
-          fi
-          "$qemu_binary" -display help | grep -Fq egl-headless
-          "$qemu_binary" -device help | grep -Fq "$display_device"
-          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
-          compgen -G '/dev/dri/renderD*' >/dev/null
       - name: Build and pin the isolated installer profile encoder
         run: |
           set -euo pipefail
