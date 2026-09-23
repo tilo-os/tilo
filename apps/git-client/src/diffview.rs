@@ -13,8 +13,8 @@ use vello::peniko::Color;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonFace;
+use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
 
-use crate::diff::{TokenClass, tokenize};
 use crate::draw;
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
@@ -693,11 +693,19 @@ impl DiffView {
             draw::mono(scene, tr, t, content, FONT, c.text_primary, x, y);
             return;
         }
+        // Diff rows are discontiguous slices of the file, so each line is
+        // tokenized on its own.
         let mut cx = x;
-        for tok in tokenize(content, language) {
-            let color = token_color(theme, tok.class);
-            draw::mono(scene, tr, t, &tok.text, FONT, color, cx, y);
-            cx += f64::from(draw::mono_width(tr, &tok.text, FONT));
+        let spans = SyntaxHighlighter::for_token_or_plain(language)
+            .start()
+            .highlight_line(content);
+        for span in spans {
+            let Some(text) = content.get(span.range) else {
+                continue;
+            };
+            let color = token_color(theme, span.kind);
+            draw::mono(scene, tr, t, text, FONT, color, cx, y);
+            cx += f64::from(draw::mono_width(tr, text, FONT));
         }
     }
 
@@ -758,16 +766,17 @@ impl DiffView {
     }
 }
 
-fn token_color(theme: &Theme, class: TokenClass) -> Color {
+fn token_color(theme: &Theme, kind: TokenKind) -> Color {
     let c = &theme.tokens.colors;
-    match class {
-        TokenClass::Plain => c.text_primary,
-        TokenClass::Keyword => c.accent[6],
-        TokenClass::Str => c.semantic.success,
-        TokenClass::Comment => c.text_dim,
-        TokenClass::Number => c.semantic.warning,
-        TokenClass::Type => c.semantic.info,
-        TokenClass::Punct => c.neutral[7],
+    match kind {
+        TokenKind::Keyword => c.accent[6],
+        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
+        TokenKind::Comment => c.text_dim,
+        TokenKind::Number | TokenKind::Constant => c.semantic.warning,
+        TokenKind::Type | TokenKind::Function => c.semantic.info,
+        TokenKind::Operator | TokenKind::Punctuation => c.neutral[7],
+        TokenKind::Attribute | TokenKind::Preprocessor => c.semantic.danger,
+        _ => c.text_primary,
     }
 }
 
