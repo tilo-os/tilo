@@ -3430,16 +3430,15 @@ mod tests {
             .iter()
             .find(|resource| resource.kind == "imager.import.folder")
             .unwrap();
-        let copy = folder
+        let copy_action = folder
             .actions
             .iter()
             .find(|action| action.id == "one-time-copy")
-            .unwrap()
-            .build_json(&serde_json::Map::new())
             .unwrap();
+        let copy = copy_action.build_json(&serde_json::Map::new()).unwrap();
         Widget::invoke_resource_operation_v2(
             &mut app,
-            tilo_actions::OperationKind::View,
+            copy_action.kind,
             &copy.type_id,
             &copy.payload,
             &state,

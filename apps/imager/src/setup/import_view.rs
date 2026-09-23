@@ -41,6 +41,7 @@ use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
+type SaveReply = mpsc::Receiver<Result<Vec<OperationRecord>, String>>;
 
 #[derive(Clone, Copy, Debug)]
 enum PickTarget {
@@ -69,6 +70,32 @@ enum ImportCommand {
     FirstIssues(usize),
 }
 
+struct PendingCopyInvocation {
+    invocation: tilo_actions::InvocationId,
+    operation_ids: Vec<String>,
+    terminal_states: HashMap<String, OperationState>,
+    cancellation_requested: bool,
+    failure: Option<String>,
+}
+
+struct PendingReviewInvocation {
+    invocation: tilo_actions::InvocationId,
+    folder_id: String,
+    cancelled: bool,
+    cancellation_requested: bool,
+    finished: bool,
+    failure: Option<String>,
+    save_reply: Option<SaveReply>,
+}
+
+struct PendingPrepareInvocation {
+    invocation: tilo_actions::InvocationId,
+    save_reply: SaveReply,
+    operation_id: String,
+    source: PathBuf,
+    destination_parent: PathBuf,
+}
+
 /// A later-import surface backed by the same real journaled worker as setup.
 pub struct ImportApp {
     continuation: Option<Continuation>,
@@ -85,6 +112,9 @@ pub struct ImportApp {
     source: Option<PathBuf>,
     destination_parent: Option<PathBuf>,
     worker: Option<(usize, MigrationWorker)>,
+    pending_copy_invocation: Option<PendingCopyInvocation>,
+    pending_review_invocation: Option<PendingReviewInvocation>,
+    pending_prepare_invocation: Option<PendingPrepareInvocation>,
     picker: Option<(PickTarget, ui::PortalChannel)>,
     picker_launcher: fn() -> ui::PortalChannel,
     identity_checker: fn() -> Result<(), String>,
@@ -137,6 +167,9 @@ impl ImportApp {
             source: None,
             destination_parent: None,
             worker: None,
+            pending_copy_invocation: None,
+            pending_review_invocation: None,
+            pending_prepare_invocation: None,
             picker: None,
             picker_launcher: folders::pick_folder,
             identity_checker: desktop_continuation::trusted_identity_complete,
@@ -493,6 +526,9 @@ impl ImportApp {
             source: None,
             destination_parent: None,
             worker: None,
+            pending_copy_invocation: None,
+            pending_review_invocation: None,
+            pending_prepare_invocation: None,
             picker: None,
             picker_launcher: folders::pick_folder,
             identity_checker: desktop_continuation::trusted_identity_complete,
@@ -519,7 +555,12 @@ impl ImportApp {
     }
 
     fn can_retry_operation(&self, index: usize) -> bool {
-        if self.worker.is_some() || self.review_request.is_some() {
+        if self.worker.is_some()
+            || self.review_request.is_some()
+            || self.pending_copy_invocation.is_some()
+            || self.pending_prepare_invocation.is_some()
+            || self.pending_review_invocation.is_some()
+        {
             return false;
         }
         let Some(operation) = self.operations.get(index) else {
@@ -541,6 +582,40 @@ impl ImportApp {
         })
     }
 
+    fn can_start_operation(&self, index: usize) -> bool {
+        self.operations
+            .get(index)
+            .is_some_and(|record| record.state() == OperationState::AwaitingReview)
+            && self.worker.is_none()
+            && self.review_request.is_none()
+            && self.gate_request.is_none()
+            && self.pending_copy_invocation.is_none()
+            && self.pending_review_invocation.is_none()
+            && self.pending_prepare_invocation.is_none()
+            && self.validate_continued_operation(index).is_ok()
+            && self.continued_index(index).is_none_or(|folder| {
+                self.continuation
+                    .as_ref()
+                    .and_then(|continuation| continuation.folders.get(folder))
+                    .is_some_and(|choice| choice.mode == ChoiceMode::Copy)
+            })
+            && durable_copy_available().is_ok()
+    }
+
+    fn can_prepare_review(&self) -> bool {
+        self.source.is_some()
+            && self.destination_parent.is_some()
+            && self.store.is_some()
+            && self.worker.is_none()
+            && self.review_request.is_none()
+            && self.gate_request.is_none()
+            && self.picker.is_none()
+            && self.pending_copy_invocation.is_none()
+            && self.pending_review_invocation.is_none()
+            && self.pending_prepare_invocation.is_none()
+            && self.pending_saves.len() < 2
+    }
+
     fn import_phase(&self) -> ImportStatusPhase {
         if self.store.is_none() {
             ImportStatusPhase::Unavailable
@@ -554,7 +629,13 @@ impl ImportApp {
             ImportStatusPhase::ChoosingFolder
         } else if self.detail_request.is_some() {
             ImportStatusPhase::LoadingDetails
-        } else if !self.pending_saves.is_empty() {
+        } else if !self.pending_saves.is_empty()
+            || self.pending_prepare_invocation.is_some()
+            || self
+                .pending_review_invocation
+                .as_ref()
+                .is_some_and(|pending| pending.save_reply.is_some())
+        {
             ImportStatusPhase::Saving
         } else if self.status_is_error {
             ImportStatusPhase::Error
@@ -616,11 +697,7 @@ impl ImportApp {
                 let details_available = operation.issue_count() > 0
                     || !operation.metadata_limitations().is_empty()
                     || operation.failure().is_some();
-                let start_available = operation.state() == OperationState::AwaitingReview
-                    && self.worker.is_none()
-                    && self.review_request.is_none()
-                    && durable_copy_available().is_ok()
-                    && self.validate_continued_operation(index).is_ok();
+                let start_available = self.can_start_operation(index);
                 OperationProjection {
                     identity: operation.id().to_string(),
                     state: operation_state_key(operation.state()),
@@ -662,7 +739,9 @@ impl ImportApp {
                         destination_reviewed: folder.destination().is_ok_and(|path| path.is_some()),
                         review_available,
                         picker_available: review_available && self.picker.is_none(),
-                        mode_available: self.worker.is_none() && self.review_request.is_none(),
+                        mode_available: self.worker.is_none()
+                            && self.review_request.is_none()
+                            && self.gate_request.is_none(),
                     }
                 })
                 .collect();
@@ -670,7 +749,9 @@ impl ImportApp {
                 identity_ready: self.identity_ready,
                 identity_check_available: !self.identity_ready && self.gate_request.is_none(),
                 start_batch_available: self.can_start_continued_batch(),
-                later_all_available: self.worker.is_none() && self.review_request.is_none(),
+                later_all_available: self.worker.is_none()
+                    && self.review_request.is_none()
+                    && self.gate_request.is_none(),
                 folders,
             }
         });
@@ -680,24 +761,14 @@ impl ImportApp {
             selection: SelectionProjection {
                 source_selected: self.source.is_some(),
                 destination_selected: self.destination_parent.is_some(),
-                review_ready: self.source.is_some()
-                    && self.destination_parent.is_some()
-                    && self.store.is_some()
-                    && self.worker.is_none()
-                    && self.review_request.is_none()
-                    && self.pending_saves.len() < 2,
+                review_ready: self.can_prepare_review(),
             },
             active_operation,
             operations,
             continuation,
             picker_available: self.picker.is_none() && self.store.is_some(),
             clear_available: self.source.is_some() || self.destination_parent.is_some(),
-            prepare_review_available: self.source.is_some()
-                && self.destination_parent.is_some()
-                && self.store.is_some()
-                && self.worker.is_none()
-                && self.review_request.is_none()
-                && self.pending_saves.len() < 2,
+            prepare_review_available: self.can_prepare_review(),
         }
     }
 
@@ -840,6 +911,7 @@ impl ImportApp {
                 if self.continuation.is_none()
                     || self.worker.is_some()
                     || self.review_request.is_some()
+                    || self.gate_request.is_some()
                 {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-later-all-unavailable",
@@ -852,14 +924,7 @@ impl ImportApp {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
                 };
-                if !self
-                    .operations
-                    .get(index)
-                    .is_some_and(|record| record.state() == OperationState::AwaitingReview)
-                    || self.worker.is_some()
-                    || self.review_request.is_some()
-                    || self.validate_continued_operation(index).is_err()
-                {
+                if !self.can_start_operation(index) {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-start-unavailable",
                     ));
@@ -977,7 +1042,10 @@ impl ImportApp {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
                 };
-                if self.worker.is_some() || self.review_request.is_some() {
+                if self.worker.is_some()
+                    || self.review_request.is_some()
+                    || self.gate_request.is_some()
+                {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-folder-mode-unavailable",
                     ));
@@ -989,7 +1057,10 @@ impl ImportApp {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
                 };
-                if self.worker.is_some() || self.review_request.is_some() {
+                if self.worker.is_some()
+                    || self.review_request.is_some()
+                    || self.gate_request.is_some()
+                {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-folder-mode-unavailable",
                     ));
@@ -1072,6 +1143,14 @@ impl ImportApp {
     }
 
     fn prepare_review(&mut self) -> Result<(), String> {
+        if self.pending_prepare_invocation.is_some()
+            || self.pending_review_invocation.is_some()
+            || self.pending_copy_invocation.is_some()
+            || self.gate_request.is_some()
+            || self.picker.is_some()
+        {
+            return Err("Wait for the previous folder action to finish.".into());
+        }
         if self.worker.is_some() {
             return Err("Wait for the active copy before preparing another import.".into());
         }
@@ -1183,7 +1262,7 @@ impl ImportApp {
         if !self.identity_ready {
             return Err("Finish identity setup in Tilo first.".into());
         }
-        if self.worker.is_some() || self.review_request.is_some() {
+        if self.worker.is_some() || self.review_request.is_some() || self.gate_request.is_some() {
             return Err("Wait for the active copy or folder review.".into());
         }
         let c = self.continuation.as_ref().ok_or("No saved folder review")?;
@@ -1248,6 +1327,16 @@ impl ImportApp {
         };
         let index = *index;
         self.review_request = None;
+        if let Some(pending) = &mut self.pending_review_invocation
+            && pending.cancellation_requested
+        {
+            pending.cancelled = true;
+            pending.finished = true;
+            self.status = "Folder review stopped before it was saved.".into();
+            self.structure_dirty = true;
+            return true;
+        }
+        let previous_save_count = self.pending_saves.len();
         let result = result.and_then(|c| {
             self.check_continued_review_allowed(index)?;
             let previous = self.continuation.replace(c);
@@ -1257,6 +1346,15 @@ impl ImportApp {
             }
             Ok(())
         });
+        if let Some(pending) = &mut self.pending_review_invocation {
+            pending.finished = true;
+            if self.pending_saves.len() > previous_save_count {
+                pending.save_reply = self.pending_saves.pop();
+            }
+            if let Err(error) = &result {
+                pending.failure = Some(error.clone());
+            }
+        }
         match result {
             Ok(()) => {
                 self.status =
@@ -1273,7 +1371,7 @@ impl ImportApp {
     }
 
     fn save_continued_mode(&mut self, index: usize, mode: ChoiceMode) -> Result<(), String> {
-        if self.worker.is_some() {
+        if self.worker.is_some() || self.gate_request.is_some() {
             return Err("Stop the running copy before changing folder choices.".into());
         }
         let c = self.continuation.as_mut().ok_or("No saved folder review")?;
@@ -1305,6 +1403,17 @@ impl ImportApp {
     }
 
     fn start_operation(&mut self, index: usize) -> Result<(), String> {
+        if self.pending_prepare_invocation.is_some() || self.pending_review_invocation.is_some() {
+            return Err("Wait for the folder review to finish saving before copying.".into());
+        }
+        if let Some(pending) = &self.pending_copy_invocation
+            && self
+                .operations
+                .get(index)
+                .is_none_or(|record| !pending.operation_ids.iter().any(|id| id == record.id()))
+        {
+            return Err("Wait for the previous copy result before starting another folder.".into());
+        }
         self.validate_continued_operation(index)?;
         if !self
             .operations
@@ -1322,6 +1431,12 @@ impl ImportApp {
             .map_err(|error| format!("Folder copying is unavailable on this platform: {error}"))?;
         let continued_index = self.continued_index(index);
         if let (Some(c), Some(folder)) = (&self.continuation, continued_index) {
+            if c.folders
+                .get(folder)
+                .is_none_or(|choice| choice.mode != ChoiceMode::Copy)
+            {
+                return Err("Choose Copy for this folder before starting it.".into());
+            }
             c.validate_fresh_destination(folder)?;
         }
         let mut operation = self
@@ -1369,6 +1484,12 @@ impl ImportApp {
     }
 
     fn retry_operation(&mut self, index: usize) -> Result<(), String> {
+        if self.pending_copy_invocation.is_some()
+            || self.pending_prepare_invocation.is_some()
+            || self.pending_review_invocation.is_some()
+        {
+            return Err("Wait for the previous copy result before retrying.".into());
+        }
         self.validate_continued_operation(index)?;
         if self.worker.is_some() {
             return Err("another folder import is already running".into());
@@ -1428,11 +1549,11 @@ impl ImportApp {
     }
 
     fn cancel_active(&mut self) -> bool {
-        self.batch.clear();
         let Some((_, worker)) = &self.worker else {
             return false;
         };
         if worker.cancel() {
+            self.batch.clear();
             self.status = "Stopping at the next safe copy boundary…".into();
             self.status_is_error = false;
             self.structure_dirty = true;
@@ -1514,6 +1635,41 @@ impl ImportApp {
                         self.batch.clear();
                     }
                 }
+                if self.status_is_error {
+                    let error = self.status.clone();
+                    let copy_related = match command {
+                        ImportCommand::Start(index) | ImportCommand::Retry(index) => {
+                            self.operations.get(index).is_some_and(|record| {
+                                self.pending_copy_invocation
+                                    .as_ref()
+                                    .is_some_and(|pending| {
+                                        pending.operation_ids.iter().any(|id| id == record.id())
+                                    })
+                            })
+                        }
+                        ImportCommand::StartBatch => self.pending_copy_invocation.is_some(),
+                        _ => false,
+                    };
+                    if copy_related && let Some(pending) = &mut self.pending_copy_invocation {
+                        pending.failure = Some(error.clone());
+                    }
+                    let review_related = match command {
+                        ImportCommand::ResolveContinued(index)
+                        | ImportCommand::PickContinuedDestination(index) => {
+                            self.continuation.as_ref().is_some_and(|continuation| {
+                                self.pending_review_invocation
+                                    .as_ref()
+                                    .is_some_and(|pending| {
+                                        pending.folder_id == continuation.operation_id(index)
+                                    })
+                            })
+                        }
+                        _ => false,
+                    };
+                    if review_related && let Some(pending) = &mut self.pending_review_invocation {
+                        pending.failure = Some(error);
+                    }
+                }
                 *changed = true;
             }
         }
@@ -1541,9 +1697,19 @@ impl ImportApp {
 
     fn poll_folder_picker(&mut self) -> bool {
         let mut changed = false;
-        let picker_outcome = self.picker.as_ref().and_then(|(target, receiver)| {
-            receiver.try_recv().ok().map(|outcome| (*target, outcome))
-        });
+        let picker_outcome =
+            self.picker
+                .as_ref()
+                .and_then(|(target, receiver)| match receiver.try_recv() {
+                    Ok(outcome) => Some((*target, outcome)),
+                    Err(mpsc::TryRecvError::Disconnected) => Some((
+                        *target,
+                        ui::PortalOutcome::Failed(
+                            "Folder dialog stopped before responding.".into(),
+                        ),
+                    )),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                });
         if let Some((target, outcome)) = picker_outcome {
             self.picker = None;
             changed = true;
@@ -1555,6 +1721,9 @@ impl ImportApp {
                         PickTarget::ContinuedDestination(index) => {
                             let result = self.request_continued_review(index, Some(path));
                             if let Err(e) = result {
+                                if let Some(pending) = &mut self.pending_review_invocation {
+                                    pending.failure = Some(e.clone());
+                                }
                                 self.status = e;
                                 self.status_is_error = true;
                                 self.structure_dirty = true;
@@ -1568,12 +1737,22 @@ impl ImportApp {
                     self.status_is_error = false;
                 }
                 ui::PortalOutcome::Cancelled => {
+                    if let PickTarget::ContinuedDestination(index) = target
+                        && let (Some(pending), Some(continuation)) =
+                            (&mut self.pending_review_invocation, &self.continuation)
+                        && pending.folder_id == continuation.operation_id(index)
+                    {
+                        pending.cancelled = true;
+                    }
                     self.status = "No folder was selected.".into();
                     self.status_is_error = false;
                 }
                 ui::PortalOutcome::Failed(error) => {
                     self.status = format!("The folder dialog could not open: {error}");
                     self.status_is_error = true;
+                    if let Some(pending) = &mut self.pending_review_invocation {
+                        pending.failure = Some(self.status.clone());
+                    }
                 }
             }
         }
@@ -1634,6 +1813,15 @@ impl ImportApp {
             }
         }
         if terminal {
+            if let Some((index, _)) = &self.worker
+                && let Some(record) = self.operations.get(*index)
+                && let Some(pending) = &mut self.pending_copy_invocation
+                && pending.operation_ids.iter().any(|id| id == record.id())
+            {
+                pending
+                    .terminal_states
+                    .insert(record.id().to_string(), record.state());
+            }
             self.worker = None;
             if !self.batch.is_empty() {
                 let next = self.batch.remove(0);
@@ -1674,9 +1862,8 @@ impl ImportApp {
         self.apply_authorized_command(command);
     }
 
-    fn start_reviewed_batch(&mut self) -> Result<(), String> {
-        self.batch = self
-            .operations
+    fn reviewed_batch_indices(&self) -> Vec<usize> {
+        self.operations
             .iter()
             .enumerate()
             .filter(|(i, op)| {
@@ -1690,7 +1877,11 @@ impl ImportApp {
                     })
             })
             .map(|(i, _)| i)
-            .collect();
+            .collect()
+    }
+
+    fn start_reviewed_batch(&mut self) -> Result<(), String> {
+        self.batch = self.reviewed_batch_indices();
         if self.batch.is_empty() {
             Err("Review at least one saved Copy folder first.".into())
         } else {
@@ -1767,8 +1958,11 @@ impl ImportApp {
             ImportCommand::Start(index) => self.start_operation(index),
             ImportCommand::Retry(index) => self.retry_operation(index),
             ImportCommand::Cancel => {
-                self.cancel_active();
-                Ok(())
+                if self.cancel_active() {
+                    Ok(())
+                } else {
+                    Err("Copy could not be stopped because file checks are finishing.".into())
+                }
             }
             ImportCommand::ClearSelection => {
                 self.source = None;
@@ -1859,12 +2053,7 @@ impl ImportApp {
         body = body.push(Box::new(
             self.button("import.review", "Review copy", ImportCommand::PrepareReview)
                 .primary()
-                .with_enabled(
-                    self.source.is_some()
-                        && self.destination_parent.is_some()
-                        && self.store.is_some()
-                        && self.worker.is_none(),
-                ),
+                .with_enabled(self.can_prepare_review()),
         ));
         Card::titled(
             if self.operations.is_empty() {
@@ -1961,7 +2150,7 @@ impl ImportApp {
                     ImportCommand::Start(index),
                 )
                 .primary()
-                .with_enabled(self.worker.is_none() && durable_copy_available().is_ok()),
+                .with_enabled(self.can_start_operation(index)),
             ),
             OperationState::Running
                 if self
@@ -2012,6 +2201,9 @@ impl ImportApp {
             && self.identity_ready
             && self.worker.is_none()
             && self.gate_request.is_none()
+            && self.pending_copy_invocation.is_none()
+            && self.pending_prepare_invocation.is_none()
+            && self.pending_review_invocation.is_none()
             && self.operations.iter().enumerate().any(|(index, op)| {
                 op.state() == OperationState::AwaitingReview
                     && self.continued_index(index).is_some_and(|f| {
@@ -2024,7 +2216,10 @@ impl ImportApp {
     }
 
     fn continued_review_controls(&self, row: Column, index: usize) -> Column {
-        let enabled = self.identity_ready && self.worker.is_none() && self.review_request.is_none();
+        let enabled = self.identity_ready
+            && self.worker.is_none()
+            && self.review_request.is_none()
+            && self.gate_request.is_none();
         // Both destination commands belong to one action row (wrapping when
         // the card is narrow) instead of two single-button lines.
         row.push(Box::new(
@@ -2103,16 +2298,30 @@ impl ImportApp {
                 .push(Box::new(
                     Row::new()
                         .no_wrap()
-                        .push(Box::new(self.button(
-                            &format!("import.continued.{index}.copy"),
-                            "One-time Copy",
-                            ImportCommand::ContinuedMode(index, ChoiceMode::Copy),
-                        )))
-                        .push(Box::new(self.button(
-                            &format!("import.continued.{index}.later"),
-                            "Later",
-                            ImportCommand::ContinuedMode(index, ChoiceMode::Later),
-                        ))),
+                        .push(Box::new(
+                            self.button(
+                                &format!("import.continued.{index}.copy"),
+                                "One-time Copy",
+                                ImportCommand::ContinuedMode(index, ChoiceMode::Copy),
+                            )
+                            .with_enabled(
+                                self.worker.is_none()
+                                    && self.review_request.is_none()
+                                    && self.gate_request.is_none(),
+                            ),
+                        ))
+                        .push(Box::new(
+                            self.button(
+                                &format!("import.continued.{index}.later"),
+                                "Later",
+                                ImportCommand::ContinuedMode(index, ChoiceMode::Later),
+                            )
+                            .with_enabled(
+                                self.worker.is_none()
+                                    && self.review_request.is_none()
+                                    && self.gate_request.is_none(),
+                            ),
+                        )),
                 ));
             if can_review && f.mode == ChoiceMode::Copy {
                 row = self.continued_review_controls(row, index);
@@ -2140,7 +2349,11 @@ impl ImportApp {
                         "Decide later for all",
                         ImportCommand::LaterAll,
                     )
-                    .with_enabled(self.worker.is_none()),
+                    .with_enabled(
+                        self.worker.is_none()
+                            && self.review_request.is_none()
+                            && self.gate_request.is_none(),
+                    ),
                 )),
         ));
         Card::titled("Continue your Desktop setup", Box::new(body))
@@ -2359,10 +2572,377 @@ impl Widget for ImportApp {
             }
             return Ok(None);
         };
-        if kind != tilo_actions::OperationKind::View {
+        if kind != operation.kind() {
             return Err(super::strings::t("imager-import-error-operation-kind"));
         }
         self.invoke_import_operation(operation).map(Some)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = import_actions::decode(type_id, payload)? else {
+            for child in self.children_mut() {
+                if let Some(started) =
+                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(started));
+                }
+            }
+            return Ok(None);
+        };
+        if kind != operation.kind() {
+            return Err(super::strings::t("imager-import-error-operation-kind"));
+        }
+        let operation_ids = if operation.background() {
+            if self.pending_copy_invocation.is_some()
+                || self.pending_review_invocation.is_some()
+                || self.pending_prepare_invocation.is_some()
+            {
+                return Err("Another folder import action is still settling.".into());
+            }
+            match &operation {
+                ImportOperation::StartReviewedBatch => self
+                    .reviewed_batch_indices()
+                    .into_iter()
+                    .filter_map(|index| {
+                        self.operations
+                            .get(index)
+                            .map(|record| record.id().to_string())
+                    })
+                    .collect(),
+                ImportOperation::Start { operation_id }
+                | ImportOperation::Retry { operation_id } => vec![operation_id.clone()],
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let review_folder = match &operation {
+            ImportOperation::ResolveFolder { folder_id }
+            | ImportOperation::PickFolderDestination { folder_id } => Some(folder_id.clone()),
+            _ => None,
+        };
+        let preparing = matches!(&operation, ImportOperation::PrepareReview);
+        let prepare_paths = if preparing {
+            Some((
+                self.source.clone().ok_or("Choose a source folder first")?,
+                self.destination_parent
+                    .clone()
+                    .ok_or("Choose a destination folder first")?,
+            ))
+        } else {
+            None
+        };
+        let output = self.invoke_import_operation(operation)?;
+        if preparing {
+            let (source, destination_parent) =
+                prepare_paths.ok_or("Folder review lost its selected locations")?;
+            let save_reply = self
+                .pending_saves
+                .pop()
+                .ok_or_else(|| "Folder review did not queue a durable index save.".to_string())?;
+            let operation_id = self
+                .operations
+                .last()
+                .ok_or("Folder review did not create a copy plan")?
+                .id()
+                .to_string();
+            self.pending_prepare_invocation = Some(PendingPrepareInvocation {
+                invocation,
+                save_reply,
+                operation_id,
+                source,
+                destination_parent,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if let Some(folder_id) = review_folder {
+            self.pending_review_invocation = Some(PendingReviewInvocation {
+                invocation,
+                folder_id,
+                cancelled: false,
+                cancellation_requested: false,
+                finished: false,
+                failure: None,
+                save_reply: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if !operation_ids.is_empty() {
+            self.pending_copy_invocation = Some(PendingCopyInvocation {
+                invocation,
+                operation_ids,
+                terminal_states: HashMap::new(),
+                cancellation_requested: false,
+                failure: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(output)))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self
+            .pending_prepare_invocation
+            .as_ref()
+            .is_some_and(|pending| pending.invocation == invocation)
+        {
+            let result = self
+                .pending_prepare_invocation
+                .as_ref()?
+                .save_reply
+                .try_recv();
+            let result = match result {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err("Folder review writer stopped before confirming its checkpoint.".into())
+                }
+            };
+            let pending = self.pending_prepare_invocation.take()?;
+            return Some(match result {
+                Ok(saved) => {
+                    for (current, persisted) in self.operations.iter_mut().zip(saved) {
+                        current.retain_detail_reference(&persisted);
+                    }
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(self.import_projection().value()),
+                            resources: Vec::new(),
+                        },
+                    }
+                }
+                Err(message) => {
+                    self.operations
+                        .retain(|record| record.id() != pending.operation_id);
+                    self.source.get_or_insert(pending.source);
+                    self.destination_parent
+                        .get_or_insert(pending.destination_parent);
+                    self.status = format!("Folder review could not be saved: {message}");
+                    self.status_is_error = true;
+                    self.structure_dirty = true;
+                    tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "imager.review_save_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    }
+                }
+            });
+        }
+        if cancellation_requested
+            && self
+                .pending_copy_invocation
+                .as_ref()
+                .is_some_and(|pending| pending.invocation == invocation)
+        {
+            if self.gate_request.is_some() {
+                self.gate_request = None;
+                self.batch.clear();
+                self.pending_copy_invocation = None;
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("Folder copy stopped before it started.".into()),
+                });
+            }
+            if self.worker.is_some()
+                && self
+                    .pending_copy_invocation
+                    .as_ref()
+                    .is_some_and(|pending| !pending.cancellation_requested)
+                && self.cancel_active()
+                && let Some(pending) = &mut self.pending_copy_invocation
+            {
+                pending.cancellation_requested = true;
+            }
+        }
+        if cancellation_requested
+            && self
+                .pending_review_invocation
+                .as_ref()
+                .is_some_and(|pending| pending.invocation == invocation)
+        {
+            if self.review_request.is_some() {
+                if let Some(pending) = &mut self.pending_review_invocation {
+                    pending.cancellation_requested = true;
+                }
+                return None;
+            }
+            if self.gate_request.is_some() || self.picker.is_some() {
+                self.gate_request = None;
+                self.picker = None;
+                self.pending_review_invocation = None;
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("Folder review stopped before it was saved.".into()),
+                });
+            }
+        }
+        if let Some(pending) = self.pending_review_invocation.as_ref() {
+            if pending.invocation != invocation {
+                return None;
+            }
+            if self.gate_request.is_some() || self.review_request.is_some() || self.picker.is_some()
+            {
+                return None;
+            }
+            if !pending.cancelled && pending.failure.is_none() && !pending.finished {
+                return None;
+            }
+            let save_result = if let Some(reply) = &pending.save_reply {
+                match reply.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => return None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "Folder review writer stopped before confirming its checkpoint.".into(),
+                    )),
+                }
+            } else {
+                None
+            };
+            let pending = self.pending_review_invocation.take()?;
+            if let Some(Ok(saved)) = &save_result {
+                for (current, persisted) in self.operations.iter_mut().zip(saved) {
+                    current.retain_detail_reference(persisted);
+                }
+            }
+            if let Some(Err(message)) = &save_result {
+                self.status = format!("Folder review could not be saved: {message}");
+                self.status_is_error = true;
+                self.structure_dirty = true;
+            }
+            let update = if pending.cancelled {
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("No destination folder was selected.".into()),
+                }
+            } else if pending.failure.is_some() || save_result.as_ref().is_some_and(Result::is_err)
+            {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "imager.review_failed".into(),
+                        message: pending
+                            .failure
+                            .or_else(|| save_result.and_then(Result::err))
+                            .unwrap_or_else(|| "Folder review could not be saved.".into()),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            } else if self.operations.iter().any(|record| {
+                record.id() == pending.folder_id && record.state() == OperationState::AwaitingReview
+            }) {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(self.import_projection().value()),
+                        resources: Vec::new(),
+                    },
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "imager.review_incomplete".into(),
+                        message: "Folder review ended without a saved copy plan.".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            };
+            return Some(update);
+        }
+        let pending = self.pending_copy_invocation.as_ref()?;
+        if pending.invocation != invocation {
+            return None;
+        }
+        if self.gate_request.is_some()
+            || self.worker.as_ref().is_some_and(|(index, _)| {
+                self.operations
+                    .get(*index)
+                    .is_some_and(|record| pending.operation_ids.iter().any(|id| id == record.id()))
+            })
+            || !self.batch.is_empty()
+        {
+            return None;
+        }
+        let states = pending
+            .operation_ids
+            .iter()
+            .map(|id| pending.terminal_states.get(id).copied())
+            .collect::<Vec<_>>();
+        let update = if pending.failure.is_some() {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "imager.copy_failed".into(),
+                    message: pending.failure.clone().unwrap_or_else(|| {
+                        "The selected folder copy disappeared before completion.".into()
+                    }),
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else if states
+            .iter()
+            .all(|state| *state == Some(OperationState::Complete))
+        {
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(self.import_projection().value()),
+                    resources: Vec::new(),
+                },
+            }
+        } else if pending.cancellation_requested
+            || states
+                .iter()
+                .any(|state| *state == Some(OperationState::Cancelled))
+        {
+            tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("Folder copy stopped before completion.".into()),
+            }
+        } else if states.iter().any(Option::is_none) {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "imager.copy_failed".into(),
+                    message: "The selected folder copy disappeared before completion.".into(),
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "imager.copy_incomplete".into(),
+                    message: "Folder copy ended before all selected folders completed.".into(),
+                    details: None,
+                    retryable: false,
+                },
+            }
+        };
+        self.pending_copy_invocation = None;
+        Some(update)
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -2503,6 +3083,9 @@ impl Widget for ImportApp {
             || self.review_request.is_some()
             || self.gate_request.is_some()
             || self.picker.is_some()
+            || self.pending_copy_invocation.is_some()
+            || self.pending_review_invocation.is_some()
+            || self.pending_prepare_invocation.is_some()
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
     }
@@ -2607,7 +3190,7 @@ mod tests {
         let encoded = import_actions::encode(operation);
         Widget::invoke_resource_operation_v2(
             app,
-            tilo_actions::OperationKind::View,
+            operation.kind(),
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),
@@ -2647,12 +3230,42 @@ mod tests {
         ui::portal::inject_for_test(ui::PortalOutcome::Cancelled)
     }
 
+    fn disconnected_picker() -> ui::PortalChannel {
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        receiver
+    }
+
     #[allow(
         clippy::unnecessary_wraps,
         reason = "this test seam has the same fallible signature as the production identity boundary"
     )]
     fn identity_ready() -> Result<(), String> {
         Ok(())
+    }
+
+    fn identity_denied() -> Result<(), String> {
+        Err("Tilo identity is unavailable".into())
+    }
+
+    fn start_action(
+        app: &mut ImportApp,
+        action: &tilo_actions::ActionSpec,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<ui::widget::ResourceOperationStart, String> {
+        let encoded = action
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| error.to_string())?;
+        Widget::start_resource_operation(
+            app,
+            invocation,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )?
+        .ok_or_else(|| "import operation was not handled".into())
     }
 
     fn continuation_choice(source: &Path) -> super::super::controller::FolderChoice {
@@ -2981,6 +3594,315 @@ mod tests {
                 .state(),
             OperationState::AwaitingReview
         );
+    }
+
+    #[test]
+    fn copy_action_succeeds_only_after_the_worker_finishes() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"copied bytes").unwrap();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        app.prepare_review().unwrap();
+        let start = action(&root_resource(&app).children[0], "start");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &start, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        assert!(
+            Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_none()
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ) {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Succeeded { .. }
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline, "copy action never settled");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.operations[0].state(), OperationState::Complete);
+    }
+
+    #[test]
+    fn prepare_review_effect_fails_when_the_index_save_is_rejected() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        fs::remove_file(app.store.as_ref().unwrap().root().join("ownership.lock")).unwrap();
+        let review = action(&root_resource(&app), "prepare-review");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &review, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        let unsaved_id = app.operations[0].id().to_string();
+        assert!(!app.import_projection().operations[0].start_available);
+        assert!(
+            invoke_import_raw(
+                &mut app,
+                &ImportOperation::Start {
+                    operation_id: unsaved_id,
+                },
+            )
+            .is_err(),
+            "an unconfirmed review must not start a copy"
+        );
+        let pending = app.pending_prepare_invocation.as_ref().unwrap();
+        app.source = Some(pending.source.clone());
+        app.destination_parent = Some(pending.destination_parent.clone());
+        assert!(!app.import_projection().prepare_review_available);
+        assert!(invoke_import_raw(&mut app, &ImportOperation::PrepareReview).is_err());
+        assert_eq!(
+            app.operations.len(),
+            1,
+            "a second review must not be queued"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ) {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Failed { ref error, .. }
+                        if !error.retryable
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline, "review save never settled");
+            std::thread::yield_now();
+        }
+        assert!(
+            app.operations.is_empty(),
+            "failed review must not remain actionable"
+        );
+        assert!(app.source.is_some(), "source selection should be retained");
+        assert!(
+            app.destination_parent.is_some(),
+            "destination selection should be retained"
+        );
+    }
+
+    #[test]
+    fn identity_failure_yields_failed_copy_action_instead_of_success() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+        continuation.resolve(0, &destination_parent, true).unwrap();
+        app.continuation = Some(continuation);
+        app.identity_ready = true;
+        app.prepare_continued_folder(0).unwrap();
+        app.identity_checker = identity_denied;
+        let start = action(&root_resource(&app), "start-reviewed-folders");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &start, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ) {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline, "identity failure never settled");
+            std::thread::yield_now();
+        }
+        assert!(app.worker.is_none());
+        assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+    }
+
+    #[test]
+    fn broker_cancellation_stops_a_queued_copy_before_the_worker_starts() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+        continuation.resolve(0, &destination_parent, true).unwrap();
+        app.continuation = Some(continuation);
+        app.identity_ready = true;
+        app.prepare_continued_folder(0).unwrap();
+        app.identity_checker = identity_ready;
+        let start = action(&root_resource(&app), "start-reviewed-folders");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &start, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        assert!(app.gate_request.is_some());
+        let update = Widget::poll_resource_operation(
+            &mut app,
+            invocation,
+            true,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        );
+        assert!(matches!(
+            update,
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(app.gate_request.is_none());
+        app.poll_background();
+        assert!(app.worker.is_none());
+        assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+    }
+
+    #[test]
+    fn identity_failure_yields_failed_folder_review_action() {
+        let (_temp, mut app, source, _destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"unchanged original").unwrap();
+        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+        app.identity_ready = true;
+        app.identity_checker = identity_denied;
+        let review = action(&root_resource(&app).children[0], "review-destination");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &review, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ) {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Failed { ref error, .. } if !error.retryable
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline, "review failure never settled");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn cancelled_folder_destination_picker_cancels_review_action() {
+        let (_temp, mut app, source, _destination_parent) = fixture();
+        settle_index(&mut app);
+        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+        app.identity_ready = true;
+        app.identity_checker = identity_ready;
+        app.picker_launcher = cancelled_picker;
+        let choose = action(&root_resource(&app).children[0], "choose-destination");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &choose, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if let Some(update) = Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ) {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Cancelled { .. }
+                ));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "picker cancellation never settled"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn disconnected_folder_picker_fails_the_review_action() {
+        let (_temp, mut app, source, _destination_parent) = fixture();
+        settle_index(&mut app);
+        app.continuation = Some(Continuation::capture(&[continuation_choice(&source)]).unwrap());
+        app.identity_ready = true;
+        app.identity_checker = identity_ready;
+        app.picker_launcher = disconnected_picker;
+        let choose = action(&root_resource(&app).children[0], "choose-destination");
+        let invocation = tilo_actions::InvocationId::new();
+
+        assert_eq!(
+            start_action(&mut app, &choose, invocation).unwrap(),
+            ui::widget::ResourceOperationStart::Accepted
+        );
+        app.poll_background();
+        assert!(
+            app.picker.is_none(),
+            "disconnected portal must clear the picker"
+        );
+        assert!(matches!(
+            Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            ),
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn stop_copy_command_refuses_when_no_worker_accepts_the_request() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        settle_index(&mut app);
+        app.apply_authorized_command(ImportCommand::Cancel);
+        assert!(app.status_is_error);
+        assert!(app.status.contains("could not be stopped"));
     }
 
     #[test]
