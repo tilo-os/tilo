@@ -1941,7 +1941,12 @@ mod tests {
             .to_public_key_pem(LineEnding::LF)
             .expect("public PEM");
         let identity = p256_public_key_sha256(&public).expect("P-256 identity");
-        assert_eq!(identity.len(), 64);
+        // SHA-256 over the canonical SubjectPublicKeyInfo DER; the identity
+        // is persisted, so its bytes are pinned.
+        assert_eq!(
+            identity,
+            "ce97ec20d43661a19b215cb2e376a698d0b4aa2aa5b4c7854e916bd05082fcee"
+        );
         assert!(
             p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
                 .is_err()
