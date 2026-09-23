@@ -242,15 +242,18 @@ pub enum VmCommand {
     },
     /// Open a shell in the VM, or run one command there. Not for deploying.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm ssh\n  tilo-vm vm ssh -- journalctl -b -p warning\n  tilo-vm vm ssh --raw -- touch /var/tmp/x"
+        after_help = "Examples:\n  tilo-vm vm ssh\n  tilo-vm vm ssh dev\n  tilo-vm vm ssh -- journalctl -b -p warning\n  tilo-vm vm ssh dev -- systemctl --failed\n  tilo-vm vm ssh --raw -- touch /var/tmp/x"
     )]
     Ssh {
         /// Run commands that look like deploys anyway.
         #[arg(long)]
         raw: bool,
-        #[arg(long)]
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+        #[arg(long, hide = true, conflicts_with = "name")]
         vm: Option<String>,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// The command to run, after `--`; without one, an interactive shell.
+        #[arg(last = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
     /// Is the VM up, reachable, and running a compatible daemon?
@@ -546,5 +549,36 @@ mod tests {
             matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
         );
         assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
+    }
+
+    fn vm_ssh(words: &[&str]) -> (Option<String>, Option<String>, Vec<String>) {
+        let mut line = vec!["tilo-vm", "vm", "ssh"];
+        line.extend_from_slice(words);
+        match Cli::try_parse_from(line).unwrap().command {
+            Some(Command::Vm(VmCommand::Ssh {
+                name, vm, command, ..
+            })) => (name, vm, command),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn vm_ssh_takes_the_vm_like_every_other_vm_command() {
+        let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            vm_ssh(&["probe", "--", "true"]),
+            (Some("probe".into()), None, words(&["true"]))
+        );
+        assert_eq!(
+            vm_ssh(&["--", "journalctl", "-b"]),
+            (None, None, words(&["journalctl", "-b"]))
+        );
+        assert_eq!(vm_ssh(&[]), (None, None, vec![]));
+        assert_eq!(
+            vm_ssh(&["--vm", "ci", "--", "true"]),
+            (None, Some("ci".into()), words(&["true"]))
+        );
+        // A command needs `--`, so a VM name is never run as one.
+        assert!(Cli::try_parse_from(["tilo-vm", "vm", "ssh", "probe", "true"]).is_err());
     }
 }

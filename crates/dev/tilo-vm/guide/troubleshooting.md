@@ -16,8 +16,10 @@ before that needs the same step. The error prints the exact command;
 is older, `tilo-vm vm upgrade`; if `tilo-vm` is older, rebuild it with
 `cargo install --locked --path crates/dev/tilo-vm`.
 
-**No tilo-vmd / no tilo-control.** The VM runs a production image. Move it to
-a dev image: `tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>`.
+**No tilo-vmd / no tilo-control.** The VM runs a production image (or any
+non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
+`vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
+Move it to a dev image: `tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>`.
 
 **Session is failed or inactive.** `tilo-vm logs`, then
 `tilo-vm slot restart`. A bad build usually shows in the first lines;
@@ -59,9 +61,13 @@ dispatch it with fgj if you may, or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
 interrupted download resumes when you rerun the command.
 
-**No hypervisor.** `tilo-vm doctor` names what is missing (virsh,
-virt-install, `qemu:///session`, `/dev/kvm`; UTM's `utmctl`; Hyper-V) and the
-install line for your host.
+**No hypervisor.** `tilo-vm doctor` names what is missing (virsh, qemu-img,
+passt, `/dev/kvm`, a `qemu:///session` whose `virsh capabilities` lists a KVM
+guest; UTM's `utmctl`; Hyper-V) and the install line for your host.
+virt-install is not used. If `virsh --connect qemu:///session capabilities`
+fails, doctor quotes virsh's error: it means libvirt's QEMU driver
+(`virtqemud`, or `libvirtd`) does not start for your user. Libvirt's storage
+driver is never needed.
 
 **The VM cannot build.** Its image lacks cargo, rsync or python3 (`tilo-vm
 status` shows where builds run). `tilo-vm vm upgrade` to a current dev image;

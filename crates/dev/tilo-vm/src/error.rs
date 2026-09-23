@@ -527,7 +527,9 @@ mod tests {
             CliError::NoHypervisor(Missing {
                 adapter: "libvirt".into(),
                 detail: "virsh not on PATH".into(),
-                fix: "sudo dnf install libvirt-daemon-kvm virt-install virt-manager".into(),
+                fix:
+                    "sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt"
+                        .into(),
             }),
             CliError::ImageNotFound { path: "x".into() },
             CliError::DiskExists { path: "x".into() },
