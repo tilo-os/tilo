@@ -2923,12 +2923,15 @@ fn elide_to_width_ellipsizes_and_actually_fits() {
     let full = "Team standup with the whole design org";
     // Given room for the whole string, it comes back untouched (no ellipsis).
     let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
-    assert_eq!(elide_to_width(&mut tr, full, 11.0, roomy), full);
+    assert_eq!(
+        tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(roomy)),
+        full
+    );
     // Under a tight budget it must ellipsize AND the result must measure
     // within the budget — proving the cut is width-driven, not a fixed
     // character count that could still overflow.
     let tight = 60.0;
-    let cut = elide_to_width(&mut tr, full, 11.0, tight);
+    let cut = tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(tight));
     assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
     assert!(cut.chars().count() < full.chars().count());
     assert!(
@@ -2967,7 +2970,7 @@ fn week_event_titles_are_ellipsized_not_hard_sliced() {
         .map(|e| e.title.clone())
         .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
         .expect("demo has a title too long for a narrow week column");
-    let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
+    let drawn = tr.elide_to_width(&long, 11.0, ui::num::f32_of_f64(block_text_w));
     assert!(
         drawn.ends_with('…'),
         "narrow week title ellipsized: {drawn:?}"

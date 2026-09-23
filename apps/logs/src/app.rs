@@ -1041,37 +1041,6 @@ impl Metrics {
     }
 }
 
-/// Trim `s` with a trailing ellipsis until it fits `max_w` px at `size`.
-fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let measure = |tr: &mut TextRenderer, t: &str| {
-        if mono {
-            tr.measure_styled(t, size, None, TextWeight::Regular, false, true)
-                .0
-        } else {
-            tr.measure(t, size, None).0
-        }
-    };
-    if f64::from(measure(tr, s)) <= max_w {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let full = f64::from(measure(tr, s));
-    let mut keep = (((max_w / full) * chars.len() as f64) as usize).min(chars.len());
-    loop {
-        if keep == 0 {
-            return "…".to_string();
-        }
-        let cand: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
-        if f64::from(measure(tr, &cand)) <= max_w {
-            return cand;
-        }
-        keep -= 1;
-    }
-}
-
 impl LogsApp {
     fn draw_header(
         &self,
@@ -1619,7 +1588,7 @@ impl LogsApp {
         );
         // The value stacks on the caption's measured line (16 px at 1×).
         let value_top = rect.y0 + 4.0 + m.line_h(ts(tr, theme.tokens.typography.scale.xs)) - 0.5;
-        let val = elide(tr, label, sz, rect.width() - 38.0, false);
+        let val = tr.elide_to_width(label, sz, ui::num::f32_of_f64(rect.width() - 38.0));
         text_at(
             tr,
             scene,
@@ -1986,7 +1955,8 @@ impl LogsApp {
             if !cols.compact {
                 // Unit is promoted on desktop; compact rows reserve that
                 // width for the message and expose the unit in detail/a11y.
-                let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
+                let unit_shown =
+                    tr.elide_to_width(e.unit_short(), tsz, ui::num::f32_of_f64(cols.unit_w - 6.0));
                 text_at(
                     tr,
                     scene,
@@ -2001,7 +1971,7 @@ impl LogsApp {
                 );
             }
             // message
-            let msg_shown = elide(tr, &e.message, tsz, cols.msg_w, false);
+            let msg_shown = tr.elide_to_width(&e.message, tsz, ui::num::f32_of_f64(cols.msg_w));
             let msg_c = if is_sel {
                 theme.text_primary
             } else {
@@ -2164,7 +2134,7 @@ impl LogsApp {
 
         // Unit title.
         let title_sz = ts(tr, theme.tokens.typography.scale.lg);
-        let title = elide(tr, &e.unit, title_sz, inner_w, false);
+        let title = tr.elide_to_width(&e.unit, title_sz, ui::num::f32_of_f64(inner_w));
         text_at(
             tr,
             scene,
@@ -2279,7 +2249,7 @@ impl LogsApp {
                 TextWeight::Semibold,
                 true,
             );
-            let val = elide(tr, &v, vsz, inner_w - key_w - 8.0, false);
+            let val = tr.elide_to_width(&v, vsz, ui::num::f32_of_f64(inner_w - key_w - 8.0));
             text_at(
                 tr,
                 scene,
@@ -3262,7 +3232,7 @@ impl LogsApp {
             } else {
                 theme.text_primary
             };
-            let shown = elide(tr, label, sz, irect.width() - 30.0, false);
+            let shown = tr.elide_to_width(label, sz, ui::num::f32_of_f64(irect.width() - 30.0));
             text_at(
                 tr,
                 scene,

@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonFace;
 use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
@@ -475,7 +475,11 @@ impl DiffView {
         match line.kind {
             DiffLineKind::Hunk => {
                 let header = match text_limit {
-                    Some(limit) => draw::elide_mono(tr, &line.content, FONT, limit - content_x),
+                    Some(limit) => tr.elide_to_width_style(
+                        &line.content,
+                        ui::num::f32_of_f64(limit - content_x),
+                        &TextStyle::new(FONT).with_family(FontChoice::Monospace),
+                    ),
                     None => line.content.clone(),
                 };
                 draw::mono(scene, tr, t, &header, FONT, c.semantic.info, content_x, ty);
@@ -985,7 +989,11 @@ mod tests {
         let content_x = viewport.x0 + m.gutter_w;
         let limit = toggle.rect.x0 - f64::from(theme.tokens.spacing.s2);
         let header = &d.lines[0].content;
-        let elided = draw::elide_mono(&mut tr, header, FONT, limit - content_x);
+        let elided = tr.elide_to_width_style(
+            header,
+            ui::num::f32_of_f64(limit - content_x),
+            &TextStyle::new(FONT).with_family(FontChoice::Monospace),
+        );
         assert!(
             elided.ends_with('\u{2026}'),
             "header {header:?} should elide at 390px"

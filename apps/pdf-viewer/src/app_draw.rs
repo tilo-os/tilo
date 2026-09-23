@@ -86,33 +86,6 @@ fn vcenter(rect: Rect, text_h: f32) -> f64 {
     rect.y0 + (rect.height() - f64::from(text_h)) / 2.0
 }
 
-/// Truncate `text` with an ellipsis so it fits within `max` px on one line.
-/// `weight` must be the weight the caller paints with: a name measured Regular
-/// but drawn Semibold advances wider and overran the bound it was cut to.
-fn truncate_to_width(
-    tr: &mut TextRenderer,
-    text: &str,
-    size: f32,
-    max: f32,
-    weight: TextWeight,
-) -> String {
-    if tr.measure_weighted(text, size, None, weight).0 <= max {
-        return text.to_string();
-    }
-    let mut kept = String::new();
-    for ch in text.chars() {
-        let mut probe = kept.clone();
-        probe.push(ch);
-        probe.push('…');
-        if tr.measure_weighted(&probe, size, None, weight).0 > max {
-            break;
-        }
-        kept.push(ch);
-    }
-    kept.push('…');
-    kept
-}
-
 /// The type-scale steps as the *nominal* sizes this app hands its renderer.
 ///
 /// Theme tokens arrive already multiplied by the accessibility text scale and
@@ -1015,8 +988,7 @@ impl PdfApp {
         // makes a small failure state resistant to pathological input).  The
         // complete diagnostic remains exposed in the assertive accessibility
         // node and in `load_error` for copy/support workflows.
-        let shown_sub = truncate_to_width(
-            tr,
+        let shown_sub = tr.elide_to_width_weighted(
             sub,
             sub_px,
             (canvas.width() - 80.0) as f32,
@@ -2534,8 +2506,7 @@ impl PdfApp {
             hdr.avatar_c,
             hdr.avatar_radius,
         );
-        let name = truncate_to_width(
-            tr,
+        let name = tr.elide_to_width_weighted(
             &cm.author,
             self.type_px.sm,
             hdr.name_max,

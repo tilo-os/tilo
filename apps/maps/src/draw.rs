@@ -279,7 +279,7 @@ pub fn text_clip(
     color: Color,
     max_w: f64,
 ) {
-    let s = ellipsize(tr, s, size, max_w);
+    let s = tr.elide_to_width(s, size, ui::num::f32_of_f64(max_w));
     tr.draw_text(
         scene,
         &s,
@@ -349,23 +349,4 @@ pub fn text_center(
 /// Measure text width.
 pub fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
     f64::from(tr.measure(s, size, None).0)
-}
-
-/// Hard-truncate `s` with an ellipsis so it fits within `max_w` at `size`.
-pub fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if measure_w(tr, s, size) <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        let trial = format!("{out}{ch}…");
-        if measure_w(tr, &trial, size) > max_w {
-            break;
-        }
-        out.push(ch);
-    }
-    // The ellipsis is appended either way — even a first character that
-    // already overflows still yields a visible truncation marker.
-    out.push('…');
-    out
 }

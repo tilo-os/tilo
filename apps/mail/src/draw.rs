@@ -67,20 +67,7 @@ pub fn elide(
     if max_w <= 1.0 {
         return String::new();
     }
-    let (w, _) = tr.measure_weighted(text, size, None, weight);
-    if f64::from(w) <= max_w {
-        return text.to_string();
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while !chars.is_empty() {
-        chars.pop();
-        let cand = format!("{}…", chars.iter().collect::<String>().trim_end());
-        let (cw, _) = tr.measure_weighted(&cand, size, None, weight);
-        if f64::from(cw) <= max_w {
-            return cand;
-        }
-    }
-    "…".to_string()
+    tr.elide_to_width_weighted(text, size, ui::num::f32_of_f64(max_w), weight)
 }
 
 /// Deterministic accent colour for an address' initials disc.

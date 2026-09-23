@@ -805,7 +805,7 @@ impl OfflinePanel {
             || "Download current view".to_string(),
             |pick| format!("Download {}", pick.name),
         );
-        let label = draw::ellipsize(text, &label, 13.0, button_width - 2.0 * s3);
+        let label = text.elide_to_width(&label, 13.0, ui::num::f32_of_f64(button_width - 2.0 * s3));
         Button::paint(
             scene,
             transform,

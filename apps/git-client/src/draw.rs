@@ -230,41 +230,6 @@ pub fn pill_width(tr: &mut TextRenderer, label: &str, size: f32) -> f64 {
     f64::from(tw) + pill_pad() * 2.0
 }
 
-/// Truncate monospace `s` to fit `max_width` at `size`, appending an ellipsis
-/// when anything was dropped — the mono counterpart of
-/// [`TextRenderer::elide_to_width`], measured with the same styled path
-/// [`mono`] paints with.
-pub fn elide_mono(tr: &mut TextRenderer, s: &str, size: f32, max_width: f64) -> String {
-    const ELLIPSIS: &str = "\u{2026}";
-    if s.is_empty() || max_width <= 0.0 {
-        return String::new();
-    }
-    if f64::from(mono_width(tr, s, size)) <= max_width {
-        return s.to_string();
-    }
-    let ell_w = f64::from(mono_width(tr, ELLIPSIS, size));
-    if ell_w > max_width {
-        return ELLIPSIS.to_string();
-    }
-    let budget = max_width - ell_w;
-    let mut best = String::new();
-    let mut candidate = String::new();
-    for ch in s.chars() {
-        candidate.push(ch);
-        if f64::from(mono_width(tr, &candidate, size)) <= budget {
-            best.push(ch);
-        } else {
-            break;
-        }
-    }
-    // Trim the space before the ellipsis, as the toolkit's sans-serif
-    // elision does, so `impl Scene …` and `impl Scene…` never sit side by side.
-    let trimmed = best.trim_end().len();
-    best.truncate(trimmed);
-    best.push_str(ELLIPSIS);
-    best
-}
-
 /// How a [`pill`] closes its edge (HIG §9.5 rest edges).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PillEdge {

@@ -3811,10 +3811,10 @@ impl CameraApp {
         let icon_r = Rect::new(icx - 24.0, icy - 24.0, icx + 24.0, icy + 24.0);
         p::icon(scene, t, icon, icon_r, icon_col, 2.0);
         let ty = panel.y0 + 116.0;
-        let title = ellipsize(tr, title, 16.0, panel.width() - 24.0);
+        let title = tr.elide_to_width(title, 16.0, ui::num::f32_of_f64(panel.width() - 24.0));
         p::text_center(scene, tr, icx, ty, &title, 16.0, title_col);
         if let Some(sub) = subtitle {
-            let sub = ellipsize(tr, sub, 12.5, panel.width() - 24.0);
+            let sub = tr.elide_to_width(sub, 12.5, ui::num::f32_of_f64(panel.width() - 24.0));
             p::text_center(scene, tr, icx, ty + 24.0, &sub, 12.5, sub_col);
         }
         EmptyStateLayout {
@@ -5376,8 +5376,9 @@ impl CameraApp {
     ) {
         let colors = &theme.tokens.colors;
         let inner = (max_width - 32.0).max(40.0);
-        let title = ellipsize(tr, title, 15.0, inner);
-        let subtitle = (!subtitle.is_empty()).then(|| ellipsize(tr, subtitle, 11.5, inner));
+        let title = tr.elide_to_width(title, 15.0, ui::num::f32_of_f64(inner));
+        let subtitle = (!subtitle.is_empty())
+            .then(|| tr.elide_to_width(subtitle, 11.5, ui::num::f32_of_f64(inner)));
         let tw = f64::from(p::text_w(tr, &title, 15.0));
         let sw = subtitle
             .as_deref()
@@ -5629,11 +5630,10 @@ impl CameraApp {
             19.0,
             white(),
         );
-        let hint = ellipsize(
-            tr,
+        let hint = tr.elide_to_width(
             "Choose a QR or barcode image from this device",
             12.5,
-            (content.width() - 24.0).max(120.0),
+            ui::num::f32_of_f64((content.width() - 24.0).max(120.0)),
         );
         p::text_center(
             scene,
@@ -5758,7 +5758,11 @@ impl CameraApp {
             white(),
         );
         let summ = s.kind.summary(&s.raw);
-        let summ = ellipsize(tr, &summ, summary_size, card.x1 - tx - 40.0);
+        let summ = tr.elide_to_width(
+            &summ,
+            summary_size,
+            ui::num::f32_of_f64(card.x1 - tx - 40.0),
+        );
         p::text(
             scene,
             tr,
@@ -5892,7 +5896,11 @@ impl CameraApp {
                 p::alpha(c.accent[6], 0.95),
                 1.8,
             );
-            let summ = ellipsize(tr, &kind.summary(&entry.raw), 13.0, row.width() - 44.0);
+            let summ = tr.elide_to_width(
+                &kind.summary(&entry.raw),
+                13.0,
+                ui::num::f32_of_f64(row.width() - 44.0),
+            );
             let summ_top = row.center().y - block_h / 2.0;
             p::text(scene, tr, row.x0 + 36.0, summ_top, &summ, 13.0, white());
             p::text(
@@ -6425,7 +6433,7 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let large_type = theme.text_scale >= 1.5;
         let label = if large_type {
-            ellipsize(tr, label, 14.0, row.width() - 36.0)
+            tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(row.width() - 36.0))
         } else {
             label.to_string()
         };
@@ -6480,7 +6488,7 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let large_type = theme.text_scale >= 1.5;
         let label = if large_type {
-            ellipsize(tr, label, 14.0, row.width() - 36.0)
+            tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(row.width() - 36.0))
         } else {
             label.to_string()
         };
@@ -6578,23 +6586,6 @@ impl CameraApp {
         self.segmented(scene, t, tr, theme, seg, items);
         row.y1
     }
-}
-
-/// Truncate `s` with an ellipsis so it fits in `max_w` pixels at `size`.
-fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if f64::from(p::text_w(tr, s, size)) <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        let trial = format!("{out}{ch}…");
-        if f64::from(p::text_w(tr, &trial, size)) > max_w {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
 }
 
 /// Test-only accessors that let sibling modules (`crate::actions` tests) drive
