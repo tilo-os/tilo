@@ -122,6 +122,7 @@ members = [
     "crates/dev/ui-graph",
 
     # Doc
+    "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-wit",
     "crates/doc/qdoc",

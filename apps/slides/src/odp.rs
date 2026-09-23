@@ -23,8 +23,10 @@
 )]
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use std::path::Path;
+
+use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 
 use crate::model::{
     Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
@@ -41,9 +43,11 @@ const MIME: &str = "application/vnd.oasis.opendocument.presentation";
 /// Every imported office package is checked before XML parsing or media
 /// extraction.  These limits bound both deliberately hostile archives and a
 /// mistaken attempt to open an unrelated disk image as a presentation.
-pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 4_096;
-pub(crate) const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
-pub(crate) const MAX_ARCHIVE_MEMBER_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const ARCHIVE_LIMITS: ZipLimits = ZipLimits {
+    max_parts: 4_096,
+    max_part_bytes: 32 * 1024 * 1024,
+    max_total_bytes: 128 * 1024 * 1024,
+};
 pub(crate) const MAX_XML_MEMBER_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_IMPORTED_PICTURE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_IMPORTED_TEXT_CHARS: usize = 100_000;
@@ -365,10 +369,8 @@ fn resolve_entity(r: &quick_xml::events::BytesRef) -> Option<char> {
 /// Returns an error if `bytes` isn't a readable ZIP archive, if it has no
 /// `content.xml` entry, or if `content.xml` parses to zero slides.
 pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    validate_archive(&mut zip)?;
-    let content = read_zip_text(&mut zip, "content.xml")?;
+    let mut zip = open_package(bytes)?;
+    let content = read_package_xml(&mut zip, "content.xml")?;
     let mut deck = parse_content(&content).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml")
     })?;
@@ -392,67 +394,42 @@ pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     Ok(deck)
 }
 
-pub(crate) fn validate_archive<R: Read + std::io::Seek>(
-    zip: &mut zip::ZipArchive<R>,
-) -> std::io::Result<()> {
-    if zip.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "presentation archive has too many entries",
-        ));
-    }
-    let mut total = 0_u64;
-    for index in 0..zip.len() {
-        let file = zip
-            .by_index(index)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        let size = file.size();
-        if size > MAX_ARCHIVE_MEMBER_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "presentation archive member is too large",
-            ));
-        }
-        total = total.checked_add(size).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "presentation archive is too large",
-            )
-        })?;
-        if total > MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "presentation archive expands beyond the allowed limit",
-            ));
-        }
-    }
-    Ok(())
+/// An imported office package (`.odp`/`.pptx`), read under [`ARCHIVE_LIMITS`].
+pub(crate) type Package<'a> = BoundedArchive<Cursor<&'a [u8]>>;
+
+/// Opens an untrusted presentation package and refuses it before any XML
+/// parsing or media extraction if its entry count or declared sizes breach
+/// [`ARCHIVE_LIMITS`].
+pub(crate) fn open_package(bytes: &[u8]) -> std::io::Result<Package<'_>> {
+    let mut zip = BoundedArchive::from_bytes(bytes, ARCHIVE_LIMITS).map_err(package_error)?;
+    zip.check_declared_sizes().map_err(package_error)?;
+    Ok(zip)
 }
 
-fn read_zip_text<R: Read + std::io::Seek>(
-    zip: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> std::io::Result<String> {
-    let file = zip
-        .by_name(name)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    if file.size() > MAX_XML_MEMBER_BYTES as u64 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "presentation XML member is too large",
-        ));
-    }
-    let mut bytes = Vec::with_capacity(file.size().min(64 * 1024) as usize);
-    file.take((MAX_XML_MEMBER_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_XML_MEMBER_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "presentation XML member expands beyond the allowed limit",
-        ));
-    }
-    String::from_utf8(bytes)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+/// Reads an XML part of a presentation package: bounded to
+/// [`MAX_XML_MEMBER_BYTES`] and rejected if it declares a DTD.
+pub(crate) fn read_package_xml(zip: &mut Package<'_>, name: &str) -> std::io::Result<String> {
+    zip.read_xml(name, MAX_XML_MEMBER_BYTES as u64)
+        .map_err(package_error)
+}
+
+/// Reads an embedded picture, bounded to [`MAX_IMPORTED_PICTURE_BYTES`].
+/// A missing or oversized picture is skipped, not an import failure.
+pub(crate) fn read_package_picture(zip: &mut Package<'_>, name: &str) -> Option<Vec<u8>> {
+    zip.read(name, MAX_IMPORTED_PICTURE_BYTES as u64).ok()
+}
+
+fn package_error(error: ZipError) -> std::io::Error {
+    let message = match &error {
+        ZipError::TooManyEntries { .. } => "presentation archive has too many entries",
+        ZipError::PartTooLarge { .. } => "presentation archive member is too large",
+        ZipError::PartInflatesTooLarge { .. } => {
+            "presentation archive member expands beyond the allowed limit"
+        }
+        ZipError::TotalTooLarge { .. } => "presentation archive expands beyond the allowed limit",
+        _ => return error.into(),
+    };
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
 pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
@@ -478,26 +455,13 @@ pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
     Ok(())
 }
 
-fn extract_picture<R: Read + std::io::Seek>(
-    zip: &mut zip::ZipArchive<R>,
-    href: &str,
-) -> Option<String> {
+fn extract_picture(zip: &mut Package<'_>, href: &str) -> Option<String> {
     if !href.starts_with("Pictures/")
         || Path::new(href).file_name()?.to_str()? != href.get("Pictures/".len()..)?
     {
         return None;
     }
-    let file = zip.by_name(href).ok()?;
-    if file.size() > MAX_IMPORTED_PICTURE_BYTES as u64 {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(file.size().min(64 * 1024) as usize);
-    file.take((MAX_IMPORTED_PICTURE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
-        return None;
-    }
+    let bytes = read_package_picture(zip, href)?;
     crate::assets::store_asset(&bytes)
 }
 
@@ -755,6 +719,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::{ElementKind, seed_deck};
+    use std::io::Read;
 
     /// The core requirement: a deck written to `.odp` and read back is
     /// byte-for-byte the same model (geometry, text, colours, z-order, every

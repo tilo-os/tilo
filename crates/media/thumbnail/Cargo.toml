@@ -27,8 +27,8 @@ video = ["dep:media", "media/decode"]
 atomic-file = { path = "../../system/atomic-file" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
-# EPUB cover extraction from ZIP/OPF containers.
-zip.workspace = true
+# EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.
+bounded-zip = { path = "../../doc/bounded-zip" }
 roxmltree.workspace = true
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
@@ -43,6 +43,8 @@ media = { path = "../core", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+# Builds EPUB fixtures in tests.
+zip.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
 [lints]

@@ -24,7 +24,9 @@
 )]
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
+
+use crate::odp::Package;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -118,14 +120,14 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
 }
 
 pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
-    crate::odp::validate_archive(&mut zip)?;
+    let mut zip = crate::odp::open_package(bytes)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
         .and_then(|x| first_text(&x, b"dc:title"))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Imported PowerPoint".into());
-    let mut names: Vec<String> = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+    let mut names: Vec<String> = zip
+        .file_names()
+        .map(str::to_string)
         .filter(|n| {
             n.starts_with("ppt/slides/slide")
                 && std::path::Path::new(n)
@@ -388,11 +390,7 @@ impl Default for Pending {
     }
 }
 
-fn parse_slide(
-    xml: &str,
-    rels: &HashMap<String, String>,
-    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
-) -> Slide {
+fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>) -> Slide {
     let mut slide = Slide::new(Layout::Blank);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -565,7 +563,7 @@ fn push_pending(
     slide: &mut Slide,
     c: Pending,
     rels: &HashMap<String, String>,
-    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    zip: &mut Package<'_>,
 ) {
     let w = if c.w > 0.0 { c.w } else { 1.0 };
     let h = if c.h > 0.0 { c.h } else { 1.0 };
@@ -574,20 +572,9 @@ fn push_pending(
             return;
         };
         let path = format!("ppt/{}", target.trim_start_matches("../"));
-        let Ok(f) = zip.by_name(&path) else {
+        let Some(bytes) = crate::odp::read_package_picture(zip, &path) else {
             return;
         };
-        if f.size() > crate::odp::MAX_IMPORTED_PICTURE_BYTES as u64 {
-            return;
-        }
-        let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
-        if f.take((crate::odp::MAX_IMPORTED_PICTURE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() > crate::odp::MAX_IMPORTED_PICTURE_BYTES
-        {
-            return;
-        }
         let Some(src) = crate::odp::cache_imported_picture(&bytes) else {
             return;
         };
@@ -704,21 +691,8 @@ fn parse_notes(xml: &str) -> String {
     notes
 }
 
-fn read_zip_text<R: Read + std::io::Seek>(
-    z: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Option<String> {
-    let f = z.by_name(name).ok()?;
-    if f.size() > crate::odp::MAX_XML_MEMBER_BYTES as u64 {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
-    f.take((crate::odp::MAX_XML_MEMBER_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() <= crate::odp::MAX_XML_MEMBER_BYTES)
-        .then(|| String::from_utf8(bytes).ok())
-        .flatten()
+fn read_zip_text(z: &mut Package<'_>, name: &str) -> Option<String> {
+    crate::odp::read_package_xml(z, name).ok()
 }
 fn parse_rels(xml: &str) -> HashMap<String, String> {
     let mut r = Reader::from_str(xml);
@@ -948,7 +922,7 @@ mod tests {
         };
 
         let bytes = write_pptx(&deck).expect("pptx export");
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let accent_xml = read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
         let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
         assert!(
@@ -977,7 +951,7 @@ mod tests {
         };
 
         let bytes = write_pptx(&deck).expect("pptx export");
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
         let notes =
             read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml").expect("notes slide");
@@ -985,7 +959,9 @@ mod tests {
         assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
         assert!(notes.contains("Open with the decision."));
         assert!(
-            archive.by_name("ppt/notesSlides/notesSlide2.xml").is_err(),
+            !archive
+                .file_names()
+                .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
             "slides without notes do not gain empty note pages"
         );
         drop(archive);

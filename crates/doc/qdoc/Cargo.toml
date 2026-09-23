@@ -11,6 +11,8 @@ description = "CRDT-native canonical document model and format-provider API for 
 [dependencies]
 automerge.workspace = true
 blake3.workspace = true
+# Zip-bomb and XXE defence for every office package codec.
+bounded-zip = { path = "../bounded-zip" }
 pulldown-cmark = { version = "0.12", default-features = false }
 zip.workspace = true
 quick-xml.workspace = true
