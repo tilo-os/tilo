@@ -7998,7 +7998,7 @@ impl SlidesApp {
             Widget::set_focus(&mut self.fill_picker, true);
         }
         if let Some(col) = self.fill_picker.take_changed() {
-            self.set_sel_str(routed.state, "fill", &crate::model::color_to_hex(col));
+            self.set_sel_str(routed.state, "fill", &ui::color::to_hex(col));
         }
         true
     }

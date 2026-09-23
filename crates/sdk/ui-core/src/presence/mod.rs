@@ -1443,29 +1443,14 @@ impl PresenceCtx {
     }
 }
 
-/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
-/// Alpha is discarded; leading `#` is optional; `None` for anything unparseable.
+/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple
+/// (see [`crate::color::parse_hex`]). Alpha is discarded; `None` for anything
+/// unparseable.
 pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
-    let s = hex.trim_start_matches('#');
-    let bytes = s.as_bytes();
-    match bytes.len() {
-        3 => {
-            let b0 = *bytes.first()?;
-            let b1 = *bytes.get(1)?;
-            let b2 = *bytes.get(2)?;
-            let r = u8::from_str_radix(std::str::from_utf8(&[b0, b0]).ok()?, 16).ok()?;
-            let g = u8::from_str_radix(std::str::from_utf8(&[b1, b1]).ok()?, 16).ok()?;
-            let b = u8::from_str_radix(std::str::from_utf8(&[b2, b2]).ok()?, 16).ok()?;
-            Some((r, g, b))
-        }
-        6 | 8 => {
-            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-            Some((r, g, b))
-        }
-        _ => None,
-    }
+    crate::color::parse_hex(hex).map(|c| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b)
+    })
 }
 
 #[cfg(test)]
