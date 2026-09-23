@@ -291,6 +291,22 @@ pub struct TabBar {
     /// derived from its glyph rect at hit-test time (see
     /// [`Self::action_hit_rect`]).
     min_pointer_target: f64,
+    /// Last theme fast-duration, for animation scheduling outside `draw`.
+    drag_lift_duration: Duration,
+    /// Window groups paint the lifted handle together with the attached app
+    /// preview in the floating pass, above strip clips. Standalone tab bars
+    /// keep the legacy inline overlay for their own tests/embedders.
+    drag_overlay_owned_by_parent: bool,
+}
+
+/// Geometry shared by the tab handle and the window-content preview attached
+/// to it while the pointer is carrying a tab. Kept independent of paint so a
+/// parent can render the complete lifted object above strip clips.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TabDragVisual {
+    pub tab_id: u64,
+    pub lifted_handle: Rect,
+    pub lift_progress: f64,
 }
 
 impl TabBar {
@@ -350,6 +366,8 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
+            drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
