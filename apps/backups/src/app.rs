@@ -453,15 +453,9 @@ impl BackupsApp {
         ) else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-            if fs::write(&temporary, bytes).is_ok() {
-                let _ = fs::rename(temporary, path);
-            }
+            let _ = atomic_file::write_creating_parent(&path, &bytes);
         }
     }
 
