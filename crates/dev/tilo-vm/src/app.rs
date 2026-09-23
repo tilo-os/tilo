@@ -775,7 +775,12 @@ impl App {
         match command {
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
-            VmCommand::Ssh { raw, vm, command } => self.vm_ssh(vm.as_deref(), raw, &command),
+            VmCommand::Ssh {
+                raw,
+                name,
+                vm,
+                command,
+            } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
@@ -1207,6 +1212,14 @@ impl App {
         }
         let key = sshkey::key_path(&self.registry_path, &args.name);
         let root_key = sshkey::ensure(&mut self.runner, &key, &args.name)?;
+        // A new VM has new host keys: forget those of any earlier VM of this name.
+        let known_hosts = remote::known_hosts_path(&key.display().to_string());
+        match std::fs::remove_file(&known_hosts) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(CliError::io(format!("remove {known_hosts}"))(e));
+            }
+            _ => {}
+        }
         let entry = VmEntry {
             hypervisor: plan.choice.adapter.to_owned(),
             ssh: args.ssh,
