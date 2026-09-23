@@ -31,6 +31,7 @@ mod migration_store;
 mod migration_worker;
 pub mod model;
 mod nofollow;
+pub mod staging;
 mod strings;
 pub mod view;
 
