@@ -599,7 +599,7 @@ impl ImportApp {
             && self
                 .detail_pages
                 .get(&index)
-                .is_some_and(|page| page.next.is_none())
+                .is_some_and(|page| page.offset > 0 && page.next.is_none())
     }
 
     fn import_projection(&self) -> ImportProjection {
@@ -701,6 +701,68 @@ impl ImportApp {
         }
     }
 
+    /// A private status response for the local owner. The public resource
+    /// projection and Effect receipts remain path-free. The host refuses
+    /// directed View actions from remote actors (`private_view` in
+    /// `ui-core/src/app/actions.rs`), covered by its directed-view test.
+    fn local_status_value(&self) -> serde_json::Value {
+        let mut value = self.import_projection().value();
+        let source = self.source.as_ref().map(|path| path.display().to_string());
+        let destination = self.destination_parent.as_ref().map(|parent| {
+            self.source
+                .as_ref()
+                .and_then(|source| source.file_name())
+                .map_or_else(
+                    || parent.display().to_string(),
+                    |name| parent.join(name).display().to_string(),
+                )
+        });
+        value["local"] = serde_json::json!({
+            "source": source,
+            "destination": destination,
+            "status": self.status,
+        });
+        for (index, operation) in self.operations.iter().enumerate() {
+            value["operations"][index]["source"] = serde_json::json!(
+                operation
+                    .source()
+                    .ok()
+                    .map(|path| path.display().to_string())
+            );
+            value["operations"][index]["destination"] = serde_json::json!(
+                operation
+                    .destination()
+                    .ok()
+                    .map(|path| path.display().to_string())
+            );
+            if self.expanded_details.contains(&index) {
+                let preview = operation.issues().ok();
+                let issues = self
+                    .detail_pages
+                    .get(&index)
+                    .map_or_else(|| preview.as_deref().unwrap_or(&[]), |page| &page.issues);
+                for (number, (path, _)) in issues.iter().take(32).enumerate() {
+                    value["operations"][index]["issues"][number]["path"] =
+                        serde_json::json!(path.display().to_string());
+                }
+            }
+        }
+        if let Some(continuation) = &self.continuation {
+            for (index, folder) in continuation.folders.iter().enumerate() {
+                value["continuation"]["folders"][index]["source"] =
+                    serde_json::json!(folder.source().ok().map(|path| path.display().to_string()));
+                value["continuation"]["folders"][index]["destination"] = serde_json::json!(
+                    folder
+                        .destination()
+                        .ok()
+                        .flatten()
+                        .map(|path| path.display().to_string())
+                );
+            }
+        }
+        value
+    }
+
     fn refuse_semantic<T>(&mut self, message: String) -> Result<T, String> {
         self.status.clone_from(&message);
         self.status_is_error = true;
@@ -729,7 +791,7 @@ impl ImportApp {
         let command = match operation {
             ImportOperation::Observe => {
                 return Ok(tilo_actions::ActionOutput {
-                    value: Some(self.import_projection().value()),
+                    value: Some(self.local_status_value()),
                     resources: Vec::new(),
                 });
             }
@@ -1837,7 +1899,7 @@ impl ImportApp {
         } else if self
             .detail_pages
             .get(&index)
-            .is_some_and(|page| page.next.is_none())
+            .is_some_and(|page| page.offset > 0 && page.next.is_none())
         {
             (
                 "First issue page",
@@ -2617,7 +2679,13 @@ mod tests {
         let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
         assert!(!public_error.contains(&source_text));
         assert!(!public_error.contains(&destination_text));
+        assert!(public_error.contains("read-status"), "{public_error}");
         assert!(app.status.contains(&collision.display().to_string()));
+        assert!(
+            observe_import(&mut app).unwrap()["local"]["status"]
+                .as_str()
+                .is_some_and(|status| status.contains(&collision.display().to_string()))
+        );
         fs::remove_dir(collision).unwrap();
         app.prepare_review().unwrap();
         let operation_id = app.operations[0].id().to_string();
@@ -2647,6 +2715,56 @@ mod tests {
             .join(" ");
         assert!(!exposed.contains(&source_text));
         assert!(!exposed.contains(&destination_text));
+    }
+
+    #[test]
+    fn local_read_status_names_reviewed_endpoints_without_publishing_paths() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"private copy").unwrap();
+        let expected_source = source.display().to_string();
+        let expected_destination = destination_parent.join("source").display().to_string();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        let selected = observe_import(&mut app).unwrap();
+        assert_eq!(selected["local"]["source"], expected_source);
+        assert_eq!(selected["local"]["destination"], expected_destination);
+
+        app.prepare_review().unwrap();
+        let reviewed = observe_import(&mut app).unwrap();
+        assert_eq!(reviewed["operations"][0]["source"], expected_source);
+        assert_eq!(
+            reviewed["operations"][0]["destination"],
+            expected_destination
+        );
+        let public = app.import_projection().value().to_string();
+        assert!(!public.contains(&expected_source));
+        assert!(!public.contains(&expected_destination));
+    }
+
+    #[test]
+    fn local_read_status_names_continued_folder_endpoints() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"private copy").unwrap();
+        let expected_source = source.display().to_string();
+        let expected_destination = destination_parent.join("source").display().to_string();
+        let mut continuation = Continuation::capture(&[continuation_choice(&source)]).unwrap();
+        continuation.resolve(0, &destination_parent, true).unwrap();
+        app.continuation = Some(continuation);
+
+        let local = observe_import(&mut app).unwrap();
+        assert_eq!(
+            local["continuation"]["folders"][0]["source"],
+            expected_source
+        );
+        assert_eq!(
+            local["continuation"]["folders"][0]["destination"],
+            expected_destination
+        );
+        let public = app.import_projection().value().to_string();
+        assert!(!public.contains(&expected_source));
+        assert!(!public.contains(&expected_destination));
     }
 
     #[test]
@@ -2922,6 +3040,7 @@ mod tests {
         let observed = wait_for_public_issue_count(&mut app, 8);
         let issues = observed["operations"][0]["issues"].as_array().unwrap();
         assert_eq!(issues.len(), 8);
+        assert_eq!(issues[0]["path"], "Shortcut 32");
         assert!(issues.iter().all(|issue| {
             issue["message"]
                 .as_str()
@@ -2936,6 +3055,34 @@ mod tests {
             action(&operation, "next-issues").contract.availability,
             tilo_actions::Availability::Unavailable { .. }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_issues_action_is_unavailable_on_a_single_final_page() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("document.txt"), b"original").unwrap();
+        for index in 0..9 {
+            std::os::unix::fs::symlink(
+                source.join("document.txt"),
+                source.join(format!("link-{index}")),
+            )
+            .unwrap();
+        }
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        app.prepare_review().unwrap();
+        let start = action(&root_resource(&app).children[0], "start");
+        invoke_action(&mut app, &start).unwrap();
+        wait_terminal(&mut app);
+        let operation = root_resource(&app).children.remove(0);
+        invoke_action(&mut app, &action(&operation, "toggle-details")).unwrap();
+        wait_for_public_issue_count(&mut app, 9);
+
+        let observed = observe_import(&mut app).unwrap();
+        assert_eq!(observed["operations"][0]["next_issues_available"], false);
+        assert_eq!(observed["operations"][0]["first_issues_available"], false);
     }
 
     #[test]
