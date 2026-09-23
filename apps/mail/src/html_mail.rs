@@ -225,6 +225,13 @@ mod tests {
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
+        // Standard alphabet (`+`/`/`), padded.
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
+        assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
+        // A data URL is one token: no MIME-style line wrapping at 76 columns.
+        let long = base64_encode(&[0x5a_u8; 300]);
+        assert_eq!(long.len(), 400);
+        assert!(!long.contains(['\r', '\n']));
     }
 
     /// Test-only decoder to prove the data URL round-trips.
