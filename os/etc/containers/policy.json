@@ -11,6 +11,9 @@
           "signedIdentity": { "type": "matchRepository" }
         }
       ],
+      "code.podesta.ai/qos/tilo-vm": [
+        { "type": "reject" }
+      ],
       "code.podesta.ai/qos/tilo-dev": [
         { "type": "reject" }
       ]

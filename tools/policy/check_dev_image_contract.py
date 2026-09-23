@@ -2,7 +2,7 @@
 """Keep the dev image and the production image apart.
 
 os/Containerfile.dev builds the dev VM image FROM the production image: it adds
-an SSH server, `dev-overrides` binaries, tilo-control, tilo-devd and a build
+an SSH server, `dev-overrides` binaries, tilo-control, tilo-vmd and a build
 toolchain, and it is unsealed. Two ways that could leak into production:
 
 1. The dev image is published or tagged as a production image. So:
@@ -13,9 +13,9 @@ toolchain, and it is unsealed. Two ways that could leak into production:
      what os/Containerfile's builder stage installs, so it compiles with what
      the production builder of the same commit compiles with;
    * every script or workflow that builds os/Containerfile.dev may tag and push
-     it only under a `tilo-dev` name, never code.podesta.ai/qos/tilo or
+     it only under a `tilo-vm` name, never code.podesta.ai/qos/tilo or
      localhost/tilo;
-   * production container policy must reject code.podesta.ai/qos/tilo-dev, so a
+   * production container policy must reject code.podesta.ai/qos/tilo-vm, so a
      production machine never switches to a dev image.
 2. A production Containerfile builds or installs a dev-only piece: a dev-only
    component of os/components.toml (its layer, bins, packages or paths), a dev
@@ -36,7 +36,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
-DEV_REPOSITORY = "code.podesta.ai/qos/tilo-dev"
+DEV_REPOSITORY = "code.podesta.ai/qos/tilo-vm"
 RERUN = "python3 tools/policy/check_dev_image_contract.py   (or tools/policy/run.sh)"
 WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a session-driving socket and "
                "runs sshd; if it is ever tagged, pushed or installed as the production image, every "
@@ -44,7 +44,7 @@ WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a sess
 WHY_LEAK = ("production images are built from os/Containerfile* and must never contain dev-only "
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.
-DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-devd/data", "os/scripts/unseal-rootfs.py",
+DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-rootfs.py",
                "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev")
 PRODUCTION_NAME = re.compile(r"(?:code\.podesta\.ai/qos/tilo|localhost/tilo)(?=[:@\s\"']|$)")
 
@@ -185,7 +185,7 @@ def builders_of_dev_image(repo: Path) -> list[Path]:
 
 
 def check_dev_image_names(repo: Path) -> list[Finding]:
-    """Scripts and workflows that build the dev image tag and push only tilo-dev names."""
+    """Scripts and workflows that build the dev image tag and push only tilo-vm names."""
     findings: list[Finding] = []
     for path in builders_of_dev_image(repo):
         shown = rel(repo, path)
@@ -203,11 +203,11 @@ def check_dev_image_names(repo: Path) -> list[Finding]:
                 destinations.append(assignment.group(2))
             for destination in destinations:
                 value = destination.strip("\"'")
-                if PRODUCTION_NAME.search(value) and "tilo-dev" not in value:
+                if PRODUCTION_NAME.search(value):
                     findings.append(Finding(
                         f"{shown}:{number}", f"a file that builds os/Containerfile.dev names the "
                         f"production image {value!r} as a tag or push destination", WHY_FLAVOUR,
-                        "tag and push the dev image only as localhost/tilo-dev:<tag> or "
+                        "tag and push the dev image only as localhost/tilo-vm:<tag> or "
                         f"{DEV_REPOSITORY}:<tag>."))
     return findings
 

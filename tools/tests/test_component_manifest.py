@@ -140,10 +140,10 @@ class InstallerTests(unittest.TestCase):
         production = {c.name for c in installer.select_components(manifest, [], True)}
         dev = {c.name for c in installer.select_components(manifest, [], False, True)}
         self.assertIn("control", dev)
-        self.assertIn("devd", dev)
+        self.assertIn("vmd", dev)
         self.assertIn("shell", dev)
         self.assertNotIn("control", production)
-        self.assertNotIn("devd", production)
+        self.assertNotIn("vmd", production)
         self.assertIn("shell", production)
 
     def test_dev_cargo_plan_adds_dev_features(self):
@@ -151,7 +151,7 @@ class InstallerTests(unittest.TestCase):
         dev = installer.select_components(manifest, [], False, True)
         packages, bins, features = installer.cargo_plan(dev, True)
         self.assertIn("shell/dev-overrides", features)
-        self.assertEqual(set(bins), {"shell", "tilo-control", "tilo-devd"})
+        self.assertEqual(set(bins), {"shell", "tilo-control", "tilo-vmd"})
         _, _, production_features = installer.cargo_plan(dev, False)
         self.assertNotIn("shell/dev-overrides", production_features)
 

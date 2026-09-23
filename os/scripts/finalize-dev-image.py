@@ -6,12 +6,12 @@
 
 Run by os/Containerfile.dev as its last content step:
 
-* /usr/share/tilo-dev/base.json is what tilo-devd checks every imported layer
-  against (tilo_dev_protocol::BaseInfo): the production base image's digest,
+* /usr/share/tilo-vm/base.json is what tilo-vmd checks every imported layer
+  against (the protocol crate's BaseInfo): the production base image's digest,
   plus the in-image toolchain (`rustc --version`), its target triple and the
-  Cargo.lock hash, in the same form `tilo-dev` records in a layer's provenance.
+  Cargo.lock hash, in the same form `tilo-vm` records in a layer's provenance.
 * /etc/containers/policy.json lets the dev VM `bootc switch`/`upgrade` onto
-  code.podesta.ai/qos/tilo-dev, which is deliberately unsigned. Production
+  code.podesta.ai/qos/tilo-vm, which is deliberately unsigned. Production
   policy rejects that repository outright (os/etc/containers/policy.json), so
   this rewrites exactly that one scope and nothing else; the signed production
   repository keeps its sigstore requirement.
@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEV_REPOSITORY = "code.podesta.ai/qos/tilo-dev"
+DEV_REPOSITORY = "code.podesta.ai/qos/tilo-vm"
 PRODUCTION_REPOSITORY = "code.podesta.ai/qos/tilo"
 
 
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
              "production image")
 
     info = base_info(args.base_image, args.base_digest, args.cargo_lock)
-    target = root / "usr/share/tilo-dev/base.json"
+    target = root / "usr/share/tilo-vm/base.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(info, indent=2) + "\n")
 

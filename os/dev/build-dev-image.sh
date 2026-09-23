@@ -18,8 +18,8 @@
 #                     what ./os/build.sh produces). A CI image works too:
 #                       podman pull code.podesta.ai/qos/tilo:<tag>
 #                       TILO_DEV_BASE=code.podesta.ai/qos/tilo:<tag> ./os/dev/build-dev-image.sh
-#   TILO_DEV_IMAGE    tag for the dev image (default localhost/tilo-dev:latest);
-#                     must name tilo-dev, never the production image
+#   TILO_DEV_IMAGE    tag for the dev image (default localhost/tilo-vm:latest);
+#                     must name tilo-vm, never the production image
 #   TILO_DEV_DISK     0 builds the container only (default 1)
 #   TILO_OUTPUT       disk output root (default os/output/dev)
 #   TILO_BUILD_ARGS   extra `podman build` flags, e.g. --no-cache
@@ -39,11 +39,11 @@ export TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
 source "$_dev_dir/_common.sh"
 
 base="${TILO_DEV_BASE:-localhost/tilo:latest}"
-dev_image="${TILO_DEV_IMAGE:-localhost/tilo-dev:latest}"
+dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:latest}"
 case "$dev_image" in
-  localhost/tilo-dev:*|code.podesta.ai/qos/tilo-dev:*) ;;
-  *) die "TILO_DEV_IMAGE=$dev_image: the dev image may only be tagged localhost/tilo-dev:<tag> or
-  code.podesta.ai/qos/tilo-dev:<tag>. It runs sshd and dev-overrides binaries, so it must never
+  localhost/tilo-vm:*|code.podesta.ai/qos/tilo-vm:*) ;;
+  *) die "TILO_DEV_IMAGE=$dev_image: the dev image may only be tagged localhost/tilo-vm:<tag> or
+  code.podesta.ai/qos/tilo-vm:<tag>. It runs sshd and dev-overrides binaries, so it must never
   carry a production image name." ;;
 esac
 

@@ -80,9 +80,9 @@ class DevImageContractTests(unittest.TestCase):
         root = self.fixture()
         path = root / "os/etc/containers/policy.json"
         policy = json.loads(path.read_text())
-        del policy["transports"]["docker"]["code.podesta.ai/qos/tilo-dev"]
+        del policy["transports"]["docker"]["code.podesta.ai/qos/tilo-vm"]
         path.write_text(json.dumps(policy, indent=2))
-        self.assertIn("does not reject code.podesta.ai/qos/tilo-dev", "\n".join(self.findings(root)))
+        self.assertIn("does not reject code.podesta.ai/qos/tilo-vm", "\n".join(self.findings(root)))
 
     def test_dev_image_tagged_as_production_fails(self):
         root = self.fixture()
@@ -98,7 +98,7 @@ class DevImageContractTests(unittest.TestCase):
         root = self.fixture()
         script = root / "os/push-dev.sh"
         script.write_text("#!/bin/sh\n# builds os/Containerfile.dev\n"
-                          "podman push localhost/tilo-dev:x docker://code.podesta.ai/qos/tilo:main\n")
+                          "podman push localhost/tilo-vm:x docker://code.podesta.ai/qos/tilo:main\n")
         self.assertIn("os/push-dev.sh:3:", "\n".join(self.findings(root)))
 
     def test_snapshot_default_must_match_the_pin(self):
@@ -133,12 +133,12 @@ class FinalizeDevImageTests(unittest.TestCase):
         before = json.dumps(production["transports"]["docker"]["code.podesta.ai/qos/tilo"], sort_keys=True)
         dev = self.finalize.dev_policy(json.loads(json.dumps(production)))
         docker = dev["transports"]["docker"]
-        self.assertEqual(docker["code.podesta.ai/qos/tilo-dev"], [{"type": "insecureAcceptAnything"}])
+        self.assertEqual(docker["code.podesta.ai/qos/tilo-vm"], [{"type": "insecureAcceptAnything"}])
         self.assertEqual(json.dumps(docker["code.podesta.ai/qos/tilo"], sort_keys=True), before)
         self.assertEqual(dev["default"], production["default"])
 
     def test_a_base_that_already_admits_dev_images_is_refused(self):
-        policy = {"transports": {"docker": {"code.podesta.ai/qos/tilo-dev": [{"type": "insecureAcceptAnything"}]}}}
+        policy = {"transports": {"docker": {"code.podesta.ai/qos/tilo-vm": [{"type": "insecureAcceptAnything"}]}}}
         with self.assertRaises(SystemExit):
             self.finalize.dev_policy(policy)
 

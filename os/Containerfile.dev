@@ -5,9 +5,9 @@
 # NEVER A PRODUCTION IMAGE. It ships an SSH server, binaries built with the
 # `dev-overrides` feature (they honour a fixed lock-screen password and a
 # session-driving socket from the environment), the build toolchain and an
-# unsealed /usr. It is published only as code.podesta.ai/qos/tilo-dev, which
+# unsealed /usr. It is published only as code.podesta.ai/qos/tilo-vm, which
 # production policy rejects (os/etc/containers/policy.json), and built locally
-# as localhost/tilo-dev. tools/policy/check_dev_image_contract.py enforces
+# as localhost/tilo-vm. tools/policy/check_dev_image_contract.py enforces
 # that, and keeps everything this file adds out of os/Containerfile.
 #
 # Built FROM the production image of the same commit, so a dev VM runs
@@ -15,7 +15,7 @@
 #
 #   * The components that declare `dev_features` in os/components.toml (the
 #     compositor today) are rebuilt as release builds with those features. The
-#     dev-only components (`dev-*` layers), tilo-control and tilo-devd, are
+#     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
 #     built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * The production builder's toolchain, installed into the image. The binaries
@@ -25,9 +25,9 @@
 #     context), checked against it by the dev image contract, and installed from
 #     the same frozen RPM snapshot, so the compiler and -devel libraries cannot
 #     drift from the production builder's.
-#   * sshd (enabled), rsync, systemd-sysext, and tilo-devd's session unit
+#   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
-#     crates/dev/tilo-devd/data. vkms and uinput load at boot.
+#     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
 #   * The image is UNSEALED. A layer on the sealed image breaks the composefs
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
@@ -37,7 +37,7 @@
 #
 #     podman build -f os/Containerfile.dev \
 #         --build-arg BASE_IMAGE=code.podesta.ai/qos/tilo:<tag> \
-#         -t localhost/tilo-dev:latest .
+#         -t localhost/tilo-vm:latest .
 #
 # os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
 # production image and then writes a disk. The CI lane is
@@ -83,7 +83,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
 
-# sshd for `tilo-dev`, rsync for worktree sync, and the production builder's
+# sshd for `tilo-vm`, rsync for worktree sync, and the production builder's
 # packages. openssh-server is the one package the production image removes on
 # purpose (the runtime crypto policy forbids an SSH server there).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
@@ -151,12 +151,12 @@ RUN --network=none \
 FROM dev-toolchain AS dev
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
-COPY crates/dev/tilo-devd/data/72-vkms-seat.rules crates/dev/tilo-devd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
-COPY crates/dev/tilo-devd/data/tilo-dev-session@.service /usr/lib/systemd/system/tilo-dev-session@.service
-COPY crates/dev/tilo-devd/data/tilo-dev-vkms.conf /usr/lib/modprobe.d/tilo-dev-vkms.conf
+COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
+COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
 COPY os/dev-image/ /
 
-# base.json for tilo-devd's layer checks, the dev-only update policy and the
+# base.json for tilo-vmd's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.
 ARG BASE_IMAGE
 ARG TILO_BASE_DIGEST=
@@ -165,8 +165,8 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl enable sshd.service systemd-sysext.service \
-    && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-devd \
-    && /usr/bin/tilo-devd --version \
+    && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
+    && /usr/bin/tilo-vmd --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
