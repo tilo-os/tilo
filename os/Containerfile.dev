@@ -94,6 +94,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && xargs -r -a /run/tilo-dev-builder-packages dnf install -y --setopt=reposdir=/repo \
     && rm -f /run/tilo-dev-builder-packages \
     && dnf clean all && /usr/libexec/tilo/finalize-rpmdb \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
     && rustc --version && cargo --version && sccache --version
 
 # ---- Dev binaries -----------------------------------------------------------
