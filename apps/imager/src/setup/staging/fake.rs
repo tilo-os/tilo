@@ -428,6 +428,15 @@ mod tests {
     fn run(p: &mut FakePlatform, w: &World, action: Action) -> Result<(), Refusal> {
         let mut request = w.request.clone();
         request.action = action;
+        if action != Action::Stage {
+            // As the UI sends them: authority comes from the record only.
+            request.manifest_path = String::new();
+            request.component_paths = ComponentPaths {
+                staging_esp: String::new(),
+                staging_root: String::new(),
+            };
+            request.profile = serde_json::Map::new();
+        }
         let mut lines = Vec::new();
         let result = helper::execute(p, &w.store, &w.authority, &request, &mut |l| {
             lines.push(l.clone());
@@ -763,6 +772,10 @@ mod tests {
             codes::NOT_STAGED
         );
         run(&mut p, &w, Action::Stage).unwrap();
+        // The download may be gone: arm needs only the record.
+        std::fs::remove_file(&w.root_path).unwrap();
+        std::fs::remove_file(&w.request.component_paths.staging_esp).unwrap();
+        std::fs::remove_file(&w.request.manifest_path).unwrap();
         p.vars.remove("BootNext"); // firmware consumed it; installer cancelled
         run(&mut p, &w, Action::Arm).unwrap();
         assert_eq!(p.vars["BootNext"], vec![0x00, 0x01]);
