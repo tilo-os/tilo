@@ -176,6 +176,7 @@ pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod png;
 pub mod portal;
 pub mod presence;
 pub mod profiling;

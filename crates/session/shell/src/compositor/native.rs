@@ -2481,7 +2481,6 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
 ) {
-    use std::io::Write;
     let (w, h) = fb.viewport();
     // Viewport dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -2558,43 +2557,9 @@ fn write_snapshot_png(
         drop(slot);
         rgba
     };
-    let file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: create {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, w, h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = match encoder.write_header() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: png header {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    if let Err(e) = png_writer.write_image_data(&rgba) {
+    if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
         eprintln!(
-            "tilo compositor: test_control snapshot: png write {}: {e}",
-            path.display()
-        );
-        return;
-    }
-    // Drop the PNG writer first so the BufWriter holds the last bytes, then
-    // flush explicitly — else a fast-following file-size assertion could race a buffered tail.
-    drop(png_writer);
-    if let Err(e) = writer.flush() {
-        eprintln!(
-            "tilo compositor: test_control snapshot: flush {}: {e}",
+            "tilo compositor: test_control snapshot: write {}: {e}",
             path.display()
         );
     }

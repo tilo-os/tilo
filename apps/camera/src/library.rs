@@ -59,16 +59,12 @@ pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io
 }
 
 fn write_png(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
+    use image::{ExtendedColorType, ImageEncoder};
     let file = std::fs::File::create(path)?;
     let w = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(w, frame.w, frame.h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| png_io(&e))?;
-    writer
-        .write_image_data(&frame.rgba)
-        .map_err(|e| png_io(&e))?;
-    Ok(())
+    image::codecs::png::PngEncoder::new(w)
+        .write_image(&frame.rgba, frame.w, frame.h, ExtendedColorType::Rgba8)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
@@ -80,10 +76,6 @@ fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
     enc.write_image(&rgb, frame.w, frame.h, ExtendedColorType::Rgb8)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(())
-}
-
-fn png_io(e: &png::EncodingError) -> std::io::Error {
-    std::io::Error::other(e.to_string())
 }
 
 /// Decode `path` and downscale to at most `w`×`h`, returning tightly packed

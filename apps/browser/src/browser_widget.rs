@@ -134,27 +134,12 @@ fn decode_favicon_png(
     expected_width: u32,
     expected_height: u32,
 ) -> Option<vello::peniko::ImageData> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    if reader.output_color_type() != (png::ColorType::Rgba, png::BitDepth::Eight) {
+    let decoded = ui::png::decode_rgba8_within(bytes, 64 * 64).ok()?;
+    if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    let size = reader.output_buffer_size()?;
-    if size > 64 * 64 * 4 {
-        return None;
-    }
-    let mut rgba = vec![0; size];
-    let info = reader.next_frame(&mut rgba).ok()?;
-    if info.width != expected_width
-        || info.height != expected_height
-        || info.buffer_size() != expected_width as usize * expected_height as usize * 4
-    {
-        return None;
-    }
-    rgba.truncate(info.buffer_size());
     Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(rgba)),
+        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
         format: vello::peniko::ImageFormat::Rgba8,
         alpha_type: vello::peniko::ImageAlphaType::Alpha,
         width: expected_width,

@@ -67,7 +67,6 @@ dirs.workspace = true
 # Encoding-level assertions for the video-surface test; version matches `vello`.
 vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
-png.workspace = true
 tempfile.workspace = true
 
 [features]

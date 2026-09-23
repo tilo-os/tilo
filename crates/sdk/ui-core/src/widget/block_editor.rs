@@ -10387,17 +10387,7 @@ mod tests {
 
     #[test]
     fn image_attachment_sizes_to_available_width_without_layout_feedback() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 160, 100);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&vec![255; 160 * 100 * 4])
-                .unwrap();
-        }
+        let bytes = crate::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
         let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
         let store = crate::ImageStore::new(&fetch);
         let mut editor = BlockEditor::new();

@@ -16,8 +16,6 @@
 )]
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -169,36 +167,22 @@ fn write_png(path: &Path, frame: &Frame) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create typography snapshot directory");
     }
-    let file = File::create(path).expect("create typography snapshot");
-    let mut encoder = png::Encoder::new(BufWriter::new(file), frame.width, frame.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .expect("write typography PNG header")
-        .write_image_data(&frame.rgba)
-        .expect("write typography PNG pixels");
+    tilo_ui::png::write_rgba8(path, frame.width, frame.height, &frame.rgba)
+        .expect("write typography snapshot");
 }
 
 fn read_png(path: &Path) -> Frame {
-    let decoder = png::Decoder::new(BufReader::new(File::open(path).unwrap_or_else(|error| {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
         panic!(
             "missing typography baseline {}: {error}; regenerate with UPDATE_TYPOGRAPHY_BASELINES=1",
             path.display()
         )
-    })));
-    let mut reader = decoder.read_info().expect("read typography PNG header");
-    let mut bytes = vec![0; reader.output_buffer_size().expect("PNG buffer size")];
-    let info = reader
-        .next_frame(&mut bytes)
-        .expect("decode typography PNG");
-    assert_eq!(info.color_type, png::ColorType::Rgba);
-    assert_eq!(info.bit_depth, png::BitDepth::Eight);
-    bytes.truncate(info.buffer_size());
+    });
+    let decoded = tilo_ui::png::decode_rgba8(&bytes).expect("decode typography PNG");
     Frame {
-        width: info.width,
-        height: info.height,
-        rgba: bytes,
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
         adapter: String::new(),
     }
 }
