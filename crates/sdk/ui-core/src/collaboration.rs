@@ -1237,12 +1237,7 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     {
         id
     } else {
-        use std::fmt::Write as _;
-        let mut s = String::with_capacity(64);
-        for b in &key {
-            let _ = write!(s, "{b:02x}");
-        }
-        s
+        hex::encode(key)
     }
 }
 

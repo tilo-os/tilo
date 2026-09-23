@@ -290,7 +290,7 @@ impl<T: Transport> Session<T> {
             }
         }
         if let Some((entry, digest)) = selected {
-            expected.insert(entry.token.clone(), hex(&digest));
+            expected.insert(entry.token.clone(), hex::encode(digest));
         }
         if hashes != expected {
             return Err(changed("native postflight hashes disagree"));
@@ -344,13 +344,6 @@ impl<T: Transport> Session<T> {
             attested: false,
         })
     }
-}
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes.iter().fold(String::new(), |mut output, byte| {
-        let _ = write!(output, "{byte:02x}");
-        output
-    })
 }
 struct NativeFile<'a, T: Transport> {
     session: &'a mut Session<T>,
@@ -938,7 +931,7 @@ mod tests {
                 e.token = format!("{}-{:?}", self.generation, e.path);
                 if e.content_readable && e.size == 0 {
                     self.hashes
-                        .insert(e.token.clone(), hex(&Sha256::digest([])));
+                        .insert(e.token.clone(), hex::encode(Sha256::digest([])));
                 }
             }
             Ok(Manifest {
@@ -969,7 +962,7 @@ mod tests {
             }
             if offset + u64::from(length) == self.content.len() as u64 {
                 self.hashes
-                    .insert(token.into(), hex(&Sha256::digest(&self.content)));
+                    .insert(token.into(), hex::encode(Sha256::digest(&self.content)));
                 if self.state.borrow().fault == Some("read-cancel") {
                     self.cancel.store(true, Ordering::Relaxed);
                 }
@@ -1192,7 +1185,7 @@ mod tests {
                 e.token = format!("{}-{:?}", self.generation, e.path);
                 if e.content_readable && e.size == 0 {
                     self.hashes
-                        .insert(e.token.clone(), hex(&Sha256::digest([])));
+                        .insert(e.token.clone(), hex::encode(Sha256::digest([])));
                 }
             }
             let manifest = Manifest {
@@ -1272,7 +1265,7 @@ mod tests {
             *position += bytes.len() as u64;
             if *position == entry.size {
                 self.hashes
-                    .insert(token.into(), hex(&digest.clone().finalize()));
+                    .insert(token.into(), hex::encode(digest.clone().finalize()));
                 self.active = None;
             }
             self.revalidate()?;
@@ -1387,7 +1380,7 @@ mod tests {
         assert_eq!(before, Sha256::digest(std::fs::read(&image).unwrap()));
         println!(
             "actual-image sha256={} native_ranges={} bytes={} complete={} destination={}",
-            hex(&before),
+            hex::encode(before),
             reads.borrow().len(),
             report.verified_bytes,
             report.complete(),
@@ -1532,7 +1525,7 @@ mod tests {
             "actual scoped fixture {name}: bytes={} skipped={} sha256={}",
             report.verified_bytes,
             report.skipped.len(),
-            hex(&before)
+            hex::encode(before)
         );
     }
     #[cfg(unix)]

@@ -6,7 +6,6 @@ use crate::widget::Widget;
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 
@@ -310,9 +309,7 @@ impl BoundPublication {
             .into());
         }
         let mut alias = prefix;
-        for byte in resource.as_bytes() {
-            let _ = write!(alias, "{byte:02x}");
-        }
+        alias.push_str(&hex::encode(resource));
         owners.insert(binding.lifetime_id, binding.clone());
         Ok(alias)
     }

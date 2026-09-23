@@ -20,7 +20,6 @@ use crate::{config, favorites, fileops, templates};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -178,12 +177,9 @@ enum CollabPanelAction {
     },
 }
 
+/// Lower-case hex of the first `count` bytes (all of them when shorter).
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
-    let mut output = String::with_capacity(count.saturating_mul(2));
-    for byte in bytes.iter().take(count) {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    hex::encode(bytes.get(..count).unwrap_or(bytes))
 }
 
 fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
