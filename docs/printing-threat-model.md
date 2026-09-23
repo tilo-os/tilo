@@ -69,11 +69,12 @@ printer list without consent.
 
 Enforcement, concretely:
 
-- `Capability::Print` has **no arm in `SandboxProfile::apply_grants`**
-  (`crates/session/shell/src/sandbox/profile.rs`). Granting print permission — at any scope,
+- `Capability::Print` never becomes a bind: `tilo-launcher` turns grants into
+  binds in `launcher::capabilities`, which binds only filesystem paths,
+  devices and network access. Granting print permission — at any scope,
   however broadly — adds no bind mount. There is no code path that puts the
   cups socket inside a sandbox, which is why `os/tests/printing_isolation.sh`
-  greps for one and fails if it appears.
+  greps the launcher sources for one and fails if it appears.
 - Print is its own capability variant rather than a reused filesystem or
   device grant, so a permission the user gave for something else cannot
   silently authorise printing.
@@ -218,7 +219,7 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 
 | Property | Enforced by |
 |---|---|
-| Apps never get the cups socket | No `Capability::Print` arm in `SandboxProfile::apply_grants`; asserted by `os/tests/printing_isolation.sh` |
+| Apps never get the cups socket | No print binding in `launcher::capabilities`; asserted by `os/tests/printing_isolation.sh` |
 | Apps print via a consented portal | `crates/session/shell/src/portal/print.rs`, through `flow::resolve` |
 | Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf` |
 | No network listener | `os/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf`, `os/etc/cups/cupsd.conf` |
