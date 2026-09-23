@@ -404,7 +404,8 @@ fn releases_for_host(
 /// # Errors
 /// Rejects any invalid embedded catalog entry before host filtering.
 pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
-    Ok(parse_catalog(BUNDLED_CATALOG)?
+    let catalog = internal_catalog_text()?;
+    Ok(parse_catalog(&catalog)?
         .releases
         .into_iter()
         .filter_map(|entry| match entry {
@@ -414,6 +415,23 @@ pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
             _ => None,
         })
         .collect())
+}
+
+/// The catalog internal releases resolve against: the embedded one, or, in
+/// builds that allow staging test overrides (debug, or compiled with
+/// `TILO_IMAGER_STAGING_TEST_OVERRIDES=1`), the file named by
+/// `TILO_STAGING_TEST_CATALOG`. The loop-device harness uses it to name its
+/// synthetic bundle; release builds never read it, and the file passes the
+/// same `parse_catalog` validation as the embedded catalog.
+fn internal_catalog_text() -> Result<std::borrow::Cow<'static, str>, String> {
+    if crate::setup::staging::helper::test_overrides_allowed() {
+        if let Some(path) = std::env::var_os("TILO_STAGING_TEST_CATALOG") {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("test catalog {}: {e}", path.to_string_lossy()))?;
+            return Ok(text.into());
+        }
+    }
+    Ok(BUNDLED_CATALOG.into())
 }
 
 fn valid_hardware_profile(profile: &str) -> bool {
@@ -1413,6 +1431,22 @@ mod internal_catalog_tests {
             "manifest_url":"https://code.podesta.ai/fixture/manifest.json",
             "manifest_sha256":format!("{:x}",Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
+    /// The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
+    /// bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.
+    #[test]
+    fn loop_harness_catalog_shape_is_a_valid_catalog() {
+        let mut entry = internal(b"{}");
+        entry["release_id"] = json!("loop-test");
+        entry["manifest_url"] = json!("https://code.podesta.ai/qos/loop-test/manifest.json");
+        let text =
+            json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
+        let parsed = parse_catalog(&text).unwrap();
+        assert!(matches!(
+            parsed.releases.as_slice(),
+            [CatalogRelease::Internal(m)] if m.release_id == "loop-test"
+        ));
+    }
+
     fn selection(value: Value) -> InternalRelease {
         match parse_catalog(&catalog(value))
             .unwrap()
