@@ -36,11 +36,6 @@ const APP_OVERRIDE: &str = r#"<Override PartName="/docProps/app.xml" ContentType
 const CORE_REL: &str = r#"<Relationship Id="rIdQdocCore" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>"#;
 const APP_REL: &str = r#"<Relationship Id="rIdQdocApp" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>"#;
 
-const HEADER_OVERRIDE: &str = r#"<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>"#;
-const FOOTER_OVERRIDE: &str = r#"<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>"#;
-const HEADER_REL: &str = r#"<Relationship Id="rIdQdocHdr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>"#;
-const FOOTER_REL: &str = r#"<Relationship Id="rIdQdocFtr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>"#;
-
 const FOOTNOTES_OVERRIDE: &str = r#"<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>"#;
 const ENDNOTES_OVERRIDE: &str = r#"<Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/>"#;
 const FOOTNOTES_REL: &str = r#"<Relationship Id="rIdQdocFtnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>"#;
@@ -70,8 +65,6 @@ struct PartFlags {
     had_styles_part: bool,
     had_core: bool,
     had_app: bool,
-    had_header_part: bool,
-    had_footer_part: bool,
     had_footnotes_part: bool,
     had_endnotes_part: bool,
     had_comments_part: bool,
@@ -93,8 +86,6 @@ fn copy_preserved_parts(
             flags.had_doc_rels |= name == "word/_rels/document.xml.rels";
             flags.had_numbering |= name == "word/numbering.xml";
             flags.had_styles_part |= name == "word/styles.xml";
-            flags.had_header_part |= name == super::headers::HEADER_PART;
-            flags.had_footer_part |= name == super::headers::FOOTER_PART;
             flags.had_footnotes_part |= name == super::notes::FOOTNOTES_PART;
             flags.had_endnotes_part |= name == super::notes::ENDNOTES_PART;
             flags.had_comments_part |= name == super::comments::COMMENTS_PART;
@@ -112,6 +103,24 @@ fn copy_preserved_parts(
     (flags, original_core, original_app)
 }
 
+/// A header or footer part this export writes, with the relationship that references it.
+struct RegionPart {
+    part: String,
+    rel_id: &'static str,
+    rel_type: &'static str,
+    content_type: &'static str,
+}
+
+impl RegionPart {
+    fn content_type_override(&self) -> String {
+        super::section::override_xml(&self.part, self.content_type)
+    }
+
+    fn relationship(&self) -> String {
+        super::section::relationship_xml(self.rel_id, self.rel_type, &self.part)
+    }
+}
+
 /// Which optional parts this export is newly wiring up (synthesised but not already declared).
 #[allow(
     clippy::struct_excessive_bools,
@@ -127,8 +136,10 @@ struct Wireups {
     need_styles: bool,
     need_core: bool,
     need_app: bool,
-    need_header: bool,
-    need_footer: bool,
+    /// qdoc's header/footer parts. Any header/footer relationship, part and override carried
+    /// from the imported package that the new `w:sectPr` doesn't reference is already gone,
+    /// so these are always wired up.
+    regions: Vec<RegionPart>,
     need_footnotes: bool,
     need_endnotes: bool,
     need_comments: bool,
@@ -142,33 +153,32 @@ fn build_content_types(
     images: &ImageExport,
 ) {
     if flags.had_content_types {
-        let mut overrides: Vec<(&str, &str)> = Vec::new();
+        let mut overrides: Vec<(String, String)> = w
+            .regions
+            .iter()
+            .map(|r| (format!("/{}", r.part), r.content_type_override()))
+            .collect();
+        let mut add = |part: &str, ovr: &str| overrides.push((part.to_string(), ovr.to_string()));
         if w.has_lists && !flags.had_numbering {
-            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
+            add("/word/numbering.xml", NUMBERING_OVERRIDE);
         }
         if w.need_styles {
-            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
+            add("/word/styles.xml", STYLES_OVERRIDE);
         }
         if w.need_core {
-            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
+            add("/docProps/core.xml", CORE_OVERRIDE);
         }
         if w.need_app {
-            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
-        }
-        if w.need_header {
-            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
-        }
-        if w.need_footer {
-            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
+            add("/docProps/app.xml", APP_OVERRIDE);
         }
         if w.need_footnotes {
-            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
+            add("/word/footnotes.xml", FOOTNOTES_OVERRIDE);
         }
         if w.need_endnotes {
-            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
+            add("/word/endnotes.xml", ENDNOTES_OVERRIDE);
         }
         if w.need_comments {
-            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
+            add("/word/comments.xml", COMMENTS_OVERRIDE);
         }
         let image_defaults = images.content_type_defaults();
         if (!overrides.is_empty() || !image_defaults.is_empty())
@@ -176,8 +186,8 @@ fn build_content_types(
         {
             let mut s = String::from_utf8_lossy(ct).into_owned();
             for (part, ovr) in overrides {
-                if !s.contains(part) {
-                    inject_before(&mut s, "</Types>", ovr);
+                if !s.contains(&format!(r#"PartName="{part}""#)) {
+                    inject_before(&mut s, "</Types>", &ovr);
                 }
             }
             // Image content-type `Default`s — dedup on `Extension="<ext>"`.
@@ -208,11 +218,8 @@ fn build_content_types(
         if w.wrote_app {
             ct.push_str(APP_OVERRIDE);
         }
-        if w.need_header {
-            ct.push_str(HEADER_OVERRIDE);
-        }
-        if w.need_footer {
-            ct.push_str(FOOTER_OVERRIDE);
+        for r in &w.regions {
+            ct.push_str(&r.content_type_override());
         }
         if w.need_footnotes {
             ct.push_str(FOOTNOTES_OVERRIDE);
@@ -265,8 +272,7 @@ fn build_document_rels(
 ) {
     if !(w.has_lists
         || w.need_styles
-        || w.need_header
-        || w.need_footer
+        || !w.regions.is_empty()
         || w.need_footnotes
         || w.need_endnotes
         || w.need_comments
@@ -282,11 +288,8 @@ fn build_document_rels(
         if w.has_lists {
             inner.push_str(NUMBERING_REL);
         }
-        if w.need_header {
-            inner.push_str(HEADER_REL);
-        }
-        if w.need_footer {
-            inner.push_str(FOOTER_REL);
+        for r in &w.regions {
+            inner.push_str(&r.relationship());
         }
         if w.need_footnotes {
             inner.push_str(FOOTNOTES_REL);
@@ -311,11 +314,8 @@ fn build_document_rels(
         if w.need_styles && !s.contains("Target=\"styles.xml\"") {
             inject_before(&mut s, "</Relationships>", STYLES_REL);
         }
-        if w.need_header && !s.contains("Target=\"header1.xml\"") {
-            inject_before(&mut s, "</Relationships>", HEADER_REL);
-        }
-        if w.need_footer && !s.contains("Target=\"footer1.xml\"") {
-            inject_before(&mut s, "</Relationships>", FOOTER_REL);
+        for r in &w.regions {
+            inject_before(&mut s, "</Relationships>", &r.relationship());
         }
         if w.need_footnotes && !s.contains("Target=\"footnotes.xml\"") {
             inject_before(&mut s, "</Relationships>", FOOTNOTES_REL);
@@ -348,15 +348,16 @@ fn build_document_rels(
 /// separately, once every "did we just add this part" flag is known.
 fn copy_fixed_parts(
     c: &mut DocxContainer,
-    hf_parts: &super::headers::ExportedParts,
+    hf_parts: super::headers::ExportedParts,
+    section: &super::section::SectionPlan,
     notes: &super::notes::ExportedNotes,
     comments: &super::comments::ExportedComments,
 ) {
-    if let Some(hdr) = hf_parts.header.clone() {
-        c.set(super::headers::HEADER_PART, hdr);
+    if let (Some(hdr), Some(part)) = (hf_parts.header, section.header_part.as_deref()) {
+        c.set(part, hdr);
     }
-    if let Some(ftr) = hf_parts.footer.clone() {
-        c.set(super::headers::FOOTER_PART, ftr);
+    if let (Some(ftr), Some(part)) = (hf_parts.footer, section.footer_part.as_deref()) {
+        c.set(part, ftr);
     }
     if let Some(ftn) = notes.footnotes_xml.clone() {
         c.set(super::notes::FOOTNOTES_PART, ftn);
@@ -431,16 +432,27 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     let hf_parts = super::headers::export_parts(&doc);
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
-    // sectPr is emitted when header/footer refs or columns need it; OOXML orders header/footer refs before w:cols.
-    let sectpr = if hf_parts.any() || !cols.is_empty() {
-        format!(
-            r"<w:sectPr>{}{}</w:sectPr>",
-            super::headers::section_references(&hf_parts),
-            cols
-        )
-    } else {
-        String::new()
-    };
+
+    let mut c = DocxContainer { parts: Vec::new() };
+    let (flags, original_core, original_app) = copy_preserved_parts(&doc, &mut c);
+
+    // The imported section properties arrive as a body fidelity block; they are rebuilt around
+    // qdoc's header/footer and columns rather than copied, and header/footer parts carried
+    // from the imported package that the rebuilt sectPr no longer references are pruned.
+    let original_sectpr = snap
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|b| match b.attrs.get("xml") {
+            Some(AttrVal::Str(xml))
+                if b.kind == "fidelity" && super::section::is_section_properties(xml) =>
+            {
+                Some(xml.as_str())
+            }
+            _ => None,
+        });
+    let section = super::section::plan(&mut c, original_sectpr, &hf_parts, &cols);
+    let sectpr = section.sectpr.clone();
     let notes = super::notes::export_notes(&doc);
     let comments = super::comments::export_comments(&doc);
     let (document, named_refs, numbering, images) = build_document_xml(
@@ -456,9 +468,6 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let has_styles = !named_refs.is_empty() || doc_lang.is_some();
     let has_images = !images.images.is_empty();
 
-    let mut c = DocxContainer { parts: Vec::new() };
-    let (flags, original_core, original_app) = copy_preserved_parts(&doc, &mut c);
-
     c.set("word/document.xml", document.into_bytes());
 
     // Each exported drawing references a synthesised `word/media/imageN.<ext>` relationship part.
@@ -466,7 +475,24 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set(&img.part, img.bytes.clone());
     }
 
-    copy_fixed_parts(&mut c, &hf_parts, &notes, &comments);
+    let mut regions = Vec::new();
+    if let Some(part) = section.header_part.clone() {
+        regions.push(RegionPart {
+            part,
+            rel_id: super::headers::HEADER_REL_ID,
+            rel_type: super::section::HEADER_REL_TYPE,
+            content_type: super::section::HEADER_CONTENT_TYPE,
+        });
+    }
+    if let Some(part) = section.footer_part.clone() {
+        regions.push(RegionPart {
+            part,
+            rel_id: super::headers::FOOTER_REL_ID,
+            rel_type: super::section::FOOTER_REL_TYPE,
+            content_type: super::section::FOOTER_CONTENT_TYPE,
+        });
+    }
+    copy_fixed_parts(&mut c, hf_parts, &section, &notes, &comments);
 
     let (wrote_core, wrote_app) = write_doc_props(
         &mut c,
@@ -494,8 +520,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         need_styles: has_styles && !flags.had_styles_part,
         need_core: wrote_core && !flags.had_core,
         need_app: wrote_app && !flags.had_app,
-        need_header: hf_parts.header.is_some() && !flags.had_header_part,
-        need_footer: hf_parts.footer.is_some() && !flags.had_footer_part,
+        regions,
         need_footnotes: notes.footnotes_xml.is_some() && !flags.had_footnotes_part,
         need_endnotes: notes.endnotes_xml.is_some() && !flags.had_endnotes_part,
         need_comments: comments.comments_xml.is_some() && !flags.had_comments_part,
@@ -1412,7 +1437,10 @@ fn render_block(
             i.saturating_add(1)
         }
         "fidelity" => {
-            if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
+            // Section properties are rebuilt and appended after the last block.
+            if let Some(AttrVal::Str(xml)) = b.attrs.get("xml")
+                && !super::section::is_section_properties(xml)
+            {
                 body.push_str(xml);
             }
             i.saturating_add(1)
