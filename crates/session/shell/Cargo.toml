@@ -60,7 +60,7 @@ dev-session = []
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file" }
+atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
 # Owner- and link-checked private files (sandboxed app logs, crash reports).
 private-fs = { path = "../../system/private-fs" }

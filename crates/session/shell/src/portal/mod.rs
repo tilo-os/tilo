@@ -179,8 +179,6 @@ use std::collections::HashMap;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -569,27 +567,12 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("portal consent path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let temporary = path.with_extension("tmp");
-    let bytes = serde_json::to_vec(&PortalConsentFile {
-        always: always.clone(),
-    })
-    .map_err(std::io::Error::other)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    fs::File::open(parent)?.sync_all()
+    atomic_file::json::write_private(
+        path,
+        &PortalConsentFile {
+            always: always.clone(),
+        },
+    )
 }
 
 /// The user-prompt the portal needs to surface, waiting on a choice.
@@ -1254,8 +1237,10 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    // Never read on purpose: holding the `Connection` IS the job — dropping it releases the bus name and tears the object server down.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
+    )]
     connection: zbus::Connection,
     owns_name: bool,
 }

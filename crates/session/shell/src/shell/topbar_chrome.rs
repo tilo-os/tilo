@@ -285,15 +285,12 @@ fn publish_clock_command(command: &str, activity_id: Option<&str>) {
     else {
         return;
     };
-    let tmp = path.with_extension("json.new");
     let payload = serde_json::json!({
         "version": 1,
         "command": command,
         "activity_id": activity_id,
     });
-    if std::fs::write(&tmp, payload.to_string()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+    let _ = atomic_file::write(&path, payload.to_string().as_bytes());
 }
 
 fn clamp_clock_overlay(
