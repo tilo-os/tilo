@@ -10,6 +10,7 @@
 //! is wrapped in change-start/end markers, with the changed-region's `text:deletion`
 //! recording only the kind + author/date.
 
+use crate::codecs::xml_escape::{escape_attr, escape_text};
 use crate::snapshot::{ChangeKind, ChangeView};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -90,37 +91,6 @@ pub(super) fn marker_change_id(e: &quick_xml::events::BytesStart) -> Option<Stri
         .flatten()
         .find(|a| matches!(a.key.as_ref(), b"text:change-id" | b"text:id"))
         .and_then(|a| crate::codecs::unescape_attr(&a))
-}
-
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        push_escaped(&mut out, c);
-    }
-    out
-}
-
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// Render the `<text:tracked-changes>` block for a document's changes; empty string when there are no changes.

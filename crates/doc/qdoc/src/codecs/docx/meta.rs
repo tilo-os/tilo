@@ -3,6 +3,7 @@
 //! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
+use crate::codecs::xml_escape::escape_text;
 use crate::model::{DocMut, DocRef, doc_prop};
 use crate::schema::{
     PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT,
@@ -84,19 +85,6 @@ pub(super) fn import_app(xml: &[u8], doc: &mut DocMut) {
             None
         }
     });
-}
-
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 const CORE_NS: &str = concat!(

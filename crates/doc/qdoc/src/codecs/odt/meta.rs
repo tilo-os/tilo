@@ -3,6 +3,7 @@
 //! `meta:generator`, mapped onto the canonical `meta.props` map both directions, while
 //! preserving any unmodeled child elements verbatim on export.
 
+use crate::codecs::xml_escape::escape_text;
 use crate::model::{DocMut, DocRef, doc_prop};
 use crate::schema::{
     DOC_PROP_KEYS, PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED,
@@ -76,20 +77,6 @@ pub(super) fn import_meta(xml: &[u8], doc: &mut DocMut) {
         }
         buf.clear();
     }
-}
-
-/// Escape text for XML element content.
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// The ODF element (with prefix) a canonical property maps onto inside `office:meta`.

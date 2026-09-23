@@ -3,6 +3,7 @@
 //! position in the body paragraph, plus its content as a block sequence in the
 //! `notes` container, both directions.
 
+use crate::codecs::xml_escape::push_text;
 use crate::model::{DocMut, NoteKind};
 use crate::snapshot::{BlockView, NoteView};
 use quick_xml::events::Event;
@@ -108,15 +109,6 @@ fn note_class(raw: &str) -> Option<String> {
     }
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
 /// Render a note's blocks as `text:note-body` inner XML; only plain text + tabs/breaks
 /// are modeled (richer inline styling isn't supported in note bodies).
 fn render_note_body(blocks: &[BlockView]) -> String {
@@ -127,7 +119,7 @@ fn render_note_body(blocks: &[BlockView]) -> String {
             match c {
                 '\t' => out.push_str("<text:tab/>"),
                 '\n' => out.push_str("<text:line-break/>"),
-                _ => push_escaped(&mut out, c),
+                _ => push_text(&mut out, c),
             }
         }
         out.push_str("</text:p>");

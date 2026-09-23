@@ -3,6 +3,7 @@
 //! (a page-number field is `<text:page-number/>`). This maps them onto the canonical
 //! header/footer regions, splicing regenerated regions back into a copy of `styles.xml`.
 
+use crate::codecs::xml_escape::push_text;
 use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
@@ -118,15 +119,6 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     }
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
 /// Whether character `i` of `b` is the start of a page-number field.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
@@ -152,7 +144,7 @@ fn render_region_block(b: &BlockView) -> String {
         match c {
             '\t' => out.push_str("<text:tab/>"),
             '\n' => out.push_str("<text:line-break/>"),
-            _ => push_escaped(&mut out, c),
+            _ => push_text(&mut out, c),
         }
     }
     out.push_str("</text:p>");
