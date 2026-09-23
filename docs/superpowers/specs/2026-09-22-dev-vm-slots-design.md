@@ -134,8 +134,14 @@ compiles. A contract check guarantees that production images never enable the fe
 
 ## Revisions after the spike and review
 
-- The CLI is `tilo-vm` (daemon `tilo-vmd`), because `tilo-dev` is taken by the `tilo-dev.desktop`
-  session. Slots replace the Fedora 44 loop over time.
+- The CLI is **`tilo-vm`** and the guest daemon `tilo-vmd`, because `tilo-dev` collides with the
+  `tilo-dev.desktop` developer session. Everything follows: crates `crates/dev/tilo-vm*`, state
+  `/var/lib/tilo-vm/`, unit `tilo-vm-session@.service`, config `tilo-vm/vms.toml`, env `TILO_VM`,
+  worktree file `.tilo-vm`, disk package `tilo-vm-disk`, image `code.podesta.ai/qos/tilo-vm:<tag>`.
+  Slots are meant to become the one dev story, replacing the Fedora 44 loop over time.
+- In-VM builds and CI layer extraction are streaming jobs (`ssh <vm> tilo-vmd build|ci-layer`,
+  the job on stdin, live output on stderr) rather than RPC calls. A headful slot's uinput devices
+  live in a transient `tilo-vm-input-<slot>` unit, since a uinput device dies with its creator.
 - The per-agent object is called a **slot** (`tilo-vm slot …`, user `tds-<name>`, seat
   `seat-<slot>`). "Overlay" below means slot.
 - The session unit uses `PAMName=greetd` and `SyslogIdentifier=tilo-session-%i`. A swap stops the
