@@ -25,6 +25,7 @@ has() {
 mapfile -t frozen_consumers < <(
   grep -lE 'from=rpms|enablerepo=frozen|RPMS_REF' \
     "$repo/os/Containerfile" \
+    "$repo/os/Containerfile.dev" \
     "$repo/os/Containerfile.host" \
     "$repo/os/containers/tilo-relay/Containerfile" \
     "$repo/os/dev/composefs/Containerfile" \
