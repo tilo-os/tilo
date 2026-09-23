@@ -474,7 +474,7 @@ explain when the host does not offer them.\n";
             tracing::debug!("no broker; restricting to the base set only");
         }
         let outcome = ush::guard::restrict_self(&rw, &ro);
-        tracing::debug!("landlock: {}", outcome.describe());
+        tracing::debug!("landlock: {}", ush::guard::describe(outcome));
 
         let cmd = rest
             .first()
@@ -816,7 +816,7 @@ explain when the host does not offer them.\n";
     /// "installed" because the install code ran would pass exactly when it
     /// should fail, so the answer comes from an operation the ruleset forbids.
     fn landlock_now() -> String {
-        let probed = ush::guard::landlock_probe().describe();
+        let probed = ush::guard::describe(ush::guard::landlock_probe());
         let reported = std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|text| {
