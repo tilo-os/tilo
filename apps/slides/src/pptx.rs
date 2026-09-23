@@ -539,6 +539,13 @@ fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>)
                     }
                 }
             }
+            // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
+            // the text around them.
+            Ok(Event::GeneralRef(r)) if in_text => {
+                if let Some(c) = cur.as_mut() {
+                    c.text.extend(qdoc::codecs::resolve_general_ref(&r));
+                }
+            }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
                 b"rPr" | b"defRPr" => in_text_style = in_text_style.saturating_sub(1),
@@ -673,6 +680,9 @@ fn parse_notes(xml: &str) -> String {
                     notes.push_str(&text);
                 }
             }
+            Ok(Event::GeneralRef(r)) if in_text => {
+                notes.extend(qdoc::codecs::resolve_general_ref(&r));
+            }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
                 b"sp" => {
@@ -710,14 +720,21 @@ fn parse_rels(xml: &str) -> HashMap<String, String> {
     }
     m
 }
+/// The text content of the first `wanted` element, or `None` if there is none.
 fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
     let mut r = Reader::from_str(xml);
-    let mut hit = false;
+    let mut text: Option<String> = None;
     loop {
-        match r.read_event() {
-            Ok(Event::Start(e)) => hit = e.name().as_ref() == wanted,
-            Ok(Event::Text(t)) if hit => return t.xml10_content().ok().map(|x| x.into_owned()),
-            Ok(Event::Eof) | Err(_) => return None,
+        match (r.read_event(), text.as_mut()) {
+            (Ok(Event::Start(e)), None) if e.name().as_ref() == wanted => {
+                text = Some(String::new());
+            }
+            (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
+            (Ok(Event::GeneralRef(g)), Some(text)) => {
+                text.extend(qdoc::codecs::resolve_general_ref(&g));
+            }
+            (Ok(Event::End(_)), Some(_)) => return text,
+            (Ok(Event::Eof) | Err(_), _) => return None,
             _ => {}
         }
     }
@@ -726,7 +743,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .map(|a| String::from_utf8_lossy(a.value.as_ref()).into_owned())
+        .and_then(|a| qdoc::codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {
@@ -980,6 +997,55 @@ mod tests {
             r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
         );
         assert_eq!(notes, "Keep this");
+    }
+
+    /// Every predefined entity and decimal/hex character references (one
+    /// outside the BMP), next to each other and to text.
+    const RAW_REFS: &str =
+        "R&amp;D &lt;b&gt; &quot;q&quot; &apos;s&apos; &#8217;&#x2019;&#x1F600;&#65;&amp;&amp;";
+    const REFS_TEXT: &str = "R&D <b> \"q\" 's' \u{2019}\u{2019}\u{1F600}A&&";
+
+    #[test]
+    fn round_trips_reserved_characters_in_title_text_and_notes() {
+        let mut slide = Slide::new(Layout::Blank);
+        slide.add(Element::text(
+            "R&D <b> & \u{1F600}",
+            10.0,
+            20.0,
+            500.0,
+            100.0,
+            36.0,
+        ));
+        slide.notes = "a < b && c > d".into();
+        let deck = Deck {
+            title: "Q&A <live>".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![slide],
+        };
+        let got = read_pptx(&write_pptx(&deck).unwrap()).unwrap();
+        assert_eq!(got.title, "Q&A <live>");
+        assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
+        assert_eq!(got.slides[0].notes, "a < b && c > d");
+    }
+
+    #[test]
+    fn entity_and_character_references_resolve_in_notes_title_and_attributes() {
+        let notes = parse_notes(&format!(
+            r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+        ));
+        assert_eq!(notes, REFS_TEXT);
+        let title = first_text(
+            &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
+            b"dc:title",
+        );
+        assert_eq!(title.as_deref(), Some(REFS_TEXT));
+        let rels = parse_rels(
+            r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
+        );
+        assert_eq!(
+            rels.get("rId1").map(String::as_str),
+            Some("../media/R&D chart.png")
+        );
     }
 
     #[test]
