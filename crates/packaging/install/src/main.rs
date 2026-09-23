@@ -447,12 +447,9 @@ fn payloads_root() -> Result<PathBuf, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-        && !dir.is_empty()
-    {
-        return Ok(PathBuf::from(dir));
-    }
-    dirs::data_dir().ok_or(Error::NoDataDir)
+    xdg_paths::env_dir("XDG_DATA_HOME")
+        .or_else(xdg_paths::data_dir)
+        .ok_or(Error::NoDataDir)
 }
 
 fn trusted_attestors_path() -> Result<PathBuf, Error> {

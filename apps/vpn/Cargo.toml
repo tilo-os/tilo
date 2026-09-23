@@ -27,6 +27,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 os-actions = { path = "../../crates/system/os-actions" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

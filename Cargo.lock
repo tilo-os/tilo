@@ -1133,6 +1133,7 @@ dependencies = [
  "vello",
  "walkdir",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -2186,6 +2187,7 @@ dependencies = [
  "runtime-portal",
  "serial_test",
  "tempfile",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -2522,6 +2524,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zbus",
 ]
 
@@ -3329,11 +3332,11 @@ name = "desktop-policy"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
- "dirs 6.0.0",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -6780,6 +6783,7 @@ dependencies = [
  "tilo-app-package",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -8056,6 +8060,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-net",
+ "xdg-paths",
  "zeroize",
  "zstd",
 ]
@@ -8293,6 +8298,7 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -11749,6 +11755,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -11809,6 +11816,7 @@ dependencies = [
  "vello",
  "vte",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -13196,7 +13204,6 @@ dependencies = [
  "atomic-file",
  "automerge",
  "calamine",
- "dirs 6.0.0",
  "runtime-dylib",
  "rust_xlsxwriter",
  "serde",
@@ -13208,6 +13215,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zip",
 ]
 
@@ -13315,6 +13323,7 @@ dependencies = [
  "word-processor",
  "x25519-dalek 2.0.1",
  "xattr",
+ "xdg-paths",
  "zbus",
  "zeroize",
 ]
@@ -13706,6 +13715,9 @@ dependencies = [
 [[package]]
 name = "spellcheck"
 version = "0.1.0"
+dependencies = [
+ "xdg-paths",
+]
 
 [[package]]
 name = "spez"
@@ -14625,6 +14637,7 @@ dependencies = [
  "threshold-identity",
  "toml 1.0.6+spec-1.1.0",
  "walkdir",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -14729,6 +14742,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -14789,6 +14803,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "xdg-paths",
  "zbus",
 ]
 
@@ -14805,6 +14820,7 @@ dependencies = [
  "serde_json",
  "tilo-callstream",
  "tokio",
+ "xdg-paths",
  "zbus",
 ]
 
@@ -14978,6 +14994,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
+ "xdg-paths",
  "zbus",
  "zeroize",
 ]
@@ -15089,6 +15106,7 @@ dependencies = [
  "tempfile",
  "toml 1.0.6+spec-1.1.0",
  "walkdir",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -15648,6 +15666,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -16442,6 +16461,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -16492,6 +16512,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zeroize",
 ]
 
