@@ -316,7 +316,76 @@ def make_live_record(plan, staged, backend_sha256=None):
             "target_partitions": plan["target_partitions"], "staging": staged}
 
 
-def publish_live_record(plan, record, backend_data):
+def make_live_runner(plan, staged, backend_sha256):
+    by_role = {row["role"]: row for row in staged}
+    final = {row["role"]: row for row in plan["target_partitions"]}
+    expected = sorted(plan["preserve_partitions"] + [
+        {"partuuid": row["partuuid"], "offset_bytes": row["offset_bytes"], "size_bytes": row["size_bytes"]}
+        for row in staged], key=lambda row: row["offset_bytes"])
+    expected_args = "\n".join(
+        f'  --expect-partition "{row["partuuid"]}:{row["offset_bytes"]}:{row["size_bytes"]}"'
+        for row in expected)
+    text = f'''#!/bin/bash
+set -euo pipefail
+[ "$(id -u)" -eq 0 ] || {{ echo "run this from a root recovery shell" >&2; exit 1; }}
+: "${{TILO_USER:?set TILO_USER to the lowercase login name}}"
+TILO_HOSTNAME="${{TILO_HOSTNAME:-tilo}}"
+TILO_FULL_NAME="${{TILO_FULL_NAME:-}}"
+TILO_LOCALE="${{TILO_LOCALE:-de_DE.UTF-8}}"
+TILO_TIMEZONE="${{TILO_TIMEZONE:-Europe/Berlin}}"
+TILO_KEYMAP="${{TILO_KEYMAP:-de}}"
+here="$(cd "$(dirname "$0")" && pwd)"
+backend="$here/tilo-install"
+printf '%s  %s\n' '{backend_sha256}' "$backend" | sha256sum -c -
+runtime=/run/tilo-install-internal
+install -m 0755 "$backend" "$runtime"
+chcon --reference=/usr/libexec/tilo-install "$runtime" 2>/dev/null || true
+source_root="$(readlink -f /dev/disk/by-partuuid/{by_role['staging-root']['partuuid']})"
+source_esp="$(readlink -f /dev/disk/by-partuuid/{by_role['staging-esp']['partuuid']})"
+disk="$(lsblk -srpno NAME,TYPE "$source_root" | awk '$2=="disk"{{print $1;exit}}')"
+[ -b "$disk" ] && [ "$(lsblk -srpno NAME,TYPE "$source_esp" | awk '$2=="disk"{{print $1;exit}}')" = "$disk" ] \
+  || {{ echo 'staging partitions do not share one physical disk' >&2; exit 1; }}
+[ "$(blockdev --getsize64 "$disk")" = '{plan['windows_disk']['size_bytes']}' ] \
+  || {{ echo 'physical disk size differs from the reviewed Windows plan' >&2; exit 1; }}
+devnum="$(lsblk -dno MAJ:MIN "$disk" | tr -d '[:space:]')"
+wwn="$(lsblk -dno WWN "$disk" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+serial="$(lsblk -dno SERIAL "$disk" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+ptuuid="$(lsblk -dno PTUUID "$disk" | tr -d '[:space:]')"
+logical="$(blockdev --getss "$disk")"
+[ -n "$wwn$serial" ] && [ -n "$ptuuid" ] || {{ echo 'disk lacks stable runtime identity' >&2; exit 1; }}
+read -rsp 'Account password: ' account_password; echo
+read -rsp 'Repeat account password: ' account_confirm; echo
+[ "$account_password" = "$account_confirm" ] || {{ echo 'account passwords differ' >&2; exit 1; }}
+read -rsp 'Disk unlock passphrase: ' disk_passphrase; echo
+read -rsp 'Repeat disk unlock passphrase: ' disk_confirm; echo
+[ "$disk_passphrase" = "$disk_confirm" ] || {{ echo 'disk passphrases differ' >&2; exit 1; }}
+args=(
+  --disk "$disk" --user "$TILO_USER" --hostname "$TILO_HOSTNAME"
+  --full-name "$TILO_FULL_NAME" --locale "$TILO_LOCALE" --timezone "$TILO_TIMEZONE" --keymap "$TILO_KEYMAP"
+  --filesystem btrfs --encrypt --pin --yes
+  --expect-disk-size-bytes '{plan['windows_disk']['size_bytes']}' --expect-disk-devnum "$devnum"
+  --expect-disk-ptuuid "$ptuuid" --expect-logical-sector-size "$logical"
+  --guided-alongside --confirm-free-space "$disk"
+  --free-start-bytes '{plan['target_free_extent']['offset_bytes']}' --free-size-bytes '{plan['target_free_extent']['size_bytes']}'
+  --efi-start-bytes '{final['final-esp']['offset_bytes']}' --efi-size-bytes '{final['final-esp']['size_bytes']}'
+  --root-start-bytes '{final['final-root']['offset_bytes']}' --root-size-bytes '{final['final-root']['size_bytes']}'
+  --new-efi-partuuid '{final['final-esp']['partuuid']}' --new-root-partuuid '{final['final-root']['partuuid']}'
+  --internal-source
+  --internal-source-root-partuuid '{by_role['staging-root']['partuuid']}' --internal-source-root-size-bytes '{by_role['staging-root']['size_bytes']}'
+  --internal-source-efi-partuuid '{by_role['staging-esp']['partuuid']}' --internal-source-efi-size-bytes '{by_role['staging-esp']['size_bytes']}'
+{expected_args}
+)
+[ -z "$wwn" ] || args+=(--expect-disk-wwn "$wwn")
+[ -z "$serial" ] || args+=(--expect-disk-serial "$serial")
+[ -z "${{TILO_KEYVARIANT:-}}" ] || args+=(--keyvariant "$TILO_KEYVARIANT")
+[ "${{TILO_FIDO2:-0}}" = 1 ] && args+=(--fido2)
+printf '%s\n%s\n' "$account_password" "$disk_passphrase" | "$runtime" "${{args[@]}}"
+unset account_password account_confirm disk_passphrase disk_confirm
+'''
+    return text.encode()
+
+
+def publish_live_record(plan, record, backend_data, runner_data):
     disk = plan["windows_disk"]["number"]
     esp = next(row for row in record["staging"] if row["role"] == "staging-esp")
     partuuid = guid(esp["partuuid"])
@@ -340,6 +409,10 @@ if(-not $p.DriveLetter){{throw 'Windows could not mount the staged ESP'}}
         backend.write_bytes(backend_data)
         if hashlib.sha256(backend.read_bytes()).hexdigest() != record["development_backend"]["sha256"]:
             fail("development installer backend failed staged-ESP readback")
+        runner = root / "dev/run-internal-install.sh"
+        runner.write_bytes(runner_data)
+        if runner.read_bytes() != runner_data:
+            fail("internal installer runner failed staged-ESP readback")
         temporary = root / ".internal-stage.json.tmp"
         temporary.write_bytes(data)
         os.replace(temporary, path)
@@ -399,11 +472,13 @@ def execute(args):
                             "offset_bytes": row["offset_bytes"], "size_bytes": row["size_bytes"]})
     _backend_path, backend_data, backend_hash = development_backend()
     live_record = make_live_record(plan, results, backend_hash)
-    record_hash = publish_live_record(plan, live_record, backend_data)
+    runner_data = make_live_runner(plan, results, backend_hash)
+    record_hash = publish_live_record(plan, live_record, backend_data, runner_data)
     receipt = {"schema": "tilo.windows-internal-stage.v1", "disk": plan["windows_disk"],
                "target_free_extent": plan["target_free_extent"], "staging": results,
                "source_sha256": plan["source"]["sha256"], "readback_verified": True,
-               "live_record_sha256": record_hash}
+               "live_record_sha256": record_hash,
+               "live_runner_sha256": hashlib.sha256(runner_data).hexdigest()}
     atomic_json(args.output, receipt)
     print(f"staging complete and read back: {args.output}")
 
