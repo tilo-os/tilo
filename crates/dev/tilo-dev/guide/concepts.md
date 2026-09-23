@@ -11,8 +11,9 @@ the VM itself do not see them.
 
 - `headless`: the compositor renders offscreen. Drive it with `control`,
   take pictures with `shot`. Costs no GPU.
-- `headful`: gets its own virtual display (a vkms card) and its own logind
-  seat, so the real DRM and libinput paths run.
+- `headful`: gets its own virtual display (a vkms card), its own logind seat
+  and, on first `tilo-dev input`, its own keyboard and pointer, so the real
+  DRM and libinput paths run. The card is re-created after a VM reboot.
 
 **Layer.** An immutable, content-addressed directory (`usr/...`) holding one
 component's build, with `provenance.json` saying how it was built. The same
@@ -30,5 +31,7 @@ VM's own `/usr`, so they affect every slot.
 shows. It runs greetd until a slot claims it (`tilo-dev seat claim`); the
 claim is a lease that records who holds it.
 
-**Authority.** Layers you build are `authority = "local"`. They exist to
-test; they are never promoted to an image. Only CI builds are.
+**Authority.** Layers you build (in the VM or on the host) are
+`authority = "local"`. They exist to test; they are never promoted to an
+image. Layers taken from a published CI image (`--from ci:<tag>`) are
+`authority = "ci"`.

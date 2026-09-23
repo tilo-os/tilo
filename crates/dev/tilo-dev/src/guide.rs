@@ -39,6 +39,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         "when something does not work",
         include_str!("../guide/troubleshooting.md"),
     ),
+    (
+        "fedora-loop",
+        "fedora44-vm-iterate.sh commands and their equivalents",
+        include_str!("../guide/fedora-loop.md"),
+    ),
 ];
 
 pub fn index() -> String {
@@ -70,6 +75,7 @@ mod tests {
             "storage",
             "platforms",
             "troubleshooting",
+            "fedora-loop",
         ] {
             assert!(topic(name).is_some_and(|t| t.starts_with("# ")), "{name}");
         }

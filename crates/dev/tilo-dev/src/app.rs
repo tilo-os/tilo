@@ -10,20 +10,24 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use tilo_dev_protocol::manifest::{Component, Manifest};
 use tilo_dev_protocol::{
-    Action, ApplyResult, Control, Gc, LayerImport, LayerSource, Logs, Policy, Rollback, Scope,
-    SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList, SlotRestart, SlotRm,
-    Status, Swap, VM_SLOT,
+    Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
+    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Policy, Rollback,
+    Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList, SlotRestart,
+    SlotRm, Status, Swap, VM_SLOT, VmTools,
 };
 
 use crate::build;
-use crate::cli::{Command, CreateArgs, SeatCommand, SlotCommand, VmCommand};
+use crate::ci;
+use crate::cli::{Builder, Command, CreateArgs, InputCommand, SeatCommand, SlotCommand, VmCommand};
 use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
+use crate::disk;
 use crate::error::CliError;
 use crate::guide;
 use crate::hypervisor::{self, CommandLine, Hypervisor, Runner, SystemRunner, Vm, run_all};
 use crate::receipt::Receipt;
-use crate::remote::{self, Remote};
+use crate::remote::{self, LockOutcome, Remote};
+use crate::vmbuild;
 
 pub struct Outcome {
     pub text: String,
@@ -272,7 +276,9 @@ impl App {
                 &registry,
                 &self.registry_path,
             )
-            .ok_or(CliError::NoVm)?
+            .ok_or_else(|| CliError::NoVm {
+                registry: self.registry_path.display().to_string(),
+            })?
         };
         let entry = registry
             .vms
@@ -362,7 +368,12 @@ impl App {
             Some(Command::Guide { topic }) => Self::guide(topic.as_deref()),
             Some(Command::Vm(command)) => self.vm(command),
             Some(Command::Slot(command)) => self.slot(command),
-            Some(Command::Swap { target, from }) => self.swap(&target, &from),
+            Some(Command::Swap {
+                target,
+                from,
+                builder,
+            }) => self.swap(&target, &from, builder),
+            Some(Command::Input { slot, action }) => self.input(slot, action),
             Some(Command::Rollback { slot, to }) => {
                 let slot = self.slot_name(slot)?;
                 let vm = self.resolve_vm(None)?;
@@ -388,7 +399,11 @@ impl App {
             Some(Command::Seat(command)) => self.seat(command),
             Some(Command::Shot { slot, output }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
-            Some(Command::Gc { dry_run, keep }) => self.gc(dry_run, keep),
+            Some(Command::Gc {
+                dry_run,
+                keep,
+                keep_targets,
+            }) => self.gc(dry_run, keep, keep_targets),
         }
     }
 
@@ -427,15 +442,18 @@ impl App {
         let goals =
             "goals: warm component build < 60s, swap + session restart < 10s, cached boot < 30s";
         let vm = match self.resolve_vm(None) {
-            Err(CliError::NoVm) => {
+            Err(error @ CliError::NoVm { .. }) => {
                 return Ok(Outcome::new(
-                    format!("VM: none selected\n{goals}"),
-                    json!({ "vm": null, "registry": self.registry_path }),
+                    format!(
+                        "VM: none selected\n  new here? read tilo-dev guide quickstart\n  {}\n{goals}",
+                        error.hint()
+                    ),
+                    json!({ "vm": null, "registry": self.registry_path, "hint": error.hint() }),
                 )
                 .next(&[
+                    "tilo-dev guide quickstart",
+                    "tilo-dev vm create <name>",
                     "tilo-dev vm list",
-                    "tilo-dev vm use <name>",
-                    "tilo-dev guide platforms",
                 ]));
             }
             other => other?,
@@ -470,12 +488,14 @@ impl App {
         if let Some(free) = status.storage.free_bytes {
             let low = free < registry.min_free_bytes();
             lines.push(format!(
-                "  disk: {} free, layers use {}{}",
+                "  disk: {} free, layers use {}, build dirs {}{}",
                 human_bytes(free),
                 human_bytes(status.storage.layers_bytes),
+                human_bytes(status.storage.targets_bytes),
                 if low { "  LOW: tilo-dev gc" } else { "" }
             ));
         }
+        lines.push(format!("  builds: {}", describe_tools(&hello.tools)));
         if let Some(lease) = &status.seat0 {
             lines.push(format!(
                 "  seat0: held by slot {} since {}",
@@ -503,12 +523,16 @@ impl App {
                 );
             }
             (Some(name), None) => {
-                lines.push(format!("slot: {name} (not created yet)"));
+                lines.push(format!(
+                    "slot: {name} (not created yet; new here? tilo-dev guide quickstart)"
+                ));
                 next.push("tilo-dev slot create --headless".into());
+                next.push("tilo-dev guide quickstart".into());
             }
             (None, _) => {
                 lines.push("slot: none (not in a worktree; pass a slot name)".into());
                 next.push("tilo-dev slot list".into());
+                next.push("tilo-dev guide quickstart".into());
             }
         }
         for issue in &status.issues {
@@ -546,6 +570,8 @@ impl App {
         for (tool, purpose) in [
             ("ssh", "reach the VM"),
             ("git", "name your slot and record provenance"),
+            ("rsync", "sync this worktree into the VM for in-VM builds"),
+            ("curl", "download the published dev disk"),
         ] {
             if on_path(tool) {
                 check(tool, "ok", format!("{tool} found"), None);
@@ -564,14 +590,16 @@ impl App {
                     check(
                         tool,
                         "ok",
-                        format!("{tool} found (for swap --from worktree)"),
+                        format!("{tool} found (for swap --builder host)"),
                         None,
                     );
                 } else {
                     check(
                         tool,
                         "warn",
-                        format!("{tool} missing: swap --from worktree cannot build"),
+                        format!(
+                            "{tool} missing: swap --builder host cannot build here (the in-VM builder still can)"
+                        ),
                         Some(format!("install {tool}")),
                     );
                 }
@@ -579,10 +607,24 @@ impl App {
         } else {
             check(
                 "host builds",
-                "warn",
-                "swap --from worktree needs a Linux host".into(),
-                Some("swap prebuilt layers: --from layer:<hash>".into()),
+                "ok",
+                "not possible on this OS; swaps build in the VM (--builder vm, the default)".into(),
+                None,
             );
+        }
+        match disk::find_token() {
+            Some(token) => check(
+                "forge token",
+                "ok",
+                format!("from {} (for vm create downloads)", token.source),
+                None,
+            ),
+            None => check(
+                "forge token",
+                "warn",
+                "none found: vm create cannot download the published disk".into(),
+                Some("export FORGEJO_TOKEN=<token with package read access>, or log in with fgj or tea".into()),
+            ),
         }
         match self.manifest() {
             Ok(Some(_)) => check("manifest", "ok", "os/components.toml found".into(), None),
@@ -686,6 +728,25 @@ impl App {
                     ),
                     None,
                 );
+                let tools = &hello.tools;
+                let builds = describe_tools(tools);
+                if tools.can_build() {
+                    check("vm builder", "ok", builds, None);
+                } else {
+                    check(
+                        "vm builder",
+                        if cfg!(target_os = "linux") {
+                            "warn"
+                        } else {
+                            "fail"
+                        },
+                        builds,
+                        Some(
+                            "tilo-dev vm upgrade   (a dev image with cargo, rsync and python3)"
+                                .into(),
+                        ),
+                    );
+                }
                 let emulated = vm.entry.emulated;
                 if hello.arch == std::env::consts::ARCH || emulated {
                     check("arch", "ok", format!("VM is {}", hello.arch), None);
@@ -698,7 +759,9 @@ impl App {
                             hello.arch,
                             std::env::consts::ARCH
                         ),
-                        Some("host builds will not run there; build on a matching host".into()),
+                        Some(
+                            "host builds will not run there; build in the VM: --builder vm".into(),
+                        ),
                     );
                 }
                 if let Ok(status) = remote.call(Status { slot: None }) {
@@ -759,15 +822,7 @@ impl App {
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
-            VmCommand::Stop { name } => {
-                let vm = self.resolve_vm(name.as_deref())?;
-                run_all(&mut self.runner, &Self::adapter(&vm)?.stop(&vm.vm()))?;
-                Ok(Outcome::new(
-                    format!("VM {} is shutting down", vm.name),
-                    json!({ "vm": vm.name }),
-                )
-                .next(&["tilo-dev vm start"]))
-            }
+            VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
             VmCommand::Upgrade { name, image } => {
                 self.vm_upgrade(name.as_deref(), image.as_deref())
             }
@@ -832,10 +887,55 @@ impl App {
         }
     }
 
+    /// Shut down under the guest's VM lock, so no swap, gc or upgrade is cut
+    /// off halfway; the lock is held until the VM is down.
+    fn vm_stop(&mut self, name: Option<&str>, force: bool) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(name)?;
+        let adapter = Self::adapter(&vm)?;
+        let mut lock = None;
+        if !force {
+            let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+            match remote::hold_vm_lock(&endpoint, vm.entry.key.as_deref()) {
+                LockOutcome::Held(held) => lock = Some(held),
+                LockOutcome::Busy => {
+                    return Err(CliError::Busy {
+                        what: format!("VM {}", vm.name),
+                    });
+                }
+                LockOutcome::Unreachable(detail) => self.warnings.push(format!(
+                    "could not take the VM lock ({detail}); stopping without it"
+                )),
+            }
+        }
+        run_all(&mut self.runner, &adapter.stop(&vm.vm()))?;
+        let down = lock
+            .as_mut()
+            .map(|l| l.wait_for_shutdown(Duration::from_secs(120)));
+        let text = match down {
+            Some(true) => format!(
+                "VM {} shut down (it held the VM lock until it was down)",
+                vm.name
+            ),
+            Some(false) => format!(
+                "VM {} was asked to shut down but still answers after 120s; tilo-dev vm status",
+                vm.name
+            ),
+            None => format!("VM {} is shutting down", vm.name),
+        };
+        drop(lock);
+        Ok(Outcome::new(text, json!({ "vm": vm.name, "down": down })).next(&["tilo-dev vm start"]))
+    }
+
     fn vm_list(&self) -> Result<Outcome, CliError> {
         let registry = self.registry()?;
         let current = self.resolve_vm(None).ok().map(|vm| vm.name);
         let mut lines = vec![format!("registry: {}", self.registry_path.display())];
+        if registry.vms.is_empty() {
+            lines.push(format!(
+                "no VMs registered yet. Get one:\n  tilo-dev vm create <name>   downloads the published dev disk, creates and registers the VM\n  or ask a human which shared VM to use; they register it in {} (tilo-dev vm use <name> --global)",
+                self.registry_path.display()
+            ));
+        }
         for (name, entry) in &registry.vms {
             let mut marks = Vec::new();
             if registry.default.as_ref() == Some(name) {
@@ -855,10 +955,7 @@ impl App {
             json!({ "registry": self.registry_path, "vms": registry.vms, "default": registry.default, "current": current }),
         );
         if registry.vms.is_empty() {
-            outcome = outcome.next(&[
-                "tilo-dev vm create <name> --image <dev image> --disk <path>",
-                "tilo-dev guide platforms",
-            ]);
+            outcome = outcome.next(&["tilo-dev vm create <name>", "tilo-dev guide quickstart"]);
         }
         Ok(outcome)
     }
@@ -957,6 +1054,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear sequence: checks, disk, adapter, registry"
+    )]
     fn vm_create(&mut self, args: CreateArgs) -> Result<Outcome, CliError> {
         let host = std::env::consts::ARCH;
         let arch = args.arch.clone().unwrap_or_else(|| host.to_owned());
@@ -972,21 +1073,6 @@ impl App {
             ));
         }
         let mut registry = self.registry()?;
-        let entry = VmEntry {
-            hypervisor: args
-                .hypervisor
-                .unwrap_or_else(|| hypervisor::native().into()),
-            ssh: args.ssh,
-            image: args.image,
-            disk: args.disk,
-            arch: (arch != host).then_some(arch),
-            emulated: args.emulated,
-            memory_mb: args.memory_mb,
-            cpus: args.cpus,
-            ssh_port: args.ssh_port,
-            template: args.template,
-            ..VmEntry::default()
-        };
         if let Some(existing) = registry.vms.get(&args.name) {
             return Ok(Outcome::new(
                 format!(
@@ -997,6 +1083,58 @@ impl App {
             )
             .next(&["tilo-dev vm start", "tilo-dev vm status"]));
         }
+        let hypervisor_name = args
+            .hypervisor
+            .clone()
+            .unwrap_or_else(|| hypervisor::native().into());
+        let format = disk::format_for(&hypervisor_name);
+        let mut image = args.image.clone();
+        let mut tag = None;
+        if image.is_none() && args.template.is_none() {
+            let (path, published) = self.download_disk(args.tag.as_deref(), &arch, format)?;
+            image = Some(path);
+            tag = Some(published);
+        }
+        if hypervisor_name == "utm" && args.template.is_none() {
+            return Err(CliError::Unsupported {
+                what: "creating a UTM VM from a disk on the command line".into(),
+                alternative: format!(
+                    "import {} in UTM once (Create > Virtualize > Linux, use the existing disk), name it, then: tilo-dev vm create {} --template '<that name>'",
+                    image.as_deref().unwrap_or("the dev disk"),
+                    args.name
+                ),
+            });
+        }
+        let disk_path = match args.disk.clone() {
+            Some(path) => Some(path),
+            None if image.is_some() => {
+                let dir = dirs::data_local_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("tilo-dev")
+                    .join("vms");
+                std::fs::create_dir_all(&dir)
+                    .map_err(CliError::io(format!("create {}", dir.display())))?;
+                Some(
+                    dir.join(format!("{}.{format}", args.name))
+                        .display()
+                        .to_string(),
+                )
+            }
+            None => None,
+        };
+        let entry = VmEntry {
+            hypervisor: hypervisor_name,
+            ssh: args.ssh,
+            image,
+            disk: disk_path,
+            arch: (arch != host).then_some(arch),
+            emulated: args.emulated,
+            memory_mb: args.memory_mb,
+            cpus: args.cpus,
+            ssh_port: args.ssh_port,
+            template: args.template,
+            ..VmEntry::default()
+        };
         if entry
             .image
             .as_deref()
@@ -1015,17 +1153,101 @@ impl App {
             registry.default = Some(args.name.clone());
         }
         registry.save(&self.registry_path)?;
-        let text = format!(
+        let mut text = format!(
             "VM {} created with {} and registered in {}",
             args.name,
             adapter.name(),
             self.registry_path.display()
         );
-        Ok(Outcome::new(
+        if let (Some(tag), Some(image)) = (&tag, &entry_image(&registry, &args.name)) {
+            let _ = write!(
+                text,
+                "\n  from the published dev disk {tag}, cached at {image} (the VM's disk is a copy-on-write child of it: keep that file)"
+            );
+        }
+        let start = format!("tilo-dev vm start {}", args.name);
+        let slot = "tilo-dev slot create --headless".to_owned();
+        let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "commands": commands }),
-        )
-        .next(&["tilo-dev vm start", "tilo-dev vm use <name>"]))
+            json!({ "vm": args.name, "created": true, "tag": tag, "commands": commands }),
+        );
+        outcome.next = vec![start, slot];
+        Ok(outcome)
+    }
+
+    /// Fetch the published dev disk for `arch`/`format` into the cache and
+    /// return its path and tag.
+    fn download_disk(
+        &mut self,
+        tag: Option<&str>,
+        arch: &str,
+        format: &str,
+    ) -> Result<(String, String), CliError> {
+        let token = disk::find_token();
+        let auth = disk::AuthHeader::new(token.as_ref())?;
+        let refused = |url: &str, status: u16| CliError::ForgeAuth {
+            url: url.to_owned(),
+            status,
+            token: token.as_ref().map(|t| t.source.clone()),
+        };
+        let unexpected = |url: &str, status: u16, body: &str| CliError::CommandFailed {
+            command: format!("curl {url}"),
+            status: format!("HTTP {status}"),
+            stderr: body.chars().take(300).collect(),
+        };
+        let tag = if let Some(tag) = tag {
+            tag.to_owned()
+        } else {
+            let (status, body) = disk::get(&mut self.runner, disk::VERSIONS, &auth)?;
+            match status {
+                200 => disk::newest_tag(&body).ok_or_else(|| CliError::NoDiskPublished {
+                    tag: "(any)".into(),
+                    url: disk::VERSIONS.into(),
+                })?,
+                401 | 403 => return Err(refused(disk::VERSIONS, status)),
+                _ => return Err(unexpected(disk::VERSIONS, status, &body)),
+            }
+        };
+        let url = disk::manifest_url(&tag);
+        let (status, body) = disk::get(&mut self.runner, &url, &auth)?;
+        match status {
+            200 => {}
+            401 | 403 => return Err(refused(&url, status)),
+            404 => {
+                if token.is_none() {
+                    self.warnings.push(
+                        "no forge token was found, and the forge answers 404 for private packages: export FORGEJO_TOKEN=<token with package read access>".into(),
+                    );
+                }
+                return Err(CliError::NoDiskPublished { tag, url });
+            }
+            _ => return Err(unexpected(&url, status, &body)),
+        }
+        let manifest: disk::DiskManifest =
+            serde_json::from_str(&body).map_err(|e| CliError::CommandFailed {
+                command: format!("read {url}"),
+                status: "not a disk manifest".into(),
+                stderr: e.to_string(),
+            })?;
+        let chosen =
+            manifest
+                .pick(arch, format)
+                .cloned()
+                .ok_or_else(|| CliError::NoDiskForHost {
+                    tag: tag.clone(),
+                    arch: arch.to_owned(),
+                    format: format.to_owned(),
+                    available: manifest.offered(),
+                })?;
+        let dest = disk::cache_path(&tag, &chosen.file);
+        let runner = &mut self.runner;
+        self.receipt
+            .phase("download", || disk::fetch(runner, &chosen, &dest, &auth))?;
+        self.receipt.set(
+            "disk",
+            json!({ "tag": tag, "file": chosen.file, "sha256": chosen.sha256 }),
+        );
+        Ok((dest.display().to_string(), tag))
     }
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
@@ -1203,7 +1425,12 @@ impl App {
 
     // ---- swap -----------------------------------------------------------------
 
-    fn swap(&mut self, target: &[String], from: &str) -> Result<Outcome, CliError> {
+    fn swap(
+        &mut self,
+        target: &[String],
+        from: &str,
+        builder: Option<Builder>,
+    ) -> Result<Outcome, CliError> {
         let (slot, component) = match target {
             [component] => (self.slot_name(None)?, component.clone()),
             [slot, component] => (slot.clone(), component.clone()),
@@ -1211,6 +1438,9 @@ impl App {
         };
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
+        if let Some(app) = component.strip_prefix("app:") {
+            return self.swap_app(&slot, app, from, builder);
+        }
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry {
@@ -1237,32 +1467,22 @@ impl App {
                 });
             }
         }
-        let layer_ref = if from == "worktree" {
-            None
-        } else if let Some(hash) = from.strip_prefix("layer:") {
-            Some(hash.to_owned())
-        } else if from.starts_with("sha:") {
-            return Err(CliError::Unsupported {
-                what: "--from sha:<commit>".into(),
-                alternative: "check the commit out in a worktree and use --from worktree, or swap a layer already in the VM: --from layer:<hash>".into(),
-            });
-        } else {
-            return Err(CliError::InvalidSource(from.into()));
-        };
+        let source = ci::parse(from, self.worktree.as_ref())?;
+        if matches!(source, ci::Source::Worktree)
+            && let Some(explicit @ Builder::Host) = builder
+        {
+            // Fail before connecting: no host build is possible off Linux.
+            choose_builder(
+                Some(explicit),
+                &VmTools::default(),
+                cfg!(target_os = "linux"),
+                std::env::consts::OS,
+            )?;
+        }
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
-        let status = remote.call(Status { slot: None })?;
-        let floor = self.registry()?.min_free_bytes();
-        if let Some(free) = status.storage.free_bytes
-            && free < floor
-        {
-            return Err(CliError::LowDisk {
-                place: format!("VM {}", vm.name),
-                free: human_bytes(free),
-                floor: human_bytes(floor),
-            });
-        }
-        let layer = if let Some(hash) = layer_ref {
+        self.check_vm_space(&mut remote, &vm)?;
+        let layer = if let ci::Source::Layer(hash) = source {
             hash
         } else {
             let manifest_path = self.base_dir().join("os/components.toml");
@@ -1273,7 +1493,11 @@ impl App {
                 name: component.clone(),
                 known: manifest.components.keys().cloned().collect(),
             })?;
-            self.build_layer(&mut remote, entry)?
+            if let ci::Source::Ci { tag, commit } = source {
+                self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
+            } else {
+                self.build_worktree_layer(&mut remote, &vm, entry, builder)?
+            }
         };
         self.receipt.set("layer", &layer);
         let info = entry.map(|c| c.info);
@@ -1304,28 +1528,330 @@ impl App {
         ]))
     }
 
-    fn build_layer(
+    /// `--from worktree` with the chosen builder.
+    fn build_worktree_layer(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         component: &Component,
+        builder: Option<Builder>,
     ) -> Result<String, CliError> {
-        if !cfg!(target_os = "linux") {
+        let (chosen, note) = choose_builder(
+            builder,
+            &remote.hello.tools,
+            cfg!(target_os = "linux"),
+            std::env::consts::OS,
+        )?;
+        self.warnings.extend(note);
+        self.receipt
+            .set("builder", if chosen == Builder::Vm { "vm" } else { "host" });
+        match chosen {
+            Builder::Vm => self.build_layer_vm(vm, component),
+            Builder::Host => self.build_layer(remote, component),
+        }
+    }
+
+    /// Refuse to add layers to a VM below its free-space floor.
+    fn check_vm_space(&self, remote: &mut Remote, vm: &Resolved) -> Result<(), CliError> {
+        let status = remote.call(Status { slot: None })?;
+        let floor = self.registry()?.min_free_bytes();
+        match status.storage.free_bytes {
+            Some(free) if free < floor => Err(CliError::LowDisk {
+                place: format!("VM {}", vm.name),
+                free: human_bytes(free),
+                floor: human_bytes(floor),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// rsync this worktree into the VM; returns its id there.
+    fn sync_worktree(&mut self, vm: &Resolved) -> Result<(Worktree, String), CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        if !on_path("rsync") {
+            return Err(CliError::ToolMissing {
+                tool: "rsync".into(),
+                purpose: "sync this worktree into the VM for an in-VM build".into(),
+            });
+        }
+        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let id = vmbuild::worktree_id(&worktree, crate::context::hostname().as_deref());
+        let rsync = vmbuild::rsync_command(&worktree.root, &endpoint, vm.entry.key.as_deref(), &id);
+        eprintln!(
+            "tilo-dev: syncing {} to {}:{}/{id}",
+            worktree.root.display(),
+            vm.name,
+            tilo_dev_protocol::SRC_DIR
+        );
+        let runner = &mut self.runner;
+        let synced = self.receipt.phase("sync", || runner.interactive(&rsync))?;
+        if !synced {
+            return Err(CliError::CommandFailed {
+                command: rsync.display(),
+                status: "sync failed".into(),
+                stderr: "rsync's output above says why (exit 1 from flock: another build of this worktree is running)".into(),
+            });
+        }
+        self.receipt.set("worktree_id", &id);
+        Ok((worktree, id))
+    }
+
+    /// Run a streaming job in the VM and record its phases.
+    fn vm_job(
+        &mut self,
+        vm: &Resolved,
+        subcommand: &str,
+        job: &impl serde::Serialize,
+    ) -> Result<JobOutput, CliError> {
+        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let command = vmbuild::daemon_command(vm.entry.daemon.as_deref(), subcommand);
+        let output = vmbuild::run_job(&vm.name, &endpoint, vm.entry.key.as_deref(), &command, job)?;
+        let (JobOutput::Layer { phases, .. } | JobOutput::App { phases, .. }) = &output;
+        for (name, seconds) in phases {
+            self.receipt.record(name, *seconds);
+        }
+        if let JobOutput::Layer { cache, .. } = &output {
+            self.receipt.set("cache", cache);
+        }
+        Ok(output)
+    }
+
+    /// `--builder vm`: sync, build in the VM, import there; no bytes return.
+    fn build_layer_vm(&mut self, vm: &Resolved, component: &Component) -> Result<String, CliError> {
+        let (worktree, id) = self.sync_worktree(vm)?;
+        let job = BuildJob {
+            worktree: id,
+            target: BuildTarget::Component {
+                name: component.name.clone(),
+            },
+            provenance: build::source_provenance(&worktree, &component.name, "vm"),
+            owner: worktree.owner(),
+            color: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        };
+        match self.vm_job(vm, "build", &job)? {
+            JobOutput::Layer { hash, .. } => Ok(hash),
+            JobOutput::App { .. } => Err(CliError::CommandFailed {
+                command: "tilo-devd build".into(),
+                status: "unexpected result".into(),
+                stderr: "an app install instead of a layer".into(),
+            }),
+        }
+    }
+
+    /// `--from sha:` / `--from ci:`: the component's manifest paths out of
+    /// the published CI image, as a layer with `authority = "ci"`.
+    fn ci_layer(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+        tag: &str,
+        commit: Option<String>,
+    ) -> Result<String, CliError> {
+        let image = ci::image(tag);
+        self.receipt.set("image", &image);
+        if component.paths.is_empty() {
             return Err(CliError::Unsupported {
-                what: "building a component on this host".into(),
-                alternative: "build on a Linux host, or swap a layer that is already in the VM: --from layer:<hash>".into(),
+                what: format!("--from ci for '{}', which lists no files", component.name),
+                alternative: "build it: --from worktree".into(),
+            });
+        }
+        let mut provenance = tilo_dev_protocol::Provenance::local(&component.name);
+        provenance.source_commit = commit;
+        provenance.cargo_profile = Some(component.profile.clone());
+        provenance.features.clone_from(&component.features);
+        let job = CiJob {
+            image: image.clone(),
+            component: component.name.clone(),
+            paths: component.paths.clone(),
+            provenance,
+        };
+        if remote.hello.tools.podman {
+            eprintln!("tilo-dev: pulling {image} in VM {}", vm.name);
+            return match self.vm_job(vm, "ci-layer", &job) {
+                Ok(JobOutput::Layer { hash, .. }) => Ok(hash),
+                Ok(JobOutput::App { .. }) => Err(CliError::CommandFailed {
+                    command: "tilo-devd ci-layer".into(),
+                    status: "unexpected result".into(),
+                    stderr: "an app install instead of a layer".into(),
+                }),
+                Err(CliError::Remote(error)) if error.code == tilo_dev_protocol::code::AUTH => {
+                    Err(CliError::RegistryLogin {
+                        place: format!("VM {}", vm.name),
+                        registry: REGISTRY.into(),
+                    })
+                }
+                Err(error) => Err(error),
+            };
+        }
+        // No podman in the VM: pull here, upload the layer.
+        registry_login(&mut self.runner)?;
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        let staging = build::Staging::new(&worktree)?;
+        let arch = remote.hello.arch.clone();
+        eprintln!("tilo-dev: pulling {image} on this host (the VM has no podman)");
+        let runner = &mut self.runner;
+        let digest = self.receipt.phase("pull", || {
+            ci::extract_on_host(runner, &image, &arch, &job.paths, &staging.tree())
+        })?;
+        build::pack(&staging.tree(), &staging.archive())?;
+        let mut provenance = job.provenance;
+        provenance.authority = "ci".into();
+        provenance.builder = Some("ci".into());
+        provenance.base_image_digest = digest;
+        provenance.target = Some(format!("{arch}-unknown-linux-gnu"));
+        let archive = staging.archive();
+        let upload = self
+            .receipt
+            .phase("transfer", || -> Result<String, CliError> {
+                let file = std::fs::File::open(&archive)
+                    .map_err(CliError::io(format!("open {}", archive.display())))?;
+                remote.upload(std::io::BufReader::new(file))
+            })?;
+        let imported = self.receipt.phase("import", || {
+            remote.call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(provenance),
+            })
+        })?;
+        Ok(imported.hash)
+    }
+
+    /// `swap app:<dir>`: package the app as a self-signed `.tapp` and
+    /// install it into the slot user's store. Not a generation.
+    fn swap_app(
+        &mut self,
+        slot: &str,
+        dir: &str,
+        from: &str,
+        builder: Option<Builder>,
+    ) -> Result<Outcome, CliError> {
+        if from != "worktree" {
+            return Err(CliError::Unsupported {
+                what: format!("--from {from} for an app"),
+                alternative: format!("apps build from this worktree: tilo-dev swap app:{dir}"),
             });
         }
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        let known = build::apps_in(&worktree.root);
+        if !known.iter().any(|a| a == dir) {
+            return Err(CliError::UnknownApp {
+                name: dir.to_owned(),
+                known,
+            });
+        }
+        let vm = self.resolve_vm(None)?;
+        let mut remote = self.connect(&vm)?;
+        let (chosen, note) = choose_builder(
+            builder,
+            &remote.hello.tools,
+            cfg!(target_os = "linux"),
+            std::env::consts::OS,
+        )?;
+        self.warnings.extend(note);
+        let result: AppInstallResult = match chosen {
+            Builder::Vm => {
+                let (worktree, id) = self.sync_worktree(&vm)?;
+                let job = BuildJob {
+                    worktree: id,
+                    target: BuildTarget::App {
+                        dir: dir.to_owned(),
+                        slot: slot.to_owned(),
+                    },
+                    provenance: build::source_provenance(&worktree, &format!("app:{dir}"), "vm"),
+                    owner: worktree.owner(),
+                    color: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+                };
+                match self.vm_job(&vm, "build", &job)? {
+                    JobOutput::App { result, .. } => result,
+                    JobOutput::Layer { .. } => {
+                        return Err(CliError::CommandFailed {
+                            command: "tilo-devd build".into(),
+                            status: "unexpected result".into(),
+                            stderr: "a layer instead of an app install".into(),
+                        });
+                    }
+                }
+            }
+            Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+        };
+        let what = match (&result.id, &result.version) {
+            (Some(id), Some(version)) => format!("{id} {version}"),
+            (Some(id), None) => id.clone(),
+            _ => format!("apps/{dir}"),
+        };
+        let text = format!(
+            "installed {what} (self-signed) into slot {slot}'s app store; nothing restarted: it is live the next time the app launches\n  app installs are not generations: tilo-dev rollback does not undo them"
+        );
+        Ok(Outcome::new(text, json!(result)).next(&[
+            "tilo-dev control actions list",
+            "tilo-dev shot",
+            "tilo-dev logs",
+        ]))
+    }
+
+    fn install_app_from_host(
+        &mut self,
+        remote: &mut Remote,
+        worktree: &Worktree,
+        slot: &str,
+        dir: &str,
+    ) -> Result<AppInstallResult, CliError> {
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self
-            .runner
+        let target = build::target_dir(&self.cargo_metadata());
+        let staging = build::Staging::new(worktree)?;
+        let tapp = staging.tree().with_extension("tapp");
+        let [tools, package] = build::app_package(&target, dir, &tapp);
+        let runner = &mut self.runner;
+        let built = self.receipt.phase("build", || -> Result<(), CliError> {
+            for command in [&tools, &package] {
+                if !runner.interactive(command)? {
+                    return Err(CliError::CommandFailed {
+                        command: command.display(),
+                        status: "failed".into(),
+                        stderr: String::new(),
+                    });
+                }
+            }
+            Ok(())
+        });
+        built?;
+        let upload = self
+            .receipt
+            .phase("transfer", || -> Result<String, CliError> {
+                let file = std::fs::File::open(&tapp)
+                    .map_err(CliError::io(format!("open {}", tapp.display())))?;
+                remote.upload(std::io::BufReader::new(file))
+            })?;
+        self.receipt.phase("install", || {
+            remote.call(AppInstall {
+                slot: slot.to_owned(),
+                source: LayerSource::Upload(upload),
+            })
+        })
+    }
+
+    fn cargo_metadata(&mut self) -> Value {
+        self.runner
             .output(&CommandLine::new(
                 "cargo",
                 &["metadata", "--no-deps", "--format-version", "1"],
             ))
             .ok()
             .and_then(|o| serde_json::from_str(&o.stdout).ok())
-            .unwrap_or(Value::Null);
+            .unwrap_or(Value::Null)
+    }
+
+    /// `--builder host`: cargo on this Linux host, layer uploaded.
+    fn build_layer(
+        &mut self,
+        remote: &mut Remote,
+        component: &Component,
+    ) -> Result<String, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata();
+        let target = build::target_dir(&metadata);
         let extra = build::dev_features(&metadata, &component.packages);
         let cargo = build::cargo_build(component, &extra);
         let before = build::sccache_stats(&mut self.runner);
@@ -1342,7 +1868,7 @@ impl App {
         self.receipt
             .set("cache", build::cache_summary(before, after));
         let staging = build::Staging::new(&worktree)?;
-        let install = build::install(component, &staging.tree());
+        let install = build::install(component, &target, &staging.tree());
         let runner = &mut self.runner;
         let assembled = self.receipt.phase("assemble", || -> Result<(), CliError> {
             if !runner.interactive(&install)? {
@@ -1355,8 +1881,7 @@ impl App {
             build::pack(&staging.tree(), &staging.archive())
         });
         assembled?;
-        let mut features = component.features.clone();
-        features.extend(extra);
+        let features = component.build_features(&extra);
         let provenance = build::provenance(&mut self.runner, &worktree, component, features);
         let archive = staging.archive();
         let upload = self
@@ -1465,16 +1990,62 @@ impl App {
         Ok(Outcome::new(result.stdout.trim_end(), json!(result)))
     }
 
-    fn gc(&mut self, dry_run: bool, keep: Option<u32>) -> Result<Outcome, CliError> {
-        let keep = keep.unwrap_or(self.registry()?.keep_generations());
+    fn input(&mut self, slot: Option<String>, command: InputCommand) -> Result<Outcome, CliError> {
+        let actions = input_actions(command)?;
+        let slot = self.slot_name(slot)?;
         let vm = self.resolve_vm(None)?;
-        let result = self.connect(&vm)?.call(Gc { keep, dry_run })?;
+        let result = self.connect(&vm)?.call(Input {
+            slot: slot.clone(),
+            actions: actions.clone(),
+        })?;
+        let what = actions
+            .iter()
+            .map(describe_input)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(Outcome::new(
+            format!(
+                "{what} on slot {slot} (seat {}, {} input events through its uinput devices)",
+                result.seat, result.events
+            ),
+            json!(result),
+        )
+        .next(&["tilo-dev shot", "tilo-dev control state-dump --pretty"]))
+    }
+
+    fn gc(
+        &mut self,
+        dry_run: bool,
+        keep: Option<u32>,
+        keep_targets: Option<u32>,
+    ) -> Result<Outcome, CliError> {
+        let registry = self.registry()?;
+        let keep = keep.unwrap_or_else(|| registry.keep_generations());
+        let keep_targets = keep_targets.or(registry.keep_targets);
+        let vm = self.resolve_vm(None)?;
+        let result = self.connect(&vm)?.call(Gc {
+            keep,
+            dry_run,
+            keep_targets,
+            free_goal_bytes: Some(registry.min_free_bytes()),
+        })?;
         let verb = if dry_run { "would remove" } else { "removed" };
-        let text = format!(
+        let mut text = format!(
             "{verb} {} layers ({}) and {} generations; keeping the current and newest {keep} per slot",
             result.removed_layers.len(),
             human_bytes(result.freed_bytes),
             result.removed_generations.len()
+        );
+        let _ = write!(
+            text,
+            "\n{verb} {} in-VM build dirs ({}), least recently used first{}",
+            result.removed_targets.len(),
+            human_bytes(result.freed_target_bytes),
+            if result.removed_targets.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", result.removed_targets.join(", "))
+            }
         );
         let mut outcome = Outcome::new(text, json!(result));
         if dry_run {
@@ -1486,6 +2057,107 @@ impl App {
 
 fn yes(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+fn entry_image(registry: &Registry, name: &str) -> Option<String> {
+    registry.vms.get(name).and_then(|e| e.image.clone())
+}
+
+/// Where builds and CI extraction run for a VM with these tools.
+pub fn describe_tools(tools: &VmTools) -> String {
+    let build = if tools.can_build() {
+        format!(
+            "in the VM (sccache {})",
+            if tools.sccache { "shared" } else { "missing" }
+        )
+    } else if cfg!(target_os = "linux") {
+        format!(
+            "on this host (the VM lacks {})",
+            tools.missing_for_build().join(", ")
+        )
+    } else {
+        format!(
+            "unavailable (the VM lacks {}; tilo-dev vm upgrade)",
+            tools.missing_for_build().join(", ")
+        )
+    };
+    let ci = if tools.podman {
+        "CI layers pulled in the VM"
+    } else {
+        "CI layers pulled on this host"
+    };
+    format!("{build}; {ci}")
+}
+
+/// Which builder `swap --from worktree` uses.
+///
+/// # Errors
+/// `--builder host` off Linux, and `--builder vm` (or no choice off Linux)
+/// when the VM's image cannot build.
+pub fn choose_builder(
+    explicit: Option<Builder>,
+    tools: &VmTools,
+    linux_host: bool,
+    os: &str,
+) -> Result<(Builder, Option<String>), CliError> {
+    let cannot = || CliError::VmCannotBuild {
+        missing: tools
+            .missing_for_build()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    };
+    match explicit {
+        Some(Builder::Host) if !linux_host => {
+            Err(CliError::HostBuildUnsupported { os: os.to_owned() })
+        }
+        Some(Builder::Host) => Ok((Builder::Host, None)),
+        Some(Builder::Vm) | None if tools.can_build() => Ok((Builder::Vm, None)),
+        None if linux_host => Ok((
+            Builder::Host,
+            Some(format!(
+                "the VM's image has no {}, so this build runs on this host (--builder host); tilo-dev vm upgrade gets an image that builds",
+                tools.missing_for_build().join(", ")
+            )),
+        )),
+        Some(Builder::Vm) | None => Err(cannot()),
+    }
+}
+
+/// `tilo-dev input` arguments as protocol actions.
+///
+/// # Errors
+/// Unknown buttons, and keys or characters that cannot be sent.
+pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError> {
+    let action = match command {
+        InputCommand::Key { combos } => InputAction::Key { combos },
+        InputCommand::Type { text } => InputAction::Type { text },
+        InputCommand::Move { x, y } => InputAction::Move { x, y },
+        InputCommand::Click { button, at } => InputAction::Click {
+            button: Button::parse(&button).ok_or_else(|| {
+                CliError::InvalidInput(format!("'{button}' is not a button (left, right, middle)"))
+            })?,
+            at: match at.as_deref() {
+                Some([x, y]) => Some((*x, *y)),
+                _ => None,
+            },
+        },
+    };
+    let actions = vec![action];
+    tilo_dev_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
+    Ok(actions)
+}
+
+fn describe_input(action: &InputAction) -> String {
+    match action {
+        InputAction::Key { combos } => format!("pressed {}", combos.join(" ")),
+        InputAction::Type { text } => format!("typed {} characters", text.chars().count()),
+        InputAction::Move { x, y } => format!("moved the pointer to {x},{y}"),
+        InputAction::Click { button, at } => {
+            let at = at.map(|(x, y)| format!(" at {x},{y}")).unwrap_or_default();
+            format!("clicked {button:?}{at}").to_lowercase()
+        }
+    }
 }
 
 fn slot_line(info: &SlotInfo) -> String {
@@ -1643,6 +2315,125 @@ mod tests {
             "received unexpected HTTP status: 401 Unauthorized"
         ));
         assert!(!is_auth_failure("no space left on device"));
+    }
+
+    fn app_with_empty_registry(dir: &Path) -> App {
+        App {
+            json: false,
+            worktree: None,
+            registry_path: dir.join("vms.toml"),
+            runner: SystemRunner { cwd: None },
+            receipt: Receipt::new(dir, vec![]),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn first_contact_points_at_the_quickstart_and_both_ways_to_a_vm() {
+        if std::env::var_os("TILO_DEV_VM").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let status = app.run(None).unwrap();
+        assert!(
+            status.text.contains("tilo-dev guide quickstart"),
+            "{}",
+            status.text
+        );
+        assert!(status.text.contains("ask a human"), "{}", status.text);
+        assert_eq!(status.next[0], "tilo-dev guide quickstart");
+        assert!(
+            status
+                .next
+                .contains(&"tilo-dev vm create <name>".to_owned())
+        );
+
+        let list = app.run(Some(Command::Vm(VmCommand::List))).unwrap();
+        assert!(list.text.contains("no VMs registered yet"), "{}", list.text);
+        assert!(
+            list.text.contains("tilo-dev vm create <name>"),
+            "{}",
+            list.text
+        );
+        assert!(list.text.contains("ask a human"), "{}", list.text);
+        assert!(list.next.contains(&"tilo-dev vm create <name>".to_owned()));
+
+        let error = app
+            .run(Some(Command::Logs {
+                slot: Some("a".into()),
+                lines: 1,
+            }))
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::NoVm { .. }));
+        assert!(error.render().contains("see: tilo-dev guide quickstart"));
+    }
+
+    #[test]
+    fn builder_choice_prefers_the_vm_and_explains_fallbacks() {
+        let ready = VmTools {
+            cargo: true,
+            rsync: true,
+            python3: true,
+            sccache: true,
+            podman: false,
+        };
+        let bare = VmTools::default();
+        assert_eq!(
+            choose_builder(None, &ready, true, "linux").unwrap(),
+            (Builder::Vm, None)
+        );
+        let (builder, note) = choose_builder(None, &bare, true, "linux").unwrap();
+        assert_eq!(builder, Builder::Host);
+        assert!(note.unwrap().contains("--builder host"));
+        assert!(matches!(
+            choose_builder(None, &bare, false, "macos"),
+            Err(CliError::VmCannotBuild { .. })
+        ));
+        let error = choose_builder(Some(Builder::Host), &ready, false, "macos").unwrap_err();
+        assert!(matches!(error, CliError::HostBuildUnsupported { .. }));
+        assert!(error.to_string().contains("macos"));
+        assert!(error.hint().contains("--builder vm"));
+        assert!(matches!(
+            choose_builder(Some(Builder::Vm), &bare, true, "linux"),
+            Err(CliError::VmCannotBuild { .. })
+        ));
+        assert_eq!(
+            choose_builder(Some(Builder::Host), &bare, true, "linux").unwrap(),
+            (Builder::Host, None)
+        );
+        assert!(describe_tools(&ready).starts_with("in the VM"));
+    }
+
+    #[test]
+    fn input_arguments_become_validated_actions() {
+        let click = input_actions(InputCommand::Click {
+            button: "right".into(),
+            at: Some(vec![4, 5]),
+        })
+        .unwrap();
+        assert_eq!(
+            click,
+            [InputAction::Click {
+                button: Button::Right,
+                at: Some((4, 5))
+            }]
+        );
+        assert_eq!(describe_input(&click[0]), "clicked right at 4,5");
+        assert!(matches!(
+            input_actions(InputCommand::Click {
+                button: "fourth".into(),
+                at: None
+            }),
+            Err(CliError::InvalidInput(_))
+        ));
+        let error = input_actions(InputCommand::Type {
+            text: "naïve".into(),
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains('ï'));
+        assert!(error.hint().contains("tilo-dev input key"));
     }
 
     #[test]

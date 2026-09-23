@@ -10,6 +10,7 @@
 //! min_free_gb = 5          # builds, swaps and vm start refuse below this
 //! warn_disk_gb = 80        # status warns when a VM disk grows past this
 //! keep_generations = 5     # gc keeps this many per slot
+//! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv
@@ -38,6 +39,9 @@ pub struct Registry {
     pub warn_disk_gb: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_generations: Option<u32>,
+    /// In-VM build dirs gc keeps (the daemon's default is 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_targets: Option<u32>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }

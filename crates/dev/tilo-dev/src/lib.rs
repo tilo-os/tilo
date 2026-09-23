@@ -4,11 +4,14 @@
 
 pub mod app;
 pub mod build;
+pub mod ci;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod disk;
 pub mod error;
 pub mod guide;
 pub mod hypervisor;
 pub mod receipt;
 pub mod remote;
+pub mod vmbuild;

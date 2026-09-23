@@ -28,13 +28,26 @@ image's unit template or the expected domain (`tilo-devd rpc --expect-domain`)
 is out of date: `tilo-dev vm upgrade`.
 
 **401 or reqPackageAccess from code.sandbox.example.** Log in with a forge token that
-has package read access: `podman login code.sandbox.example` on the host, and for
-`vm upgrade` inside the VM too (the error names which one).
+has package read access: `podman login code.sandbox.example` on the host; inside
+the VM (for `vm upgrade` and CI layers pulled there)
+`tilo-dev vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.sandbox.example`.
+The error names which one.
 
-**Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc` and
-upgrades take the whole VM; wait and retry.
+**`vm create` cannot download.** It needs a forge token: `FORGEJO_TOKEN`, or an
+fgj or tea login for code.sandbox.example (`tilo-dev doctor` says which it found).
+"No dev disk published" means CI has not published that tag; pick another
+with `--tag`, or build a disk with `os/dev/build-dev-image.sh` and pass
+`--image`. An interrupted download resumes when you rerun the command.
+
+**The VM cannot build.** Its image lacks cargo, rsync or python3 (`tilo-dev
+status` shows where builds run). `tilo-dev vm upgrade` to a current dev image;
+on a Linux host `--builder host` works meanwhile. A sync that fails with
+exit 1 from flock means another build of the same worktree is running.
+
+**Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc`,
+upgrades and `vm stop` take the whole VM; wait and retry.
 
 **Receipts.** Every run leaves `target/dev-runs/<id>/run.json` with phase
-timings (build, assemble, transfer, import, apply, session-ready) and flags
-phases slower than the goals: warm build < 60s, swap plus restart < 10s,
-cached boot < 30s.
+timings (sync, build, assemble, transfer, import, apply, session-ready,
+download) and flags phases slower than the goals: warm build < 60s, swap
+plus restart < 10s, cached boot < 30s.

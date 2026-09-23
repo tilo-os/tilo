@@ -1,6 +1,8 @@
-//! `swap --from worktree` on the host: build a component with plain cargo,
-//! lay it out with the manifest installer, and pack the layer for upload.
-//! Path decisions stay in `os/scripts/install-components.py`.
+//! `swap --from worktree --builder host`: build a component with plain
+//! cargo on this Linux host, lay it out with the manifest installer, and
+//! pack the layer for upload. Path decisions stay in
+//! `os/scripts/install-components.py`; the cargo and installer arguments
+//! are the same ones the in-VM builder runs.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -8,62 +10,74 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tilo_dev_protocol::Provenance;
-use tilo_dev_protocol::manifest::Component;
+use tilo_dev_protocol::manifest::{Component, dev_override_features};
 
 use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-pub const INSTALLER: &str = "os/scripts/install-components.py";
-pub const DEV_FEATURE: &str = "dev-overrides";
-
 /// `pkg/dev-overrides` for each of `packages` that declares the feature,
 /// read from `cargo metadata`. Production images never enable it.
 pub fn dev_features(metadata: &Value, packages: &[String]) -> Vec<String> {
-    let Some(all) = metadata.get("packages").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    packages
-        .iter()
-        .filter(|name| {
-            all.iter().any(|p| {
-                p.get("name").and_then(Value::as_str) == Some(name.as_str())
-                    && p.get("features").and_then(|f| f.get(DEV_FEATURE)).is_some()
-            })
-        })
-        .map(|name| format!("{name}/{DEV_FEATURE}"))
-        .collect()
+    dev_override_features(metadata, packages)
+}
+
+/// Cargo's target directory for this worktree, from `cargo metadata`.
+pub fn target_dir(metadata: &Value) -> String {
+    metadata
+        .get("target_directory")
+        .and_then(Value::as_str)
+        .map_or_else(|| "target".to_owned(), str::to_owned)
 }
 
 pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandLine {
-    let mut command = CommandLine::new(
-        "cargo",
-        &["build", "--locked", "--profile", &component.profile],
-    );
-    for package in &component.packages {
-        command = command.arg("-p").arg(package.clone());
-    }
-    let mut features = component.features.clone();
-    features.extend(
-        extra_features
-            .iter()
-            .filter(|f| !component.features.contains(f))
-            .cloned(),
-    );
-    if !features.is_empty() {
-        command = command.arg("--features").arg(features.join(","));
-    }
+    let mut command = CommandLine::new("cargo", &[]);
+    command.args = component.cargo_args(extra_features);
     command
 }
 
-pub fn install(component: &Component, dest: &Path) -> CommandLine {
-    let from = format!("target/{}", component.profile);
-    CommandLine::new(
-        "python3",
-        &[INSTALLER, "--quiet", "--from", &from, "--dest"],
-    )
-    .arg(dest.display().to_string())
-    .arg(component.name.clone())
+pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandLine {
+    let from = format!("{target_dir}/{}", component.profile);
+    let mut command = CommandLine::new("python3", &[]);
+    command.args = component.installer_args(&from, &dest.display().to_string());
+    command
+}
+
+/// `cargo` that builds the app packaging tools, then the `tilo-app` call
+/// that packages `apps/<dir>` as a self-signed `.tapp` at `out`.
+pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] {
+    let tools = CommandLine::new(
+        "cargo",
+        &[
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "tilo-app-cli",
+            "-p",
+            "tilo-app-package-cli",
+        ],
+    );
+    let package = CommandLine::new(&format!("{target_dir}/release/tilo-app"), &["package"])
+        .arg(format!("apps/{dir}"))
+        .arg("--output")
+        .arg(out.display().to_string())
+        .arg("--force")
+        .env("TILO_PKG", format!("{target_dir}/release/tilo-app-package"));
+    [tools, package]
+}
+
+/// Apps this worktree offers: `apps/<dir>/tilo-app.toml`.
+pub fn apps_in(root: &Path) -> Vec<String> {
+    let mut apps: Vec<String> = std::fs::read_dir(root.join("apps"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("tilo-app.toml").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    apps.sort();
+    apps
 }
 
 /// Pack `dir` (holding `usr/`) as an uncompressed tar, symlinks kept.
@@ -106,6 +120,21 @@ fn first_line(runner: &mut dyn Runner, command: &CommandLine) -> Option<String> 
     })
 }
 
+/// What the worktree says about a build of `component`: commit, dirty-tree
+/// hash and `Cargo.lock` hash. The builder adds its toolchain.
+pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) -> Provenance {
+    let mut provenance = Provenance::local(component);
+    provenance.source_commit = worktree.head();
+    provenance.dirty_tree_hash = worktree
+        .dirty_state()
+        .map(|state| sha256_hex(state.as_bytes()));
+    provenance.builder = Some(builder.into());
+    provenance.cargo_lock_hash = std::fs::read(worktree.root.join("Cargo.lock"))
+        .ok()
+        .map(|b| sha256_hex(&b));
+    provenance
+}
+
 /// Everything that identifies a host build of `component`.
 pub fn provenance(
     runner: &mut dyn Runner,
@@ -113,17 +142,9 @@ pub fn provenance(
     component: &Component,
     features: Vec<String>,
 ) -> Provenance {
-    let mut provenance = Provenance::local(&component.name);
-    provenance.source_commit = worktree.head();
-    provenance.dirty_tree_hash = worktree
-        .dirty_state()
-        .map(|state| sha256_hex(state.as_bytes()));
+    let mut provenance = source_provenance(worktree, &component.name, "host");
     provenance.cargo_profile = Some(component.profile.clone());
     provenance.features = features;
-    provenance.builder = Some("host".into());
-    provenance.cargo_lock_hash = std::fs::read(worktree.root.join("Cargo.lock"))
-        .ok()
-        .map(|b| sha256_hex(&b));
     provenance.toolchain = first_line(runner, &CommandLine::new("rustc", &["--version"]));
     if let Ok(output) = runner.output(&CommandLine::new("rustc", &["-vV"])) {
         provenance.target = output
@@ -243,9 +264,26 @@ mod tests {
     fn installer_gets_the_profile_dir_and_the_component() {
         let fs = component("[[component]]\nname = \"fs\"\npackages = [\"fs\"]\n");
         assert_eq!(
-            install(&fs, Path::new("/stage/tree")).display(),
+            install(&fs, "target", Path::new("/stage/tree")).display(),
             "python3 os/scripts/install-components.py --quiet --from target/release --dest /stage/tree fs"
         );
+        assert_eq!(target_dir(&json!({"target_directory": "/t"})), "/t");
+        assert_eq!(target_dir(&json!(null)), "target");
+    }
+
+    #[test]
+    fn apps_package_with_their_own_tools() {
+        let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
+        assert_eq!(
+            tools.display(),
+            "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
+        );
+        assert_eq!(
+            package.display(),
+            "TILO_PKG=target/release/tilo-app-package target/release/tilo-app package apps/notes --output /w/notes.tapp --force"
+        );
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        assert!(apps_in(&repo).contains(&"notes".to_owned()));
     }
 
     #[test]
