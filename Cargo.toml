@@ -477,6 +477,10 @@ debug-assertions = true
 [profile.demo.package.launcher]
 debug-assertions = true
 
+# ...and a demo-profile `app` at their own `tilo-install` build.
+[profile.demo.package.app-cli]
+debug-assertions = true
+
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
