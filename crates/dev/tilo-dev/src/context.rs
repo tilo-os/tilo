@@ -55,6 +55,19 @@ impl Worktree {
         git(&self.root, &["rev-parse", "HEAD"])
     }
 
+    /// The full commit a revision names, if this repository has it.
+    pub fn rev_parse(&self, rev: &str) -> Option<String> {
+        git(
+            &self.root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{rev}^{{commit}}"),
+            ],
+        )
+    }
+
     /// Everything that differs from HEAD, for provenance: the tracked diff
     /// plus untracked paths. `None` for a clean tree.
     pub fn dirty_state(&self) -> Option<String> {
