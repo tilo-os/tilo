@@ -165,12 +165,22 @@ pub fn abi_check(
     {
         return Err(mismatch("builder image", layer, vm));
     }
+    let mut warnings = Vec::new();
+    // Thin apps link the image's libruntime_dylib.so, whose symbols carry
+    // crate hashes: another Cargo.lock breaks them. Statically linked
+    // components only drift from the image's dependency set.
     if let (Some(layer), Some(vm)) = (&provenance.cargo_lock_hash, &base.cargo_lock_hash)
         && layer != vm
     {
-        return Err(mismatch("Cargo.lock", short(layer), short(vm)));
+        if provenance.cargo_profile.as_deref() == Some("thin-app") {
+            return Err(mismatch("Cargo.lock", short(layer), short(vm)));
+        }
+        warnings.push(format!(
+            "layer Cargo.lock {} differs from the VM's {}: dependencies drift from the image",
+            short(layer),
+            short(vm)
+        ));
     }
-    let mut warnings = Vec::new();
     if let (Some(layer), Some(vm)) = (&provenance.base_image_digest, &base.image_digest)
         && layer != vm
     {
@@ -1146,6 +1156,12 @@ mod tests {
         layer.target = Some("x86_64-unknown-linux-gnu".into());
 
         layer.cargo_lock_hash = Some("fedcba9876543210fedc".into());
+        // A statically linked component only warns.
+        let warnings = abi_check(&layer, &base, "x86_64").unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Cargo.lock"), "{warnings:?}");
+        // Thin apps share libruntime_dylib.so with the image: refused.
+        layer.cargo_profile = Some("thin-app".into());
         let error = abi_check(&layer, &base, "x86_64").unwrap_err();
         assert_eq!(
             error.to_string(),
