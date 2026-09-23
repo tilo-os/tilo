@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -80,7 +81,7 @@ pub fn seal_wifi_credential(
     }
     let network_id = wifi_network_id(ssid, security);
     let mut bundle_nonce = [0_u8; 24];
-    OsRng.fill_bytes(&mut bundle_nonce);
+    UnwrapErr(SysRng).fill_bytes(&mut bundle_nonce);
     let mut envelopes = Vec::with_capacity(recipients.len());
     for recipient in recipients {
         let recipient_bytes = decode_device_key(&recipient)?;
@@ -89,7 +90,7 @@ pub fn seal_wifi_credential(
             .to_montgomery()
             .to_bytes();
         let mut seed = [0_u8; 32];
-        OsRng.fill_bytes(&mut seed);
+        UnwrapErr(SysRng).fill_bytes(&mut seed);
         let ephemeral = StaticSecret::from(seed);
         let ephemeral_public_key = PublicKey::from(&ephemeral).to_bytes();
         let shared = ephemeral.diffie_hellman(&PublicKey::from(recipient_public));
@@ -101,7 +102,7 @@ pub fn seal_wifi_credential(
             bundle_nonce,
         );
         let mut nonce = [0_u8; 24];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let aad = wifi_envelope_aad(
             author,
             &recipient,

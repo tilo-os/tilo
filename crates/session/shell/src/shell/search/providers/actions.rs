@@ -8,6 +8,7 @@
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::fmt::Write as _;
 use std::rc::Rc;
 
@@ -466,7 +467,7 @@ fn apply_ownership_proposal(
         .ok_or_else(|| ActionError::Refused("workspace owner is not certified".into()))?;
     let signer = active_ownership_signer(state, current_owner)?;
     let mut proposal_id = [0_u8; 32];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut proposal_id);
+    rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut proposal_id);
     let room = state
         .tree()
         .active_workspace()

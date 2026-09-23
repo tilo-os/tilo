@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
 use vello::Scene;
@@ -436,7 +436,7 @@ impl PairDeviceScreen {
         let nonce = payload.nonce()?;
         let host_round1 = payload.initiator_round1()?;
         // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
         // Process the host's round-1 → produce our round-2 reply.
@@ -520,7 +520,7 @@ impl PairDeviceScreen {
     /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
     /// beginning its enrolment round fails.
     pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
     }
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn validate_code_against_payload_round_trip() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let nonce = [0x77u8; 16];

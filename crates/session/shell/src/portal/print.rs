@@ -47,7 +47,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -363,7 +364,7 @@ impl PrintBackend {
 }
 
 impl PreparedPrintJobs {
-    /// Mint a token for `job` and return it, from `OsRng` — never a counter,
+    /// Mint a token for `job` and return it, from `UnwrapErr(SysRng)` — never a counter,
     /// hash, or clock. The portal spec types it as a `u`, so 32 bits is the
     /// whole budget; [`Self::redeem_token`] also requires the redeemer to be
     /// the app it was minted for, and single use plus a TTL keep the guessing window small.
@@ -420,7 +421,7 @@ impl PreparedPrintJobs {
 
 fn random_token() -> u32 {
     let mut bytes = [0u8; 4];
-    OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     u32::from_le_bytes(bytes)
 }
 

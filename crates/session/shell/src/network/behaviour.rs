@@ -82,7 +82,9 @@ fn load_or_create_keypair_with_legacy(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+            getrandom::SysRng,
+        ));
         tilo_user_identity::persist::write_device_key(path, &key)?;
         key
     };

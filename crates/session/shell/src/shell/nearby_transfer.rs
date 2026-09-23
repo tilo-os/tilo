@@ -13,7 +13,8 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 pub const STORE_SCHEMA_VERSION: u16 = 1;
@@ -1185,7 +1186,7 @@ fn remove_if_exists(path: &Path) -> Result<(), String> {
 
 fn random_id() -> [u8; 16] {
     let mut id = [0; 16];
-    OsRng.fill_bytes(&mut id);
+    UnwrapErr(SysRng).fill_bytes(&mut id);
     id
 }
 fn id_hex(id: [u8; 16]) -> String {

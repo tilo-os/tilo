@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use rand::RngCore;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand::Rng;
 use reqwest::Certificate;
 use reqwest::blocking::{Body, Client, Response};
 use serde::{Deserialize, Serialize};
@@ -1376,7 +1377,7 @@ fn now_unix() -> Result<u64, AgentError> {
 
 fn nonce() -> String {
     let mut bytes = [0_u8; 24];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

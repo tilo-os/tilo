@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::os::unix::fs::PermissionsExt;
 
 use collab_types::{ChannelId, Role, generate_keypair};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
@@ -171,7 +171,7 @@ pub fn run(args: &[String]) {
               distinguishing them further would reduce clarity"
 )]
 fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
 
     // Recovery words exist only for a genuine threshold share. Complete a

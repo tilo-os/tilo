@@ -29,7 +29,8 @@ serde.workspace = true
 serde_json.workspace = true
 argon2.workspace = true
 chacha20poly1305.workspace = true
-rand_core = { workspace = true, features = ["getrandom"] }
+getrandom.workspace = true
+rand_core.workspace = true
 atomic-file = { path = "../../crates/system/atomic-file" }
 
 [lints]

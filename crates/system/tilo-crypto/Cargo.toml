@@ -26,7 +26,7 @@ const-oid = { version = "0.9", features = ["db"] }
 der = { version = "0.7", features = ["alloc", "pem"] }
 ed25519-dalek.workspace = true
 # RSA key generation takes a rand_core 0.10 RNG; read it straight from the OS.
-getrandom = { version = "0.4", features = ["sys_rng"] }
+getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }

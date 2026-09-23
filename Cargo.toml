@@ -341,13 +341,16 @@ tar = "0.4"
 # ---------------------------------------------------------------------------
 # Cryptography and identity
 #
-# ed25519-dalek 2.x requires rand_core 0.6 for `SigningKey::generate`.
-# Keep rand at 0.8 for a compatible `OsRng`.
+# ed25519-dalek 3 and x25519-dalek 3 take rand_core 0.10 RNGs; rand,
+# rand_core and rand_chacha stay on that generation with them. OS randomness
+# comes from getrandom's `SysRng` (`UnwrapErr(SysRng)` where an infallible
+# `CryptoRng` is required).
 # ---------------------------------------------------------------------------
-ed25519-dalek = "2"
-rand = "0.8"
-rand_core = "0.6"
-rand_chacha = "0.3"
+ed25519-dalek = "3"
+rand = "0.10"
+rand_core = "0.10"
+rand_chacha = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
 sha2 = "0.11"
 hmac = "0.13"
 blake3 = "1.8.5"

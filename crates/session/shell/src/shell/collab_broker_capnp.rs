@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
@@ -123,7 +124,7 @@ impl NearbyTargetRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTargetHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -214,7 +215,7 @@ impl NearbyDestinationRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyDestinationHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -304,7 +305,7 @@ impl NearbyTransferRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -1448,7 +1449,7 @@ impl RealtimeBridge {
     fn new_token(&self) -> String {
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let token = hex::encode(bytes);
             if !self.sessions.contains_key(&token) {
                 return token;

@@ -31,9 +31,9 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 collab-types           = { path = "../../collab/collab-types" }
 
 blake3.workspace = true
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 hex.workspace = true
-rand.workspace = true
 semver.workspace = true
 serde.workspace = true
 thiserror.workspace = true

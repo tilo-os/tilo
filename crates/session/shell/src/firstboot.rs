@@ -19,7 +19,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use ui::widget::identity_flow::IdentityRecord;
@@ -479,7 +479,7 @@ fn ensure_primary_identity_in_context(
 
     // Mint through the same encoder the interactive ceremony uses, so
     // there's exactly one writer of the on-disk record — the two provisioning paths can't drift apart in what they store.
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());

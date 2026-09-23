@@ -754,7 +754,7 @@ fn validate_records(
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
     fn file(id: FileRecordId, version: FileVersionId) -> RecordAvailability {
@@ -765,7 +765,7 @@ mod tests {
     }
 
     fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
-        let device = SigningKey::generate(&mut OsRng);
+        let device = SigningKey::generate(&mut UnwrapErr(SysRng));
         let revision = collab_types::ContentRevisionV1 {
             schema_version: collab_types::CONTENT_REVISION_VERSION,
             record_id: record.record_id,

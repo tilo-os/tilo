@@ -2,7 +2,7 @@
 use std::io::{self, Read};
 use std::path::Path;
 
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
@@ -132,7 +132,7 @@ pub(super) fn load_or_create_key(
             if dir.join("vault.enc").try_exists()? {
                 return Err(io::Error::other("existing vault key is missing"));
             }
-            OsRng
+            SysRng
                 .try_fill_bytes(key.as_mut_slice())
                 .map_err(|error| io::Error::other(error.to_string()))?;
             false

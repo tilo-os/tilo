@@ -53,8 +53,8 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
+getrandom.workspace = true
 tempfile.workspace = true
-rand.workspace = true
 
 [lints]
 workspace = true

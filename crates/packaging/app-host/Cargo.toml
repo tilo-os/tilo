@@ -64,10 +64,10 @@ sd-notify.workspace = true
 capnpc.workspace = true
 
 [dev-dependencies]
+getrandom.workspace = true
 tar.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
-rand.workspace = true
 
 [[test]]
 name = "it"

@@ -641,7 +641,7 @@ impl WorkspaceStore {
 /// exactly 32 bytes, or if creating the state root or publishing a freshly
 /// minted secret fails.
 pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreError> {
-    use rand::RngCore;
+    use rand::Rng;
 
     let path = state_root.join("iroh-secret.bin");
     match read_iroh_secret(&path) {
@@ -650,7 +650,7 @@ pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreEr
     }
     fs::create_dir_all(state_root)?;
     let mut secret = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut secret);
+    rand::rng().fill_bytes(&mut secret);
     // `false` means another starter published first; its secret is the one
     // every later start will read, so return that rather than ours.
     private_fs::create_atomic(&path, &secret)?;
