@@ -165,30 +165,3 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
         error,
     }
 }
-
-pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut value = bytes as f64;
-    let mut unit = 0_usize;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    let suffix = UNITS.get(unit).copied().unwrap_or("PB");
-    if unit == 0 {
-        format!("{bytes} B")
-    } else if value >= 100.0 {
-        format!("{value:.0} {suffix}")
-    } else {
-        format!("{value:.1} {suffix}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn byte_format_is_compact() {
-        assert_eq!(format_bytes(1_500_000_000), "1.5 GB");
-    }
-}

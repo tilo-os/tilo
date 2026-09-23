@@ -240,15 +240,10 @@ pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
     None
 }
 
-/// Format a memory size in kB as a friendly `"n.n GB"` (or `"n MB"` when
-/// under a gigabyte).
+/// Format a memory size reported in KiB (as `/proc/meminfo` does) with
+/// binary units, `15.6 GiB`.
 pub(crate) fn format_memory(kb: u64) -> String {
-    let mb = kb as f64 / 1024.0;
-    if mb >= 1024.0 {
-        format!("{:.1} GB", mb / 1024.0)
-    } else {
-        format!("{mb:.0} MB")
-    }
+    ui::format::bytes(kb.saturating_mul(1024))
 }
 
 pub(crate) fn parse_uptime_seconds(contents: &str) -> Option<f64> {
@@ -347,8 +342,8 @@ mod tests {
             parse_mem_total_kb("MemTotal:       16330124 kB\n"),
             Some(16_330_124)
         );
-        assert_eq!(format_memory(16_330_124), "15.6 GB");
-        assert_eq!(format_memory(512 * 1024), "512 MB");
+        assert_eq!(format_memory(16_330_124), "15.6 GiB");
+        assert_eq!(format_memory(512 * 1024), "512.0 MiB");
         assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
     }
 

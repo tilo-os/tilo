@@ -1053,7 +1053,7 @@ impl ImportApp {
                         operation.apply_progress(&progress);
                         self.status = format!(
                             "Verified {} across {} file(s).",
-                            format_bytes(progress.verified_bytes),
+                            ui::format::bytes_si(progress.verified_bytes),
                             progress.verified_files
                         );
                     }
@@ -1660,7 +1660,7 @@ fn operation_text(operation: &OperationRecord) -> (String, String) {
     let mut summary = format!(
         "{source} → {destination}\n{}\nCopied and checked: {} across {} file(s)",
         state_summary(operation.state()),
-        format_bytes(operation.verified_bytes()),
+        ui::format::bytes_si(operation.verified_bytes()),
         operation.verified_file_count()
     );
     if operation.state() == OperationState::Running
@@ -1728,18 +1728,6 @@ fn state_summary(state: OperationState) -> &'static str {
         OperationState::Incomplete => "Some items need review before the copy can finish.",
         OperationState::Failed => "The copy could not start. Open Details before trying again.",
         OperationState::Complete => "Copy checked and complete.",
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GIB: f64 = 1_073_741_824.0;
-    const MIB: f64 = 1_048_576.0;
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / GIB)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / MIB)
-    } else {
-        format!("{bytes} bytes")
     }
 }
 

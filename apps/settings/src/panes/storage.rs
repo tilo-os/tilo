@@ -161,7 +161,7 @@ impl StoragePane {
                         self.sync_snapshot.as_ref().map_or_else(
                             || "Not available".into(),
                             |snapshot| {
-                                human_bytes(
+                                ui::format::bytes_si(
                                     snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
                                 )
                             },
@@ -169,7 +169,7 @@ impl StoragePane {
                     } else if self.snapshot.unavailable.contains(&category) {
                         "Not available".into()
                     } else {
-                        human_bytes(*totals.get(&category).unwrap_or(&0))
+                        ui::format::bytes_si(*totals.get(&category).unwrap_or(&0))
                     };
                     value_row(category.label(), &value)
                 })
@@ -193,9 +193,9 @@ impl StoragePane {
                     .map(|w| w.reclaimable_bytes)
                     .sum();
                 let mut sync_rows = vec![
-                    value_row("On this device", &human_bytes(local)),
-                    value_row("On other devices only", &human_bytes(remote)),
-                    value_row("Safe to free", &human_bytes(reclaimable)),
+                    value_row("On this device", &ui::format::bytes_si(local)),
+                    value_row("On other devices only", &ui::format::bytes_si(remote)),
+                    value_row("Safe to free", &ui::format::bytes_si(reclaimable)),
                 ];
                 if let Some(message) = &self.sync_message {
                     sync_rows.push(caption(message));
@@ -206,14 +206,16 @@ impl StoragePane {
                         .iter()
                         .filter(|f| f.reclaimable_bytes > 0)
                         .take(8)
-                        .map(|f| value_row(&f.logical_path, &human_bytes(f.reclaimable_bytes))),
+                        .map(|f| {
+                            value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
+                        }),
                 );
                 if reclaimable > 0 && !self.sync_busy {
                     card_with_action(
                         "Synced storage",
                         Box::new(Button::new(
                             "storage.sync.free",
-                            &format!("Free {}", human_bytes(reclaimable)),
+                            &format!("Free {}", ui::format::bytes_si(reclaimable)),
                             Some(SYNC_FREE_KEY),
                         )),
                         rows(sync_rows),
@@ -249,7 +251,7 @@ impl StoragePane {
             .map(|e| {
                 value_row(
                     &e.owner,
-                    &format!("{} · {}", human_bytes(e.bytes), e.category.label()),
+                    &format!("{} · {}", ui::format::bytes_si(e.bytes), e.category.label()),
                 )
             })
             .collect();
@@ -270,7 +272,7 @@ impl StoragePane {
             Some(preview) if !preview.items.is_empty() => {
                 let action = Box::new(Button::new(
                     "storage.clean",
-                    &format!("Remove {}", human_bytes(preview.total_bytes)),
+                    &format!("Remove {}", ui::format::bytes_si(preview.total_bytes)),
                     Some(CLEAN_KEY),
                 ));
                 let mut preview_rows = vec![caption(
@@ -282,7 +284,7 @@ impl StoragePane {
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("Cache item"),
-                        &human_bytes(i.bytes),
+                        &ui::format::bytes_si(i.bytes),
                     )
                 }));
                 card_with_action("Cache cleanup preview", action, rows(preview_rows))
@@ -327,15 +329,6 @@ impl Default for StoragePane {
 }
 pub fn build() -> Box<dyn Widget> {
     Box::new(StoragePane::new())
-}
-
-fn human_bytes(bytes: u64) -> String {
-    for (unit, scale) in [("GB", 1_000_000_000), ("MB", 1_000_000), ("kB", 1_000)] {
-        if bytes >= scale {
-            return format!("{:.1} {unit}", bytes as f64 / scale as f64);
-        }
-    }
-    format!("{bytes} B")
 }
 
 fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelection> {
@@ -407,7 +400,7 @@ impl Widget for StoragePane {
                             if report.queued_files > 0 && report.evicted_files > 0 {
                                 format!(
                                     "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
-                                    human_bytes(report.freed_bytes),
+                                    ui::format::bytes_si(report.freed_bytes),
                                     report.evicted_files,
                                     report.queued_files
                                 )
@@ -419,7 +412,7 @@ impl Widget for StoragePane {
                             } else {
                                 format!(
                                     "Freed {} from {} synced files.",
-                                    human_bytes(report.freed_bytes),
+                                    ui::format::bytes_si(report.freed_bytes),
                                     report.evicted_files
                                 )
                             },
