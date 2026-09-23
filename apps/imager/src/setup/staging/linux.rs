@@ -33,6 +33,14 @@ pub struct LinuxPlatform {
     efivars: PathBuf,
     /// Partitions are looked up by PARTUUID below this directory.
     by_partuuid: PathBuf,
+    /// Where block nodes are made when neither udev nor devtmpfs provides one.
+    private_nodes: PathBuf,
+}
+
+impl Drop for LinuxPlatform {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.private_nodes);
+    }
 }
 
 fn run(command: &mut Command) -> IoResult<String> {
@@ -116,6 +124,8 @@ impl LinuxPlatform {
             disk,
             efivars: env("TILO_STAGING_TEST_EFIVARS").unwrap_or_else(|| PathBuf::from(EFIVARS)),
             by_partuuid: PathBuf::from("/dev/disk/by-partuuid"),
+            // Below /dev: temporary filesystems are often mounted nodev.
+            private_nodes: PathBuf::from(format!("/dev/.tilo-staging-{}", std::process::id())),
         })
     }
 
@@ -183,8 +193,64 @@ impl LinuxPlatform {
             .status();
     }
 
-    fn partition_node(&self, guid: &str) -> PathBuf {
-        self.by_partuuid.join(guid.to_ascii_lowercase())
+    /// The node for partition `number` of our disk: udev's by-partuuid link
+    /// when present, else `/dev/<name>` found through sysfs, else a node made
+    /// from sysfs `dev` in a private directory (containers without udev or a
+    /// live devtmpfs). `open_partition` proves the identity either way.
+    fn partition_node(&self, guid: &str, number: u32) -> IoResult<PathBuf> {
+        let link = self.by_partuuid.join(guid.to_ascii_lowercase());
+        if link.exists() {
+            return Ok(link);
+        }
+        let disk = self.disk_name()?;
+        let entries = std::fs::read_dir(format!("/sys/class/block/{disk}"))
+            .map_err(|e| format!("{disk}: {e}"))?;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if read_trimmed(&path.join("partition")) != Some(number.to_string()) {
+                continue;
+            }
+            let name = entry.file_name();
+            let dev = PathBuf::from("/dev").join(&name);
+            if dev.exists() {
+                return Ok(dev);
+            }
+            let (major, minor) = read_trimmed(&path.join("dev"))
+                .and_then(|d| {
+                    let (a, b) = d.split_once(':')?;
+                    Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?))
+                })
+                .ok_or("partition device number unreadable")?;
+            std::fs::create_dir_all(&self.private_nodes).map_err(|e| e.to_string())?;
+            std::fs::set_permissions(
+                &self.private_nodes,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            )
+            .map_err(|e| e.to_string())?;
+            let node = self.private_nodes.join(&name);
+            let _ = std::fs::remove_file(&node);
+            let c_node = std::ffi::CString::new(node.as_os_str().as_encoded_bytes())
+                .map_err(|e| e.to_string())?;
+            // SAFETY: valid NUL-terminated path; makedev is pure arithmetic.
+            let rc = unsafe {
+                libc::mknod(
+                    c_node.as_ptr(),
+                    libc::S_IFBLK | 0o600,
+                    libc::makedev(major, minor),
+                )
+            };
+            if rc != 0 {
+                return Err(format!(
+                    "mknod {}: {}",
+                    node.display(),
+                    std::io::Error::last_os_error()
+                ));
+            }
+            return Ok(node);
+        }
+        Err(format!(
+            "the kernel does not expose partition {number} of {disk}"
+        ))
     }
 
     /// Open a staging partition's node and prove it is the expected
@@ -201,7 +267,7 @@ impl LinuxPlatform {
             .write(write)
             .custom_flags(libc::O_EXCL | libc::O_DIRECT | libc::O_CLOEXEC);
         let file = options
-            .open(self.partition_node(guid))
+            .open(self.partition_node(guid, p.number)?)
             .map_err(|e| format!("open partition {guid}: {e}"))?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
         let rdev = meta.rdev();
@@ -359,10 +425,9 @@ impl Platform for LinuxPlatform {
             .find(|p| super::same_guid(&p.guid, &guid))
             .ok_or("the new partition did not appear in the table")?;
         let _ = run(Command::new("partx").arg("-u").arg(&self.disk));
-        let node = self.partition_node(&guid);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut added = false;
-        while !node.exists() {
+        while self.partition_node(&guid, p.number).is_err() {
             if !added {
                 let _ = run(Command::new("partx")
                     .args(["-a", "--nr", &p.number.to_string()])
@@ -531,13 +596,20 @@ fn removable(disk: &Path) -> bool {
 
 /// The unprivileged Linux probe (spec §5).
 pub fn probe_facts() -> HostFacts {
-    if !Path::new("/sys/firmware/efi").is_dir() {
-        return HostFacts::unsupported(Blocker::NotUefi);
-    }
     let platform = match LinuxPlatform::open() {
         Ok(p) => p,
+        Err(_) if !Path::new("/sys/firmware/efi").is_dir() => {
+            return HostFacts::unsupported(Blocker::NotUefi);
+        }
         Err(_) => return HostFacts::unsupported(Blocker::DiskUnsupported),
     };
+    // A test efivars directory (overrides only) stands in for the firmware.
+    let efivars_overridden = platform.efivars != Path::new(EFIVARS);
+    if !Path::new("/sys/firmware/efi").is_dir()
+        && !(efivars_overridden && platform.efivars.is_dir())
+    {
+        return HostFacts::unsupported(Blocker::NotUefi);
+    }
     if removable(&platform.disk) {
         return HostFacts::unsupported(Blocker::DiskUnsupported);
     }
