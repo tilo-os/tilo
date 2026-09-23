@@ -203,6 +203,7 @@ members = [
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
+    "crates/system/xdg-paths",
 
     # Text
     "crates/text/spellcheck",
