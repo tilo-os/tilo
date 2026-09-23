@@ -215,6 +215,11 @@ pub struct InstallOptions {
     /// be present at install time; failure to enroll an explicitly requested
     /// factor aborts the install while the temporary key still exists. Default `false`.
     pub fido2: bool,
+    /// Staged (USB-free) installs only: the validated handoff copy that lets
+    /// the backend target the disk holding the running installer. It is sent
+    /// only with the guided plan; the backend re-derives every fact from the
+    /// booted ESP, firmware and partition table and refuses any other mode.
+    pub internal_handoff: String,
 }
 
 impl Default for InstallOptions {
@@ -250,6 +255,7 @@ impl Default for InstallOptions {
             keyvariant: String::new(),
             pin: Zeroizing::new(String::new()),
             fido2: false,
+            internal_handoff: String::new(),
         }
     }
 }
@@ -325,6 +331,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             .arg(&opts.guided_root_partuuid)
             .arg("--confirm-free-space")
             .arg(disk);
+        if !opts.internal_handoff.is_empty() {
+            cmd.arg("--internal-handoff").arg(&opts.internal_handoff);
+        }
         for partition in &opts.expected_partitions {
             cmd.arg("--expect-partition").arg(format!(
                 "{}:{}:{}",
@@ -811,6 +820,32 @@ mod tests {
                 "missing guided binding {expected:?}: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn internal_handoff_travels_only_with_the_guided_plan() {
+        let guided = InstallOptions {
+            guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
+            guided_free_size_bytes: 64 * 1024 * 1024 * 1024,
+            internal_handoff: crate::internal_handoff::HANDOFF_PATH.into(),
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &guided);
+        let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--internal-handoff", crate::internal_handoff::HANDOFF_PATH])
+        );
+        assert!(args.contains(&"--guided-alongside"));
+
+        // A whole-disk or prepared command never carries it, so the backend's
+        // live-disk refusal stays in force for those modes.
+        let erase = InstallOptions {
+            internal_handoff: crate::internal_handoff::HANDOFF_PATH.into(),
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &erase);
+        assert!(!cmd.get_args().any(|arg| arg == "--internal-handoff"));
     }
 
     #[test]
