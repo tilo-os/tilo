@@ -292,7 +292,6 @@ wayland-protocols = "0.32.12"
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",
-    "renderer_glow",
     "desktop",
     # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",
