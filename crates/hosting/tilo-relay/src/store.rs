@@ -629,35 +629,42 @@ impl WorkspaceStore {
 /// Load-or-mint the relay's iroh node secret.
 ///
 /// The secret is a 32-byte Ed25519-like key persisted at
-/// `<state_root>/iroh-secret.bin` with mode 0600 so the relay's
-/// iroh node id is stable across restarts.
+/// `<state_root>/iroh-secret.bin` with owner-only access so the relay's
+/// iroh node id is stable across restarts. An existing secret is never
+/// replaced: only a secret that is absent is minted, and it is published
+/// with an exclusive create, so relays starting at the same moment all
+/// return the one secret that reached disk.
 ///
 /// # Errors
 ///
-/// Returns an error if an existing secret file is not exactly 32
-/// bytes, or if reading it, creating the state root, or the atomic
-/// write of a freshly minted secret fails.
+/// Returns an error if an existing secret file cannot be read or is not
+/// exactly 32 bytes, or if creating the state root or publishing a freshly
+/// minted secret fails.
 pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreError> {
     use rand::RngCore;
 
     let path = state_root.join("iroh-secret.bin");
-    if path.exists() {
-        let bytes = fs::read(&path)?;
-        if bytes.len() != 32 {
-            return Err(StoreError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("iroh secret is {} bytes, want 32", bytes.len()),
-            )));
-        }
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes);
-        return Ok(out);
+    match read_iroh_secret(&path) {
+        Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
+        existing => return existing,
     }
     fs::create_dir_all(state_root)?;
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
-    atomic_file::write_with_mode(&path, &secret, 0o600)?;
-    Ok(secret)
+    // `false` means another starter published first; its secret is the one
+    // every later start will read, so return that rather than ours.
+    private_fs::create_atomic(&path, &secret)?;
+    read_iroh_secret(&path)
+}
+
+fn read_iroh_secret(path: &Path) -> Result<[u8; 32], StoreError> {
+    let bytes = fs::read(path)?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+        StoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("iroh secret is {} bytes, want 32", bytes.len()),
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -760,6 +767,72 @@ mod tests {
         let b = load_or_create_iroh_secret(tmp.path()).unwrap();
         assert_eq!(a, b);
         assert_ne!(a, [0u8; 32]);
+    }
+
+    #[test]
+    fn iroh_secret_is_never_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("iroh-secret.bin");
+        std::fs::write(&path, [7u8; 32]).unwrap();
+        assert_eq!(load_or_create_iroh_secret(tmp.path()).unwrap(), [7u8; 32]);
+        // A malformed secret is an error, not a reason to mint a new identity.
+        std::fs::write(&path, b"short").unwrap();
+        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"short");
+    }
+
+    #[test]
+    fn unreadable_iroh_secret_is_never_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("iroh-secret.bin");
+        // A directory in the secret's place fails every read, whatever the
+        // caller's privileges (a mode-000 file is still readable by root).
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("marker"), b"kept").unwrap();
+        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+        assert!(path.is_dir(), "the unreadable secret must not be replaced");
+        assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn simultaneous_starts_share_one_iroh_secret() {
+        for _ in 0..8 {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            // Spawn every participant before joining: interleaving spawn/join
+            // would deadlock the barrier.
+            let mut workers = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let root = root.clone();
+                let gate = std::sync::Arc::clone(&gate);
+                workers.push(std::thread::spawn(move || {
+                    gate.wait();
+                    load_or_create_iroh_secret(&root).unwrap()
+                }));
+            }
+            let secrets: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let persisted = std::fs::read(root.join("iroh-secret.bin")).unwrap();
+            assert!(secrets.iter().all(|secret| secret.as_slice() == persisted));
+            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minted_iroh_secret_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        load_or_create_iroh_secret(tmp.path()).unwrap();
+        let mode = std::fs::metadata(tmp.path().join("iroh-secret.bin"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

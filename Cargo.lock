@@ -14837,6 +14837,7 @@ dependencies = [
  "launcher",
  "libc",
  "postcard",
+ "private-fs",
  "rand 0.8.8",
  "runtime-identity",
  "sd-notify",

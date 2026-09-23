@@ -52,6 +52,8 @@ path = "src/home_peer_control.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+# Exclusive, owner-only publication of the relay's node secret.
+private-fs = { path = "../../system/private-fs" }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 install = { path = "../../packaging/install" }
