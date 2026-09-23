@@ -16,6 +16,7 @@ on:
       - "rust-toolchain.toml"
       - "crates/session/shell/**"
       - "apps/imager/**"
+      - "crates/system/block-devices/**"
       - "crates/sdk/tilo-app/**"
       - "crates/sdk/ui-core/**"
       - "crates/packaging/launcher/**"

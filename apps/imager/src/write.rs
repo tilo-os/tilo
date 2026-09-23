@@ -1010,67 +1010,31 @@ fn run_system_job(
 }
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-fn udisks_object_path(device_name: &str) -> String {
-    use std::fmt::Write as _;
-
-    let leaf = device_name.strip_prefix("/dev/").unwrap_or(device_name);
-    let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
-    for byte in leaf.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            path.push(byte as char);
-        } else {
-            let _ = write!(path, "_{byte:02x}");
-        }
-    }
-    path
-}
-
-#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn unmount_udisks_filesystems(
-    connection: &zbus::blocking::Connection,
+    udisks: &block_devices::udisks::Udisks,
     target: &TargetDrive,
 ) -> io::Result<()> {
-    use std::collections::HashMap;
-    use zbus::zvariant::Value;
-
     for name in std::iter::once(target.name.as_str()).chain(
         target
             .partitions
             .iter()
             .map(|partition| partition.name.as_str()),
     ) {
-        let block = zbus::blocking::Proxy::new(
-            connection,
-            "org.freedesktop.UDisks2",
-            udisks_object_path(name),
-            "org.freedesktop.UDisks2.Block",
-        )
-        .map_err(|error| io::Error::other(format!("UDisks2 block lookup failed: {error}")))?;
-        let usage: String = block
-            .get_property("IdUsage")
+        let usage = udisks
+            .id_usage(name)
             .map_err(|error| io::Error::other(format!("UDisks2 safety query failed: {error}")))?;
         if usage != "filesystem" {
             continue;
         }
-        let proxy = zbus::blocking::Proxy::new(
-            connection,
-            "org.freedesktop.UDisks2",
-            udisks_object_path(name),
-            "org.freedesktop.UDisks2.Filesystem",
-        )
-        .map_err(|error| io::Error::other(format!("UDisks2 partition lookup failed: {error}")))?;
-        let mount_points: Vec<Vec<u8>> = proxy.get_property("MountPoints").map_err(|error| {
+        let mount_points = udisks.mount_points(name).map_err(|error| {
             io::Error::other(format!("UDisks2 mount-state query failed: {error}"))
         })?;
         if mount_points.is_empty() {
             continue;
         }
-        let options: HashMap<&str, Value<'_>> = HashMap::new();
-        proxy
-            .call::<_, _, ()>("Unmount", &(options,))
-            .map_err(|error| {
-                io::Error::other(format!("UDisks2 could not unmount {name}: {error}"))
-            })?;
+        udisks.unmount(name).map_err(|error| {
+            io::Error::other(format!("UDisks2 could not unmount {name}: {error}"))
+        })?;
     }
     Ok(())
 }
@@ -1084,20 +1048,16 @@ fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     use zbus::zvariant::{OwnedFd, Value};
 
     revalidate_target(target)?;
-    let connection = zbus::blocking::Connection::system()
+    let udisks = block_devices::udisks::Udisks::system()
         .map_err(|error| io::Error::other(format!("could not reach UDisks2: {error}")))?;
-    unmount_udisks_filesystems(&connection, target)?;
+    unmount_udisks_filesystems(&udisks, target)?;
     // Revalidate after unmounting: removable media can disappear while an
     // authorization prompt is on screen. UDisks2 then independently resolves
     // and exclusively opens the same object.
     revalidate_target(target)?;
-    let proxy = zbus::blocking::Proxy::new(
-        &connection,
-        "org.freedesktop.UDisks2",
-        udisks_object_path(&target.name),
-        "org.freedesktop.UDisks2.Block",
-    )
-    .map_err(|error| io::Error::other(format!("UDisks2 device lookup failed: {error}")))?;
+    let proxy = udisks
+        .block(&target.name)
+        .map_err(|error| io::Error::other(format!("UDisks2 device lookup failed: {error}")))?;
     let flags = libc::O_EXCL | libc::O_SYNC | libc::O_CLOEXEC;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
     options.insert("flags", Value::from(flags));
@@ -2007,19 +1967,6 @@ mod tests {
         assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
         assert!(!allow_write(), "the sandbox never gains direct /dev access");
         unsafe { std::env::remove_var("TILO_IMAGER_FLATPAK") };
-    }
-
-    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-    #[test]
-    fn udisks_path_encoding_cannot_escape_the_block_device_namespace() {
-        assert_eq!(
-            udisks_object_path("/dev/dm-0"),
-            "/org/freedesktop/UDisks2/block_devices/dm_2d0"
-        );
-        assert_eq!(
-            udisks_object_path("../../sda"),
-            "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda"
-        );
     }
 
     #[test]

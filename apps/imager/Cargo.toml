@@ -22,7 +22,7 @@ host-media-writer = []
 # namespace.  This backend asks the host's root-owned UDisks2 service for one
 # polkit-authorized, exclusive file descriptor to the reviewed removable
 # drive.  No /dev access or host-command escape is granted to the sandbox.
-flatpak-media-writer = ["dep:zbus"]
+flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
 qos-ntfs-protocol = { path = "../../crates/session/qos-ntfs-protocol" }
@@ -47,6 +47,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
+block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 zbus = { workspace = true, optional = true, default-features = true }
 
