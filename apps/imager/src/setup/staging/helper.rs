@@ -1214,7 +1214,7 @@ impl Engine<'_> {
                 .read_exact(&mut buf[..n])
                 .map_err(|_| Refusal::new(codes::DIGEST_MISMATCH, "a component file changed"))?;
             hash.update(&buf[..n]);
-            if n as u64 % s == 0 {
+            if (n as u64).is_multiple_of(s) {
                 self.platform
                     .write_partition(&disk, &p.guid, done, &buf[..n])
                     .map_err(io_refusal)?;
@@ -2000,7 +2000,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("progress.jsonl");
         let mut file = std::fs::File::create(&path).unwrap();
-        let mut running = Running::watch(path.clone(), None);
+        let mut running = Running::watch(path, None);
         assert_eq!(running.poll(), Poll::default());
         file.write_all(br#"{"step":"write-root","done_bytes":5,"total_bytes":10}"#)
             .unwrap();
