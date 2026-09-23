@@ -969,7 +969,8 @@ pub(crate) mod tests {
     /// Containerfile.installer, so this also proves the Rust allow-list
     /// accepts the real specialised live command line. Its payloads are
     /// ordinary synthetic bytes, not filesystems or a bootable UKI.
-    const SHARED_FIXTURE: &str = include_str!("../../../../os/tests/fixtures/internal-bundle-v2.json");
+    const SHARED_FIXTURE: &str =
+        include_str!("../../../../os/tests/fixtures/internal-bundle-v2.json");
     const ROOT_UUID: &str = "12345678-1234-4234-8234-123456789abc";
 
     pub(crate) fn fixture() -> Value {
@@ -1149,7 +1150,10 @@ pub(crate) mod tests {
             " root=tilo-auto",
             " rd.luks.options=tpm2-device=auto,fido2-device=auto",
         ] {
-            assert!(with_cmdline(&format!("{base}{tail}")).is_err(), "accepted {tail}");
+            assert!(
+                with_cmdline(&format!("{base}{tail}")).is_err(),
+                "accepted {tail}"
+            );
         }
         for (old, new) in [
             ("tilo.mode=normal", "tilo.mode=repair"),
@@ -1162,7 +1166,10 @@ pub(crate) mod tests {
             (" rw ", " ro "),
         ] {
             assert!(base.contains(old), "fixture lacks {old}");
-            assert!(with_cmdline(&base.replacen(old, new, 1)).is_err(), "accepted {new}");
+            assert!(
+                with_cmdline(&base.replacen(old, new, 1)).is_err(),
+                "accepted {new}"
+            );
         }
         for accepted in [
             base.clone(),
@@ -1178,7 +1185,10 @@ pub(crate) mod tests {
                 .filter(|token| *token != required)
                 .collect::<Vec<_>>()
                 .join(" ");
-            assert!(with_cmdline(&removed).is_err(), "accepted without {required}");
+            assert!(
+                with_cmdline(&removed).is_err(),
+                "accepted without {required}"
+            );
         }
     }
     #[test]
@@ -1201,11 +1211,7 @@ pub(crate) mod tests {
                 1,
             ),
             base.replacen(&bound, &placeholder, 1),
-            base.replacen(
-                &bound,
-                &format!("qos.root={} ", "0".repeat(37)),
-                1,
-            ),
+            base.replacen(&bound, &format!("qos.root={} ", "0".repeat(37)), 1),
         ] {
             assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
         }
