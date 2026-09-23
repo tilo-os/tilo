@@ -739,8 +739,13 @@ pub struct AppInstallResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuildTarget {
-    /// A manifest component, imported as a layer.
-    Component { name: String },
+    /// A manifest component, imported as a layer. `profile` overrides the
+    /// manifest's cargo profile (`swap --profile dev`).
+    Component {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     /// An app under `apps/<dir>`, packaged as a self-signed `.tapp` and
     /// installed into `slot`'s app store.
     App { dir: String, slot: String },

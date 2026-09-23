@@ -184,7 +184,11 @@ fn full_slot_lifecycle_over_stdio() {
         }),
     }));
     assert_eq!(error.code, code::SCOPE);
-    assert!(error.hint.contains("tilo-vm swap vm fs"), "{}", error.hint);
+    assert!(
+        error.hint.contains("tilo-vm swap --slot vm fs"),
+        "{}",
+        error.hint
+    );
 
     // Into the vm slot it refreshes sysext, restarts its units and every slot session.
     let vm = client

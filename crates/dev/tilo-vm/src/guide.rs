@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 pub const TOPICS: &[(&str, &str, &str)] = &[
     (
         "quickstart",
-        "the five commands you need",
+        "get a VM, swap, screenshot; the headful and seat0 recipe",
         include_str!("../guide/quickstart.md"),
     ),
     (
@@ -80,5 +80,46 @@ mod tests {
             assert!(topic(name).is_some_and(|t| t.starts_with("# ")), "{name}");
         }
         assert!(index().contains("swapping"));
+    }
+
+    #[test]
+    fn quickstart_teaches_the_headful_path_and_both_screenshots() {
+        let text = topic("quickstart").unwrap();
+        for needle in [
+            "tilo-vm slot create --headful",
+            "tilo-vm swap shell",
+            "tilo-vm shot",
+            "tilo-vm seat claim",
+            "tilo-vm vm shot",
+            "compositor",
+            "seat0",
+            "qemu:///session",
+        ] {
+            assert!(text.contains(needle), "quickstart lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn guides_use_the_current_command_shapes() {
+        for (name, _, text) in TOPICS {
+            for stale in [
+                "swap vm ",
+                "swap my-slot",
+                "swap review-a",
+                "Every command takes `--json` and writes a receipt",
+            ] {
+                assert!(!text.contains(stale), "guide {name} still says `{stale}`");
+            }
+        }
+        let swapping = topic("swapping").unwrap();
+        assert!(swapping.contains("--slot vm fs"));
+        assert!(swapping.contains("--profile dev"));
+        assert!(swapping.contains("dev-overrides"));
+        let platforms = topic("platforms").unwrap();
+        assert!(platforms.contains("virt-manager"));
+        assert!(platforms.contains("Release / Dev VM disk"));
+        let fedora = topic("fedora-loop").unwrap();
+        assert!(fedora.contains("dist/dev/fedora44-vm-iterate.sh"));
+        assert!(fedora.contains("deploy-apps"));
     }
 }

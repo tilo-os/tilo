@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use tilo_vm_protocol::manifest::dev_override_features;
+use tilo_vm_protocol::manifest::{dev_override_features, valid_profile};
 use tilo_vm_protocol::{
     AppInstallResult, BuildJob, BuildTarget, CiJob, JobLine, JobOutput, LayerSource, Manifest,
     Provenance,
@@ -206,7 +206,9 @@ impl Daemon {
             });
         }
         let result = match &job.target {
-            BuildTarget::Component { name } => self.build_component(&job, &src, name),
+            BuildTarget::Component { name, profile } => {
+                self.build_component(&job, &src, name, profile.as_deref())
+            }
             BuildTarget::App { dir, slot } => self.build_app(&job, &src, dir, slot),
         };
         // Record the build dir's size even after a failed build: it still costs disk.
@@ -219,7 +221,15 @@ impl Daemon {
         job: &BuildJob,
         src: &Path,
         name: &str,
+        profile: Option<&str>,
     ) -> Result<JobOutput, DaemonError> {
+        if let Some(profile) = profile
+            && !valid_profile(profile)
+        {
+            return Err(DaemonError::InvalidParams(format!(
+                "'{profile}' is not a cargo profile name"
+            )));
+        }
         let manifest_path = src.join("os/components.toml");
         let manifest = Manifest::load(&manifest_path)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?
@@ -230,7 +240,8 @@ impl Daemon {
                 name: name.to_owned(),
                 known: manifest.components.keys().cloned().collect(),
             })?
-            .clone();
+            .clone()
+            .with_profile(profile);
         let metadata = capture(
             Command::new("cargo")
                 .args(["metadata", "--no-deps", "--format-version", "1"])
@@ -258,7 +269,7 @@ impl Daemon {
             .join("staging")
             .join(format!("build-{}", uuid::Uuid::new_v4().simple()));
         let tree = staging.join("tree");
-        let from = format!("target/{}", component.profile);
+        let from = format!("target/{}", component.profile_dir());
         let assembled = timer.time("assemble", || {
             std::fs::create_dir_all(&tree).map_err(DaemonError::io("create build staging"))?;
             step(
