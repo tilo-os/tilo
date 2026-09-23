@@ -115,6 +115,11 @@ ssh -t -p <port> tester@<vm address> 'sudo install -d -m 0700 /root/.ssh && echo
 It asks for that password twice (SSH, then sudo). The same command fixes a
 libvirt VM created before keys were passed at creation.
 
+Each VM also has its own `known_hosts`, `keys/<name>_ed25519.known_hosts`,
+so local VMs that share `127.0.0.1` and a forwarded port never collide in
+`~/.ssh/known_hosts`; `vm create` clears it, since a new VM has new host
+keys. For a shell or one command as root: `tilo-vm vm ssh [<name>] [-- <command>]`.
+
 ## Registry and files
 
 `vms.toml` sits in the platform config dir (`~/.config/tilo-vm/` on Linux,
