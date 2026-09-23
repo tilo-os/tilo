@@ -277,7 +277,7 @@ impl Widget for ShortcutPane {
             self.needs_seed = false;
         }
         let vim = read_bool(state, root, VIM_MODE).unwrap_or(self.last_vim_mode);
-        let vim_draft = read_bool(state, root, &draft_key(VIM_MODE)).unwrap_or(vim);
+        let vim_draft = read_bool(state, root, draft_key(VIM_MODE)).unwrap_or(vim);
         if vim != self.last_vim_mode {
             let _ = state.put(root, draft_key(VIM_MODE), vim);
             let previous = self.last_vim_mode;
@@ -304,7 +304,7 @@ impl Widget for ShortcutPane {
             };
             if self.last_text.get(&action) == Some(&value) {
                 let draft =
-                    read_str_or_text(state, root, &draft_key(key)).unwrap_or_else(|| value.clone());
+                    read_str_or_text(state, root, draft_key(key)).unwrap_or_else(|| value.clone());
                 if draft == value {
                     continue;
                 }

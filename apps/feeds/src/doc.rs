@@ -377,7 +377,7 @@ impl FeedsDoc {
         };
         ReadSettings {
             font_scale: read_number(doc, &obj, "font_scale")
-                .unwrap_or(f64::from(default.font_scale)) as f32,
+                .unwrap_or_else(|| f64::from(default.font_scale)) as f32,
             font: {
                 let s = read_str(doc, &obj, "font").unwrap_or_default();
                 if s.is_empty() {

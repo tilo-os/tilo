@@ -64,7 +64,7 @@ impl CalDoc {
         else {
             return false;
         };
-        read_bool(doc, &tombstones, &Self::tombstone_key(kind, id)).unwrap_or(false)
+        read_bool(doc, &tombstones, Self::tombstone_key(kind, id)).unwrap_or(false)
     }
 
     fn tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
@@ -447,7 +447,7 @@ impl CalDoc {
         };
         let attendees = Self::ensure_child(doc, &event, "attendees");
         let tombstones = Self::ensure_child(doc, &event, "attendee_tombstones");
-        if read_bool(doc, &tombstones, &attendee.id.to_string()).unwrap_or(false) {
+        if read_bool(doc, &tombstones, attendee.id.to_string()).unwrap_or(false) {
             return;
         }
         let item = Self::ensure_child(doc, &attendees, &attendee.id.to_string());

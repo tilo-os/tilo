@@ -326,7 +326,7 @@ impl FirewallDoc {
     }
     fn tombstoned(doc: &AutoCommit, zone: &ObjId, id: RuleId) -> bool {
         get_map(doc, zone, "rule_tombstones")
-            .is_some_and(|m| read_bool(doc, &m, &id.to_string()) == Some(true))
+            .is_some_and(|m| read_bool(doc, &m, id.to_string()) == Some(true))
     }
     pub fn add_rule(doc: &mut AutoCommit, kind: ZoneKind, rule: &Rule) {
         let Some(root) = map(doc, &ROOT, ROOT_KEY) else {

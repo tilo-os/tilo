@@ -681,7 +681,7 @@ impl BluetoothPane {
     fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let snapshot = self.devices.clone();
         for d in &snapshot {
-            if read_bool(state, root, &key(&d.path, "pair")).unwrap_or(false) {
+            if read_bool(state, root, key(&d.path, "pair")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "pair"), false);
                 if self.pending_pair.is_none() {
                     let control = Arc::clone(&self.control);
@@ -700,7 +700,7 @@ impl BluetoothPane {
                     self.structure_dirty = true;
                 }
             }
-            if read_bool(state, root, &key(&d.path, "cancel")).unwrap_or(false) {
+            if read_bool(state, root, key(&d.path, "cancel")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "cancel"), false);
                 match self.control.cancel_pairing(&d.path) {
                     Ok(()) => self.notice = Some(format!("Cancelled pairing {}.", d.name)),
@@ -710,12 +710,12 @@ impl BluetoothPane {
             for a in ["connect", "disconnect"] {
                 self.act(state, root, d, a);
             }
-            if read_bool(state, root, &key(&d.path, "details")).unwrap_or(false) {
+            if read_bool(state, root, key(&d.path, "details")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "details"), false);
                 self.expanded = (self.expanded.as_deref() != Some(&d.path)).then(|| d.path.clone());
                 self.structure_dirty = true;
             }
-            if let Some(v) = read_bool(state, root, &key(&d.path, "trusted"))
+            if let Some(v) = read_bool(state, root, key(&d.path, "trusted"))
                 && v != d.trusted
             {
                 match self.control.set_trusted(&d.path, v) {
@@ -733,17 +733,17 @@ impl BluetoothPane {
                 }
                 self.refresh();
             }
-            if read_bool(state, root, &key(&d.path, "rename")).unwrap_or(false) {
+            if read_bool(state, root, key(&d.path, "rename")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "rename"), false);
                 let alias =
-                    read_str_or_text(state, root, &key(&d.path, "alias")).unwrap_or_default();
+                    read_str_or_text(state, root, key(&d.path, "alias")).unwrap_or_default();
                 match self.control.set_alias(&d.path, &alias) {
                     Ok(()) => self.notice = Some(format!("Renamed device to {}.", alias.trim())),
                     Err(e) => self.notice = Some(format!("Could not rename {}: {e}", d.name)),
                 }
                 self.refresh();
             }
-            if read_bool(state, root, &key(&d.path, "forget")).unwrap_or(false) {
+            if read_bool(state, root, key(&d.path, "forget")).unwrap_or(false) {
                 let _ = state.put(root, key(&d.path, "forget"), false);
                 let local_forget = matches!(
                     self.operation_status.get(),

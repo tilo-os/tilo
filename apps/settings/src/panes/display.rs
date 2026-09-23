@@ -1778,7 +1778,7 @@ impl DisplayPane {
         cfg: &mut OutputConfig,
     ) -> bool {
         let mut changed = false;
-        if let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "enabled"))
+        if let Some(enabled) = read_bool(state, root, output_key(&output.connector, "enabled"))
             && enabled != cfg.enabled
         {
             cfg.enabled = enabled;
@@ -1787,7 +1787,7 @@ impl DisplayPane {
             }
             changed = true;
         }
-        if let Some(primary) = read_bool(state, root, &output_key(&output.connector, "primary"))
+        if let Some(primary) = read_bool(state, root, output_key(&output.connector, "primary"))
             && primary != cfg.primary
         {
             if primary {
@@ -1798,14 +1798,14 @@ impl DisplayPane {
             cfg.primary = primary;
             changed = true;
         }
-        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "scale"))
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "scale"))
             && let Some(scale) = scale_factor_of(&label)
             && (scale - cfg.scale).abs() > f64::EPSILON
         {
             cfg.scale = scale;
             changed = true;
         }
-        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "mode"))
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mode"))
             && let Some(mode) = output
                 .modes
                 .iter()
@@ -1817,7 +1817,7 @@ impl DisplayPane {
             changed = true;
         }
         if let Some(label) =
-            read_str_or_text(state, root, &output_key(&output.connector, "transform"))
+            read_str_or_text(state, root, output_key(&output.connector, "transform"))
             && let Some(transform) = transform_from_label(&label)
             && transform != cfg.transform
         {
@@ -1825,21 +1825,21 @@ impl DisplayPane {
             changed = true;
         }
         if output.hdr
-            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "hdr"))
+            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "hdr"))
             && enabled != cfg.hdr
         {
             cfg.hdr = enabled;
             changed = true;
         }
         if output.vrr
-            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "vrr"))
+            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "vrr"))
             && enabled != cfg.vrr
         {
             cfg.vrr = enabled;
             changed = true;
         }
         if let Some(label) =
-            read_str_or_text(state, root, &output_key(&output.connector, "color_profile"))
+            read_str_or_text(state, root, output_key(&output.connector, "color_profile"))
         {
             let selected = if label == "System default" {
                 None
@@ -1870,7 +1870,7 @@ impl DisplayPane {
         cfg: &mut OutputConfig,
     ) -> bool {
         let mut changed = false;
-        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "mirror"))
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mirror"))
         {
             let mirror = if label == "Extend workspace" {
                 None
@@ -1886,7 +1886,7 @@ impl DisplayPane {
             }
         }
         if let Some(position) =
-            read_str_or_text(state, root, &output_key(&output.connector, "position"))
+            read_str_or_text(state, root, output_key(&output.connector, "position"))
         {
             let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
                 let label = position.strip_prefix(&format!("{side} of "))?;
@@ -1949,7 +1949,7 @@ impl DisplayPane {
         changed: &mut bool,
     ) {
         let newly_selected_primary = connected.iter().find(|output| {
-            read_bool(state, root, &output_key(&output.connector, "primary")) == Some(true)
+            read_bool(state, root, output_key(&output.connector, "primary")) == Some(true)
                 && !self
                     .output_config
                     .outputs
