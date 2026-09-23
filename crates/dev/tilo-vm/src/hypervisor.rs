@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::config::VmEntry;
 use crate::error::CliError;
+use crate::sshkey;
 
 /// One external command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -196,6 +197,10 @@ pub struct Capabilities {
     pub serial: bool,
     pub screenshot: bool,
     pub reset: bool,
+    /// How the root SSH key reaches the guest as a systemd credential at
+    /// creation. Without one, the key is installed once after the first boot
+    /// (`tilo-vm guide platforms`).
+    pub credentials: Option<&'static str>,
     /// Native control channel passed through by `vm control`.
     pub control: Option<&'static str>,
 }
@@ -229,11 +234,13 @@ impl Vm<'_> {
 
 pub trait Hypervisor {
     fn name(&self) -> &'static str;
-    /// Commands that create the VM from its image.
+    /// Commands that create the VM from its image. `root_key` is the public
+    /// key line for root's `authorized_keys`, passed on where the adapter has
+    /// a credential channel ([`Capabilities::credentials`]).
     ///
     /// # Errors
     /// Missing registry fields.
-    fn create(&self, vm: &Vm<'_>) -> Result<Vec<CommandLine>, CliError>;
+    fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
@@ -330,7 +337,7 @@ impl Hypervisor for Libvirt {
         "libvirt"
     }
 
-    fn create(&self, vm: &Vm<'_>) -> Result<Vec<CommandLine>, CliError> {
+    fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError> {
         let mut commands: Vec<CommandLine> = overlay_disk(vm)?.into_iter().collect();
         let mut install = CommandLine::new(
             "virt-install",
@@ -366,7 +373,14 @@ impl Hypervisor for Libvirt {
             "pty",
             "--noautoconsole",
             "--noreboot",
-        ]);
+        ])
+        // SMBIOS type 11: systemd imports it as the credential that becomes
+        // root's authorized_keys.
+        .arg("--sysinfo")
+        .arg(format!(
+            "type=smbios,oemStrings.entry0={}",
+            sshkey::smbios_credential(root_key)
+        ));
         if let Some(arch) = &vm.entry.arch {
             install = install.arg("--arch").arg(arch.clone());
             if vm.entry.emulated {
@@ -401,6 +415,7 @@ impl Hypervisor for Libvirt {
             serial: true,
             screenshot: true,
             reset: true,
+            credentials: Some("SMBIOS type 11 OEM string"),
             control: Some("virsh"),
         }
     }
@@ -445,7 +460,8 @@ impl Hypervisor for Qemu {
         "qemu"
     }
 
-    fn create(&self, vm: &Vm<'_>) -> Result<Vec<CommandLine>, CliError> {
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // os/dev/vm.sh takes no extra QEMU arguments, so no credential.
         Ok(overlay_disk(vm)?.into_iter().collect())
     }
 
@@ -475,6 +491,7 @@ impl Hypervisor for Qemu {
             serial: true,
             screenshot: true,
             reset: true,
+            credentials: None,
             control: Some("QEMU monitor (HMP)"),
         }
     }
@@ -514,7 +531,9 @@ impl Hypervisor for Utm {
         "utm"
     }
 
-    fn create(&self, vm: &Vm<'_>) -> Result<Vec<CommandLine>, CliError> {
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // No credential channel: Apple Virtualization has no SMBIOS OEM
+        // strings or fw_cfg, and utmctl cannot set QEMU arguments.
         // utmctl cannot import a disk; a human imports the published image
         // once as a template VM in UTM, and each dev VM is a clone of it.
         let template = vm
@@ -579,6 +598,7 @@ impl Hypervisor for Utm {
             serial: true,
             screenshot: false,
             reset: false,
+            credentials: None,
             control: Some("utmctl"),
         }
     }
@@ -619,7 +639,9 @@ impl Hypervisor for HyperV {
         "hyperv"
     }
 
-    fn create(&self, vm: &Vm<'_>) -> Result<Vec<CommandLine>, CliError> {
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // No credential channel: Hyper-V sets no SMBIOS OEM strings, and its
+        // KVP and file-copy services need guest daemons the image lacks.
         let name = ps_quote(vm.name);
         let disk = ps_quote(vm.disk()?);
         let mut commands = Vec::new();
@@ -682,6 +704,7 @@ impl Hypervisor for HyperV {
             serial: true,
             screenshot: false,
             reset: true,
+            credentials: None,
             control: Some("PowerShell (Hyper-V module)"),
         }
     }
@@ -709,6 +732,8 @@ impl Hypervisor for HyperV {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
 
     struct Fake(Vec<CommandLine>, Output);
 
@@ -754,7 +779,7 @@ mod tests {
             name: "dev",
             entry: &entry,
         };
-        let create = Libvirt.create(&vm).unwrap();
+        let create = Libvirt.create(&vm, KEY).unwrap();
         assert_eq!(
             create[0].display(),
             "qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 /vms/dev.qcow2"
@@ -765,6 +790,13 @@ mod tests {
         ));
         assert!(install.contains("--disk path=/vms/dev.qcow2,format=qcow2,bus=virtio"));
         assert!(install.contains("--network passt,portForward=2223:22"));
+        assert!(
+            install.contains(&format!(
+                "--sysinfo type=smbios,oemStrings.entry0=io.systemd.credential.binary:ssh.authorized_keys.root={}",
+                sshkey::encoded(KEY)
+            )),
+            "{install}"
+        );
         assert!(!install.contains("--arch"));
         assert_eq!(
             Libvirt.start(&vm)[0].display(),
@@ -793,10 +825,13 @@ mod tests {
             ..entry()
         };
         let install = Libvirt
-            .create(&Vm {
-                name: "arm",
-                entry: &entry,
-            })
+            .create(
+                &Vm {
+                    name: "arm",
+                    entry: &entry,
+                },
+                KEY,
+            )
             .unwrap()[1]
             .display();
         assert!(install.contains("--arch aarch64 --virt-type qemu"));
@@ -837,12 +872,12 @@ mod tests {
             entry: &entry,
         };
         assert!(
-            Libvirt.create(&vm).unwrap()[0]
+            Libvirt.create(&vm, KEY).unwrap()[0]
                 .display()
                 .starts_with("/usr/bin/qemu-img create")
         );
         assert!(
-            Qemu.create(&vm).unwrap()[0]
+            Qemu.create(&vm, KEY).unwrap()[0]
                 .display()
                 .starts_with("/usr/bin/qemu-img create")
         );
@@ -859,7 +894,7 @@ mod tests {
             entry: &entry,
         };
         assert_eq!(
-            Utm.create(&vm).unwrap()[0].display(),
+            Utm.create(&vm, KEY).unwrap()[0].display(),
             "utmctl clone 'Tilo Dev' --name dev"
         );
         assert_eq!(Utm.stop(&vm)[0].display(), "utmctl stop dev --request");
@@ -870,10 +905,13 @@ mod tests {
         assert_eq!(runner.0[0].display(), "utmctl ip-address dev");
         let no_template = entry_without_template();
         assert!(matches!(
-            Utm.create(&Vm {
-                name: "dev",
-                entry: &no_template
-            }),
+            Utm.create(
+                &Vm {
+                    name: "dev",
+                    entry: &no_template
+                },
+                KEY
+            ),
             Err(CliError::Config { .. })
         ));
     }
@@ -893,7 +931,7 @@ mod tests {
             name: "dev",
             entry: &entry,
         };
-        let create = HyperV.create(&vm).unwrap();
+        let create = HyperV.create(&vm, KEY).unwrap();
         assert_eq!(create.len(), 1);
         assert_eq!(create[0].program, "powershell.exe");
         assert_eq!(
@@ -949,7 +987,10 @@ mod tests {
 
     #[test]
     fn capabilities_match_the_optional_methods() {
-        let entry = entry();
+        let entry = VmEntry {
+            template: Some("Tilo Dev".into()),
+            ..entry()
+        };
         let vm = Vm {
             name: "dev",
             entry: &entry,
@@ -964,6 +1005,12 @@ mod tests {
                 "{name} shot"
             );
             assert_eq!(caps.reset, a.reset(&vm).is_some(), "{name} reset");
+            let passes_key = a.create(&vm, KEY).unwrap().iter().any(|c| {
+                c.args
+                    .iter()
+                    .any(|arg| arg.contains("io.systemd.credential"))
+            });
+            assert_eq!(caps.credentials.is_some(), passes_key, "{name} credentials");
             assert_eq!(
                 caps.control.is_some(),
                 a.control(&vm, &[]).is_some(),

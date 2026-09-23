@@ -6,6 +6,12 @@ Start with `tilo-vm doctor`: it checks each prerequisite and prints the fix.
 start`. If it is running but silent, look at it: `tilo-vm vm shot`,
 `tilo-vm vm serial`. As a last resort, `tilo-vm vm reset`.
 
+**The VM refuses its root SSH key.** SSH answers but says `Permission
+denied (publickey)`. On UTM, Hyper-V and qemu the key is installed once
+after the first boot; on libvirt it goes in at creation, so a VM created
+before that needs the same step. The error prints the exact command;
+`tilo-vm guide platforms` explains it.
+
 **Protocol mismatch.** The VM's image and your `tilo-vm` disagree. If the VM
 is older, `tilo-vm vm upgrade`; if `tilo-vm` is older, rebuild it with
 `cargo install --locked --path crates/dev/tilo-vm`.
