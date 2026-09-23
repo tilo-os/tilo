@@ -17,11 +17,11 @@ use super::internal_cache::HeldReadSeek;
 use super::internal_cache::coordinator::Cancellation;
 use super::internal_download::SelectedManifest;
 use super::model::HostOs;
-use super::staging::DEFAULT_TARGET_BYTES;
 use super::staging::helper::{self, Action, ComponentPaths, Outcome, Poll, Progress, Request};
 use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBounds};
 use super::staging::probe::{self, Blocker, HostFacts};
 use super::staging::record::{Record, ReleaseRef, Step};
+use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
 
 /// Release jobs set this at build time only after the round trip passed.
 pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
@@ -296,19 +296,57 @@ fn stage_request(
     let (esp_min, root_min) =
         manifest_requirements(selected).map_err(|error| refusal("manifest", error))?;
     link.lock().requirements = Some((esp_min, root_min));
-    let plan = &intent.plan;
-    if partition_bytes(plan, plan.staging_esp.first_lba, plan.staging_esp.last_lba) < esp_min
-        || partition_bytes(
-            plan,
-            plan.staging_root.first_lba,
-            plan.staging_root.last_lba,
-        ) < root_min
-    {
+    let reviewed = intent.plan;
+    let aligned = |bytes: u64| bytes.div_ceil(ALIGN_BYTES) * ALIGN_BYTES;
+    let esp_bytes = partition_bytes(
+        &reviewed,
+        reviewed.staging_esp.first_lba,
+        reviewed.staging_esp.last_lba,
+    );
+    let root_bytes = partition_bytes(
+        &reviewed,
+        reviewed.staging_root.first_lba,
+        reviewed.staging_root.last_lba,
+    );
+    if esp_bytes < aligned(esp_min) || root_bytes < aligned(root_min) {
         return Err(refusal(
             "plan-stale",
             "The verified download needs more installer space than the reviewed plan holds.",
         ));
     }
+    // Review ran before the manifest was known, on provisional sizes. The
+    // helper accepts only the planner's exact result for the bundle's sizes,
+    // so replan now; the replanned layout is used only when it keeps the
+    // same Tilo size and shrinks the system volume no further than reviewed.
+    let (plan, plan_sha256) = if esp_bytes == aligned(esp_min) && root_bytes == aligned(root_min) {
+        (reviewed, intent.plan_sha256)
+    } else {
+        let sector = reviewed.basis.disk.sector_bytes;
+        let stale = || {
+            refusal(
+                "plan-stale",
+                "The verified download changes the reviewed plan.",
+            )
+        };
+        let replanned = (link.runtime.compute)(
+            &reviewed.basis,
+            Requirements {
+                staging_esp_bytes: esp_min,
+                staging_root_bytes: root_min,
+                target_bytes: reviewed.target_extent.lbas() * sector,
+            },
+        )
+        .map(|p| plan::with_loader_path(p, &reviewed.boot_entry.loader_path.replace('\\', "/")))
+        .map_err(|_| stale())?;
+        let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |s| s.to_bytes);
+        if kept(&replanned) < kept(&reviewed)
+            || replanned.target_extent.lbas() != reviewed.target_extent.lbas()
+        {
+            return Err(stale());
+        }
+        let digest = replanned.digest();
+        (replanned, digest)
+    };
     let component_paths =
         (link.runtime.component_paths)(selected).map_err(|error| refusal("paths", error))?;
     let manifest_path = manifest_dir.join("manifest.json");
@@ -333,8 +371,8 @@ fn stage_request(
             .ok_or_else(|| refusal("manifest", "The manifest path is not valid Unicode."))?
             .into(),
         component_paths,
-        plan: intent.plan,
-        plan_sha256: intent.plan_sha256,
+        plan,
+        plan_sha256,
         profile: serde_json::Map::new(),
     })
 }
@@ -1541,7 +1579,12 @@ pub(super) mod tests {
     }
 
     fn selected(root_minimum: u64) -> SelectedManifest {
+        selected_sizes(PROVISIONAL_STAGING_ESP_BYTES, root_minimum)
+    }
+
+    fn selected_sizes(esp_minimum: u64, root_minimum: u64) -> SelectedManifest {
         let mut manifest = crate::setup::internal_bundle::tests::fixture();
+        manifest["components"][0]["minimum_partition_bytes"] = serde_json::json!(esp_minimum);
         manifest["components"][1]["minimum_partition_bytes"] = serde_json::json!(root_minimum);
         let bytes = crate::setup::internal_bundle::tests::bytes(&manifest);
         let release = crate::release::InternalRelease::transport_fixture(
@@ -1577,7 +1620,36 @@ pub(super) mod tests {
             std::fs::read(&request.manifest_path).unwrap(),
             manifest.bytes()
         );
-        assert_eq!(install.link.lock().requirements, Some((4096, 40 * GIB)));
+        assert_eq!(
+            install.link.lock().requirements,
+            Some((PROVISIONAL_STAGING_ESP_BYTES, 40 * GIB))
+        );
+    }
+
+    // Catches the helper refusing every real install (its plan must be the
+    // planner's exact result for the bundle's sizes) and a replan that
+    // silently shrinks the system volume further than the person reviewed.
+    #[test]
+    fn smaller_manifest_sizes_are_replanned_without_shrinking_further() {
+        let fakes = Fakes::new(Vec::new());
+        let mut install = probed(&fakes, true);
+        let digest = install.reviewed_digest().unwrap();
+        install.begin_stage(&digest, true).unwrap();
+        let intent = install.link.lock().intent.clone().unwrap();
+        let reviewed = intent.plan.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = selected_sizes(64 << 20, 40 * GIB);
+        let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
+        assert_ne!(request.plan_sha256, digest);
+        assert_eq!(request.plan_sha256, request.plan.digest());
+        let s = request.plan.basis.disk.sector_bytes;
+        assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
+        assert_eq!(
+            request.plan.target_extent.lbas(),
+            reviewed.target_extent.lbas()
+        );
+        let kept = |p: &Plan| p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes);
+        assert!(kept(&request.plan) >= kept(&reviewed));
     }
 
     // Catches staging a plan whose installer partitions are smaller than the

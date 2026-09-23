@@ -124,6 +124,10 @@ pub struct Record {
 pub struct RecordedComponent {
     pub byte_size: u64,
     pub sha256: String,
+    /// Filesystem identity bound by the manifest, so `arm` can recognise the
+    /// staging root after the installer has booted (and grown) it once.
+    #[serde(default)]
+    pub filesystem_uuid: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

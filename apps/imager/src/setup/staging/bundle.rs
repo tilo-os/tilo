@@ -14,6 +14,8 @@ pub struct ComponentFacts {
     pub byte_size: u64,
     pub sha256: String,
     pub minimum_partition_bytes: u64,
+    /// Btrfs fsid (root) or FAT serial (ESP) the exporter bound.
+    pub filesystem_uuid: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,7 @@ struct LooseComponent {
     byte_size: u64,
     sha256: String,
     minimum_partition_bytes: u64,
+    filesystem_uuid: String,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +81,7 @@ pub(crate) fn facts_unchecked(manifest: &[u8]) -> Result<BundleFacts, String> {
                 byte_size: c.byte_size,
                 sha256: c.sha256.clone(),
                 minimum_partition_bytes: c.minimum_partition_bytes,
+                filesystem_uuid: c.filesystem_uuid.clone(),
             }),
             _ => Err(format!("manifest needs exactly one {role} component")),
         }
