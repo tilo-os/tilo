@@ -127,6 +127,14 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
 
 if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+   && grep -Fq 'if [[ $GITHUB_REF == refs/tags/v* ]]; then' "$workflow" \
+   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
+   && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+   && grep -Fq "if: needs.plan.outputs.publish == 'true'" "$workflow" \
+   && grep -Fq "compgen -G '/dev/dri/renderD*'" "$workflow" \
+   && grep -Fq 'OS publication requires a readable/writable DRI render node' "$workflow" \
+   && grep -Fq 'OS publication will use the bounded QEMU TCG fallback' "$workflow" \
+   && grep -Fq './os/dev/vm.sh boot --gl' "$workflow" \
    && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
    && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'expected exactly two native child descriptors' "$workflow" \
@@ -138,7 +146,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="code.sandbox.example/qos/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
-  ok 'OS publication promotes one signed two-architecture index after both native gates'
+  ok 'OS publication promotes one signed two-architecture index after protected native gates'
 else
   bad 'OS publication can omit a native architecture or promote child manifests independently'
 fi

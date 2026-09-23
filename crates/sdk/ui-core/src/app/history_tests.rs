@@ -1144,17 +1144,9 @@ fn native_tile_effect_isolation(semantic: bool) {
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     layout(&mut app);
     let actor = app.collaboration.local_author.0.clone();
-    app.invoke_resource_action(
-        &tilo_actions::ActionAddress::new("first", "export"),
-        None,
-        &actor,
-        true,
-        false,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    let address = tilo_actions::ActionAddress::new("first", "export");
+    app.invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
+        .unwrap();
     assert_eq!(probes[0].1.get(), 1);
     probes[0].0.borrow_mut().emit(()).unwrap();
     probes[1].0.borrow_mut().emit(()).unwrap();
@@ -1221,17 +1213,9 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         let mut app = App::new_with_controlled_inputs(State::new(), tile);
         layout(&mut app);
         let actor = app.collaboration.local_author.0.clone();
-        app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("retained", "export"),
-            None,
-            &actor,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let address = tilo_actions::ActionAddress::new("retained", "export");
+        app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
+            .unwrap();
         assert_eq!(probe.starts.get(), 1);
         app.layout.node_map.clear();
         app.bindings.clear();
