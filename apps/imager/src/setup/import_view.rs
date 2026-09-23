@@ -23,6 +23,10 @@ use winit::event::{Modifiers, WindowEvent};
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
+use super::import_actions::{
+    self, ContinuationProjection, FolderProjection, ImportOperation, ImportProjection,
+    ImportStatusPhase, IssueProjection, OperationProjection, SelectionProjection,
+};
 use super::migration_store::{
     IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
 };
@@ -62,6 +66,7 @@ enum ImportCommand {
     ClearSelection,
     ToggleDetails(usize),
     NextIssues(usize),
+    FirstIssues(usize),
 }
 
 /// A later-import surface backed by the same real journaled worker as setup.
@@ -81,6 +86,8 @@ pub struct ImportApp {
     destination_parent: Option<PathBuf>,
     worker: Option<(usize, MigrationWorker)>,
     picker: Option<(PickTarget, ui::PortalChannel)>,
+    picker_launcher: fn() -> ui::PortalChannel,
+    identity_checker: fn() -> Result<(), String>,
     commands: CommandSink,
     status: String,
     status_is_error: bool,
@@ -131,6 +138,8 @@ impl ImportApp {
             destination_parent: None,
             worker: None,
             picker: None,
+            picker_launcher: folders::pick_folder,
+            identity_checker: desktop_continuation::trusted_identity_complete,
             commands: Rc::new(RefCell::new(Vec::new())),
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
@@ -155,6 +164,11 @@ impl ImportApp {
     fn try_for_shot(scenario: &str) -> Result<Self, String> {
         // Screenshot fixtures are disposable and must not inherit the login
         // user's protected home classification (CI commonly runs as root).
+        // macOS resolves its default temporary directory beneath /private,
+        // which the source guard correctly treats as an OS directory.
+        #[cfg(target_os = "macos")]
+        let temp = tempfile::tempdir_in("/Users/Shared").map_err(|error| error.to_string())?;
+        #[cfg(not(target_os = "macos"))]
         let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
         let base = temp
             .path()
@@ -480,6 +494,8 @@ impl ImportApp {
             destination_parent: None,
             worker: None,
             picker: None,
+            picker_launcher: folders::pick_folder,
+            identity_checker: desktop_continuation::trusted_identity_complete,
             commands: Rc::new(RefCell::new(Vec::new())),
             status,
             status_is_error: false,
@@ -488,6 +504,450 @@ impl ImportApp {
             structure_dirty: true,
             expanded_details: HashSet::new(),
             shot_temp: None,
+        })
+    }
+
+    fn operation_index(&self, operation_id: &str) -> Option<usize> {
+        self.operations
+            .iter()
+            .position(|operation| operation.id() == operation_id)
+    }
+
+    fn folder_index(&self, folder_id: &str) -> Option<usize> {
+        let continuation = self.continuation.as_ref()?;
+        (0..continuation.folders.len()).find(|index| continuation.operation_id(*index) == folder_id)
+    }
+
+    fn can_retry_operation(&self, index: usize) -> bool {
+        if self.worker.is_some() || self.review_request.is_some() {
+            return false;
+        }
+        let Some(operation) = self.operations.get(index) else {
+            return false;
+        };
+        if self.validate_continued_operation(index).is_err() {
+            return false;
+        }
+        if operation.retry_job().is_ok() {
+            return true;
+        }
+        let Some(folder) = self.continued_index(index) else {
+            return false;
+        };
+        self.continuation.as_ref().is_some_and(|continuation| {
+            continuation
+                .unpublished_retry(folder, operation)
+                .is_ok_and(|job| job.is_some())
+        })
+    }
+
+    fn import_phase(&self) -> ImportStatusPhase {
+        if self.store.is_none() {
+            ImportStatusPhase::Unavailable
+        } else if self.worker.is_some() {
+            ImportStatusPhase::Copying
+        } else if self.review_request.is_some() {
+            ImportStatusPhase::Reviewing
+        } else if self.gate_request.is_some() {
+            ImportStatusPhase::CheckingIdentity
+        } else if self.picker.is_some() {
+            ImportStatusPhase::ChoosingFolder
+        } else if self.detail_request.is_some() {
+            ImportStatusPhase::LoadingDetails
+        } else if !self.pending_saves.is_empty() {
+            ImportStatusPhase::Saving
+        } else if self.status_is_error {
+            ImportStatusPhase::Error
+        } else {
+            ImportStatusPhase::Ready
+        }
+    }
+
+    fn issue_projection(&self, index: usize) -> Vec<IssueProjection> {
+        if !self.expanded_details.contains(&index) {
+            return Vec::new();
+        }
+        let loaded = self.detail_pages.get(&index).map(|page| &page.issues);
+        let preview = self
+            .operations
+            .get(index)
+            .and_then(|operation| operation.issues().ok());
+        loaded
+            .map_or_else(|| preview.as_deref().unwrap_or(&[]), Vec::as_slice)
+            .iter()
+            .take(32)
+            .enumerate()
+            .map(|(number, (_, message))| IssueProjection {
+                number: number + 1,
+                message: message.chars().take(512).collect(),
+            })
+            .collect()
+    }
+
+    fn can_load_next_issues(&self, index: usize) -> bool {
+        self.expanded_details.contains(&index)
+            && self.detail_request.is_none()
+            && self
+                .detail_pages
+                .get(&index)
+                .is_some_and(|page| page.next.is_some())
+    }
+
+    fn can_load_first_issues(&self, index: usize) -> bool {
+        self.expanded_details.contains(&index)
+            && self.detail_request.is_none()
+            && self
+                .detail_pages
+                .get(&index)
+                .is_some_and(|page| page.next.is_none())
+    }
+
+    fn import_projection(&self) -> ImportProjection {
+        let active_operation = self
+            .worker
+            .as_ref()
+            .and_then(|(index, _)| self.operations.get(*index))
+            .map(|operation| operation.id().to_string());
+        let operations = self
+            .operations
+            .iter()
+            .enumerate()
+            .map(|(index, operation)| {
+                let details_available = operation.issue_count() > 0
+                    || !operation.metadata_limitations().is_empty()
+                    || operation.failure().is_some();
+                let start_available = operation.state() == OperationState::AwaitingReview
+                    && self.worker.is_none()
+                    && self.review_request.is_none()
+                    && durable_copy_available().is_ok()
+                    && self.validate_continued_operation(index).is_ok();
+                OperationProjection {
+                    identity: operation.id().to_string(),
+                    state: operation_state_key(operation.state()),
+                    verified_files: operation.verified_file_count(),
+                    verified_bytes: operation.verified_bytes(),
+                    issue_count: operation.issue_count(),
+                    review_needed: operation.state() == OperationState::AwaitingReview,
+                    details_open: self.expanded_details.contains(&index),
+                    details_loading: self
+                        .detail_request
+                        .as_ref()
+                        .is_some_and(|(loading, _)| *loading == index),
+                    issues: self.issue_projection(index),
+                    next_issues_available: self.can_load_next_issues(index),
+                    first_issues_available: self.can_load_first_issues(index),
+                    start_available,
+                    retry_available: self.can_retry_operation(index)
+                        && durable_copy_available().is_ok(),
+                    cancel_available: self
+                        .worker
+                        .as_ref()
+                        .is_some_and(|(active, _)| *active == index),
+                    details_available,
+                }
+            })
+            .collect();
+        let continuation = self.continuation.as_ref().map(|continuation| {
+            let folders = continuation
+                .folders
+                .iter()
+                .enumerate()
+                .map(|(index, folder)| {
+                    let review_available = self.check_continued_review_allowed(index).is_ok()
+                        && folder.mode == ChoiceMode::Copy;
+                    FolderProjection {
+                        identity: continuation.operation_id(index),
+                        number: index + 1,
+                        mode: choice_mode_key(folder.mode),
+                        destination_reviewed: folder.destination().is_ok_and(|path| path.is_some()),
+                        review_available,
+                        picker_available: review_available && self.picker.is_none(),
+                        mode_available: self.worker.is_none() && self.review_request.is_none(),
+                    }
+                })
+                .collect();
+            ContinuationProjection {
+                identity_ready: self.identity_ready,
+                identity_check_available: !self.identity_ready && self.gate_request.is_none(),
+                start_batch_available: self.can_start_continued_batch(),
+                later_all_available: self.worker.is_none() && self.review_request.is_none(),
+                folders,
+            }
+        });
+        ImportProjection {
+            phase: self.import_phase(),
+            status_is_error: self.status_is_error,
+            selection: SelectionProjection {
+                source_selected: self.source.is_some(),
+                destination_selected: self.destination_parent.is_some(),
+                review_ready: self.source.is_some()
+                    && self.destination_parent.is_some()
+                    && self.store.is_some()
+                    && self.worker.is_none()
+                    && self.review_request.is_none()
+                    && self.pending_saves.len() < 2,
+            },
+            active_operation,
+            operations,
+            continuation,
+            picker_available: self.picker.is_none() && self.store.is_some(),
+            clear_available: self.source.is_some() || self.destination_parent.is_some(),
+            prepare_review_available: self.source.is_some()
+                && self.destination_parent.is_some()
+                && self.store.is_some()
+                && self.worker.is_none()
+                && self.review_request.is_none()
+                && self.pending_saves.len() < 2,
+        }
+    }
+
+    fn refuse_semantic<T>(&mut self, message: String) -> Result<T, String> {
+        self.status.clone_from(&message);
+        self.status_is_error = true;
+        self.structure_dirty = true;
+        Err(message)
+    }
+
+    fn apply_semantic_command(&mut self, command: ImportCommand) -> Result<(), String> {
+        self.status_is_error = false;
+        self.apply_command(command);
+        if self.status_is_error {
+            Err(super::strings::t("imager-import-error-command-refused"))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive admission map keeps each semantic operation beside its fresh-state validation"
+    )]
+    fn invoke_import_operation(
+        &mut self,
+        operation: ImportOperation,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let command = match operation {
+            ImportOperation::Observe => {
+                return Ok(tilo_actions::ActionOutput {
+                    value: Some(self.import_projection().value()),
+                    resources: Vec::new(),
+                });
+            }
+            ImportOperation::PickSource => {
+                if self.picker.is_some() || self.store.is_none() {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-picker-unavailable",
+                    ));
+                }
+                ImportCommand::PickSource
+            }
+            ImportOperation::PickDestination => {
+                if self.picker.is_some() || self.store.is_none() {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-picker-unavailable",
+                    ));
+                }
+                ImportCommand::PickDestination
+            }
+            ImportOperation::ClearSelection => {
+                if self.source.is_none() && self.destination_parent.is_none() {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-selection-empty"));
+                }
+                ImportCommand::ClearSelection
+            }
+            ImportOperation::PrepareReview => ImportCommand::PrepareReview,
+            ImportOperation::CheckIdentity => {
+                if self.continuation.is_none() || self.identity_ready || self.gate_request.is_some()
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-identity-check-unavailable",
+                    ));
+                }
+                ImportCommand::CheckIdentity
+            }
+            ImportOperation::StartReviewedBatch => {
+                if !self.can_start_continued_batch() {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-batch-unavailable",
+                    ));
+                }
+                ImportCommand::StartBatch
+            }
+            ImportOperation::LaterAll => {
+                if self.continuation.is_none()
+                    || self.worker.is_some()
+                    || self.review_request.is_some()
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-later-all-unavailable",
+                    ));
+                }
+                ImportCommand::LaterAll
+            }
+            ImportOperation::Start { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                if !self
+                    .operations
+                    .get(index)
+                    .is_some_and(|record| record.state() == OperationState::AwaitingReview)
+                    || self.worker.is_some()
+                    || self.review_request.is_some()
+                    || self.validate_continued_operation(index).is_err()
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-start-unavailable",
+                    ));
+                }
+                ImportCommand::Start(index)
+            }
+            ImportOperation::Retry { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                if !self.can_retry_operation(index) {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-retry-unavailable",
+                    ));
+                }
+                ImportCommand::Retry(index)
+            }
+            ImportOperation::Cancel { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                if self
+                    .worker
+                    .as_ref()
+                    .is_none_or(|(active, _)| *active != index)
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-cancel-unavailable",
+                    ));
+                }
+                ImportCommand::Cancel
+            }
+            ImportOperation::ToggleDetails { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                let available = self.operations.get(index).is_some_and(|record| {
+                    record.issue_count() > 0
+                        || !record.metadata_limitations().is_empty()
+                        || record.failure().is_some()
+                });
+                if !available {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-details-unavailable",
+                    ));
+                }
+                ImportCommand::ToggleDetails(index)
+            }
+            ImportOperation::NextIssues { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                if !self.can_load_next_issues(index) {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-next-issues-unavailable",
+                    ));
+                }
+                ImportCommand::NextIssues(index)
+            }
+            ImportOperation::FirstIssues { operation_id } => {
+                let Some(index) = self.operation_index(&operation_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
+                };
+                if !self.can_load_first_issues(index) {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-first-issues-unavailable",
+                    ));
+                }
+                ImportCommand::FirstIssues(index)
+            }
+            ImportOperation::ResolveFolder { folder_id } => {
+                let Some(index) = self.folder_index(&folder_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                if self.check_continued_review_allowed(index).is_err()
+                    || !self
+                        .continuation
+                        .as_ref()
+                        .and_then(|continuation| continuation.folders.get(index))
+                        .is_some_and(|folder| folder.mode == ChoiceMode::Copy)
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-folder-review-unavailable",
+                    ));
+                }
+                ImportCommand::ResolveContinued(index)
+            }
+            ImportOperation::PickFolderDestination { folder_id } => {
+                let Some(index) = self.folder_index(&folder_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                if self.picker.is_some()
+                    || self.check_continued_review_allowed(index).is_err()
+                    || !self
+                        .continuation
+                        .as_ref()
+                        .and_then(|continuation| continuation.folders.get(index))
+                        .is_some_and(|folder| folder.mode == ChoiceMode::Copy)
+                {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-picker-unavailable",
+                    ));
+                }
+                ImportCommand::PickContinuedDestination(index)
+            }
+            ImportOperation::SetFolderCopy { folder_id } => {
+                let Some(index) = self.folder_index(&folder_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                if self.worker.is_some() || self.review_request.is_some() {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-folder-mode-unavailable",
+                    ));
+                }
+                ImportCommand::ContinuedMode(index, ChoiceMode::Copy)
+            }
+            ImportOperation::SetFolderLater { folder_id } => {
+                let Some(index) = self.folder_index(&folder_id) else {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                if self.worker.is_some() || self.review_request.is_some() {
+                    return self.refuse_semantic(super::strings::t(
+                        "imager-import-error-folder-mode-unavailable",
+                    ));
+                }
+                ImportCommand::ContinuedMode(index, ChoiceMode::Later)
+            }
+            ImportOperation::SetFolderConnected { folder_id } => {
+                if self.folder_index(&folder_id).is_none() {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                }
+                return self.refuse_semantic(super::strings::t(
+                    "imager-import-error-connected-unavailable",
+                ));
+            }
+        };
+        self.apply_semantic_command(command)?;
+        Ok(tilo_actions::ActionOutput {
+            value: Some(self.import_projection().value()),
+            resources: Vec::new(),
         })
     }
 
@@ -524,6 +984,29 @@ impl ImportApp {
             .map_err(|e| e.to_string())?;
         self.detail_request = Some((index, rx));
         Ok(())
+    }
+
+    fn load_next_issue_page(&mut self, index: usize) -> Result<(), String> {
+        if !self.can_load_next_issues(index) {
+            return Err(super::strings::t(
+                "imager-import-error-next-issues-unavailable",
+            ));
+        }
+        let offset = self
+            .detail_pages
+            .get(&index)
+            .and_then(|page| page.next)
+            .ok_or_else(|| super::strings::t("imager-import-error-next-issues-unavailable"))?;
+        self.load_issue_page(index, offset)
+    }
+
+    fn load_first_issue_page(&mut self, index: usize) -> Result<(), String> {
+        if !self.can_load_first_issues(index) {
+            return Err(super::strings::t(
+                "imager-import-error-first-issues-unavailable",
+            ));
+        }
+        self.load_issue_page(index, 0)
     }
 
     fn prepare_review(&mut self) -> Result<(), String> {
@@ -746,11 +1229,12 @@ impl ImportApp {
         if self.gate_request.is_some() {
             return Err("Waiting for the Tilo session check.".into());
         }
+        let identity_checker = self.identity_checker;
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("import-session-check".into())
             .spawn(move || {
-                let _ = tx.send(desktop_continuation::trusted_identity_complete());
+                let _ = tx.send(identity_checker());
             })
             .map_err(|e| e.to_string())?;
         self.gate_request = Some((command, rx));
@@ -1153,9 +1637,14 @@ impl ImportApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the shared command dispatcher keeps UI and semantic actions on one production path"
+    )]
     fn apply_authorized_command(&mut self, command: ImportCommand) {
         if self.review_request.is_some() {
             self.status = "Wait for the folder review to finish.".into();
+            self.status_is_error = true;
             return;
         }
         let result = match command {
@@ -1167,6 +1656,11 @@ impl ImportApp {
             }
             ImportCommand::ResolveContinued(index) => self.resolve_continued(index),
             ImportCommand::PickContinuedDestination(index) => {
+                if self.picker.is_some() {
+                    self.status = super::strings::t("imager-import-error-picker-unavailable");
+                    self.status_is_error = true;
+                    return;
+                }
                 if let Err(error) = self.check_continued_review_allowed(index) {
                     self.status = error;
                     self.status_is_error = true;
@@ -1174,7 +1668,7 @@ impl ImportApp {
                 }
                 self.picker = Some((
                     PickTarget::ContinuedDestination(index),
-                    folders::pick_folder(),
+                    (self.picker_launcher)(),
                 ));
                 Ok(())
             }
@@ -1190,14 +1684,22 @@ impl ImportApp {
             }
             ImportCommand::StartBatch => self.start_reviewed_batch(),
             ImportCommand::PickSource => {
-                self.picker = Some((PickTarget::Source, folders::pick_folder()));
-                self.status = "Choose the source folder to copy.".into();
-                Ok(())
+                if self.picker.is_some() {
+                    Err(super::strings::t("imager-import-error-picker-unavailable"))
+                } else {
+                    self.picker = Some((PickTarget::Source, (self.picker_launcher)()));
+                    self.status = "Choose the source folder to copy.".into();
+                    Ok(())
+                }
             }
             ImportCommand::PickDestination => {
-                self.picker = Some((PickTarget::DestinationParent, folders::pick_folder()));
-                self.status = "Choose where Tilo should create the copied folder.".into();
-                Ok(())
+                if self.picker.is_some() {
+                    Err(super::strings::t("imager-import-error-picker-unavailable"))
+                } else {
+                    self.picker = Some((PickTarget::DestinationParent, (self.picker_launcher)()));
+                    self.status = "Choose where Tilo should create the copied folder.".into();
+                    Ok(())
+                }
             }
             ImportCommand::PrepareReview => self.prepare_review(),
             ImportCommand::Start(index) => self.start_operation(index),
@@ -1212,14 +1714,8 @@ impl ImportApp {
                 self.status = "Selection cleared.".into();
                 Ok(())
             }
-            ImportCommand::NextIssues(index) => {
-                let offset = self
-                    .detail_pages
-                    .get(&index)
-                    .and_then(|p| p.next)
-                    .unwrap_or(0);
-                self.load_issue_page(index, offset)
-            }
+            ImportCommand::NextIssues(index) => self.load_next_issue_page(index),
+            ImportCommand::FirstIssues(index) => self.load_first_issue_page(index),
             ImportCommand::ToggleDetails(index) => {
                 if !self.expanded_details.remove(&index) {
                     self.expanded_details.insert(index);
@@ -1335,6 +1831,34 @@ impl ImportApp {
         }
     }
 
+    fn issue_page_button(&self, index: usize) -> Button {
+        let (label, command, enabled) = if self.detail_request.is_some() {
+            ("Loading issues…", ImportCommand::NextIssues(index), false)
+        } else if self
+            .detail_pages
+            .get(&index)
+            .is_some_and(|page| page.next.is_none())
+        {
+            (
+                "First issue page",
+                ImportCommand::FirstIssues(index),
+                self.can_load_first_issues(index),
+            )
+        } else {
+            (
+                "Next issue page",
+                ImportCommand::NextIssues(index),
+                self.can_load_next_issues(index),
+            )
+        };
+        self.button(
+            &format!("import.operation.{index}.next-issues"),
+            label,
+            command,
+        )
+        .with_enabled(enabled)
+    }
+
     fn operation_card(&self, index: usize, operation: &OperationRecord) -> Card {
         let (summary, mut details) = operation_text(operation);
         self.page_details(index, operation, &mut details);
@@ -1363,25 +1887,7 @@ impl ImportApp {
                 details_text =
                     Some(Text::new(&details).with_id(format!("import.operation.{index}.details")));
                 if operation.issue_count() > 8 {
-                    let label = if self.detail_request.is_some() {
-                        "Loading issues…"
-                    } else if self
-                        .detail_pages
-                        .get(&index)
-                        .is_some_and(|p| p.next.is_none())
-                    {
-                        "First issue page"
-                    } else {
-                        "Next issue page"
-                    };
-                    actions = actions.push(Box::new(
-                        self.button(
-                            &format!("import.operation.{index}.next-issues"),
-                            label,
-                            ImportCommand::NextIssues(index),
-                        )
-                        .with_enabled(self.detail_request.is_none()),
-                    ));
+                    actions = actions.push(Box::new(self.issue_page_button(index)));
                 }
             }
         }
@@ -1716,6 +2222,27 @@ fn operation_state_label(state: OperationState) -> &'static str {
     }
 }
 
+const fn operation_state_key(state: OperationState) -> &'static str {
+    match state {
+        OperationState::AwaitingReview => "awaiting_review",
+        OperationState::Ready => "ready",
+        OperationState::Running => "running",
+        OperationState::Interrupted => "interrupted",
+        OperationState::Cancelled => "cancelled",
+        OperationState::Incomplete => "incomplete",
+        OperationState::Failed => "failed",
+        OperationState::Complete => "complete",
+    }
+}
+
+const fn choice_mode_key(mode: ChoiceMode) -> &'static str {
+    match mode {
+        ChoiceMode::Copy => "copy",
+        ChoiceMode::Connected => "connected",
+        ChoiceMode::Later => "later",
+    }
+}
+
 fn state_summary(state: OperationState) -> &'static str {
     match state {
         OperationState::AwaitingReview => "Review required before any copy starts.",
@@ -1744,6 +2271,38 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 impl Widget for ImportApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[import_actions::IMPORT_OPERATION_TYPE]
+    }
+
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![import_actions::resource(&self.import_projection())]
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(operation) = import_actions::decode(type_id, payload)? else {
+            for child in self.children_mut() {
+                if let Some(output) =
+                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(output));
+                }
+            }
+            return Ok(None);
+        };
+        if kind != tilo_actions::OperationKind::View {
+            return Err(super::strings::t("imager-import-error-operation-kind"));
+        }
+        self.invoke_import_operation(operation).map(Some)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.poll_background();
         self.drain_commands();
@@ -1909,10 +2468,11 @@ mod tests {
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
-        // CI commonly runs as root, whose home is deliberately rejected by
-        // `system_folder_reason`. Keep this generic import fixture in the
-        // platform temp directory so it exercises copy behaviour rather than
-        // the protected-system-path guard.
+        // A source under macOS's default /private/var temporary directory is
+        // rightly rejected by the protected-system-path guard.
+        #[cfg(target_os = "macos")]
+        let temp = tempfile::tempdir_in("/Users/Shared").unwrap();
+        #[cfg(not(target_os = "macos"))]
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("source");
@@ -1944,6 +2504,565 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+    }
+
+    fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
+        Widget::resources(app, &AutoCommit::new()).pop().unwrap()
+    }
+
+    fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
+        resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .unwrap_or_else(|| panic!("missing action {id} on {}", resource.id.as_str()))
+            .clone()
+    }
+
+    fn invoke_action(
+        app: &mut ImportApp,
+        action: &tilo_actions::ActionSpec,
+    ) -> Result<serde_json::Value, String> {
+        let encoded = action
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| error.to_string())?;
+        Widget::invoke_resource_operation_v2(
+            app,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "import operation returned no projection".to_string())
+    }
+
+    fn invoke_import_raw(
+        app: &mut ImportApp,
+        operation: &ImportOperation,
+    ) -> Result<serde_json::Value, String> {
+        let encoded = import_actions::encode(operation);
+        Widget::invoke_resource_operation_v2(
+            app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "import operation returned no projection".to_string())
+    }
+
+    fn observe_import(app: &mut ImportApp) -> Result<serde_json::Value, String> {
+        let observe = action(&root_resource(app), "read-status");
+        invoke_action(app, &observe)
+    }
+
+    fn wait_for_public_issue_count(app: &mut ImportApp, count: usize) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut state = AutoCommit::new();
+        loop {
+            Widget::update(app, &mut state, &automerge::ROOT);
+            let observed = observe_import(app).unwrap();
+            if observed["phase"] != "loading_details"
+                && observed["operations"][0]["issues"]
+                    .as_array()
+                    .is_some_and(|issues| issues.len() == count)
+            {
+                return observed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "issue page with {count} messages was not publicly observable"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn cancelled_picker() -> ui::PortalChannel {
+        ui::portal::inject_for_test(ui::PortalOutcome::Cancelled)
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "this test seam has the same fallible signature as the production identity boundary"
+    )]
+    fn identity_ready() -> Result<(), String> {
+        Ok(())
+    }
+
+    fn continuation_choice(source: &Path) -> super::super::controller::FolderChoice {
+        super::super::controller::FolderChoice {
+            scan: super::super::folders::scan_folder(source).unwrap(),
+            destination: super::super::controller::FolderDestination::Unresolved,
+            mode: super::super::model::FolderMode::Copy,
+            mode_overridden: false,
+        }
+    }
+
+    #[test]
+    fn standalone_import_publishes_stable_operation_resources_before_layout() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        fs::write(source.join("document.txt"), b"kept locally").unwrap();
+        let source_text = source.display().to_string();
+        let destination_text = destination_parent.display().to_string();
+        settle_index(&mut app);
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent.clone());
+        let collision = destination_parent.join("source");
+        fs::create_dir(&collision).unwrap();
+        let prepare_review = action(&root_resource(&app), "prepare-review");
+        let public_error = invoke_action(&mut app, &prepare_review).unwrap_err();
+        assert!(!public_error.contains(&source_text));
+        assert!(!public_error.contains(&destination_text));
+        assert!(app.status.contains(&collision.display().to_string()));
+        fs::remove_dir(collision).unwrap();
+        app.prepare_review().unwrap();
+        let operation_id = app.operations[0].id().to_string();
+
+        let resources = Widget::resources(&app, &AutoCommit::new());
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "imager.import");
+        assert_eq!(resources[0].children.len(), 1);
+        assert_eq!(resources[0].children[0].kind, "imager.import.operation");
+        assert!(resources[0].children[0].id.0.ends_with(&operation_id));
+        let exposed = resources[0]
+            .children
+            .iter()
+            .map(|child| {
+                format!(
+                    "{} {}",
+                    child.label,
+                    child
+                        .presentation
+                        .as_ref()
+                        .and_then(|presentation| presentation.detail.as_deref())
+                        .unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!exposed.contains(&source_text));
+        assert!(!exposed.contains(&destination_text));
+    }
+
+    #[test]
+    fn semantic_picker_refuses_a_second_request_without_spawning_another_picker() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        settle_index(&mut app);
+        app.picker_launcher = cancelled_picker;
+        let choose_source = action(&root_resource(&app), "choose-source");
+
+        let pending = invoke_action(&mut app, &choose_source).unwrap();
+        assert_eq!(pending["phase"], "choosing_folder");
+        assert!(app.picker.is_some());
+
+        let error = invoke_action(&mut app, &choose_source).unwrap_err();
+        assert!(error.contains("chooser"), "{error}");
+        assert!(app.picker.is_some());
+        assert_eq!(app.status, error);
+
+        let (_temp, mut button_app, _source, _destination_parent) = fixture();
+        settle_index(&mut button_app);
+        button_app.picker_launcher = cancelled_picker;
+        button_app.apply_command(ImportCommand::PickSource);
+        button_app.apply_command(ImportCommand::PickDestination);
+        assert!(button_app.picker.is_some());
+        assert!(button_app.status_is_error);
+        assert!(button_app.status.contains("chooser"));
+    }
+
+    #[test]
+    fn retained_operation_action_tracks_its_id_after_reordering_and_stales_after_removal() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("first.txt"), b"first").unwrap();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent.clone());
+        app.prepare_review().unwrap();
+        settle_index(&mut app);
+
+        let second_source = destination_parent.parent().unwrap().join("second-source");
+        fs::create_dir(&second_source).unwrap();
+        fs::write(second_source.join("second.txt"), b"second").unwrap();
+        app.source = Some(second_source);
+        app.destination_parent = Some(destination_parent);
+        app.prepare_review().unwrap();
+        let first_id = app.operations[0].id().to_string();
+        let second_id = app.operations[1].id().to_string();
+        let first_resource = root_resource(&app)
+            .children
+            .into_iter()
+            .find(|resource| resource.id.0.ends_with(&first_id))
+            .unwrap();
+        let retained_start = action(&first_resource, "start");
+
+        app.operations.swap(0, 1);
+        invoke_action(&mut app, &retained_start).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(
+            app.operations
+                .iter()
+                .find(|operation| operation.id() == first_id)
+                .unwrap()
+                .state(),
+            OperationState::Complete
+        );
+        assert_eq!(
+            app.operations
+                .iter()
+                .find(|operation| operation.id() == second_id)
+                .unwrap()
+                .state(),
+            OperationState::AwaitingReview
+        );
+
+        app.operations
+            .retain(|operation| operation.id() != second_id);
+        let stale = invoke_import_raw(
+            &mut app,
+            &ImportOperation::Start {
+                operation_id: second_id,
+            },
+        )
+        .unwrap_err();
+        assert!(stale.contains("no longer available"), "{stale}");
+        assert!(app.worker.is_none());
+    }
+
+    #[test]
+    fn continuation_actions_keep_revision_identities_and_reject_replaced_reviews() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("first.txt"), b"first").unwrap();
+        let second = source.parent().unwrap().join("second-choice");
+        fs::create_dir(&second).unwrap();
+        fs::write(second.join("second.txt"), b"second").unwrap();
+        let continuation =
+            Continuation::capture(&[continuation_choice(&source), continuation_choice(&second)])
+                .unwrap();
+        let original_ids = [continuation.operation_id(0), continuation.operation_id(1)];
+        app.continuation = Some(continuation);
+
+        let folders = root_resource(&app)
+            .children
+            .into_iter()
+            .filter(|resource| resource.kind == "imager.import.folder")
+            .collect::<Vec<_>>();
+        let retained_second_later = action(&folders[1], "later");
+        let connected = action(&folders[0], "connected");
+        assert!(matches!(
+            connected.contract.availability,
+            tilo_actions::Availability::Unavailable { .. }
+        ));
+        invoke_action(&mut app, &action(&folders[0], "later")).unwrap();
+        assert_eq!(
+            [
+                app.continuation.as_ref().unwrap().operation_id(0),
+                app.continuation.as_ref().unwrap().operation_id(1),
+            ],
+            original_ids
+        );
+        assert_eq!(
+            app.continuation.as_ref().unwrap().folders[0].mode,
+            ChoiceMode::Later
+        );
+        assert!(
+            invoke_import_raw(
+                &mut app,
+                &ImportOperation::SetFolderConnected {
+                    folder_id: original_ids[0].clone(),
+                },
+            )
+            .unwrap_err()
+            .contains("not available")
+        );
+
+        let replacement_source = destination_parent.parent().unwrap().join("replacement");
+        fs::create_dir(&replacement_source).unwrap();
+        fs::write(replacement_source.join("new.txt"), b"new").unwrap();
+        app.continuation =
+            Some(Continuation::capture(&[continuation_choice(&replacement_source)]).unwrap());
+        let replacement_id = app.continuation.as_ref().unwrap().operation_id(0);
+        assert!(!original_ids.contains(&replacement_id));
+        let error = invoke_action(&mut app, &retained_second_later).unwrap_err();
+        assert!(error.contains("no longer available"), "{error}");
+        assert_eq!(
+            app.continuation.as_ref().unwrap().folders[0].mode,
+            ChoiceMode::Copy
+        );
+
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                import_actions::IMPORT_OPERATION_TYPE,
+                b"{not-json",
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reviewed_batch_rechecks_identity_and_starts_only_reviewed_copy_rows() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("first.txt"), b"first").unwrap();
+        let second = source.parent().unwrap().join("batch-second");
+        fs::create_dir(&second).unwrap();
+        fs::write(second.join("second.txt"), b"second").unwrap();
+        let mut continuation =
+            Continuation::capture(&[continuation_choice(&source), continuation_choice(&second)])
+                .unwrap();
+        continuation.resolve(0, &destination_parent, true).unwrap();
+        continuation.resolve(1, &destination_parent, true).unwrap();
+        app.continuation = Some(continuation);
+        app.identity_ready = true;
+        app.prepare_continued_folder(0).unwrap();
+        app.prepare_continued_folder(1).unwrap();
+        settle_index(&mut app);
+        app.save_continued_mode(1, ChoiceMode::Later).unwrap();
+        let copy_id = app.continuation.as_ref().unwrap().operation_id(0);
+        let later_id = app.continuation.as_ref().unwrap().operation_id(1);
+        app.identity_checker = identity_ready;
+        let start_batch = action(&root_resource(&app), "start-reviewed-folders");
+
+        let pending = invoke_action(&mut app, &start_batch).unwrap();
+        assert_eq!(pending["phase"], "checking_identity");
+        assert!(app.gate_request.is_some());
+        assert!(app.worker.is_none());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.gate_request.is_some() {
+            app.poll_background();
+            assert!(Instant::now() < deadline, "identity check did not finish");
+            std::thread::yield_now();
+        }
+        assert!(
+            app.worker.is_some(),
+            "batch bypassed the shared worker start"
+        );
+        wait_terminal(&mut app);
+        assert_eq!(
+            app.operations
+                .iter()
+                .find(|operation| operation.id() == copy_id)
+                .unwrap()
+                .state(),
+            OperationState::Complete
+        );
+        assert_eq!(
+            app.operations
+                .iter()
+                .find(|operation| operation.id() == later_id)
+                .unwrap()
+                .state(),
+            OperationState::AwaitingReview
+        );
+    }
+
+    #[test]
+    fn semantic_cancel_and_retry_use_the_existing_journaled_worker() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        for index in 0..32 {
+            fs::write(
+                source.join(format!("archive-{index:02}.bin")),
+                vec![index as u8; 64 * 1024],
+            )
+            .unwrap();
+        }
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        app.prepare_review().unwrap();
+        let operation = root_resource(&app).children.pop().unwrap();
+
+        invoke_action(&mut app, &action(&operation, "start")).unwrap();
+        assert!(app.worker.is_some());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
+            app.poll_background();
+            assert!(Instant::now() < deadline, "copy made no journaled progress");
+            std::thread::yield_now();
+        }
+        assert!(
+            app.worker.is_some(),
+            "copy finished before cancellation could be tested"
+        );
+        assert!(app.operations[0].journal().unwrap().is_file());
+        let running = root_resource(&app).children.pop().unwrap();
+        invoke_action(&mut app, &action(&running, "cancel")).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(app.operations[0].state(), OperationState::Cancelled);
+
+        let cancelled = root_resource(&app).children.pop().unwrap();
+        invoke_action(&mut app, &action(&cancelled, "retry")).unwrap();
+        assert!(app.worker.is_some());
+        wait_terminal(&mut app);
+        assert_eq!(app.operations[0].state(), OperationState::Complete);
+        assert_eq!(app.operations[0].verified_file_count(), 32);
+    }
+
+    #[test]
+    fn semantic_issue_details_publish_completed_pages_through_repeatable_public_reads() {
+        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+        let operation = root_resource(&app).children.pop().unwrap();
+        let next = action(&operation, "next-issues");
+        assert!(matches!(
+            next.contract.availability,
+            tilo_actions::Availability::Available
+        ));
+
+        let pending = invoke_action(&mut app, &next).unwrap();
+        assert_eq!(pending["phase"], "loading_details");
+        let observed = wait_for_public_issue_count(&mut app, 8);
+        let issues = observed["operations"][0]["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 8);
+        assert!(issues.iter().all(|issue| {
+            issue["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("symbolic link"))
+        }));
+        assert_eq!(observed["operations"][0]["issue_count"], 40);
+        assert_eq!(observed["operations"][0]["details_loading"], false);
+        assert_eq!(observed["operations"][0]["next_issues_available"], false);
+        assert_eq!(observe_import(&mut app).unwrap(), observed);
+        let operation = root_resource(&app).children.pop().unwrap();
+        assert!(matches!(
+            action(&operation, "next-issues").contract.availability,
+            tilo_actions::Availability::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn semantic_first_issue_page_restores_the_original_page_and_closes_both_payloads() {
+        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+        let operation = root_resource(&app).children.pop().unwrap();
+        let retained_next = action(&operation, "next-issues");
+        invoke_action(&mut app, &retained_next).unwrap();
+        let terminal = wait_for_public_issue_count(&mut app, 8);
+        assert_eq!(terminal["operations"][0]["next_issues_available"], false);
+
+        let operation = root_resource(&app).children.pop().unwrap();
+        let first = action(&operation, "first-issues");
+        assert!(matches!(
+            first.contract.availability,
+            tilo_actions::Availability::Available
+        ));
+        let close = action(&operation, "toggle-details");
+        invoke_action(&mut app, &close).unwrap();
+        let closed = root_resource(&app).children.pop().unwrap();
+        assert!(matches!(
+            action(&closed, "first-issues").contract.availability,
+            tilo_actions::Availability::Unavailable { .. }
+        ));
+        assert!(invoke_action(&mut app, &retained_next).is_err());
+        assert!(invoke_action(&mut app, &first).is_err());
+
+        let reopen = action(&closed, "toggle-details");
+        invoke_action(&mut app, &reopen).unwrap();
+        assert_eq!(
+            observe_import(&mut app).unwrap()["operations"][0]["issues"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        let first = action(&root_resource(&app).children.pop().unwrap(), "first-issues");
+        invoke_action(&mut app, &first).unwrap();
+        let restored = wait_for_public_issue_count(&mut app, 32);
+        assert_eq!(restored["operations"][0]["next_issues_available"], true);
+        let restored_operation = root_resource(&app).children.pop().unwrap();
+        assert!(matches!(
+            action(&restored_operation, "next-issues")
+                .contract
+                .availability,
+            tilo_actions::Availability::Available
+        ));
+        assert!(matches!(
+            action(&restored_operation, "first-issues")
+                .contract
+                .availability,
+            tilo_actions::Availability::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn terminal_issue_button_uses_the_production_path_to_restore_the_first_page() {
+        use ui::headless::{FrameHarness, SemanticExpectation};
+
+        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+        let operation = root_resource(&app).children.pop().unwrap();
+        invoke_action(&mut app, &action(&operation, "next-issues")).unwrap();
+        wait_for_public_issue_count(&mut app, 8);
+
+        let card = app.operation_card(0, &app.operations[0]);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(card), (640, 640));
+        harness
+            .expect(
+                &SemanticExpectation::named("import.operation.0.next-issues")
+                    .name_contains("First issue page")
+                    .enabled(true),
+            )
+            .unwrap();
+        harness
+            .perform_named(
+                "import.operation.0.next-issues",
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        drop(harness);
+
+        let mut state = AutoCommit::new();
+        Widget::update(&mut app, &mut state, &automerge::ROOT);
+        let restored = wait_for_public_issue_count(&mut app, 32);
+        assert_eq!(restored["operations"][0]["next_issues_available"], true);
+    }
+
+    #[test]
+    fn retained_next_issue_actions_refuse_while_details_are_closed() {
+        let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
+        let operation = root_resource(&app).children.pop().unwrap();
+        let retained_next = action(&operation, "next-issues");
+        let close = action(&operation, "toggle-details");
+        invoke_action(&mut app, &close).unwrap();
+
+        let closed = root_resource(&app).children.pop().unwrap();
+        assert!(matches!(
+            action(&closed, "next-issues").contract.availability,
+            tilo_actions::Availability::Unavailable { .. }
+        ));
+        let retained_error = invoke_action(&mut app, &retained_next).unwrap_err();
+        assert!(retained_error.contains("not available"), "{retained_error}");
+        let operation_id = closed.id.as_str().rsplit('.').next().unwrap().to_string();
+        let direct_error =
+            invoke_import_raw(&mut app, &ImportOperation::NextIssues { operation_id }).unwrap_err();
+        assert!(direct_error.contains("not available"), "{direct_error}");
+
+        let mut state = AutoCommit::new();
+        for _ in 0..8 {
+            Widget::update(&mut app, &mut state, &automerge::ROOT);
+            std::thread::yield_now();
+        }
+        let reopen = action(
+            &root_resource(&app).children.pop().unwrap(),
+            "toggle-details",
+        );
+        invoke_action(&mut app, &reopen).unwrap();
+        let observed = observe_import(&mut app).unwrap();
+        assert_eq!(
+            observed["operations"][0]["issues"]
+                .as_array()
+                .unwrap()
+                .len(),
+            32
+        );
+        assert_eq!(observed["operations"][0]["details_open"], true);
+        assert_eq!(observed["operations"][0]["next_issues_available"], true);
     }
 
     #[test]
