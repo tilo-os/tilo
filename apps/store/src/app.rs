@@ -3871,12 +3871,7 @@ fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
 }
 
 fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    state
-        .get(root, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, id)| matches!(value, Value::Object(ObjType::Text)).then_some(id))
-        .and_then(|id| state.text(&id).ok())
+    ui::doc::read_text(state, root, key)
         .unwrap_or_default()
         .chars()
         .take(MAX_REPORT_NOTE_CHARS)

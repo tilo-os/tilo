@@ -17,8 +17,9 @@
 //! - **Show on lock screen** — mirror notifications onto the lock screen.
 
 use std::collections::{BTreeMap, HashMap};
+use ui::doc::{read_bool, read_str};
 
-use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tilo_actions::EncodedAction;
 use tracing::warn;
@@ -306,8 +307,8 @@ impl NotificationsPane {
         field: bool,
     ) -> (bool, bool) {
         let scratch = Self::scratch_key(canonical);
-        let cv = Self::read_bool(state, root, canonical).unwrap_or(field);
-        let sv = Self::read_bool(state, root, &scratch).unwrap_or(cv);
+        let cv = read_bool(state, root, canonical).unwrap_or(field);
+        let sv = read_bool(state, root, &scratch).unwrap_or(cv);
         if cv != field {
             let _ = state.put(root, scratch.as_str(), automerge::ScalarValue::Boolean(cv));
             (cv, true)
@@ -327,8 +328,8 @@ impl NotificationsPane {
         field: &str,
     ) -> (String, bool) {
         let scratch = Self::scratch_key(canonical);
-        let cv = Self::read_text(state, root, canonical).unwrap_or_else(|| field.to_string());
-        let sv = Self::read_text(state, root, &scratch).unwrap_or_else(|| cv.clone());
+        let cv = read_str(state, root, canonical).unwrap_or_else(|| field.to_string());
+        let sv = read_str(state, root, &scratch).unwrap_or_else(|| cv.clone());
         if cv != field {
             let _ = state.put(root, scratch.as_str(), cv.as_str());
             (cv, true)
@@ -662,26 +663,6 @@ impl NotificationsPane {
         }
     }
 
-    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !self.needs_seed {
             return;
@@ -783,44 +764,43 @@ impl NotificationsPane {
         let now = unix_now();
         for app in &self.apps {
             let rule = self.prefs.per_app.entry(app.id.clone()).or_default();
-            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "banners"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "banners"))
                 && rule.banners != Some(value)
             {
                 rule.banners = Some(value);
                 changed = true;
             }
-            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "previews"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "previews"))
                 && rule.previews != Some(value)
             {
                 rule.previews = Some(value);
                 changed = true;
             }
-            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "sounds"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "sounds"))
                 && rule.sounds != Some(value)
             {
                 rule.sounds = Some(value);
                 changed = true;
             }
-            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "badges"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "badges"))
                 && rule.badges != Some(value)
             {
                 rule.badges = Some(value);
                 changed = true;
             }
-            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "priority"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "priority"))
                 && rule.priority != value
             {
                 rule.priority = value;
                 changed = true;
             }
-            if let Some(value) =
-                Self::read_bool(state, root, &app_key(&app.id, "priority_contacts"))
+            if let Some(value) = read_bool(state, root, &app_key(&app.id, "priority_contacts"))
                 && rule.priority_contacts != value
             {
                 rule.priority_contacts = value;
                 changed = true;
             }
-            if let Some(label) = Self::read_text(state, root, &app_key(&app.id, "mute"))
+            if let Some(label) = read_str(state, root, &app_key(&app.id, "mute"))
                 && let Some(seconds) = mute_seconds(&label)
                 && self.mute_labels.get(&app.id).map(String::as_str) != Some(label.as_str())
             {
@@ -1062,18 +1042,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(
-            NotificationsPane::read_bool(&doc, &root, DND_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            NotificationsPane::read_bool(&doc, &root, BANNERS_KEY),
-            Some(false)
-        );
-        assert_eq!(
-            NotificationsPane::read_bool(&doc, &root, LOCK_SCREEN_KEY),
-            Some(true)
-        );
+        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
+        assert_eq!(read_bool(&doc, &root, BANNERS_KEY), Some(false));
+        assert_eq!(read_bool(&doc, &root, LOCK_SCREEN_KEY), Some(true));
     }
 
     #[test]
@@ -1150,10 +1121,7 @@ mod tests {
         );
 
         // The action landed on the canonical key and the pane adopted + persisted it.
-        assert_eq!(
-            NotificationsPane::read_bool(&doc, &root, DND_KEY),
-            Some(true)
-        );
+        assert_eq!(read_bool(&doc, &root, DND_KEY), Some(true));
         assert!(pane.prefs().do_not_disturb);
     }
 
@@ -1193,7 +1161,7 @@ mod tests {
             "the host recorded an undo boundary for the dispatched flip"
         );
         assert_eq!(
-            NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
+            read_bool(&state.doc, &state.root, DND_KEY),
             Some(true),
             "the action set DND on"
         );
@@ -1216,7 +1184,7 @@ mod tests {
             .undo_as(Some(&local_author), None, None)
             .expect("an undo entry to pop");
         assert_eq!(
-            NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
+            read_bool(&state.doc, &state.root, DND_KEY),
             Some(false),
             "undo reverted the setting"
         );
@@ -1225,7 +1193,7 @@ mod tests {
         pane.sync(&mut state.doc, &state.root);
         assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
         assert_eq!(
-            NotificationsPane::read_bool(&state.doc, &state.root, scratch.as_str()),
+            read_bool(&state.doc, &state.root, scratch.as_str()),
             Some(false),
             "the toggle's scratch mirrors the reverted value"
         );

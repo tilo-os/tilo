@@ -2,8 +2,9 @@
 //! remain in their specialist tools, opened with typed contextual intents.
 
 use std::collections::HashMap;
+use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
@@ -317,10 +318,6 @@ impl StoragePane {
             ]),
         )
     }
-
-    fn pressed(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-        matches!(state.get(root, key), Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true)))
-    }
 }
 
 impl Default for StoragePane {
@@ -456,7 +453,7 @@ impl Widget for StoragePane {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
             }
-            if Self::pressed(state, root, CLEAN_KEY) {
+            if read_bool(state, root, CLEAN_KEY).unwrap_or(false) {
                 let _ = state.put(root, CLEAN_KEY, false);
                 if let Some(preview) = &self.cleanup {
                     let selected: Vec<usize> = (0..preview.items.len()).collect();
@@ -485,7 +482,7 @@ impl Widget for StoragePane {
                     );
                 }
             }
-            if Self::pressed(state, root, SYNC_FREE_KEY) {
+            if read_bool(state, root, SYNC_FREE_KEY).unwrap_or(false) {
                 let _ = state.put(root, SYNC_FREE_KEY, false);
                 if !self.sync_busy
                     && let Some(snapshot) = &self.sync_snapshot
@@ -507,7 +504,7 @@ impl Widget for StoragePane {
                     );
                 }
             }
-            if Self::pressed(state, root, DISKS_KEY) {
+            if read_bool(state, root, DISKS_KEY).unwrap_or(false) {
                 let _ = state.put(root, DISKS_KEY, false);
                 let result = os_actions::open_tool(ToolIntent::Disks {
                     route: DisksRoute::Overview,
@@ -517,7 +514,7 @@ impl Widget for StoragePane {
                     result.map(|()| "Opened Disks.".into()),
                 );
             }
-            if Self::pressed(state, root, BACKUPS_KEY) {
+            if read_bool(state, root, BACKUPS_KEY).unwrap_or(false) {
                 let _ = state.put(root, BACKUPS_KEY, false);
                 let result = os_actions::open_tool(ToolIntent::Backups {
                     route: BackupsRoute::Overview,

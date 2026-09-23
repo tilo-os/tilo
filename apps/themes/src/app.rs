@@ -639,7 +639,7 @@ impl ThemesApp {
         self.edit_token = TokenId::Accent;
         // The applied OS theme: adopt whatever is already persisted in the
         // shared store, else default to the seeded selection.
-        if doc::get_str(state, path, doc::KEY_ACTIVE).is_none() {
+        if ui::doc::read_str(state, path, doc::KEY_ACTIVE).is_none() {
             let active = store::load_active_id().unwrap_or_else(|| sel.clone());
             doc::put_str(state, path, doc::KEY_ACTIVE, &active);
         }
@@ -749,7 +749,7 @@ impl ThemesApp {
         let Some(sel_spec) = self.catalog.get(idx).cloned() else {
             return;
         };
-        let active_id = doc::get_str(state, path, doc::KEY_ACTIVE).unwrap_or_default();
+        let active_id = ui::doc::read_str(state, path, doc::KEY_ACTIVE).unwrap_or_default();
         self.gallery
             .set_view(&self.catalog, selected, &active_id, editable);
         self.preview.set_spec(&sel_spec);
@@ -2645,7 +2645,7 @@ mod tests {
         app.sync(&mut st.doc, &st.root);
         // The in-app "Active" badge id updates immediately…
         assert_eq!(
-            doc::get_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
+            ui::doc::read_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
             Some("dracula")
         );
         // …and the shared settings store on disk now names it the OS theme.
@@ -2830,7 +2830,7 @@ mod history_reconcile_tests {
         let mut app = ThemesApp::new();
         app.sync(&mut d, &automerge::ROOT);
         assert_eq!(
-            doc::get_str(&d, &automerge::ROOT, doc::KEY_ACTIVE).as_deref(),
+            ui::doc::read_str(&d, &automerge::ROOT, doc::KEY_ACTIVE).as_deref(),
             Some("saved-applied-identity")
         );
         app.selected = spec.id.clone();

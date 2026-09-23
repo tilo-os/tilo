@@ -23,6 +23,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_str, read_str_or_text};
 
 use crate::model::{Address, Birthday, Contact, ContactId, GroupEntry, Labeled};
 use uuid::Uuid;
@@ -57,7 +58,7 @@ impl ContactsDoc {
         let (value, contact) = doc.get(&contacts, key.as_str()).ok().flatten()?;
         matches!(value, Value::Object(ObjType::Map))
             .then_some(contact)
-            .filter(|contact| !read_bool(doc, contact, "deleted"))
+            .filter(|contact| !read_bool(doc, contact, "deleted").unwrap_or(false))
     }
 
     /// Whether an action may still address this contact. Kept read-only so a
@@ -316,19 +317,19 @@ impl ContactsDoc {
             else {
                 continue;
             };
-            if read_bool(doc, &m, "deleted") {
+            if read_bool(doc, &m, "deleted").unwrap_or(false) {
                 continue;
             }
             out.push(Contact {
                 id,
-                first: read_text(doc, &m, "first"),
-                last: read_text(doc, &m, "last"),
-                org: read_text(doc, &m, "org"),
-                title: read_text(doc, &m, "title"),
-                website: read_text(doc, &m, "website"),
-                notes: read_text(doc, &m, "notes"),
-                birthday: Birthday::parse(&read_str(doc, &m, "birthday")),
-                favorite: read_bool(doc, &m, "favorite"),
+                first: read_str_or_text(doc, &m, "first").unwrap_or_default(),
+                last: read_str_or_text(doc, &m, "last").unwrap_or_default(),
+                org: read_str_or_text(doc, &m, "org").unwrap_or_default(),
+                title: read_str_or_text(doc, &m, "title").unwrap_or_default(),
+                website: read_str_or_text(doc, &m, "website").unwrap_or_default(),
+                notes: read_str_or_text(doc, &m, "notes").unwrap_or_default(),
+                birthday: Birthday::parse(&read_str(doc, &m, "birthday").unwrap_or_default()),
+                favorite: read_bool(doc, &m, "favorite").unwrap_or(false),
                 groups: read_group_list(doc, &m, id),
                 phones: read_labeled_list(doc, &m, id, "phones"),
                 emails: read_labeled_list(doc, &m, id, "emails"),
@@ -371,34 +372,6 @@ fn sync_text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
         return;
     };
     ui::doc::splice_text_diffed(doc, &tid, value);
-}
-
-fn read_text(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
-    match doc.get(parent, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn read_str(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
-    match doc.get(parent, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn read_bool(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
-    match doc.get(parent, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-        _ => false,
-    }
 }
 
 /// Get-or-create a List object at `parent[key]`.
@@ -445,6 +418,7 @@ fn row_id(
     fingerprint: &str,
 ) -> Uuid {
     read_str(doc, row, "id")
+        .unwrap_or_default()
         .parse()
         .ok()
         .filter(|id: &Uuid| !id.is_nil())
@@ -452,21 +426,21 @@ fn row_id(
 }
 
 fn group_fingerprint(doc: &AutoCommit, row: &ObjId) -> String {
-    read_str(doc, row, "value")
+    read_str(doc, row, "value").unwrap_or_default()
 }
 
 fn labeled_fingerprint(doc: &AutoCommit, row: &ObjId) -> String {
     format!(
         "{}\u{0}{}",
-        read_str(doc, row, "label"),
-        read_text(doc, row, "value")
+        read_str(doc, row, "label").unwrap_or_default(),
+        read_str_or_text(doc, row, "value").unwrap_or_default()
     )
 }
 
 fn address_fingerprint(doc: &AutoCommit, row: &ObjId) -> String {
     ["label", "street", "city", "region", "postal", "country"]
         .into_iter()
-        .map(|key| read_str(doc, row, key))
+        .map(|key| read_str(doc, row, key).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\u{0}")
 }
@@ -513,7 +487,7 @@ fn read_group_list(doc: &AutoCommit, parent: &ObjId, contact: ContactId) -> Vec<
     for index in 0..doc.length(&list) {
         match doc.get(&list, index).ok().flatten() {
             Some((Value::Object(ObjType::Map), row)) => {
-                let value = read_str(doc, &row, "value");
+                let value = read_str(doc, &row, "value").unwrap_or_default();
                 out.push(GroupEntry {
                     id: row_id(doc, &row, contact, "groups", index, &value),
                     value,
@@ -628,8 +602,8 @@ fn read_labeled_list(
     let mut out = Vec::new();
     for index in 0..doc.length(&list) {
         if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
-            let label = read_str(doc, &row, "label");
-            let value = read_text(doc, &row, "value");
+            let label = read_str(doc, &row, "label").unwrap_or_default();
+            let value = read_str_or_text(doc, &row, "value").unwrap_or_default();
             let fingerprint = format!("{label}\u{0}{value}");
             out.push(Labeled {
                 id: row_id(doc, &row, contact, key, index, &fingerprint),
@@ -718,12 +692,12 @@ fn read_address_list(
         if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
             let address = Address {
                 id: Uuid::nil(),
-                label: read_str(doc, &row, "label"),
-                street: read_str(doc, &row, "street"),
-                city: read_str(doc, &row, "city"),
-                region: read_str(doc, &row, "region"),
-                postal: read_str(doc, &row, "postal"),
-                country: read_str(doc, &row, "country"),
+                label: read_str(doc, &row, "label").unwrap_or_default(),
+                street: read_str(doc, &row, "street").unwrap_or_default(),
+                city: read_str(doc, &row, "city").unwrap_or_default(),
+                region: read_str(doc, &row, "region").unwrap_or_default(),
+                postal: read_str(doc, &row, "postal").unwrap_or_default(),
+                country: read_str(doc, &row, "country").unwrap_or_default(),
             };
             out.push(Address {
                 id: row_id(
@@ -910,7 +884,11 @@ mod tests {
         longer.push('!');
         sync_text(&mut doc, &ROOT, "notes", &longer);
         let grew = doc.save().len() - before;
-        assert_eq!(read_text(&doc, &ROOT, "notes"), longer, "value round-trips");
+        assert_eq!(
+            read_str_or_text(&doc, &ROOT, "notes").unwrap_or_default(),
+            longer,
+            "value round-trips"
+        );
         assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
     }
 
@@ -959,7 +937,7 @@ mod tests {
         let persisted_list = peer.get(&row, "groups").unwrap().unwrap().1;
         let persisted_row = peer.get(&persisted_list, 0).unwrap().unwrap();
         assert!(matches!(persisted_row.0, Value::Object(ObjType::Map)));
-        let persisted_id = read_str(&peer, &persisted_row.1, "id");
+        let persisted_id = read_str(&peer, &persisted_row.1, "id").unwrap_or_default();
         assert_eq!(persisted_id, second_read.groups[0].id.to_string());
     }
 }

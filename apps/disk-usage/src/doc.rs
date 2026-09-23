@@ -1,6 +1,7 @@
 //! Collaborative, persistent recent-directory projection.
 
 use std::path::{Path, PathBuf};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -19,13 +20,13 @@ impl DiskUsageDoc {
             .keys(&rows)
             .filter_map(|id| {
                 let row = map_read(doc, &rows, &id)?;
-                if bool_read(doc, &row, "deleted") {
+                if read_bool(doc, &row, "deleted").unwrap_or(false) {
                     return None;
                 }
                 Some((
-                    i64_read(doc, &row, "rank"),
+                    read_i64_coerced(doc, &row, "rank").unwrap_or_default(),
                     id,
-                    PathBuf::from(text_read(doc, &row, "path")?),
+                    PathBuf::from(read_str(doc, &row, "path")?),
                 ))
             })
             .collect::<Vec<_>>();
@@ -48,8 +49,8 @@ impl DiskUsageDoc {
         let next_rank = doc
             .keys(&rows)
             .filter_map(|key| map_read(doc, &rows, &key))
-            .filter(|candidate| !bool_read(doc, candidate, "deleted"))
-            .map(|candidate| i64_read(doc, &candidate, "rank"))
+            .filter(|candidate| !read_bool(doc, candidate, "deleted").unwrap_or(false))
+            .map(|candidate| read_i64_coerced(doc, &candidate, "rank").unwrap_or_default())
             .min()
             .unwrap_or(0)
             .saturating_sub(1);
@@ -82,34 +83,6 @@ fn map_read(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
 
 fn map_make(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     map_read(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Map).ok())
-}
-
-fn text_read(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
-    doc.get(parent, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| match value {
-            ui::automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        })
-}
-
-fn i64_read(doc: &AutoCommit, parent: &ObjId, key: &str) -> i64 {
-    doc.get(parent, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.to_i64())
-        .unwrap_or_default()
-}
-
-fn bool_read(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
-    doc.get(parent, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.into_scalar().ok())
-        .is_some_and(|value| matches!(value, ui::automerge::ScalarValue::Boolean(true)))
 }
 
 fn stable_id(path: &Path) -> String {

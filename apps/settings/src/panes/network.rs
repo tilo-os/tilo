@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use ui::doc::{read_bool, read_str_or_text};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{
@@ -147,27 +148,6 @@ fn wifi_signal_glyph(signal: u8) -> &'static str {
         2 => "\u{f0922}", // wifi-strength-2
         3 => "\u{f0925}", // wifi-strength-3
         _ => "\u{f0928}", // wifi-strength-4 (full)
-    }
-}
-
-/// Read a boolean scalar at `key`, defaulting to `false`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    matches!(
-        state.get(root, key),
-        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-    )
-}
-
-/// Read a string value at `key` — handles both a plain scalar string and
-/// an Automerge `Text` object (which is what `TextInput` writes through).
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 
@@ -1996,19 +1976,23 @@ impl NetworkPane {
             (HOTSPOT_KEY, self.radios.hotspot_active, "hotspot"),
             (MOBILE_KEY, self.radios.wwan_enabled, "mobile"),
         ] {
-            let Some(enabled) = read_bool(state, root, key).then_some(true).or_else(|| {
-                state
-                    .get(root, key)
-                    .ok()
-                    .flatten()
-                    .and_then(|(v, _)| match v {
-                        Value::Scalar(s) => match s.as_ref() {
-                            automerge::ScalarValue::Boolean(b) => Some(*b),
-                            _ => None,
-                        },
-                        Value::Object(_) => None,
-                    })
-            }) else {
+            let Some(enabled) = read_bool(state, root, key)
+                .unwrap_or(false)
+                .then_some(true)
+                .or_else(|| {
+                    state
+                        .get(root, key)
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| match v {
+                            Value::Scalar(s) => match s.as_ref() {
+                                automerge::ScalarValue::Boolean(b) => Some(*b),
+                                _ => None,
+                            },
+                            Value::Object(_) => None,
+                        })
+                })
+            else {
                 continue;
             };
             if enabled == old {
@@ -2064,7 +2048,7 @@ impl NetworkPane {
     fn sync_vpn_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for vpn in &mut self.vpns {
             let key = Self::vpn_key(&vpn.name);
-            let enabled = read_bool(state, root, &key);
+            let enabled = read_bool(state, root, &key).unwrap_or(false);
             if enabled != vpn.active {
                 match self.dispatcher.set_vpn_connection(&vpn.name, enabled) {
                     Ok(()) => vpn.active = enabled,
@@ -2111,7 +2095,7 @@ impl NetworkPane {
                 }
             }
             let forget_key = profile_forget_key(&profile.uuid);
-            if read_bool(state, root, &forget_key) {
+            if read_bool(state, root, &forget_key).unwrap_or(false) {
                 let _ = state.put(root, &forget_key, false);
                 match os_actions::forget_network_profile(&profile.uuid) {
                     Ok(()) => {
@@ -2135,7 +2119,7 @@ impl NetworkPane {
             .filter(|profile| profile.kind == "802-11-wireless")
         {
             let key = profile_share_key(&profile.uuid);
-            if !read_bool(state, root, &key) {
+            if !read_bool(state, root, &key).unwrap_or(false) {
                 continue;
             }
             let _ = state.put(root, key, false);
@@ -2165,15 +2149,15 @@ impl NetworkPane {
     }
 
     fn sync_hotspot_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, HOTSPOT_APPLY_KEY) {
+        if !read_bool(state, root, HOTSPOT_APPLY_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
-        self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
+        self.hotspot_ssid = read_str_or_text(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
-            read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
+            read_str_or_text(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
             Ok(config) => match os_actions::configure_hotspot(&config) {
                 Ok(()) => {
@@ -2190,15 +2174,15 @@ impl NetworkPane {
     }
 
     fn sync_hotspot_qr(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, HOTSPOT_QR_KEY) {
+        if !read_bool(state, root, HOTSPOT_QR_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, HOTSPOT_QR_KEY, false);
-        self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
+        self.hotspot_ssid = read_str_or_text(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
-            read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
+            read_str_or_text(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
             Ok(_) => self.hotspot_qr_visible = !self.hotspot_qr_visible,
             Err(error) => self.connection_notice = Some(error),
@@ -2208,7 +2192,7 @@ impl NetworkPane {
 
     fn sync_profile_selectors(&mut self, state: &AutoCommit, root: &ObjId) {
         for selector in [ADVANCED_PROFILE_KEY, WIRED_PROFILE_KEY] {
-            if let Some(label) = read_str(state, root, selector)
+            if let Some(label) = read_str_or_text(state, root, selector)
                 && let Some(profile) = self.profiles.iter().find(|p| profile_label(p) == label)
             {
                 let selected = if selector == ADVANCED_PROFILE_KEY {
@@ -2232,7 +2216,7 @@ impl NetworkPane {
             .filter(|p| p.kind == "802-3-ethernet")
         {
             let apply_key = ipv4_key(&profile.uuid, "apply");
-            if !read_bool(state, root, &apply_key) {
+            if !read_bool(state, root, &apply_key).unwrap_or(false) {
                 continue;
             }
             let _ = state.put(root, &apply_key, false);
@@ -2248,8 +2232,9 @@ impl NetworkPane {
                 continue;
             }
             let config = IpConfiguration {
-                automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic")),
-                addresses: read_str(state, root, &ipv4_key(&profile.uuid, "address"))
+                automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic"))
+                    .unwrap_or(false),
+                addresses: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "address"))
                     .into_iter()
                     .flat_map(|value| {
                         value
@@ -2261,9 +2246,9 @@ impl NetworkPane {
                             .collect::<Vec<_>>()
                     })
                     .collect(),
-                gateway: read_str(state, root, &ipv4_key(&profile.uuid, "gateway"))
+                gateway: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "gateway"))
                     .filter(|v| !v.trim().is_empty()),
-                dns: read_str(state, root, &ipv4_key(&profile.uuid, "dns"))
+                dns: read_str_or_text(state, root, &ipv4_key(&profile.uuid, "dns"))
                     .into_iter()
                     .flat_map(|value| {
                         value
@@ -2290,12 +2275,12 @@ impl NetworkPane {
     }
 
     fn sync_mobile_create(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, MOBILE_CREATE_KEY) {
+        if !read_bool(state, root, MOBILE_CREATE_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, MOBILE_CREATE_KEY, false);
-        let name = read_str(state, root, MOBILE_PROFILE_KEY).unwrap_or_default();
-        let apn = read_str(state, root, MOBILE_APN_KEY).unwrap_or_default();
+        let name = read_str_or_text(state, root, MOBILE_PROFILE_KEY).unwrap_or_default();
+        let apn = read_str_or_text(state, root, MOBILE_APN_KEY).unwrap_or_default();
         let tx = self.connection_tx.clone();
         self.connection_notice = Some("Creating mobile profile…".into());
         std::thread::spawn(move || {
@@ -2310,7 +2295,7 @@ impl NetworkPane {
     }
 
     fn sync_advanced_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ADVANCED_KEY) {
+        if !read_bool(state, root, ADVANCED_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, ADVANCED_KEY, false);
@@ -2330,7 +2315,7 @@ impl NetworkPane {
     }
 
     fn sync_enterprise_editor(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_EDITOR_KEY) {
+        if !read_bool(state, root, ENTERPRISE_EDITOR_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, ENTERPRISE_EDITOR_KEY, false);
@@ -2339,7 +2324,7 @@ impl NetworkPane {
     }
 
     fn sync_diagnostics(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, DIAGNOSTICS_KEY) {
+        if !read_bool(state, root, DIAGNOSTICS_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, DIAGNOSTICS_KEY, false);
@@ -2365,7 +2350,7 @@ impl NetworkPane {
     fn sync_profile_policy(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for profile in self.profiles.clone() {
             let apply = format!("network.profile.policy.{}", profile.uuid);
-            if !read_bool(state, root, &apply) {
+            if !read_bool(state, root, &apply).unwrap_or(false) {
                 continue;
             }
             let _ = state.put(root, &apply, false);
@@ -2373,7 +2358,7 @@ impl NetworkPane {
                 self.connection_notice = Some("Policy was not applied because NetworkManager's current values could not be read.".into());
                 continue;
             };
-            let requested_metered = match read_str(
+            let requested_metered = match read_str_or_text(
                 state,
                 root,
                 &format!("network.profile.metered.{}", profile.uuid),
@@ -2385,7 +2370,7 @@ impl NetworkPane {
                 Some("Automatic") => os_actions::MeteredPolicy::Automatic,
                 _ => original.metered.unwrap_or_default(),
             };
-            let requested_mac = match read_str(
+            let requested_mac = match read_str_or_text(
                 state,
                 root,
                 &format!("network.profile.mac.{}", profile.uuid),
@@ -2397,7 +2382,7 @@ impl NetworkPane {
                 Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
                 _ => original.mac,
             };
-            let requested_proxy_url = read_str(
+            let requested_proxy_url = read_str_or_text(
                 state,
                 root,
                 &format!("network.profile.proxy.{}", profile.uuid),
@@ -2437,7 +2422,7 @@ impl NetworkPane {
     }
 
     fn sync_mobile_unlock(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, MOBILE_UNLOCK_KEY) {
+        if !read_bool(state, root, MOBILE_UNLOCK_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, MOBILE_UNLOCK_KEY, false);
@@ -2453,7 +2438,7 @@ impl NetworkPane {
         }
         let pin = Zeroizing::new(std::mem::take(&mut pin));
         let tx = self.connection_tx.clone();
-        let selected = read_str(state, root, MOBILE_SIM_KEY)
+        let selected = read_str_or_text(state, root, MOBILE_SIM_KEY)
             .and_then(|label| {
                 self.sims
                     .iter()
@@ -2477,27 +2462,27 @@ impl NetworkPane {
     }
 
     fn sync_enterprise_connect(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_CONNECT_KEY) {
+        if !read_bool(state, root, ENTERPRISE_CONNECT_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, ENTERPRISE_CONNECT_KEY, false);
         let config = EnterpriseWifiConfiguration {
-            profile_name: read_str(state, root, ENTERPRISE_PROFILE_KEY).unwrap_or_default(),
-            ssid: read_str(state, root, ENTERPRISE_SSID_KEY).unwrap_or_default(),
-            identity: read_str(state, root, ENTERPRISE_IDENTITY_KEY).unwrap_or_default(),
-            anonymous_identity: read_str(state, root, ENTERPRISE_ANONYMOUS_KEY)
+            profile_name: read_str_or_text(state, root, ENTERPRISE_PROFILE_KEY).unwrap_or_default(),
+            ssid: read_str_or_text(state, root, ENTERPRISE_SSID_KEY).unwrap_or_default(),
+            identity: read_str_or_text(state, root, ENTERPRISE_IDENTITY_KEY).unwrap_or_default(),
+            anonymous_identity: read_str_or_text(state, root, ENTERPRISE_ANONYMOUS_KEY)
                 .filter(|value| !value.trim().is_empty()),
-            ca_certificate: read_str(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
-            method: match read_str(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
+            ca_certificate: read_str_or_text(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
+            method: match read_str_or_text(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
                 Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
                 Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
                 _ => os_actions::EnterpriseEapMethod::Peap,
             },
-            phase2_auth: read_str(state, root, ENTERPRISE_PHASE2_KEY)
+            phase2_auth: read_str_or_text(state, root, ENTERPRISE_PHASE2_KEY)
                 .map(|v| v.to_ascii_lowercase()),
-            client_certificate: read_str(state, root, ENTERPRISE_CLIENT_CERT_KEY)
+            client_certificate: read_str_or_text(state, root, ENTERPRISE_CLIENT_CERT_KEY)
                 .filter(|v| !v.trim().is_empty()),
-            private_key: read_str(state, root, ENTERPRISE_PRIVATE_KEY)
+            private_key: read_str_or_text(state, root, ENTERPRISE_PRIVATE_KEY)
                 .filter(|v| !v.trim().is_empty()),
         };
         let mut password = self
@@ -2526,7 +2511,7 @@ impl NetworkPane {
     }
 
     fn sync_enterprise_ca_choose(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, ENTERPRISE_CA_CHOOSE_KEY) {
+        if !read_bool(state, root, ENTERPRISE_CA_CHOOSE_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, ENTERPRISE_CA_CHOOSE_KEY, false);
@@ -2550,7 +2535,7 @@ impl NetworkPane {
     }
 
     fn sync_captive_portal(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, CAPTIVE_PORTAL_KEY) {
+        if !read_bool(state, root, CAPTIVE_PORTAL_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
@@ -2572,7 +2557,7 @@ impl NetworkPane {
         let requested_profiles: Vec<String> = self
             .vpns
             .iter()
-            .filter(|vpn| read_bool(state, root, &Self::vpn_studio_key(&vpn.name)))
+            .filter(|vpn| read_bool(state, root, &Self::vpn_studio_key(&vpn.name)).unwrap_or(false))
             .map(|vpn| vpn.name.clone())
             .collect();
         for profile in requested_profiles {
@@ -2584,7 +2569,7 @@ impl NetworkPane {
                 warn!(target: "tilo::settings", profile = %profile, error = %e, "could not open VPN Studio");
             }
         }
-        if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY) {
+        if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY).unwrap_or(false) {
             let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
             if let Err(e) = (self.tool_opener)(ToolIntent::Vpn {
                 route: VpnRoute::Overview,
@@ -2666,7 +2651,7 @@ impl NetworkPane {
     /// structure rebuilds), then drive the per-network "Connect" and "Join"
     /// buttons.
     fn sync_network_connect_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let doc_expanded = read_str(state, root, EXPANDED_KEY).filter(|s| !s.is_empty());
+        let doc_expanded = read_str_or_text(state, root, EXPANDED_KEY).filter(|s| !s.is_empty());
         if doc_expanded != self.expanded_ssid {
             self.expanded_ssid = doc_expanded;
         }
@@ -2683,7 +2668,7 @@ impl NetworkPane {
         // secure networks toggle the inline password prompt instead.
         for (ssid, secure, security) in &nets {
             let key = connect_key(ssid);
-            let pressed = read_bool(state, root, &key);
+            let pressed = read_bool(state, root, &key).unwrap_or(false);
             if !pressed {
                 continue;
             }
@@ -2705,7 +2690,7 @@ impl NetworkPane {
         // connect with the typed password, then collapse the prompt.
         for (ssid, _secure, security) in &nets {
             let jk = join_key(ssid);
-            if !read_bool(state, root, &jk) {
+            if !read_bool(state, root, &jk).unwrap_or(false) {
                 continue;
             }
             let _ = state.put(root, jk.as_str(), automerge::ScalarValue::Boolean(false));
@@ -3028,7 +3013,7 @@ mod tests {
         pane.sync(&mut doc, &root);
         assert!(pane.enterprise_editor_open);
         assert!(pane.take_structure_dirty());
-        assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY));
+        assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY).unwrap_or(false));
     }
 
     #[test]
@@ -3212,7 +3197,7 @@ mod tests {
         wait_for_password_prompt(&mut pane, &mut doc, &root);
         assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
         assert_eq!(
-            read_str(&doc, &root, EXPANDED_KEY).as_deref(),
+            read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
             Some("Neighbour_5G"),
             "expansion is mirrored into the document so it survives rebuilds"
         );
@@ -3335,7 +3320,10 @@ mod tests {
             ["connect_wifi(Neighbour_5G, pw=hunter2)"]
         );
         assert_eq!(pane.expanded_ssid, None, "Join collapses the prompt");
-        assert_eq!(read_str(&doc, &root, EXPANDED_KEY).as_deref(), Some(""));
+        assert_eq!(
+            read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
+            Some("")
+        );
     }
 
     /// Pressing Connect a second time on the same expanded network collapses
@@ -3446,11 +3434,7 @@ mod tests {
                 profile: Some("Work VPN".into()),
             }]
         );
-        assert!(!read_bool(
-            &doc,
-            &root,
-            &NetworkPane::vpn_studio_key("Work VPN")
-        ));
+        assert!(!read_bool(&doc, &root, &NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false));
     }
 
     #[test]
@@ -3503,7 +3487,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            read_str(
+            read_str_or_text(
                 &doc,
                 &automerge::ROOT,
                 &format!("network.profile.metered.{}", wifi.uuid)
@@ -3512,7 +3496,7 @@ mod tests {
             Some("Metered")
         );
         assert_eq!(
-            read_str(
+            read_str_or_text(
                 &doc,
                 &automerge::ROOT,
                 &format!("network.profile.proxy.{}", wifi.uuid)
@@ -3520,13 +3504,11 @@ mod tests {
             .as_deref(),
             Some("https://proxy.example/pac")
         );
-        assert!(!read_bool(
-            &doc,
-            &automerge::ROOT,
-            &ipv4_key(&lan.uuid, "automatic")
-        ));
+        assert!(
+            !read_bool(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "automatic")).unwrap_or(false)
+        );
         assert_eq!(
-            read_str(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "address")).as_deref(),
+            read_str_or_text(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "address")).as_deref(),
             Some("192.0.2.44/24")
         );
     }
