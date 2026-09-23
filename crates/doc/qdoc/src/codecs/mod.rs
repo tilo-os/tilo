@@ -28,7 +28,7 @@ pub use markdown::MarkdownCodec;
 pub use ods::OdsCodec;
 pub use odt::OdtCodec;
 pub use rtf::RtfCodec;
-pub use sheet_common::SheetProvider;
+pub use sheet_common::{ParsedSheet, ParsedWorkbook, SheetProvider};
 pub use xlsx::XlsxCodec;
 
 use crate::format::{ProviderTier, Registry};
@@ -43,6 +43,26 @@ pub(crate) fn unescape_attr(
     quick_xml::escape::unescape(raw)
         .ok()
         .map(std::borrow::Cow::into_owned)
+}
+
+/// The character an entity or character reference in text content stands for.
+/// `quick-xml` reports `&amp;`, `&#62;` and friends as their own
+/// [`Event::GeneralRef`](quick_xml::events::Event::GeneralRef) rather than
+/// folding them into the surrounding text, so a reader that wants the text has
+/// to put them back. Only the five predefined entities and numeric references
+/// exist in these formats (a DTD, the only way to declare more, is refused).
+pub(crate) fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+    if let Ok(Some(c)) = reference.resolve_char_ref() {
+        return Some(c);
+    }
+    match reference.decode().ok()?.as_ref() {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => None,
+    }
 }
 
 /// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
