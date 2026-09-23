@@ -637,7 +637,12 @@ impl HistoryHost {
             self.invalidate_owner();
             return;
         };
-        if let Some(controller) = &mut self.controller {
+        // Projecting history replays the document's change log, and the live
+        // frontier moves with every keystroke. Only an open history view needs
+        // it; opening one refreshes against the frontier it then finds.
+        if self.open
+            && let Some(controller) = &mut self.controller
+        {
             let _ = controller.refresh(&document);
             if selected != self.selected
                 && !selected.is_empty()
