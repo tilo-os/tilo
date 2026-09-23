@@ -482,7 +482,7 @@ fn ensure_primary_identity_in_context(
     let mut rng = UnwrapErr(SysRng);
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+    let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
     let display_name = match context {
         IdentityProvisioningContext::NativeTilo => String::new(),
         IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
@@ -950,15 +950,6 @@ fn protect_identity_record_at(identity_dir: &Path, record_path: &Path) -> io::Re
         runtime_identity::secure_identity(identity_dir, id)?;
     }
     Ok(())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        out.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(b & 0xF), 16).unwrap_or('0'));
-    }
-    out
 }
 
 #[cfg(test)]

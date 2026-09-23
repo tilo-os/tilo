@@ -5,7 +5,6 @@
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -921,7 +920,7 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         signer: Ed25519PublicKey,
         recovery: bool,
     ) -> Result<(), MlsAuthorityError> {
-        let signer_user = hex_key(signer.as_bytes());
+        let signer_user = hex::encode(signer.as_bytes());
         let mut tree = self.workspaces.write();
         let workspace = tree
             .workspaces
@@ -937,7 +936,7 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
             MlsAuthorityAction::Admit {
                 recipient, role, ..
             } => {
-                let user = hex_key(&recipient);
+                let user = hex::encode(recipient);
                 let cap = CapOverride::membership(
                     Subject::Principal(Principal::Person(user)),
                     workspace.room.to_string(),
@@ -970,7 +969,7 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         tx: &MlsAuthorityTransaction,
         signer: Ed25519PublicKey,
     ) -> Result<(), MlsAuthorityError> {
-        let signer_user = hex_key(signer.as_bytes());
+        let signer_user = hex::encode(signer.as_bytes());
         let tree = self.workspaces.read();
         let workspace = tree
             .workspaces
@@ -1023,15 +1022,8 @@ fn member_capability_id(channel: [u8; 16], member: [u8; 32]) -> String {
     format!(
         "mls-{}-{}",
         uuid::Uuid::from_bytes(channel),
-        hex_key(&member)
+        hex::encode(member)
     )
-}
-fn hex_key(key: &[u8; 32]) -> String {
-    let mut value = String::with_capacity(key.len().saturating_mul(2));
-    for byte in key {
-        let _ = write!(value, "{byte:02x}");
-    }
-    value
 }
 #[allow(
     clippy::needless_pass_by_value,
@@ -1170,7 +1162,7 @@ mod tests {
         });
 
         let mut workspace = Workspace::test_default(WorkspaceId::new(), "MLS test");
-        workspace.set_owner(hex_key(signer_pk.as_bytes()));
+        workspace.set_owner(hex::encode(signer_pk.as_bytes()));
         let workspace_id = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -1215,7 +1207,7 @@ mod tests {
         assert!(coordinator.apply(conflicting).is_err());
         assert!(broker.lock().unwrap().governance.contains_key(&channel));
         assert_eq!(
-            workspaces.read().workspaces[0].role_of(&hex_key(&[5; 32])),
+            workspaces.read().workspaces[0].role_of(&hex::encode([5; 32])),
             Some(crate::shell::state::CapRole::Editor)
         );
 
@@ -1232,7 +1224,7 @@ mod tests {
         };
         coordinator.apply(removal).unwrap();
         assert_eq!(
-            workspaces.read().workspaces[0].role_of(&hex_key(&[5; 32])),
+            workspaces.read().workspaces[0].role_of(&hex::encode([5; 32])),
             None
         );
         let pending = broker
