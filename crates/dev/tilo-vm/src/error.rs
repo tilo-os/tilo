@@ -58,6 +58,15 @@ pub enum CliError {
     },
     #[error("VM '{vm}' has no tilo-vmd; it is not running a Tilo dev image")]
     DaemonMissing { vm: String },
+    #[error("VM '{vm}' refuses its root SSH key {key}")]
+    RootKeyRefused {
+        vm: String,
+        key: String,
+        /// The one-time command that installs the key.
+        install: String,
+        /// Whether the adapter passed the key as a credential at creation.
+        credentials: bool,
+    },
     #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
     ProtocolMismatch { client: u32, daemon: u32 },
     #[error("{}", .0.message)]
@@ -194,6 +203,12 @@ impl CliError {
                 }
                 hint
             }
+            Self::RootKeyRefused { install, credentials: true, .. } => format!(
+                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+            ),
+            Self::RootKeyRefused { install, .. } => format!(
+                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+            ),
             Self::DaemonMissing { .. } => {
                 "move the VM to a dev image: tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>".into()
             }
@@ -309,7 +324,8 @@ impl CliError {
             | Self::ImageNotFound { .. }
             | Self::DiskExists { .. }
             | Self::ChecksumMismatch { .. }
-            | Self::DownloadFailed { .. } => "platforms",
+            | Self::DownloadFailed { .. }
+            | Self::RootKeyRefused { .. } => "platforms",
             Self::NotInWorktree | Self::SlotName { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
@@ -408,6 +424,18 @@ mod tests {
                 debug: vec!["tilo-vm vm serial".into()],
             },
             CliError::DaemonMissing { vm: "dev".into() },
+            CliError::RootKeyRefused {
+                vm: "dev".into(),
+                key: "/cfg/keys/dev_ed25519".into(),
+                install: "ssh -t quickuser@vm '...'".into(),
+                credentials: true,
+            },
+            CliError::RootKeyRefused {
+                vm: "dev".into(),
+                key: "/cfg/keys/dev_ed25519".into(),
+                install: "ssh -t quickuser@vm '...'".into(),
+                credentials: false,
+            },
             CliError::ProtocolMismatch {
                 client: 2,
                 daemon: 1,
@@ -570,6 +598,7 @@ mod tests {
                 | CliError::SlotName { .. }
                 | CliError::Unreachable { .. }
                 | CliError::DaemonMissing { .. }
+                | CliError::RootKeyRefused { .. }
                 | CliError::ProtocolMismatch { .. }
                 | CliError::Remote(_)
                 | CliError::ToolMissing { .. }
