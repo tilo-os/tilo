@@ -50,9 +50,18 @@ previous configuration after 15 seconds. Only Keep commits the candidate.
 
 Validation forbids zero enabled outputs, multiple primaries, stale modes,
 invalid scales, unsupported features/profiles, unknown mirror targets, mirror
-cycles, and mirror pairs with no common mode. A mirrored pair is assigned the
-best exact mode both sinks advertise; sharing an origin with two unrelated
-modes is not called mirroring.
+cycles, and mirror pairs with no common pixel extent. A mirrored pair is
+assigned the best resolution both sinks advertise; each connector keeps its
+best timing for that resolution, so nominal 60 Hz panels can mirror when one
+reports 60.000 Hz and the other 59.940 Hz. Sharing an origin with unrelated
+extents is not called mirroring.
+
+USB-C DisplayPort Alt Mode needs no private display protocol in Tilo: once the
+kernel exposes the negotiated link as a connected KMS `DP-N` connector, it
+uses the same discovery, hotplug, mode, mirror and transaction paths as a
+full-size DisplayPort connector. USB display adapters which expose a KMS
+`USB-N` connector are admitted as scanout targets as well; DRM writeback is
+the only connected interface deliberately excluded.
 
 Rotation is one end-to-end setting. The renderer samples the logical viewport
 into the rotated physical KMS buffer, hardware and software cursor coordinates

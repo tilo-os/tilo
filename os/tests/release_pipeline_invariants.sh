@@ -45,10 +45,11 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
+  && grep -Fq 'tilo-kernel-buildcache:{0},mode=min' "$workflows/build-kernel.yml" \
   && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
-  && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
-  || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
+  && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
+  || bad 'kernel cache export can duplicate work or exhaust a PR runner'
 
 if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
   && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
@@ -65,10 +66,12 @@ fi
 
 if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
   && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
-  && grep -Fq 'KERNEL_BUILD_JOBS=2' "$workflows/build-kernel.yml"; then
-  ok 'native kernel BuildKit and compiler parallelism have explicit resource bounds'
+  && grep -Fq '            kernel_build_jobs: 6' "$workflows/build-kernel.yml" \
+  && grep -Fq '            kernel_build_jobs: 4' "$workflows/build-kernel.yml" \
+  && test "$(grep -Fc 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml")" -eq 2; then
+  ok 'native kernel and Secure Boot probe share explicit resource bounds and cache keys'
 else
-  bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
+  bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
 fi
 
 if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
@@ -109,16 +112,29 @@ if grep -Fq -- '- name: Verify the signed RPM snapshot input' "$kernel_workflow"
 else
   bad 'kernel compilation can start from an unauthenticated RPM snapshot input'
 fi
-if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"' "$kernel_workflow" \
-   && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"' "$kernel_workflow" \
+if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
+   && grep -Fq 'apt_firmware=ovmf' "$kernel_workflow" \
+   && grep -Fq 'fedora_firmware=edk2-aarch64' "$kernel_workflow" \
+   && grep -Fq 'fedora_firmware=edk2-ovmf' "$kernel_workflow" \
+   && grep -Fq 'zstd dosfstools mtools "$apt_qemu" "$apt_firmware"' "$kernel_workflow" \
+   && grep -Fq 'zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"' "$kernel_workflow" \
+   && grep -Fq '/usr/share/edk2/ovmf /usr/share/OVMF' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq "expect_log 'TILO_SECURE_BOOT_ENROLL_PASS'" "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'mapfile -t runtime_files' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'for directory in "${runtime_dirs[@]}"' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'mkfs.vfat -n TILO_SBTEST' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq "expect_log 'Access Denied'" "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'AAVMF_CODE.ms.fd' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq 'virtio-blk-device,drive=esp' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq -- '-nic none -nographic -no-reboot' "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v modinfo >/dev/null' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v zstd >/dev/null' "$repo/os/kernel/tests/boot-smoke.sh" \
    && grep -Fq 'kernel/drivers/net/dummy.ko.zst' "$repo/os/kernel/tests/boot-smoke.sh"; then
-  ok 'native kernel acceptance handles compressed signed modules on apt and dnf runners'
+  ok 'native kernel acceptance installs modinfo, firmware and EFI-image tools on apt and dnf runners'
 else
-  bad 'native kernel acceptance lacks its kmod or compressed-module tooling'
+  bad 'native kernel acceptance can invoke missing module or Secure Boot VM dependencies'
 fi
 
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
