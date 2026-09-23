@@ -132,21 +132,24 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
                                     "; a sealed dev image looks like a production one to bootc and "
                                     "cannot merge dev layers into /usr",
                                     "remove it: the dev image boots unsealed from /usr/lib/modules."))
-    snapshot = repo / "os/rpms-snapshot.env"
-    pinned = re.search(r"^RPMS_REF=(\S+)$", snapshot.read_text(encoding="utf-8"), re.M) if snapshot.is_file() else None
     default = next(((n, m.group(1)) for n, t in lines if (m := re.fullmatch(r"ARG RPMS_REF=(\S+)", t))), None)
-    if default is None:
-        findings.append(Finding(shown, "declares no `ARG RPMS_REF=<default>`",
-                                "CI builds the dev image with only BASE_IMAGE, so the frozen RPM snapshot "
-                                "has to be its default",
-                                "add `ARG RPMS_REF=<the RPMS_REF of os/rpms-snapshot.env>` before the first FROM."))
-    elif pinned is None or default[1] != pinned.group(1):
-        findings.append(Finding(f"{shown}:{default[0]}", f"RPMS_REF defaults to {default[1]}, but "
-                                f"os/rpms-snapshot.env pins {pinned.group(1) if pinned else 'nothing'}",
-                                "the dev image must install the toolchain the production builder of the "
-                                "same commit installed, from the same snapshot",
-                                "set the ARG default to the RPMS_REF in os/rpms-snapshot.env (update both "
-                                "together when the snapshot is refreshed)."))
+    if default is not None:
+        findings.append(Finding(f"{shown}:{default[0]}", f"RPMS_REF has a default ({default[1]})",
+                                "os/rpms-snapshot.env is the one pin: CI rewrites it when the package set "
+                                "changes, and a second copy here would silently drift from it",
+                                "declare a bare `ARG RPMS_REF`; the builders pass it from os/rpms-snapshot.env."))
+    elif not any(re.fullmatch(r"ARG RPMS_REF", t) for _, t in lines):
+        findings.append(Finding(shown, "declares no `ARG RPMS_REF`",
+                                "the toolchain must come from the frozen snapshot the production builder used",
+                                "add a bare `ARG RPMS_REF` before the first FROM."))
+    for builder in ("os/dev/build-dev-image.sh", ".forgejo/workflows/dev-disk.yml"):
+        path = repo / builder
+        if path.is_file():
+            body = path.read_text(encoding="utf-8")
+            if not ("rpms-snapshot.env" in body and "RPMS_REF=$rpms_ref" in body):
+                findings.append(Finding(builder, "builds os/Containerfile.dev without RPMS_REF from os/rpms-snapshot.env",
+                                        "without it the dev image has no frozen snapshot to install its toolchain from",
+                                        'read `rpms_ref` from os/rpms-snapshot.env and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
     return findings
 
 

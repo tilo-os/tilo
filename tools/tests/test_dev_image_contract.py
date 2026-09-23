@@ -101,11 +101,11 @@ class DevImageContractTests(unittest.TestCase):
                           "podman push localhost/tilo-vm:x docker://code.sandbox.example/qos/tilo:main\n")
         self.assertIn("os/push-dev.sh:3:", "\n".join(self.findings(root)))
 
-    def test_snapshot_default_must_match_the_pin(self):
+    def test_snapshot_pin_has_one_home(self):
         root = self.fixture()
-        self.edit(root / "os/rpms-snapshot.env", "RPMS_REF=code.sandbox.example/qos/rpms@sha256:",
-                  "RPMS_REF=code.sandbox.example/qos/rpms@sha256:0")
-        self.assertIn("but os/rpms-snapshot.env pins", "\n".join(self.findings(root)))
+        self.edit(root / "os/Containerfile.dev", "ARG RPMS_REF\n",
+                  "ARG RPMS_REF=code.sandbox.example/qos/rpms@sha256:0\n")
+        self.assertIn("RPMS_REF has a default", "\n".join(self.findings(root)))
 
     def test_builder_package_drift_fails(self):
         root = self.fixture()
