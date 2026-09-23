@@ -14,10 +14,7 @@
 //! distinct `Settings` kind keeps the two groups apart in the palette.
 
 use tilo_actions::{ActionAddress, Resource};
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::categories::Category;
 
@@ -95,45 +92,16 @@ impl SettingsSearchProvider {
     }
 }
 
-impl SearchProvider for SettingsSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for SettingsSearchProvider {
+    fn provider_name(&self) -> &str {
         SETTINGS_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .query_page(
-                query,
-                None,
-                DEFAULT_SEARCH_CANDIDATE_LIMIT,
-                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&ui::search::SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         Self::resolve_navigation(address)
     }
 }
@@ -141,7 +109,7 @@ impl SearchProvider for SettingsSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::SearchRegistry;
+    use ui::search::{SearchProvider, SearchRegistry};
 
     #[test]
     fn provider_finds_a_pane_by_keyword() {

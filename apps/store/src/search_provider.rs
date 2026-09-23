@@ -8,10 +8,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchCatalogError, SearchResult};
 
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
-use ui::search::{SearchCatalog, SearchCatalogError, SearchPage, SearchProvider, SearchResult};
 
 use crate::{StoreItem, StoreSource};
 
@@ -203,85 +203,34 @@ impl StoreSearchProvider {
     }
 }
 
-impl SearchProvider for StoreSearchProvider {
-    #[allow(
-        clippy::unnecessary_literal_bound,
-        reason = "The shared SearchProvider trait requires a borrowed literal name."
-    )]
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for StoreSearchProvider {
+    const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
+
+    fn provider_name(&self) -> &str {
         "App Store"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
+    /// An unavailable store publishes no catalogue, so it reports no
+    /// generation and answers every page empty.
+    fn catalog(&self) -> Option<SearchCatalog> {
         let state = self
             .index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .available
-            .then(|| {
-                state
-                    .catalog
-                    .as_ref()
-                    .map(|catalog| catalog.stats().generation)
-            })
-            .flatten()
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
-        let state = self
-            .index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.available
-            && state
-                .catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.cursor_is_current(cursor))
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(query, None, limit, limit.min(DEFAULT_RESULT_LIMIT))
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&ui::search::SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let state = self
-            .index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.available {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
+        if state.available {
+            state.catalog.clone()
+        } else {
+            None
         }
-        let Some(catalog) = state.catalog.clone() else {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
-        };
-        drop(state);
-        catalog.query_page(query, cursor, work_budget, result_limit)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
+    }
+
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         if address.action != "show-details" {
             return None;
         }
@@ -342,6 +291,7 @@ mod tests {
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
     use std::sync::mpsc;
+    use ui::search::SearchProvider;
 
     fn item(index: usize) -> StoreItem {
         StoreItem {

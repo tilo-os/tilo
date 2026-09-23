@@ -6,10 +6,7 @@
 //! snapshot and lets the shared catalogue enforce bounded query work.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use ui::tilo_actions::ActionAddress;
 
 use crate::model::{Catalog, Snapshot};
@@ -82,42 +79,18 @@ pub struct BackupsSearchProvider {
     catalog: SearchCatalog,
 }
 
-impl SearchProvider for BackupsSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for BackupsSearchProvider {
+    fn provider_name(&self) -> &str {
         "Backups"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(
-            query,
-            None,
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-        .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
     }
 }
 
@@ -138,6 +111,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
 
     fn large_catalog() -> Catalog {
         let mut catalog = Catalog::sample();

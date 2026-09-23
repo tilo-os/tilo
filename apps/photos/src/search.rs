@@ -14,8 +14,8 @@ use std::sync::{Arc, RwLock};
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
-    SearchCursor, SearchPage, SearchProvider, SearchResult,
+    CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
+    SearchCatalog, SearchCatalogError, SearchCursor, SearchResult,
 };
 
 use crate::actions::{
@@ -628,61 +628,22 @@ impl PhotosSearchProvider {
     }
 }
 
-impl SearchProvider for PhotosSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for PhotosSearchProvider {
+    fn provider_name(&self) -> &str {
         PHOTO_SEARCH_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
+    fn catalog(&self) -> Option<SearchCatalog> {
         Some(
             self.state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .catalog
-                .stats()
-                .generation,
+                .clone(),
         )
     }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .cursor_is_current(cursor)
-    }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .query_page(
-                query,
-                cursor,
-                work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-                result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         let resource = self.resource(&address.resource)?;
         resource
             .actions
@@ -700,6 +661,7 @@ mod tests {
     use crate::model::{LocationProvenance, OpenImage, PhotoLocation};
     use tilo_actions::ActionAddress;
     use tilo_actions::ResourceProvider;
+    use ui::search::SearchProvider;
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
