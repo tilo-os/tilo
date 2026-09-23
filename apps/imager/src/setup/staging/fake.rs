@@ -83,7 +83,7 @@ impl FakePlatform {
         }
         let p = self.partition(guid)?;
         let s = self.disk.sector_bytes;
-        if offset % s != 0 || len as u64 % s != 0 {
+        if !offset.is_multiple_of(s) || !(len as u64).is_multiple_of(s) {
             return Err("unaligned partition I/O".into());
         }
         let size = (p.last_lba - p.first_lba + 1) * s;
@@ -176,7 +176,7 @@ impl Platform for FakePlatform {
         }
         self.before(format!("create {}..{}", spec.first_lba, spec.last_lba))?;
         let guid = spec.guid.clone().unwrap_or_else(super::random_guid);
-        let number = (1..)
+        let number = (1..=u32::MAX)
             .find(|n| !self.disk.partitions.iter().any(|p| p.number == *n))
             .expect("free number");
         self.disk.partitions.push(Partition {
@@ -499,7 +499,7 @@ mod tests {
         let copy: super::super::record::Record =
             serde_json::from_slice(&gather(&on_disk, &record_ranges)).unwrap();
         assert_eq!(copy.operation_id, w.request.operation_id);
-        let mut all = handoff_ranges.clone();
+        let mut all = handoff_ranges;
         all.extend(&record_ranges);
         fat::mask(&mut on_disk, 0, &all);
         assert_eq!(on_disk, w.esp, "the ESP is the image plus the handoff only");

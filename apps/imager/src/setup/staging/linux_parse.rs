@@ -190,7 +190,7 @@ pub fn disk_from_lsblk(
         return Err("not-gpt".into());
     }
     let s = l.sector_bytes;
-    if !(512..=4096).contains(&s) || !s.is_power_of_two() || l.size_bytes % s != 0 {
+    if !(512..=4096).contains(&s) || !s.is_power_of_two() || !l.size_bytes.is_multiple_of(s) {
         return Err("unsupported sector size".into());
     }
     let per = s / 512;
