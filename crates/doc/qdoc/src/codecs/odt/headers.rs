@@ -96,6 +96,11 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                     }
                 }
             }
+            Event::GeneralRef(r) if in_region && cur.is_some() => {
+                if let Some(c) = crate::codecs::resolve_general_ref(&r) {
+                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 n if n == tag.as_bytes() => in_region = false,
                 b"text:p" | b"text:h" if in_region => cur = None,

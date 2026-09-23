@@ -55,6 +55,9 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
                     text.push_str(&s);
                 }
             }
+            Ok(Event::GeneralRef(r)) if current.is_some() => {
+                text.extend(crate::codecs::resolve_general_ref(&r));
+            }
             Ok(Event::End(e)) => {
                 if let Some(prop) = prop_of(local_name(e.name().as_ref()))
                     && current == Some(prop)
@@ -199,6 +202,14 @@ fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> Stri
             Ok(Event::Text(t)) => {
                 if skip_depth == 0 {
                     out.extend_from_slice(t.into_inner().as_ref());
+                }
+            }
+            // Copied through still escaped: `&amp;` has to stay `&amp;` in the output.
+            Ok(Event::GeneralRef(r)) => {
+                if skip_depth == 0 {
+                    out.push(b'&');
+                    out.extend_from_slice(&r);
+                    out.push(b';');
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

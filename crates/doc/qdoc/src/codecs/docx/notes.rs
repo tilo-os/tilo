@@ -125,6 +125,11 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> String {
                     append(doc, &cur, &mut cur_len, &txt);
                 }
             }
+            Event::GeneralRef(r) if in_t => {
+                if let Some(c) = crate::codecs::resolve_general_ref(&r) {
+                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
                 b"w:p" => cur = None,

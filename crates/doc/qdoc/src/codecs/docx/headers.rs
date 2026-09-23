@@ -10,6 +10,7 @@ use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::borrow::Cow;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -220,6 +221,20 @@ fn handle_fld_char(
     }
 }
 
+/// The characters a text event, or an entity or character reference (which
+/// quick-xml reports as an event of its own), contributes to the text around it;
+/// empty when there are none.
+fn character_data<'a>(ev: &'a Event<'_>) -> Cow<'a, str> {
+    match ev {
+        Event::Text(t) => t.xml10_content().unwrap_or_default(),
+        Event::GeneralRef(r) => crate::codecs::resolve_general_ref(r)
+            .map(String::from)
+            .unwrap_or_default()
+            .into(),
+        _ => Cow::Borrowed(""),
+    }
+}
+
 /// Import a `w:hdr`/`w:ftr` part into a region: `w:p` → paragraph blocks, `w:t` → text,
 /// `w:tab`/`w:br` → tab/newline, a `PAGE` field (simple or complex) → a page-number field.
 pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
@@ -291,8 +306,8 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 ),
                 _ => {}
             },
-            Event::Text(t) => {
-                let Ok(txt) = t.xml10_content() else { continue };
+            ev @ (Event::Text(_) | Event::GeneralRef(_)) => {
+                let txt = character_data(&ev);
                 if in_instr {
                     if field_in_progress && is_page_instr(&txt) {
                         field_pending = true;
