@@ -20,7 +20,9 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-bounded-command = { path = "../../crates/system/bounded-command" }
+# TOTP secrets are sealed at rest with XChaCha20-Poly1305 under a key held by
+# Secret Service, DPAPI or an owner-only local file.
+secret-vault = { path = "../../crates/system/secret-vault" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # Tilo resource and action model for replayable account mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -46,17 +48,12 @@ rqrr = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png", "jpeg"] }
 
 # Host-native screenshot/photo selection uses the XDG file portal.
-# TOTP secrets are sealed at rest with XChaCha20-Poly1305; `rand_core`'s OsRng
-# supplies key/nonce material and `zeroize` clears plaintext and derived keys.
-chacha20poly1305.workspace = true
-rand_core = { workspace = true, features = ["getrandom"] }
+# `zeroize` clears decrypted vault plaintext and derived HMAC keys.
 zeroize.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-private-fs = { path = "../../crates/system/private-fs" }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
-
 [dev-dependencies]
+# Tests stage key files through the vault's own private-file checks.
+private-fs = { path = "../../crates/system/private-fs" }
 # Render otpauth QR codes in tests to exercise the rqrr decode path.
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
