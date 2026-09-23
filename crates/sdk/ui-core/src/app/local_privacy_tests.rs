@@ -2,6 +2,7 @@
 //!
 //! Socket tripwires prove that construction and local effects perform no
 //! service I/O. They deliberately do not emulate a successful remote broker.
+#![cfg(unix)]
 
 use super::*;
 use std::cell::{Cell, RefCell};
@@ -164,17 +165,9 @@ fn assert_local_app_behavior() {
     let mut app = App::from_scoped_parts_local(scope, State::new(), Box::new(root));
     app.init_layout();
     let author = app.collaboration.local_author.0.clone();
+    let address = tilo_actions::ActionAddress::new("private-tab", "navigate");
     let result = app
-        .invoke_resource_action(
-            &tilo_actions::ActionAddress::new("private-tab", "navigate"),
-            None,
-            &author,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
+        .invoke_resource_action(ResourceInvocation::new(&address, &author))
         .unwrap();
     assert!(matches!(
         result,
