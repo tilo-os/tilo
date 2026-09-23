@@ -1,0 +1,827 @@
+//! Turning a generation into running sessions.
+//!
+//! The decisions (what restarts, which drop-ins, in which order) live here
+//! and are unit-tested against [`RecordingApply`]. The side effects sit
+//! behind [`Apply`]; [`crate::systemd::SystemdApply`] performs them on a real
+//! dev image.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use tilo_vm_protocol::{
+    Action, ComponentInfo, ControlResult, InputAction, Policy, Scope, SlotKind,
+};
+
+use crate::error::DaemonError;
+use crate::slots::{Generation, SlotRecord};
+
+pub const LAYERS_DROPIN: &str = "50-tilo-vm-layers.conf";
+pub const SEAT_DROPIN: &str = "50-tilo-vm-seat.conf";
+pub const GREETER_UNIT: &str = "greetd.service";
+
+pub fn session_unit(slot: &str) -> String {
+    format!("tilo-vm-session@{slot}.service")
+}
+
+pub fn user_unit(uid: u32) -> String {
+    format!("user@{uid}.service")
+}
+
+/// Side effects on the guest. Each method is idempotent and reports a
+/// failed side effect as [`DaemonError::Apply`] or [`DaemonError::Io`].
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the trait documents its single error contract once"
+)]
+pub trait Apply {
+    /// Create the slot's system user if missing; return its uid.
+    fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError>;
+    fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
+    fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
+    fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
+    /// `systemctl daemon-reload`.
+    fn reload(&mut self) -> Result<(), DaemonError>;
+    fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    fn stop_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    /// `systemctl is-active` output, e.g. `active`, `inactive`, `failed`.
+    fn unit_state(&mut self, unit: &str) -> String;
+    /// Give a staged layer the `SELinux` labels its files get under `/`.
+    fn label_layer(&mut self, layer: &std::path::Path) -> Result<(), DaemonError>;
+    /// Point the VM-wide sysext set at exactly `layers`.
+    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError>;
+    fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
+    /// Create a vkms card and a logind seat for it; return the seat name.
+    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError>;
+    fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError>;
+    /// The last `lines` journal entries matching any of `matches`
+    /// (journalctl `FIELD=value` terms, `OR`ed).
+    fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError>;
+    /// Run the in-VM `tilo-control` against this slot's session.
+    fn control(
+        &mut self,
+        slot: &str,
+        user: &str,
+        args: &[String],
+    ) -> Result<ControlResult, DaemonError>;
+    /// PNG of the slot's live scene.
+    fn shot(&mut self, slot: &str, user: &str) -> Result<Vec<u8>, DaemonError>;
+    /// Capabilities and `SELinux` domain of the slot's running session
+    /// process, or `None` when it is not running.
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
+    /// `(free, total)` bytes of the filesystem holding `path`, when known.
+    fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
+    /// Send input through `seat`'s uinput keyboard and pointer, creating
+    /// them on first use; returns the number of kernel events written.
+    fn input(
+        &mut self,
+        slot: &str,
+        seat: &str,
+        actions: &[InputAction],
+    ) -> Result<u64, DaemonError>;
+    /// Remove the slot's uinput devices (they follow its seat).
+    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError>;
+    /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
+    /// returns what it printed.
+    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
+}
+
+/// What makes a session equivalent to a greetd one, as read from `/proc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionProcess {
+    pub cap_amb: u64,
+    pub cap_eff: u64,
+    /// `/proc/<pid>/attr/current`; `None` without `SELinux`.
+    pub context: Option<String>,
+}
+
+/// Why `process` differs from a greetd session, if it does. A greetd
+/// session has no ambient or effective capabilities and runs in a user
+/// domain (`expected_domain`, the type field of the `SELinux` context).
+pub fn parity_problem(process: &SessionProcess, expected_domain: &str) -> Option<String> {
+    let mut problems = Vec::new();
+    if process.cap_amb != 0 {
+        problems.push(format!("CapAmb is {:016x}, expected 0", process.cap_amb));
+    }
+    if process.cap_eff != 0 {
+        problems.push(format!("CapEff is {:016x}, expected 0", process.cap_eff));
+    }
+    if let Some(context) = &process.context {
+        let domain = context.split(':').nth(2).unwrap_or(context);
+        if domain != expected_domain {
+            problems.push(format!(
+                "SELinux domain is {domain}, expected {expected_domain}"
+            ));
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+/// Refuse components whose scope does not fit the slot they are going into.
+///
+/// # Errors
+/// [`DaemonError::ScopeMismatch`].
+pub fn check_scope(
+    record: &SlotRecord,
+    component: &str,
+    info: &ComponentInfo,
+) -> Result<(), DaemonError> {
+    let fits = match record.kind {
+        SlotKind::Vm => info.scope == Scope::Vm,
+        SlotKind::Headful | SlotKind::Headless => info.scope != Scope::Vm,
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(DaemonError::ScopeMismatch {
+            component: component.to_owned(),
+            slot: record.name.clone(),
+            scope: info.scope.as_str().into(),
+        })
+    }
+}
+
+/// What moving from `from` to `to` requires, and which system units a
+/// VM-wide change restarts.
+///
+/// # Errors
+/// A changed component whose scope does not fit the slot.
+pub fn policy(
+    record: &SlotRecord,
+    from: &Generation,
+    to: &Generation,
+) -> Result<(Policy, Vec<String>), DaemonError> {
+    let mut policy = Policy::NoRestart;
+    let mut units: Vec<String> = Vec::new();
+    let names: std::collections::BTreeSet<&String> =
+        from.components.keys().chain(to.components.keys()).collect();
+    for name in names {
+        let (before, after) = (from.components.get(name), to.components.get(name));
+        if before == after {
+            continue;
+        }
+        let Some(entry) = after.or(before) else {
+            continue;
+        };
+        check_scope(record, name, &entry.info)?;
+        let needed = match entry.info.scope {
+            Scope::App => Policy::NoRestart,
+            Scope::Session => Policy::SessionRestart,
+            Scope::Vm => {
+                for unit in &entry.info.units {
+                    if !units.contains(unit) {
+                        units.push(unit.clone());
+                    }
+                }
+                Policy::VmRefresh
+            }
+        };
+        policy = policy.max(needed);
+    }
+    Ok((policy, units))
+}
+
+pub fn layers_dropin(slot: &str, generation: u64, layers: &[PathBuf]) -> String {
+    let dirs: Vec<String> = layers.iter().map(|p| p.display().to_string()).collect();
+    let mut text = format!(
+        "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\n"
+    );
+    if !dirs.is_empty() {
+        text.push_str("ExtensionDirectories=");
+        text.push_str(&dirs.join(" "));
+        text.push('\n');
+    }
+    text
+}
+
+/// Seat selection for the session unit. `None` leaves the template's
+/// headless default in place. `pam_systemd` takes the seat from `XDG_SEAT`;
+/// seat0 additionally needs VT 1, which greetd gives up for the claim.
+pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
+    let header = format!(
+        "# Written by tilo-vmd: slot {}. Do not edit.\n",
+        record.name
+    );
+    if record.seat0.is_some() {
+        return Some(format!(
+            "{header}[Unit]\nConflicts={GREETER_UNIT}\nAfter={GREETER_UNIT}\n\n[Service]\n\
+             Environment=TILO_VM_BACKEND=drm XDG_SEAT=seat0 XDG_VTNR=1\n\
+             TTYPath=/dev/tty1\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes\n\
+             StandardInput=tty-fail\nStandardOutput=journal\nStandardError=journal\n"
+        ));
+    }
+    match (&record.seat, record.kind) {
+        (Some(seat), SlotKind::Headful) => Some(format!(
+            "{header}[Service]\nEnvironment=TILO_VM_BACKEND=drm XDG_SEAT={seat}\n"
+        )),
+        _ => None,
+    }
+}
+
+/// How the session reacts to an activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionChange {
+    /// Start the session if it is not running (creation).
+    Ensure,
+    /// Log out and log in again.
+    Restart,
+    /// Leave the running session alone.
+    Keep,
+}
+
+/// Bring a slot's system state in line with `generation`.
+///
+/// # Errors
+/// Any failing side effect.
+pub fn activate(
+    apply: &mut dyn Apply,
+    record: &mut SlotRecord,
+    generation: &Generation,
+    layers: &[PathBuf],
+    policy: Policy,
+    units: &[String],
+    change: SessionChange,
+) -> Result<Vec<Action>, DaemonError> {
+    let mut actions = Vec::new();
+    let Some(user) = record.user() else {
+        apply.link_sysext(layers)?;
+        apply.sysext_refresh()?;
+        actions.push(Action::SysextRefresh);
+        for unit in units {
+            apply.restart_unit(unit)?;
+            actions.push(Action::RestartUnit { unit: unit.clone() });
+        }
+        return Ok(actions);
+    };
+
+    let uid = apply.ensure_user(&user)?;
+    actions.push(Action::EnsureUser {
+        user: user.clone(),
+        uid,
+    });
+    if record.kind == SlotKind::Headful {
+        // Idempotent, and re-creates the card after a VM reboot emptied configfs.
+        let seat = apply.allocate_seat(&record.name)?;
+        if record.seat.as_ref() != Some(&seat) {
+            actions.push(Action::AllocateSeat { seat: seat.clone() });
+        }
+        record.seat = Some(seat);
+    }
+
+    let session = session_unit(&record.name);
+    let dropin = layers_dropin(&record.name, generation.number, layers);
+    for unit in [user_unit(uid), session.clone()] {
+        apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
+        actions.push(Action::WriteDropIn { unit });
+    }
+    match seat_dropin(record) {
+        Some(text) => apply.write_dropin(&session, SEAT_DROPIN, &text)?,
+        None => apply.remove_dropin(&session, SEAT_DROPIN)?,
+    }
+    apply.reload()?;
+
+    let change = match (change, policy) {
+        (SessionChange::Keep, Policy::SessionRestart | Policy::VmRefresh) => SessionChange::Restart,
+        (change, _) => change,
+    };
+    match change {
+        SessionChange::Ensure => {
+            apply.start_unit(&session)?;
+            actions.push(Action::StartUnit { unit: session });
+        }
+        SessionChange::Restart => actions.extend(restart_session(apply, &record.name, uid)?),
+        SessionChange::Keep => actions.push(Action::Deferred {
+            reason:
+                "app-only change: live at next app launch; other layers at next session restart"
+                    .into(),
+        }),
+    }
+    Ok(actions)
+}
+
+/// A normal session restart: log out, then a fresh login. Each unit's mount
+/// namespace freezes `/usr` when it starts, so both the session and the user
+/// manager must restart to see a new layer set or a refreshed VM `/usr`; a
+/// daemon-reload or reexec keeps the old view.
+///
+/// # Errors
+/// Any failing unit operation.
+pub fn restart_session(
+    apply: &mut dyn Apply,
+    slot: &str,
+    uid: u32,
+) -> Result<Vec<Action>, DaemonError> {
+    let session = session_unit(slot);
+    let user_manager = user_unit(uid);
+    apply.stop_unit(&session)?;
+    apply.restart_unit(&user_manager)?;
+    apply.start_unit(&session)?;
+    Ok(vec![
+        Action::StopUnit {
+            unit: session.clone(),
+        },
+        Action::RestartUnit { unit: user_manager },
+        Action::StartUnit { unit: session },
+    ])
+}
+
+/// Undo everything [`activate`] did for a user slot. The session stops
+/// before its seat is released: a vkms card removed under a live session
+/// leaves the unit running with a dead device and `Restart=` never fires.
+///
+/// # Errors
+/// Any failing side effect.
+pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Action>, DaemonError> {
+    let mut actions = Vec::new();
+    let Some(user) = record.user() else {
+        return Ok(actions);
+    };
+    let session = session_unit(&record.name);
+    apply.stop_unit(&session)?;
+    actions.push(Action::StopUnit {
+        unit: session.clone(),
+    });
+    if record.kind == SlotKind::Headful {
+        apply.stop_input(&record.name)?;
+    }
+    let uid = apply.ensure_user(&user)?;
+    let user_manager = user_unit(uid);
+    apply.stop_unit(&user_manager)?;
+    actions.push(Action::StopUnit {
+        unit: user_manager.clone(),
+    });
+    for (unit, file) in [
+        (&session, LAYERS_DROPIN),
+        (&session, SEAT_DROPIN),
+        (&user_manager, LAYERS_DROPIN),
+    ] {
+        apply.remove_dropin(unit, file)?;
+    }
+    actions.push(Action::RemoveDropIn { unit: session });
+    actions.push(Action::RemoveDropIn { unit: user_manager });
+    apply.reload()?;
+    if let Some(seat) = &record.seat {
+        apply.release_seat(&record.name, seat)?;
+        actions.push(Action::ReleaseSeat { seat: seat.clone() });
+    }
+    apply.remove_user(&user)?;
+    actions.push(Action::RemoveUser { user });
+    Ok(actions)
+}
+
+/// An [`Apply`] that performs nothing and records every call. Used by unit
+/// tests and by `tilo-vmd rpc --apply record` for protocol tests.
+#[derive(Debug, Default)]
+pub struct RecordingApply {
+    pub calls: Vec<String>,
+    pub dropins: BTreeMap<(String, String), String>,
+    users: BTreeMap<String, u32>,
+    units: BTreeMap<String, bool>,
+    pub sysext: Vec<PathBuf>,
+}
+
+impl RecordingApply {
+    fn call(&mut self, text: String) {
+        self.calls.push(text);
+    }
+}
+
+impl Apply for RecordingApply {
+    fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
+        self.call(format!("ensure_user {user}"));
+        let next = u32::try_from(self.users.len())
+            .unwrap_or(0)
+            .saturating_add(60_001);
+        Ok(*self.users.entry(user.to_owned()).or_insert(next))
+    }
+    fn remove_user(&mut self, user: &str) -> Result<(), DaemonError> {
+        self.call(format!("remove_user {user}"));
+        self.users.remove(user);
+        Ok(())
+    }
+    fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError> {
+        self.call(format!("write_dropin {unit} {file}"));
+        self.dropins
+            .insert((unit.to_owned(), file.to_owned()), contents.to_owned());
+        Ok(())
+    }
+    fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError> {
+        if self
+            .dropins
+            .remove(&(unit.to_owned(), file.to_owned()))
+            .is_some()
+        {
+            self.call(format!("remove_dropin {unit} {file}"));
+        }
+        Ok(())
+    }
+    fn reload(&mut self) -> Result<(), DaemonError> {
+        self.call("reload".into());
+        Ok(())
+    }
+    fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("start {unit}"));
+        self.units.insert(unit.to_owned(), true);
+        Ok(())
+    }
+    fn stop_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("stop {unit}"));
+        self.units.insert(unit.to_owned(), false);
+        Ok(())
+    }
+    fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("restart {unit}"));
+        self.units.insert(unit.to_owned(), true);
+        Ok(())
+    }
+    fn unit_state(&mut self, unit: &str) -> String {
+        if self.units.get(unit).copied().unwrap_or(false) {
+            "active"
+        } else {
+            "inactive"
+        }
+        .into()
+    }
+    fn label_layer(&mut self, _layer: &std::path::Path) -> Result<(), DaemonError> {
+        self.call("label_layer".into());
+        Ok(())
+    }
+    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError> {
+        self.call(format!("link_sysext {}", layers.len()));
+        self.sysext = layers.to_vec();
+        Ok(())
+    }
+    fn sysext_refresh(&mut self) -> Result<(), DaemonError> {
+        self.call("sysext_refresh".into());
+        Ok(())
+    }
+    fn allocate_seat(&mut self, slot: &str) -> Result<String, DaemonError> {
+        self.call(format!("allocate_seat {slot}"));
+        Ok(format!("seat-{slot}"))
+    }
+    fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError> {
+        self.call(format!("release_seat {slot} {seat}"));
+        Ok(())
+    }
+    fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError> {
+        self.call(format!("journal {lines}"));
+        Ok(format!("(recorded) journal of {}\n", matches.join(" + ")))
+    }
+    fn control(
+        &mut self,
+        slot: &str,
+        _user: &str,
+        args: &[String],
+    ) -> Result<ControlResult, DaemonError> {
+        self.call(format!("control {slot} {}", args.join(" ")));
+        Ok(ControlResult {
+            exit_code: 0,
+            stdout: format!("{}\n", args.join(" ")),
+            stderr: String::new(),
+        })
+    }
+    fn shot(&mut self, slot: &str, _user: &str) -> Result<Vec<u8>, DaemonError> {
+        self.call(format!("shot {slot}"));
+        Ok(b"\x89PNG\r\n\x1a\n".to_vec())
+    }
+    fn disk_space(&mut self, _path: &std::path::Path) -> Option<(u64, u64)> {
+        None
+    }
+    fn input(
+        &mut self,
+        slot: &str,
+        seat: &str,
+        actions: &[InputAction],
+    ) -> Result<u64, DaemonError> {
+        self.call(format!("input {slot} {seat} {}", actions.len()));
+        Ok(u64::try_from(actions.len()).unwrap_or(0).saturating_mul(2))
+    }
+    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError> {
+        self.call(format!("stop_input {slot}"));
+        Ok(())
+    }
+    fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError> {
+        self.call(format!("install_app {user}"));
+        let name = tapp
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+        self.units
+            .get(&session_unit(slot))
+            .copied()
+            .unwrap_or(false)
+            .then(|| SessionProcess {
+                cap_amb: 0,
+                cap_eff: 0,
+                context: Some("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023".into()),
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_vm_protocol::Owner;
+
+    use super::*;
+    use crate::slots::Entry;
+
+    fn record(name: &str, kind: SlotKind) -> SlotRecord {
+        SlotRecord {
+            name: name.into(),
+            kind,
+            owner: Owner::default(),
+            created_at: String::new(),
+            current: 0,
+            seat: None,
+            seat0: None,
+        }
+    }
+
+    fn generation(number: u64, components: &[(&str, &str, Scope, &[&str])]) -> Generation {
+        let mut g = Generation {
+            number,
+            ..Generation::default()
+        };
+        for (name, layer, scope, units) in components {
+            g.layers.push((*layer).into());
+            g.components.insert(
+                (*name).into(),
+                Entry {
+                    layer: (*layer).into(),
+                    info: ComponentInfo {
+                        scope: *scope,
+                        units: units.iter().map(|u| (*u).to_string()).collect(),
+                    },
+                },
+            );
+        }
+        g
+    }
+
+    #[test]
+    fn swap_policy_follows_scope() {
+        let user = record("a", SlotKind::Headless);
+        let base = generation(
+            1,
+            &[
+                ("shell", "h1", Scope::Session, &[]),
+                ("apps+runtime", "a1", Scope::App, &[]),
+            ],
+        );
+        let shell = generation(
+            2,
+            &[
+                ("shell", "h2", Scope::Session, &[]),
+                ("apps+runtime", "a1", Scope::App, &[]),
+            ],
+        );
+        let apps = generation(
+            3,
+            &[
+                ("shell", "h1", Scope::Session, &[]),
+                ("apps+runtime", "a2", Scope::App, &[]),
+            ],
+        );
+        assert_eq!(
+            policy(&user, &base, &shell).unwrap().0,
+            Policy::SessionRestart
+        );
+        assert_eq!(policy(&user, &base, &apps).unwrap().0, Policy::NoRestart);
+        assert_eq!(policy(&user, &base, &base).unwrap().0, Policy::NoRestart);
+        // Removing a session component (rollback to base) restarts too.
+        assert_eq!(
+            policy(&user, &shell, &Generation::default()).unwrap().0,
+            Policy::SessionRestart
+        );
+
+        let vm = record("vm", SlotKind::Vm);
+        let fs1 = generation(1, &[("fs", "f1", Scope::Vm, &["fs.service"])]);
+        let fs2 = generation(
+            2,
+            &[
+                ("fs", "f2", Scope::Vm, &["fs.service"]),
+                ("greeter", "g", Scope::Vm, &["greetd.service", "fs.service"]),
+            ],
+        );
+        let (p, units) = policy(&vm, &fs1, &fs2).unwrap();
+        assert_eq!(p, Policy::VmRefresh);
+        assert_eq!(units, ["fs.service", "greetd.service"]);
+    }
+
+    #[test]
+    fn parity_matches_a_greetd_session() {
+        let greetd = SessionProcess {
+            cap_amb: 0,
+            cap_eff: 0,
+            context: Some("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023".into()),
+        };
+        assert_eq!(parity_problem(&greetd, "unconfined_t"), None);
+        assert_eq!(
+            parity_problem(
+                &SessionProcess {
+                    context: None,
+                    ..greetd
+                },
+                "unconfined_t"
+            ),
+            None
+        );
+        let unit = SessionProcess {
+            cap_amb: 0x8_0000_0000,
+            cap_eff: 0,
+            context: Some("system_u:system_r:unconfined_service_t:s0".into()),
+        };
+        let problem = parity_problem(&unit, "unconfined_t").unwrap();
+        assert!(problem.contains("CapAmb is 0000000800000000"), "{problem}");
+        assert!(
+            problem.contains("domain is unconfined_service_t"),
+            "{problem}"
+        );
+    }
+
+    #[test]
+    fn scope_misuse_is_refused() {
+        let user = record("a", SlotKind::Headful);
+        let vm = record("vm", SlotKind::Vm);
+        let fs = ComponentInfo {
+            scope: Scope::Vm,
+            units: vec![],
+        };
+        let shell = ComponentInfo {
+            scope: Scope::Session,
+            units: vec![],
+        };
+        assert!(matches!(
+            check_scope(&user, "fs", &fs),
+            Err(DaemonError::ScopeMismatch { .. })
+        ));
+        assert!(matches!(
+            check_scope(&vm, "shell", &shell),
+            Err(DaemonError::ScopeMismatch { .. })
+        ));
+        assert!(check_scope(&user, "shell", &shell).is_ok());
+        assert!(check_scope(&vm, "fs", &fs).is_ok());
+    }
+
+    #[test]
+    fn session_restart_restarts_user_manager_between_logout_and_login() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("a", SlotKind::Headless);
+        let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+        let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+        let actions = activate(
+            &mut apply,
+            &mut slot,
+            &g,
+            &layers,
+            Policy::SessionRestart,
+            &[],
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert_eq!(
+            apply.calls,
+            [
+                "ensure_user tds-a",
+                "write_dropin user@60001.service 50-tilo-vm-layers.conf",
+                "write_dropin tilo-vm-session@a.service 50-tilo-vm-layers.conf",
+                "reload",
+                "stop tilo-vm-session@a.service",
+                "restart user@60001.service",
+                "start tilo-vm-session@a.service",
+            ]
+        );
+        assert!(actions.contains(&Action::StartUnit {
+            unit: "tilo-vm-session@a.service".into()
+        }));
+        let dropin = &apply.dropins[&("user@60001.service".to_string(), LAYERS_DROPIN.to_string())];
+        assert!(
+            dropin.contains(
+                "ExtensionDirectories=\nExtensionDirectories=/var/lib/tilo-vm/layers/h1\n"
+            )
+        );
+    }
+
+    #[test]
+    fn app_only_change_keeps_session() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("a", SlotKind::Headless);
+        let actions = activate(
+            &mut apply,
+            &mut slot,
+            &Generation::default(),
+            &[],
+            Policy::NoRestart,
+            &[],
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert!(
+            !apply
+                .calls
+                .iter()
+                .any(|c| c.starts_with("stop") || c.starts_with("start"))
+        );
+        assert!(matches!(actions.last(), Some(Action::Deferred { .. })));
+    }
+
+    #[test]
+    fn headful_ensures_its_seat_on_every_activation() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("b", SlotKind::Headful);
+        let g = Generation::default();
+        activate(
+            &mut apply,
+            &mut slot,
+            &g,
+            &[],
+            Policy::NoRestart,
+            &[],
+            SessionChange::Ensure,
+        )
+        .unwrap();
+        activate(
+            &mut apply,
+            &mut slot,
+            &g,
+            &[],
+            Policy::SessionRestart,
+            &[],
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert_eq!(
+            apply
+                .calls
+                .iter()
+                .filter(|c| c.starts_with("allocate_seat"))
+                .count(),
+            2
+        );
+        let seat = &apply.dropins[&(
+            "tilo-vm-session@b.service".to_string(),
+            SEAT_DROPIN.to_string(),
+        )];
+        assert!(seat.contains("TILO_VM_BACKEND=drm XDG_SEAT=seat-b"));
+    }
+
+    #[test]
+    fn vm_slot_refreshes_sysext_and_restarts_units() {
+        let mut apply = RecordingApply::default();
+        let mut vm = record("vm", SlotKind::Vm);
+        let layers = [PathBuf::from("/l/f2")];
+        activate(
+            &mut apply,
+            &mut vm,
+            &Generation::default(),
+            &layers,
+            Policy::VmRefresh,
+            &["fs.service".into()],
+            SessionChange::Keep,
+        )
+        .unwrap();
+        assert_eq!(
+            apply.calls,
+            ["link_sysext 1", "sysext_refresh", "restart fs.service"]
+        );
+    }
+
+    #[test]
+    fn deactivate_cleans_up() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("b", SlotKind::Headful);
+        activate(
+            &mut apply,
+            &mut slot,
+            &Generation::default(),
+            &[],
+            Policy::NoRestart,
+            &[],
+            SessionChange::Ensure,
+        )
+        .unwrap();
+        deactivate(&mut apply, &slot).unwrap();
+        assert!(apply.dropins.is_empty());
+        let stop = apply
+            .calls
+            .iter()
+            .position(|c| c == "stop tilo-vm-session@b.service")
+            .unwrap();
+        let release = apply
+            .calls
+            .iter()
+            .position(|c| c == "release_seat b seat-b")
+            .unwrap();
+        assert!(
+            stop < release,
+            "the session must stop before its card goes away"
+        );
+        assert_eq!(
+            apply.calls.last().map(String::as_str),
+            Some("remove_user tds-b")
+        );
+    }
+}
