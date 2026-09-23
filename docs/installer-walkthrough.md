@@ -234,6 +234,45 @@ an installed, licensed Windows system and a real Linux installation, their
 native signed loaders, the machine's real firmware picker, and—where enabled—
 BitLocker/recovery and Secure Boot observations.
 
+### Staged installer on the same disk (USB-free)
+
+This path is not yet released (see the status note at the top). When Tilo
+Imager stages the live installer onto the computer's own disk, the firmware
+starts it once through `BootNext`. Before the greeter starts,
+`tilo-staging-handoff detect` reads the firmware's `LoaderDevicePartUUID`,
+mounts that ESP read-only, and publishes `/EFI/tilo-staging/handoff.json` to
+the installer only if the handoff names that same ESP. The live root grows to
+its partition first, so the download is only the used size of the installer.
+
+The installer then treats the disk it runs from as a destination, but only for
+guided alongside in the space the Imager left unallocated. Erase disk and the
+prepared-partition path stay unavailable there, and the privileged backend
+refuses them even if a caller asks. The UI shows the one plan, the Imager's
+setup choices, and a review line stating that the disk also holds the running
+installer and that Windows or Linux stays untouched. **Return to Windows** (or
+Linux) restarts into the retained system at any point before installation
+starts or after it fails; Imager then offers to try again or remove the
+installer.
+
+`tilo-install --internal-handoff` re-derives every fact itself instead of
+trusting the UI copy: the live ESP and root are exactly the staged partitions
+(by PARTUUID, type and extent), the disk GUID and size match, only the two
+staged partitions are mounted, and the guided extent is exactly the staged
+target extent, still unallocated. The new Tilo ESP starts at the beginning of
+that extent and the root ends exactly where the staged installer begins.
+
+After a successful installation, and only then, the backend restores
+`BootOrder` as for any alongside install, deletes the staged `Boot####` entry
+only while its device path still names the staging ESP, and sets `BootNext` to
+the installed Tilo so the next restart starts it once while Windows or Linux
+stays the default. It also records the staging identities in the target's
+`/var/lib/tilo/staging-reclaim.json`. After the first user session,
+`tilo-staging-reclaim` verifies every recorded identity, deletes the two
+staging partitions, and grows the adjacent Tilo root partition, its LUKS
+mapping, and its filesystem into the freed space. Any mismatch leaves every
+partition untouched and logs why; an interrupted reclaim resumes from the
+disk's actual state on the next run.
+
 ## Account setup and first boot
 
 The account password and mandatory disk passphrase stay outside collaborative document
