@@ -15,6 +15,7 @@
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv
 //! ssh = "root@127.0.0.1:2223"
+//! key = "/home/me/.config/tilo-vm/keys/dev_ed25519"   # made by vm create
 //! image = "/var/lib/images/tilo-vm.qcow2"
 //! disk = "/var/lib/images/dev.qcow2"
 //! ```
@@ -52,7 +53,8 @@ pub struct VmEntry {
     /// `[user@]host[:port]`; when absent the adapter discovers the address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
-    /// SSH identity file.
+    /// SSH identity file; `vm create` makes one per VM in `keys/` beside
+    /// this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Remote command that serves RPC, e.g. `sudo -n tilo-vmd rpc`.

@@ -26,9 +26,12 @@ use crate::doctor::{self, Check};
 use crate::error::CliError;
 use crate::guide;
 use crate::host::{self, HostFacts};
-use crate::hypervisor::{self, CommandLine, Hypervisor, Runner, SystemRunner, Vm, run_all};
+use crate::hypervisor::{
+    self, CommandLine, Hypervisor, Runner, SshEndpoint, SystemRunner, Vm, run_all,
+};
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
+use crate::sshkey;
 use crate::vmbuild;
 
 pub struct Outcome {
@@ -374,7 +377,8 @@ impl App {
             vm.entry.key.as_deref(),
             vm.entry.daemon.as_deref(),
             debug,
-        )?;
+        )
+        .map_err(|error| key_refusal(vm, adapter.as_ref(), &endpoint, error))?;
         for issue in &remote.hello.issues {
             self.warnings.push(format!(
                 "slot {}: {}; {}",
@@ -1030,6 +1034,12 @@ impl App {
                 alternative: "run tilo-vm vm create from a Tilo worktree: the qemu adapter drives os/dev/vm.sh".into(),
             });
         }
+        if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
+            return Err(CliError::ToolMissing {
+                tool: "ssh-keygen".into(),
+                purpose: "make the VM's root SSH key".into(),
+            });
+        }
         let format = disk::format_for(choice.adapter);
         let image = match &args.image {
             Some(path) => {
@@ -1166,9 +1176,12 @@ impl App {
             std::fs::create_dir_all(dir)
                 .map_err(CliError::io(format!("create {}", dir.display())))?;
         }
+        let key = sshkey::key_path(&self.registry_path, &args.name);
+        let root_key = sshkey::ensure(&mut self.runner, &key, &args.name)?;
         let entry = VmEntry {
             hypervisor: plan.choice.adapter.to_owned(),
             ssh: args.ssh,
+            key: Some(key.display().to_string()),
             image,
             disk: plan.disk_path.as_ref().map(|p| p.display().to_string()),
             arch: (arch != host).then_some(arch),
@@ -1181,10 +1194,13 @@ impl App {
             ..VmEntry::default()
         };
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
-        let commands = adapter.create(&Vm {
-            name: &args.name,
-            entry: &entry,
-        })?;
+        let commands = adapter.create(
+            &Vm {
+                name: &args.name,
+                entry: &entry,
+            },
+            &root_key,
+        )?;
         run_all(&mut self.runner, &commands)?;
         registry.vms.insert(args.name.clone(), entry);
         if registry.default.is_none() {
@@ -1203,6 +1219,22 @@ impl App {
                 "\n  from the published dev disk {tag}, cached at {image} (the VM's disk is a copy-on-write child of it: keep that file)"
             );
         }
+        let credentials = adapter.capabilities().credentials;
+        if let Some(channel) = credentials {
+            let _ = write!(
+                text,
+                "\n  root SSH key {} (passed to the VM as the systemd credential {}, in an {channel})",
+                key.display(),
+                sshkey::CREDENTIAL
+            );
+        } else {
+            let _ = write!(
+                text,
+                "\n  root SSH key {}: {} has no credential channel, so install it once after the first boot; tilo-vm vm start prints the exact command (tilo-vm guide platforms)",
+                key.display(),
+                plan.choice.adapter
+            );
+        }
         if plan.choice.adapter == "libvirt" {
             let _ = write!(text, "\n  {}", host::VIRT_MANAGER_TIP);
         }
@@ -1210,7 +1242,7 @@ impl App {
         let slot = "tilo-vm slot create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "key": key, "key_as_credential": credentials, "commands": commands }),
         );
         outcome.next = vec![start, slot];
         Ok(outcome)
@@ -1326,11 +1358,15 @@ impl App {
         let started = Instant::now();
         let mut reachable = false;
         while started.elapsed() < Duration::from_secs(180) {
-            if self.connect(&vm).is_ok() {
-                reachable = true;
-                break;
+            match self.connect(&vm) {
+                Ok(_) => {
+                    reachable = true;
+                    break;
+                }
+                // sshd is up and says no: waiting will not change that.
+                Err(error @ CliError::RootKeyRefused { .. }) => return Err(error),
+                Err(_) => std::thread::sleep(Duration::from_secs(2)),
             }
-            std::thread::sleep(Duration::from_secs(2));
         }
         self.receipt.record("boot", started.elapsed().as_secs_f64());
         if !reachable {
@@ -2112,6 +2148,33 @@ impl App {
     }
 }
 
+/// SSH answered but refused the VM's recorded key: name the one-time step
+/// that installs it. Every other error passes through.
+fn key_refusal(
+    vm: &Resolved,
+    adapter: &dyn Hypervisor,
+    endpoint: &SshEndpoint,
+    error: CliError,
+) -> CliError {
+    let (CliError::Unreachable { detail, .. }, Some(key)) = (&error, vm.entry.key.as_deref())
+    else {
+        return error;
+    };
+    if !detail.contains("Permission denied") {
+        return error;
+    }
+    let install = sshkey::read_public(Path::new(key)).map_or_else(
+        |_| format!("ssh-keygen -y -f {key} > {key}.pub, then rerun this command"),
+        |public| sshkey::install_command(endpoint, &public),
+    );
+    CliError::RootKeyRefused {
+        vm: vm.name.clone(),
+        key: key.to_owned(),
+        install,
+        credentials: adapter.capabilities().credentials.is_some(),
+    }
+}
+
 /// `swap --profile` names a cargo profile and builds a component from the worktree.
 fn check_profile(profile: &str, component: &str, from: &str) -> Result<(), CliError> {
     if !tilo_vm_protocol::manifest::valid_profile(profile) {
@@ -2601,6 +2664,85 @@ mod tests {
             error.to_string().contains("outside a Tilo worktree"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_refused_key_names_the_install_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("keys/dev_ed25519");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(
+            sshkey::public_path(&key),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev\n",
+        )
+        .unwrap();
+        let vm = Resolved {
+            name: "dev".into(),
+            entry: VmEntry {
+                hypervisor: "utm".into(),
+                key: Some(key.display().to_string()),
+                ..VmEntry::default()
+            },
+            source: Source::Argument,
+        };
+        let endpoint = SshEndpoint {
+            user: "root".into(),
+            host: "192.168.64.5".into(),
+            port: 22,
+        };
+        let unreachable = |detail: &str| CliError::Unreachable {
+            vm: "dev".into(),
+            detail: detail.into(),
+            debug: vec![],
+        };
+        let error = key_refusal(
+            &vm,
+            &hypervisor::Utm,
+            &endpoint,
+            unreachable("root@192.168.64.5: Permission denied (publickey)."),
+        );
+        assert!(
+            matches!(
+                error,
+                CliError::RootKeyRefused {
+                    credentials: false,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.hint().contains("no credential channel"),
+            "{}",
+            error.hint()
+        );
+        assert!(
+            error.hint().contains("tester@192.168.64.5"),
+            "{}",
+            error.hint()
+        );
+        assert_eq!(error.see().as_deref(), Some("tilo-vm guide platforms"));
+        let libvirt = key_refusal(
+            &vm,
+            &hypervisor::Libvirt,
+            &endpoint,
+            unreachable("Permission denied (publickey)"),
+        );
+        assert!(
+            libvirt.hint().contains("did not take it"),
+            "{}",
+            libvirt.hint()
+        );
+        // Anything else is still "unreachable".
+        assert!(matches!(
+            key_refusal(
+                &vm,
+                &hypervisor::Utm,
+                &endpoint,
+                unreachable("Connection refused")
+            ),
+            CliError::Unreachable { .. }
+        ));
     }
 
     #[test]

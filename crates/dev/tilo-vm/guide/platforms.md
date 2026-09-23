@@ -53,6 +53,8 @@ architecture and format), a VM disk path that is not taken, and free space
 for the download and the VM. Then it downloads `tilo-vm-disk.json` for the
 tag from the forge's generic packages, picks the disk (qcow2, or VHDX for
 Hyper-V), resumes an interrupted download, checks its SHA-256 and caches it.
+Last, it makes the VM's root SSH key and creates the VM
+([The root SSH key](#the-root-ssh-key)).
 
 The download needs a **forge token** with package read access:
 `FORGEJO_TOKEN`, or an fgj (`~/.config/fgj/config.yaml`) or tea login for
@@ -72,6 +74,31 @@ code.sandbox.example. That token is read only for disk downloads; image pulls
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
   locally and pass it as `--image`. The error says whether it exists here.
+
+## The root SSH key
+
+`tilo-vm` reaches the VM as root with a key, never a password. `vm create`
+makes one ed25519 key per VM, `keys/<name>_ed25519` beside `vms.toml` (an
+existing key is kept), records it as the VM's `key` in `vms.toml`, and uses
+it for every connection. The dev image installs root's `authorized_keys`
+from the systemd credential `ssh.authorized_keys.root`, so the key goes in
+at creation where the hypervisor has a channel for credentials:
+
+| Adapter | How the key gets in |
+|---|---|
+| libvirt | at creation: an SMBIOS type 11 OEM string (`virt-install --sysinfo type=smbios,oemStrings.entry0=io.systemd.credential.binary:ssh.authorized_keys.root=<base64>`) |
+| UTM, Hyper-V, qemu | once, after the first boot (below). Apple Virtualization and Hyper-V offer no SMBIOS strings or fw_cfg, the image has no cloud-init, and `os/dev/vm.sh` takes no extra QEMU arguments |
+
+The one-time step logs in with the dev account's password (`tester`,
+password `tilo`, from `os/account.env`) and appends the key for root:
+
+```sh
+tilo-vm vm start      # SSH refuses the key, and the error prints the exact command:
+ssh -t -p <port> tester@<vm address> 'sudo install -d -m 0700 /root/.ssh && echo <key, base64> | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'
+```
+
+It asks for that password twice (SSH, then sudo). The same command fixes a
+libvirt VM created before keys were passed at creation.
 
 ## Registry and files
 

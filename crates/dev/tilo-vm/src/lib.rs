@@ -16,4 +16,5 @@ pub mod host;
 pub mod hypervisor;
 pub mod receipt;
 pub mod remote;
+pub mod sshkey;
 pub mod vmbuild;
