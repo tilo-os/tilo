@@ -224,6 +224,40 @@ mod tests {
         assert_eq!(read_write_access, AccessFs::from_all(abi));
     }
 
+    /// The access sets that make up every launcher ruleset, as raw bits.
+    /// A dependency bump or refactor that changes which rights are handled
+    /// or granted is a policy change and must fail here rather than pass
+    /// through a comparison of two expressions that moved together.
+    ///
+    /// Bits (landlock ABI order): Execute 1, WriteFile 2, ReadFile 4,
+    /// ReadDir 8, RemoveDir 16, RemoveFile 32, MakeChar 64, MakeDir 128,
+    /// MakeReg 256, MakeSock 512, MakeFifo 1024, MakeBlock 2048,
+    /// MakeSym 4096, Refer 8192, Truncate 16384, IoctlDev 32768;
+    /// BindTcp 1, ConnectTcp 2.
+    #[test]
+    fn pinned_ruleset_access_sets() {
+        assert_eq!(AccessFs::from_all(FS_ABI).bits(), 0xffff, "handled FS");
+        assert_eq!(AccessNet::from_all(ABI::V4).bits(), 0b11, "handled net");
+        assert_eq!(AccessFs::from_file(FS_ABI).bits(), 0xc007, "file rights");
+
+        let plan = plan_from_paths(
+            &[PathBuf::from("/usr"), PathBuf::from("/etc")],
+            &[PathBuf::from("/app")],
+        );
+        let pinned: Vec<(PathBuf, u64)> = plan
+            .iter()
+            .map(|rule| (rule.path.clone(), u64::from(rule.access.bits())))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                (PathBuf::from("/usr"), 0b1101),
+                (PathBuf::from("/etc"), 0b1101),
+                (PathBuf::from("/app"), 0xffff),
+            ]
+        );
+    }
+
     #[test]
     fn concrete_file_rules_never_request_directory_rights() {
         let temp = tempfile::NamedTempFile::new().expect("temp file");

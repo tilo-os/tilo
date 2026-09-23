@@ -415,6 +415,40 @@ mod tests {
         );
     }
 
+    /// The compiled program, byte for byte, is the policy. Pinning it means
+    /// any change to what a launched app may call — a rule added, dropped,
+    /// reordered or recompiled differently — fails here and has to be
+    /// reviewed as a policy change together with a regenerated golden file,
+    /// instead of passing silently behind a refactor.
+    ///
+    /// Only the x86_64 program is pinned: syscall numbers and the arch
+    /// check are per-architecture, so each arch would need its own file.
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn compiled_baseline_programs_match_the_pinned_golden_files() {
+        let cases: [(SeccompProfile, &[u8]); 2] = [
+            (
+                SeccompProfile::TiloDefault,
+                include_bytes!("../tests/fixtures/seccomp/tilo-default.x86_64.bpf"),
+            ),
+            (
+                SeccompProfile::TiloJit,
+                include_bytes!("../tests/fixtures/seccomp/tilo-jit.x86_64.bpf"),
+            ),
+        ];
+        for (profile, golden) in cases {
+            let compiled = compile_baseline(profile).expect("compile");
+            assert!(
+                compiled == golden,
+                "{} compiled to a different BPF program than the pinned one \
+                 ({} bytes vs {} pinned); this is a sandbox policy change",
+                profile.as_str(),
+                compiled.len(),
+                golden.len()
+            );
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn write_baseline_creates_blob() {
