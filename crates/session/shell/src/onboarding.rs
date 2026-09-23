@@ -313,21 +313,9 @@ pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String
         .map_err(|e| e.to_string())?;
     let record = record.ok_or_else(|| "the identity record is missing".to_string())?;
     Ok(MintedIdentity {
-        fingerprint: hex_encode(&record.threshold_identity.group_public_key),
+        fingerprint: hex::encode(record.threshold_identity.group_public_key),
         path: path.to_path_buf(),
     })
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        // `b >> 4` and `b & 0xF` are both always in 0..16, so these never miss;
-        // `.get()` documents that rather than indexing directly.
-        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
-        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
-    }
-    out
 }
 
 #[cfg(test)]
