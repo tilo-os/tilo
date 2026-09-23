@@ -1449,8 +1449,9 @@ impl ChromeState {
         Some(tab_id)
     }
 
-    /// Through the SAME [`GrantStoreHandle`] the portal uses, so
-    /// `sandbox::profile::apply_grants` picks it up on spawn. Keyed by
+    /// Through the SAME [`GrantStoreHandle`] the portal uses, so the
+    /// portal's later filesystem checks see it exactly as they see a grant
+    /// the user approved in a prompt. Keyed by
     /// real app identity, not a display label. Read-only,
     /// session-scoped — same as the permission prompt's "Session" choice.
     fn grant_dropped_file_access(
