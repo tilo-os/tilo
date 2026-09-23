@@ -59,6 +59,17 @@ LEGACY_ENTRY_POINTS = {
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
+# `ui::search::CatalogSearchProvider` derives every query method from one
+# retained `SearchCatalog`, so its budgets hold by construction. What remains
+# for an implementation to get wrong is `catalog()` itself: building a
+# catalogue there re-indexes the whole corpus on every query.
+CATALOG_SEARCH_PROVIDER_IMPL = re.compile(
+    r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*CatalogSearchProvider"
+    r"\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+PER_QUERY_CATALOG_BUILD = re.compile(
+    r"\bSearchCatalog\s*::\s*new\s*\(|\.\s*(?:replace_all|upsert)\s*\("
+)
 FRAMEWORK_RESOURCE_SEARCH_BUILD = re.compile(
     r"crate\s*::\s*search\s*::\s*OpenResourceSearch\s*::\s*new\s*\(\s*&resources\s*\)"
 )
@@ -509,6 +520,7 @@ def audit_search_provider_limits(
                         source,
                         line_number(raw, match.start()),
                         "app SearchProvider inherits the unbounded search_limited fallback; "
+                        "implement CatalogSearchProvider for a catalogue-backed provider, or "
                         "override it and stop scanning/materialising at the caller budget",
                     )
                 )
@@ -532,6 +544,20 @@ def audit_search_provider_limits(
                         line_number(raw, match.start()),
                         "app SearchProvider inherits the non-paged search_page fallback; override "
                         "it so broad corpora continue under a hard per-page work budget",
+                    )
+                )
+        for match in CATALOG_SEARCH_PROVIDER_IMPL.finditer(code):
+            found.add(f"{relative}::{match.group(1)}")
+            body = brace_body(code, match.start()) or ""
+            catalog = re.search(r"\bfn\s+catalog\s*\(", body)
+            catalog_body = brace_body(body, catalog.start()) if catalog else None
+            if catalog_body and PER_QUERY_CATALOG_BUILD.search(catalog_body):
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start() + catalog.start()),
+                        "CatalogSearchProvider::catalog builds a catalogue per query; return "
+                        "the retained catalogue and update it incrementally as the corpus changes",
                     )
                 )
     if root.resolve() == ROOT.resolve():
