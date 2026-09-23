@@ -113,7 +113,7 @@ pub fn seal_wifi_credential(
         );
         let ciphertext = XChaCha20Poly1305::new((&key).into())
             .encrypt(
-                XNonce::from_slice(&nonce),
+                <&XNonce>::from(&nonce),
                 Payload {
                     msg: password.as_bytes(),
                     aad: &aad,
@@ -188,7 +188,7 @@ pub fn open_wifi_credential(
     );
     let plaintext = XChaCha20Poly1305::new((&key).into())
         .decrypt(
-            XNonce::from_slice(&envelope.nonce),
+            <&XNonce>::from(&envelope.nonce),
             Payload {
                 msg: &envelope.ciphertext,
                 aad: &aad,

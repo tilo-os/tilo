@@ -374,7 +374,7 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
         .map_err(|_| io::Error::other("could not initialize portable backup encryption"))?;
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            <&XNonce>::from(&nonce),
             Payload {
                 msg: record,
                 aad: &header,
@@ -412,7 +412,7 @@ fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>>
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| invalid_backup())?;
     let plaintext = cipher
         .decrypt(
-            XNonce::from_slice(&header.nonce),
+            <&XNonce>::from(&header.nonce),
             Payload {
                 msg: ciphertext,
                 aad: authenticated_header,

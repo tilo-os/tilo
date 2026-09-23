@@ -1687,10 +1687,10 @@ impl InviteRedemptionAuthority {
             .decrypt(
                 bytes
                     .get(8..32)
+                    .and_then(|nonce| <&chacha20poly1305::XNonce>::try_from(nonce).ok())
                     .ok_or_else(|| {
                         IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
-                    })?
-                    .into(),
+                    })?,
                 Payload {
                     msg: bytes.get(32..).ok_or_else(|| {
                         IdentityFlowError::DecodeFailed("redemption record is corrupt".into())

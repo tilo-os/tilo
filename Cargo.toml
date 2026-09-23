@@ -351,7 +351,8 @@ rand_chacha = "0.3"
 sha2 = "0.11"
 hmac = "0.13"
 blake3 = "1.8.5"
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# `zeroize` keeps the cipher key wiped on drop; 0.11 made it opt-in.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 zeroize = "1"
 bip39 = "2"
