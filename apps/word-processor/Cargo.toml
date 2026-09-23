@@ -43,8 +43,6 @@ serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 url.workspace = true
-fluent.workspace = true
-unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
