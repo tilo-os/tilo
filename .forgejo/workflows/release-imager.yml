@@ -261,6 +261,55 @@ jobs:
             dist/tilo-installer/tilo-installer-linux-${{ matrix.arch }}.img.zst.sha256
             dist/tilo-installer/catalog-${{ matrix.arch }}.json
           if-no-files-found: error
+      # Internal (USB-free) installer bundle, exported from the same live disk
+      # that just passed the installation cycles. Opt-in through the protected
+      # repository variable IMAGER_INTERNAL_BUNDLE: unset does nothing, `export`
+      # tests and exports on every run, `publish` additionally publishes tagged
+      # releases as a Forgejo package and adds the catalog entries.
+      - name: Test the internal installer bundle exporter
+        if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              btrfs-progs dosfstools fdisk qemu-utils util-linux
+          else
+            sudo -n dnf install -y btrfs-progs dosfstools qemu-img util-linux
+          fi
+          python3 -m unittest discover -s os/tests -p 'internal_bundle_test.py'
+          bash os/tests/internal_bundle_catalog.sh
+          sudo -n bash os/tests/internal_bundle_export.sh
+      - name: Export the internal installer bundle
+        if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        env:
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            release_id="$GITHUB_REF_NAME"
+          else
+            release_id="rehearsal-${GITHUB_SHA}"
+          fi
+          rm -rf dist/tilo-internal
+          os/dev/export-internal-bundle.sh os/output/installer/qcow2/disk.qcow2 \
+            "${{ matrix.arch }}" "$release_id" dist/tilo-internal
+          ls -l dist/tilo-internal/bundle
+      - name: Publish the internal installer bundle
+        if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER }}
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+        run: apps/imager/packaging/publish-internal-bundle.sh dist/tilo-internal/bundle
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+        with:
+          # Only the manifest and its catalog entry: the component images are
+          # already published and must not reach the GitHub release.
+          name: tilo-internal-catalog-${{ matrix.arch }}
+          path: |
+            dist/tilo-internal/internal-catalog-${{ matrix.arch }}.json
+            dist/tilo-internal/bundle/tilo-internal-installer-${{ matrix.arch }}.json
+          if-no-files-found: error
 
   catalog:
     timeout-minutes: 60
@@ -275,6 +324,9 @@ jobs:
         with:
           path: release-assets
       - name: Assemble the release catalog
+        env:
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+          TILO_REQUIRE_INTERNAL_BUNDLE: ${{ vars.IMAGER_INTERNAL_BUNDLE == 'publish' && '1' || '0' }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
             apps/imager/packaging/build-release-catalog.sh release-assets
