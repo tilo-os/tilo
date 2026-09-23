@@ -9,9 +9,8 @@ use windows_sys::Win32::Security::Cryptography::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use super::KEY_LEN;
+use super::{KEY_LEN, VaultFormat};
 
-const ENTROPY: &[u8] = b"Tilo Accounts vault key v1";
 const MAX_KEY_BLOB: u64 = 65_536;
 
 struct DpapiOutput(CRYPT_INTEGER_BLOB);
@@ -36,9 +35,9 @@ fn blob(bytes: &[u8]) -> io::Result<CRYPT_INTEGER_BLOB> {
     })
 }
 
-fn transform(bytes: &[u8], protect: bool) -> io::Result<Zeroizing<Vec<u8>>> {
+fn transform(entropy: &[u8], bytes: &[u8], protect: bool) -> io::Result<Zeroizing<Vec<u8>>> {
     let input = blob(bytes)?;
-    let entropy = blob(ENTROPY)?;
+    let entropy = blob(entropy)?;
     let mut output = DpapiOutput(CRYPT_INTEGER_BLOB::default());
     // SAFETY: all input buffers remain live, are read-only by the API contract,
     // and output is an initialized descriptor owned by the RAII guard. Flags
@@ -89,8 +88,8 @@ fn read_private(path: &Path) -> io::Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-fn decode_key(bytes: &[u8]) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
-    let bytes = transform(bytes, false)?;
+fn decode_key(entropy: &[u8], bytes: &[u8]) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
+    let bytes = transform(entropy, bytes, false)?;
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     if bytes.len() != KEY_LEN {
         return Err(io::Error::other("DPAPI key has the wrong length"));
@@ -99,15 +98,18 @@ fn decode_key(bytes: &[u8]) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
     Ok(key)
 }
 
-pub(super) fn load_or_create_key(dir: &Path) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
+pub(super) fn load_or_create_key(
+    format: &VaultFormat,
+    dir: &Path,
+) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
     private_fs::directory(dir)?;
     let lock = private_fs::lock_file(&dir.join("vault-key.lock"))?;
     lock.lock()?;
     let protected_path = dir.join("vault.key.dpapi");
     match read_private(&protected_path) {
         Ok(bytes) => {
-            let key = decode_key(&bytes)?;
-            finish_legacy_migration(dir, &key)?;
+            let key = decode_key(format.dpapi_entropy, &bytes)?;
+            finish_legacy_migration(format, dir, &key)?;
             return Ok(key);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -139,20 +141,20 @@ pub(super) fn load_or_create_key(dir: &Path) -> io::Result<Zeroizing<[u8; KEY_LE
     };
     if migrating && dir.join("vault.enc").try_exists()? {
         let encrypted = std::fs::read(dir.join("vault.enc"))?;
-        if super::open(&key, &encrypted).is_none() {
+        if format.open(&key, &encrypted).is_none() {
             return Err(io::Error::other(
                 "legacy key does not unlock the existing vault",
             ));
         }
     }
-    let protected = transform(key.as_slice(), true)?;
+    let protected = transform(format.dpapi_entropy, key.as_slice(), true)?;
     private_fs::create_atomic(&protected_path, &protected)?;
-    let restored = decode_key(&read_private(&protected_path)?)?;
+    let restored = decode_key(format.dpapi_entropy, &read_private(&protected_path)?)?;
     if restored.as_slice() != key.as_slice() {
         return Err(io::Error::other("published key differs from the original"));
     }
     if migrating {
-        finish_legacy_migration(dir, &restored)?;
+        finish_legacy_migration(format, dir, &restored)?;
     }
     Ok(restored)
 }
@@ -160,7 +162,11 @@ pub(super) fn load_or_create_key(dir: &Path) -> io::Result<Zeroizing<[u8; KEY_LE
 /// Publication and plaintext removal are separate durable steps. Reopening
 /// must finish an interrupted migration, but never discard conflicting material
 /// that may be needed for recovery. The caller holds the vault-key lock.
-fn finish_legacy_migration(dir: &Path, key: &[u8; KEY_LEN]) -> io::Result<()> {
+fn finish_legacy_migration(
+    format: &VaultFormat,
+    dir: &Path,
+    key: &[u8; KEY_LEN],
+) -> io::Result<()> {
     let legacy_path = dir.join("vault.key");
     let legacy = match read_private(&legacy_path) {
         Ok(bytes) => bytes,
@@ -173,7 +179,7 @@ fn finish_legacy_migration(dir: &Path, key: &[u8; KEY_LEN]) -> io::Result<()> {
         ));
     }
     match std::fs::read(dir.join("vault.enc")) {
-        Ok(encrypted) if super::open(key, &encrypted).is_none() => {
+        Ok(encrypted) if format.open(key, &encrypted).is_none() => {
             return Err(io::Error::other(
                 "protected key does not unlock the existing vault",
             ));
