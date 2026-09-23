@@ -64,6 +64,38 @@ fn secret_service_key_encoding_round_trips_and_rejects_bad_material() {
 }
 
 #[test]
+fn secret_service_key_encoding_is_lowercase_and_decoding_accepts_either_case() {
+    let mut key = [0u8; KEY_LEN];
+    for (byte, value) in key.iter_mut().zip(0xe0_u8..=0xff) {
+        *byte = value;
+    }
+    let encoded = encode_key(&key);
+    assert_eq!(
+        encoded,
+        "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+    );
+    assert_eq!(
+        decode_key(&encoded.to_ascii_uppercase()).unwrap().as_ref(),
+        &key
+    );
+    let short = encoded.get(..KEY_LEN * 2 - 1).unwrap();
+    assert_eq!(
+        decode_key(short).unwrap_err(),
+        "Secret Service key has the wrong length"
+    );
+    assert_eq!(
+        decode_key(&format!("{short}g")).unwrap_err(),
+        "Secret Service key is not hexadecimal"
+    );
+    // A multi-byte character of the right byte length is not hex either.
+    let shorter = encoded.get(..KEY_LEN * 2 - 2).unwrap();
+    assert_eq!(
+        decode_key(&format!("{shorter}é")).unwrap_err(),
+        "Secret Service key is not hexadecimal"
+    );
+}
+
+#[test]
 fn secret_service_arguments_carry_the_format_identity() {
     assert_eq!(
         FORMAT.secret_service_args("lookup", None),
