@@ -39,26 +39,20 @@ with tarfile.open(stage) as archive:
     if not kernel.isfile():
         raise ValueError(f"not a regular file: {kernel.name}")
     (out / "Image").write_bytes(archive.extractfile(kernel).read())
-
-    module = None
-    for source in ("kernel/drivers/net/dummy.ko.zst",
-                   "kernel/drivers/net/dummy.ko"):
-        try:
-            candidate = archive.getmember(prefix + source)
-        except KeyError:
-            continue
-        if module is not None:
-            raise ValueError("multiple packaged dummy modules")
-        module = candidate
-    if module is None:
-        raise ValueError("packaged dummy module not found")
-    if not module.isfile():
-        raise ValueError(f"not a regular file: {module.name}")
+    module_names = [
+        prefix + "kernel/drivers/net/dummy.ko",
+        prefix + "kernel/drivers/net/dummy.ko.zst",
+    ]
+    modules = [member for member in archive.getmembers()
+               if member.name in module_names and member.isfile()]
+    if len(modules) != 1:
+        raise ValueError(f"expected one packaged dummy module, found {len(modules)}")
+    module = modules[0]
     data = archive.extractfile(module).read()
     if module.name.endswith(".zst"):
         data = subprocess.run(
-            ["zstd", "-q", "-d", "-c"], input=data,
-            stdout=subprocess.PIPE, check=True,
+            ["zstd", "--decompress", "--stdout", "--quiet"],
+            input=data, capture_output=True, check=True,
         ).stdout
     if not 0 < len(data) <= 64 * 1024 * 1024:
         raise ValueError("dummy module has an implausible decompressed size")

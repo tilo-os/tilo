@@ -19,7 +19,10 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
   pull_request:
@@ -34,7 +37,10 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
       - "tools/ci/workflow_applicability.py"
@@ -42,8 +48,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
+  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) }}
 
 jobs:
   applicability:
@@ -75,21 +81,21 @@ jobs:
         run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/build-kernel.yml
 
   signing-preflight:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
       - name: Checkout signing policy
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install checksum-pinned Cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: ${{ runner.arch }}
       - name: Bind kernel signing authority to pinned release identity
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -137,7 +143,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require the selected native kernel architecture
@@ -147,11 +155,18 @@ jobs:
       # kernel-devel, gcc, ...) and the Fedora kernel SRPM.  Log in on every
       # run — build-only PRs also need registry read.
       - name: Log in to code.podesta.ai
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.podesta.ai "$REGISTRY_USERNAME"
+
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
         with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          cache-architecture: ${{ matrix.arch }}
 
       # Same mirrored base as the OS image — the modules have to link against
       # the userspace the image ships (os/base-snapshot.env).
@@ -160,6 +175,42 @@ jobs:
 
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+
+      - name: Verify the signed RPM snapshot input
+        run: |
+          set -euo pipefail
+          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] || {
+            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
+            exit 1
+          }
+          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
+          digest="${RPMS_REF##*@}"
+          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
+          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$RPMS_REF")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" \
+            --arg package_arm64_sha256 "$package_arm64_sha256" '
+              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+              | any(
+                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
+                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null || {
+              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
+              exit 1
+            }
 
       # Reproducible: buildkit rewrites layer timestamps + the kernel's
       # KBUILD_BUILD_TIMESTAMP to SOURCE_DATE_EPOCH (see os/kernel/Containerfile).
@@ -205,7 +256,7 @@ jobs:
             type=sha,prefix=main-${{ matrix.arch }}-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}-${{ matrix.arch }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=pr-${{ github.event.number }}-${{ matrix.arch }},enable=${{ github.event_name == 'pull_request' }}
-            type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+            type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
 
       # Push only on tags/dispatch so main-branch commits verify without
       # touching the registry.
@@ -221,7 +272,7 @@ jobs:
             github-assets=os/external-assets/kernel-cache
           platforms: ${{ matrix.platform }}
           load: true
-          push: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
           tags: |
             ${{ steps.meta.outputs.tags }}
             code.podesta.ai/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
@@ -312,14 +363,8 @@ jobs:
       # the OS image. The OS image build verifies this signature before it
       # `dnf swap`s the kernel in — see os/etc/containers/policy.json for
       # the trust root.
-      - name: Install checksum-pinned Cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-        uses: ./.forgejo/actions/install-cosign
-        with:
-          cache-architecture: ${{ matrix.arch }}
-
       - name: Sign the published image
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -380,7 +425,7 @@ jobs:
             ' >/dev/null
 
       - name: Report the new digest to commit
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         run: |
           ref="code.podesta.ai/qos/tilo-kernel@${{ steps.build.outputs.digest }}"
           variable=KERNEL_RPMS_${{ matrix.arch }}_REF
@@ -398,15 +443,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve native digest for atomic promotion
-        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-kernel-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
 
+      - name: Revoke local registry login
+        if: ${{ always() }}
+        run: docker logout code.podesta.ai >/dev/null 2>&1 || true
+
   promote-native-kernels:
     needs: build-and-push-kernel
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
     runs-on: runner
     timeout-minutes: 60
     env:
@@ -416,6 +465,9 @@ jobs:
         os/base-snapshot.env
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
+        os/dev/derive-rpm-package-set.py
+        os/dev/open-kernel-snapshot-pr.py
+        os/dev/login-registry-with-retry.sh
         .forgejo/workflows/build-kernel.yml
     steps:
       - name: Checkout main for atomic pin promotion
@@ -427,7 +479,9 @@ jobs:
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Advance both kernel pins atomically
+      - name: Propose both kernel pins atomically through protected main
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           x86="$(find refs -type f -name x86_64.env -print -quit)"
@@ -459,9 +513,20 @@ jobs:
           git add os/kernel-snapshot.env
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'build(os): refresh native kernel snapshots'
-          git pull --rebase origin main
+          git fetch --no-tags origin main
+          git rebase origin/main
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed during promotion; refusing stale push\n' >&2
+            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
             exit 1
           fi
-          git push origin HEAD:main
+          snapshot_digest="$(sha256sum os/kernel-snapshot.env | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          branch="automation/kernel-snapshot-${snapshot_digest:0:16}"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+            origin "HEAD:refs/heads/$branch"
+          python3 os/dev/open-kernel-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" \
+            --x86-ref "$KERNEL_RPMS_X86_64_REF" \
+            --arm-ref "$KERNEL_RPMS_AARCH64_REF"
