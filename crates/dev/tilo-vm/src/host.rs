@@ -68,12 +68,51 @@ pub struct HostFacts {
     pub path: BTreeMap<String, Vec<PathBuf>>,
     /// Linux: can this user open `/dev/kvm` for reading and writing?
     pub kvm: Option<bool>,
-    /// Linux with virsh: does [`SESSION_URI`] answer? `Err` carries virsh's words.
-    pub session: Option<Result<(), String>>,
+    /// Linux with virsh: the guests `virsh capabilities` lists on
+    /// [`SESSION_URI`], which only its QEMU driver answers. `Err` carries
+    /// virsh's words.
+    pub session: Option<Result<Vec<Guest>, String>>,
     /// macOS: UTM.app's `utmctl`, found even when it is not on `PATH`.
     pub utm_app: Option<PathBuf>,
     /// Windows: whether PowerShell has the Hyper-V module (`Get-VM`).
     pub hyperv: Option<bool>,
+}
+
+/// One guest architecture libvirt's QEMU driver can run, and how: `kvm`
+/// (hardware virtualization) and/or `qemu` (TCG emulation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Guest {
+    pub arch: String,
+    pub domains: Vec<String>,
+}
+
+/// The value of attribute `name` in the tag that starts `tag`.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let tag = tag.split_once('>').map_or(tag, |(inside, _)| inside);
+    ['\'', '"'].into_iter().find_map(|quote| {
+        let (_, rest) = tag.split_once(&format!("{name}={quote}"))?;
+        rest.split_once(quote).map(|(value, _)| value)
+    })
+}
+
+/// The guests in `virsh capabilities` output.
+pub fn parse_guests(capabilities: &str) -> Vec<Guest> {
+    capabilities
+        .split("<guest>")
+        .skip(1)
+        .filter_map(|guest| {
+            let guest = guest.split("</guest>").next().unwrap_or(guest);
+            let (_, arch) = guest.split_once("<arch ")?;
+            let arch = attribute(arch, "name")?.to_owned();
+            let domains = guest
+                .split("<domain ")
+                .skip(1)
+                .filter_map(|tag| attribute(tag, "type"))
+                .map(str::to_owned)
+                .collect();
+            Some(Guest { arch, domains })
+        })
+        .collect()
 }
 
 /// Tools `doctor` and the adapters care about.
@@ -87,7 +126,7 @@ pub const TOOLS: &[&str] = &[
     "podman",
     "bash",
     "virsh",
-    "virt-install",
+    "passt",
     "qemu-img",
     "qemu-system-x86_64",
     "qemu-system-aarch64",
@@ -165,10 +204,10 @@ impl HostFacts {
         let session = path.get("virsh").and_then(|v| v.first()).map(|virsh| {
             let command = CommandLine::new(
                 &virsh.display().to_string(),
-                &["--connect", SESSION_URI, "uri"],
+                &["--connect", SESSION_URI, "capabilities"],
             );
             match runner.output(&command) {
-                Ok(o) if o.success => Ok(()),
+                Ok(o) if o.success => Ok(parse_guests(&o.stdout)),
                 Ok(o) => Err(o.stderr.trim().to_owned()),
                 Err(e) => Err(e.to_string()),
             }
@@ -370,7 +409,9 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
     }
 }
 
-/// virsh, virt-install and the qemu-img beside them.
+/// virsh, the qemu-img beside it, and passt, which the VM's network runs on.
+/// tilo-vm writes the domain XML itself, so nothing else (no virt-install,
+/// no libvirt storage or network driver) is needed.
 ///
 /// # Errors
 /// Which is missing, or a qemu-img from another toolchain.
@@ -380,8 +421,8 @@ pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
         detail,
         fix: libvirt_fix(facts),
     };
-    let (Some(virsh), Some(install)) = (facts.first("virsh"), facts.first("virt-install")) else {
-        let absent: Vec<&str> = ["virsh", "virt-install"]
+    let (Some(virsh), Some(passt)) = (facts.first("virsh"), facts.first("passt")) else {
+        let absent: Vec<&str> = ["virsh", "passt"]
             .into_iter()
             .filter(|t| facts.first(t).is_none())
             .collect();
@@ -390,8 +431,8 @@ pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
     let qemu_img = companion(facts, "qemu-img", virsh, "virsh").map_err(missing)?;
     Ok(vec![
         ToolPath::new("virsh", virsh),
-        ToolPath::new("virt-install", install),
         ToolPath::new("qemu-img", qemu_img),
+        ToolPath::new("passt", passt),
     ])
 }
 
@@ -410,22 +451,82 @@ pub fn kvm_usable(facts: &HostFacts) -> Result<(), Missing> {
     Ok(())
 }
 
-/// Does libvirt's rootless session answer? Unprobed counts as yes.
+/// The probe [`HostFacts::probe`] runs against the session's QEMU driver.
+pub fn session_probe() -> String {
+    format!("virsh --connect {SESSION_URI} capabilities")
+}
+
+/// Does libvirt's rootless session QEMU driver answer? Unprobed counts as yes.
 ///
 /// # Errors
-/// virsh's complaint, with the fix.
+/// virsh's complaint, verbatim, with the fix.
 pub fn session_answers(facts: &HostFacts) -> Result<(), Missing> {
     if let Some(Err(why)) = &facts.session {
+        let probe = session_probe();
         return Err(Missing {
             adapter: "libvirt".into(),
-            detail: format!("{SESSION_URI} does not answer: {why}"),
+            detail: format!("`{probe}` failed: {why}"),
             fix: format!(
-                "virsh --connect {SESSION_URI} uri must work as you, without sudo; it needs the libvirt daemon: {}",
+                "`{probe}` must work as you, without sudo; it failed with: {why}. It needs libvirt's QEMU driver (virtqemud, or libvirtd), started on demand for your user: {}",
                 libvirt_fix(facts)
             ),
         });
     }
     Ok(())
+}
+
+/// Can the session run an `arch` guest, with KVM or, when `emulated`, TCG?
+/// Unprobed counts as yes.
+///
+/// # Errors
+/// What libvirt lists instead, with the fix.
+pub fn session_domain(facts: &HostFacts, arch: &str, emulated: bool) -> Result<String, Missing> {
+    let domain = if emulated { "qemu" } else { "kvm" };
+    let probe = session_probe();
+    let missing = |detail: String, fix: String| Missing {
+        adapter: "libvirt".into(),
+        detail,
+        fix,
+    };
+    let guests = match &facts.session {
+        Some(Ok(guests)) => guests,
+        Some(Err(_)) => return session_answers(facts).map(|()| String::new()),
+        None => return Ok(format!("{SESSION_URI} not probed")),
+    };
+    let Some(guest) = guests.iter().find(|g| g.arch == arch) else {
+        let listed: Vec<&str> = guests.iter().map(|g| g.arch.as_str()).collect();
+        return Err(missing(
+            format!(
+                "`{probe}` lists no {arch} guest (only: {})",
+                if listed.is_empty() {
+                    "none".to_owned()
+                } else {
+                    listed.join(", ")
+                }
+            ),
+            format!(
+                "install QEMU's {} for libvirt: {}",
+                qemu_system(arch),
+                libvirt_fix(facts)
+            ),
+        ));
+    };
+    if guest.domains.iter().any(|d| d == domain) {
+        return Ok(format!(
+            "{SESSION_URI} runs {arch} guests with {domain} ({probe})"
+        ));
+    }
+    Err(missing(
+        format!(
+            "`{probe}` offers {arch} guests only as {}, not {domain}",
+            guest.domains.join(", ")
+        ),
+        if emulated {
+            libvirt_fix(facts)
+        } else {
+            kvm_fix(facts)
+        },
+    ))
 }
 
 /// `tool` beside `anchor` (the same toolchain), else an explanation. A
@@ -451,9 +552,10 @@ fn companion<'a>(
     }
 }
 
-/// The one line that installs libvirt (with virt-manager to watch VMs).
+/// The one line that installs libvirt's QEMU driver, virsh, qemu-img and
+/// passt (with virt-manager to watch VMs).
 pub fn libvirt_fix(facts: &HostFacts) -> String {
-    let fedora = "libvirt-daemon-kvm virt-install virt-manager qemu-img";
+    let fedora = "libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt";
     match facts.kind {
         HostKind::RpmOstree => {
             format!("this host is image-based: rpm-ostree install {fedora}, then reboot")
@@ -462,12 +564,13 @@ pub fn libvirt_fix(facts: &HostFacts) -> String {
             "this host is image-based (bootc): add {fedora} to your host image and switch to it"
         ),
         HostKind::Apt => {
-            "sudo apt install libvirt-daemon-system libvirt-clients virtinst virt-manager qemu-utils"
+            "sudo apt install libvirt-daemon-system libvirt-clients virt-manager qemu-utils passt"
                 .into()
         }
-        HostKind::Pacman => "sudo pacman -S libvirt virt-install virt-manager qemu-full".into(),
+        HostKind::Pacman => "sudo pacman -S libvirt virt-manager qemu-full passt".into(),
         HostKind::Zypper => {
-            "sudo zypper install libvirt-daemon-qemu virt-install virt-manager qemu-tools".into()
+            "sudo zypper install libvirt-daemon-qemu libvirt-client virt-manager qemu-tools passt"
+                .into()
         }
         HostKind::Macos => "macOS uses UTM: tilo-vm vm create <name> --hypervisor utm".into(),
         HostKind::Windows => {
@@ -475,7 +578,7 @@ pub fn libvirt_fix(facts: &HostFacts) -> String {
         }
         HostKind::Dnf => format!("sudo dnf install {fedora}"),
         HostKind::Unknown => {
-            "install libvirt, virt-install, virt-manager and qemu-img with your package manager".into()
+            "install libvirt's QEMU daemon, virsh, virt-manager, qemu-img and passt with your package manager".into()
         }
     }
 }
@@ -538,7 +641,12 @@ pub mod tests {
                 .or_default()
                 .push(PathBuf::from(at));
         }
-        let session = path.contains_key("virsh").then_some(Ok(()));
+        let session = path.contains_key("virsh").then(|| {
+            Ok(vec![Guest {
+                arch: "x86_64".into(),
+                domains: vec!["qemu".into(), "kvm".into()],
+            }])
+        });
         HostFacts {
             os: "linux".into(),
             arch: "x86_64".into(),
@@ -553,11 +661,126 @@ pub mod tests {
 
     pub const LIBVIRT: &[(&str, &str)] = &[
         ("virsh", "/usr/bin/virsh"),
-        ("virt-install", "/usr/bin/virt-install"),
         ("qemu-img", "/usr/bin/qemu-img"),
+        ("passt", "/usr/bin/passt"),
     ];
 
     const ANDROID: &str = "/home/u/Android/Sdk/emulator/qemu-img";
+
+    /// Trimmed `virsh --connect qemu:///session capabilities` from a Fedora
+    /// 44 `x86_64` host.
+    const CAPABILITIES: &str = "<capabilities>
+  <host>
+    <cpu><arch>x86_64</arch></cpu>
+  </host>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='i686'>
+      <wordsize>32</wordsize>
+      <domain type='qemu'/>
+      <domain type='kvm'/>
+    </arch>
+  </guest>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='x86_64'>
+      <wordsize>64</wordsize>
+      <emulator>/usr/bin/qemu-system-x86_64</emulator>
+      <machine maxCpus='4096'>pc-q35-10.1</machine>
+      <domain type='qemu'/>
+      <domain type='kvm'/>
+    </arch>
+  </guest>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name=\"aarch64\">
+      <domain type=\"qemu\"/>
+    </arch>
+  </guest>
+</capabilities>";
+
+    #[test]
+    fn capabilities_list_each_guest_and_its_domain_types() {
+        let guests = parse_guests(CAPABILITIES);
+        let pairs: Vec<(&str, Vec<&str>)> = guests
+            .iter()
+            .map(|g| {
+                (
+                    g.arch.as_str(),
+                    g.domains.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("i686", vec!["qemu", "kvm"]),
+                ("x86_64", vec!["qemu", "kvm"]),
+                ("aarch64", vec!["qemu"]),
+            ]
+        );
+        assert!(parse_guests("error: no capabilities").is_empty());
+    }
+
+    #[test]
+    fn the_session_must_offer_kvm_or_for_emulation_tcg() {
+        let mut facts = linux(HostKind::Dnf, LIBVIRT);
+        facts.session = Some(Ok(parse_guests(CAPABILITIES)));
+        let ok = session_domain(&facts, "x86_64", false).unwrap();
+        assert!(ok.contains("x86_64 guests with kvm"), "{ok}");
+        assert!(session_domain(&facts, "aarch64", true).is_ok());
+        let no_kvm = session_domain(&facts, "aarch64", false).unwrap_err();
+        assert!(
+            no_kvm.detail.contains("only as qemu, not kvm"),
+            "{}",
+            no_kvm.detail
+        );
+        assert!(no_kvm.fix.contains("usermod -aG kvm"), "{}", no_kvm.fix);
+        let absent = session_domain(&facts, "riscv64", true).unwrap_err();
+        assert!(
+            absent
+                .detail
+                .contains("no riscv64 guest (only: i686, x86_64, aarch64)"),
+            "{}",
+            absent.detail
+        );
+        assert!(absent.fix.contains("qemu-system-riscv64"), "{}", absent.fix);
+
+        let stderr = "error: failed to connect to the hypervisor\nerror: Failed to connect socket to '/run/user/1000/libvirt/virtqemud-sock': No such file or directory";
+        facts.session = Some(Err(stderr.into()));
+        let failed = session_domain(&facts, "x86_64", false).unwrap_err();
+        assert!(failed.fix.contains(stderr), "{}", failed.fix);
+        assert!(
+            failed
+                .detail
+                .contains("`virsh --connect qemu:///session capabilities` failed"),
+            "{}",
+            failed.detail
+        );
+    }
+
+    #[test]
+    fn virt_install_is_irrelevant_to_libvirt() {
+        let without = linux(HostKind::Dnf, LIBVIRT);
+        let mut with_it = LIBVIRT.to_vec();
+        with_it.push(("virt-install", "/usr/bin/virt-install"));
+        let with = linux(HostKind::Dnf, &with_it);
+        assert_eq!(auto(&without), auto(&with));
+        let choice = auto(&without).unwrap();
+        assert!(choice.tool("virt-install").is_none());
+        assert_eq!(choice.tool("passt"), Some("/usr/bin/passt"));
+        let only_install = linux(
+            HostKind::Dnf,
+            &[
+                ("virt-install", "/usr/bin/virt-install"),
+                ("qemu-img", "/usr/bin/qemu-img"),
+            ],
+        );
+        let why = auto(&only_install).unwrap_err();
+        assert_eq!(why.detail, "virsh and passt not on PATH");
+        assert!(!why.fix.contains("virt-install"), "{}", why.fix);
+        assert!(!TOOLS.contains(&"virt-install"));
+    }
 
     #[test]
     fn linux_defaults_to_libvirt_session_with_resolved_paths() {
@@ -576,7 +799,7 @@ pub mod tests {
             HostKind::Dnf,
             &[
                 ("virsh", "/usr/bin/virsh"),
-                ("virt-install", "/usr/bin/virt-install"),
+                ("passt", "/usr/bin/passt"),
                 ("qemu-img", ANDROID),
                 ("qemu-img", "/usr/bin/qemu-img"),
             ],
@@ -593,7 +816,7 @@ pub mod tests {
             HostKind::Dnf,
             &[
                 ("virsh", "/usr/bin/virsh"),
-                ("virt-install", "/usr/bin/virt-install"),
+                ("passt", "/usr/bin/passt"),
                 ("qemu-img", ANDROID),
             ],
         );
@@ -621,7 +844,9 @@ pub mod tests {
         facts.session = Some(Err("failed to connect to the hypervisor".into()));
         let why = auto(&facts).unwrap_err();
         assert!(
-            why.detail.contains("qemu:///session does not answer"),
+            why.detail.contains(
+                "`virsh --connect qemu:///session capabilities` failed: failed to connect to the hypervisor"
+            ),
             "{}",
             why.detail
         );
@@ -632,7 +857,7 @@ pub mod tests {
         let image = linux(HostKind::RpmOstree, &[]);
         let fix = auto(&image).unwrap_err().fix;
         assert!(
-            fix.contains("rpm-ostree install libvirt-daemon-kvm virt-install virt-manager"),
+            fix.contains("rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager"),
             "{fix}"
         );
         assert!(fix.contains("reboot"), "{fix}");
@@ -653,8 +878,24 @@ pub mod tests {
         let dnf = linux(HostKind::Dnf, &[]);
         assert_eq!(
             auto(&dnf).unwrap_err().fix,
-            "sudo dnf install libvirt-daemon-kvm virt-install virt-manager qemu-img"
+            "sudo dnf install libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt"
         );
+        for kind in [
+            HostKind::Apt,
+            HostKind::Pacman,
+            HostKind::Zypper,
+            HostKind::Unknown,
+        ] {
+            let fix = auto(&linux(kind, &[])).unwrap_err().fix;
+            assert!(
+                !fix.contains("virt-install") && !fix.contains("virtinst"),
+                "{fix}"
+            );
+            assert!(
+                fix.contains("virt-manager") && fix.contains("passt"),
+                "{fix}"
+            );
+        }
     }
 
     #[test]
