@@ -138,7 +138,7 @@ impl DaemonError {
                 format!("remove it first (tilo-vm slot rm {name}) or create it with its existing kind")
             }
             Self::ReservedName(_) => {
-                "pick another slot name; VM-wide components go in with: tilo-vm swap vm <component>"
+                "pick another slot name; VM-wide components go in with: tilo-vm swap --slot vm <component>"
                     .into()
             }
             Self::InvalidName(_) => {
@@ -153,10 +153,10 @@ impl DaemonError {
                 format!("tilo-vm slot list   (shows the generations of '{slot}')")
             }
             Self::NoEarlierGeneration(slot) => {
-                format!("nothing to roll back; tilo-vm swap {slot} <component> installs a build")
+                format!("nothing to roll back; tilo-vm swap --slot {slot} <component> installs a build")
             }
             Self::ScopeMismatch { component, scope, .. } if scope == "vm" => {
-                format!("VM-wide components go into the vm pseudo-slot: tilo-vm swap vm {component}")
+                format!("VM-wide components go into the vm pseudo-slot: tilo-vm swap --slot vm {component}")
             }
             Self::ScopeMismatch { component, .. } => {
                 format!("session components go into your own slot: tilo-vm swap {component}")
@@ -202,7 +202,7 @@ impl DaemonError {
                 "build on a Linux host: tilo-vm swap <component> --builder host, or move the VM to a dev image that has it: tilo-vm vm upgrade".into()
             }
             Self::RegistryAuth { .. } => {
-                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.podesta.ai   (forge token with package read access)".into()
+                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.podesta.ai   (password: a forge token with package read access). The VM keeps its own login for image pulls; the host's logins do not reach it".into()
             }
             Self::ImageNotFound { .. } => {
                 "check the tag: CI publishes code.podesta.ai/qos/tilo:main-<sha7> for main commits and :<version> for releases".into()

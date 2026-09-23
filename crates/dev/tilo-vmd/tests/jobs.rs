@@ -99,6 +99,7 @@ fn in_vm_build_imports_a_layer_and_records_its_build_dir() {
     let shell = || {
         job(BuildTarget::Component {
             name: "shell".into(),
+            profile: None,
         })
     };
     let (line, stderr) = run(root.path(), &path, &shell());
@@ -181,6 +182,7 @@ fn build_errors_come_back_with_hints() {
         &path,
         &job(BuildTarget::Component {
             name: "nope".into(),
+            profile: None,
         }),
     );
     let error = line.error.unwrap();
@@ -199,6 +201,7 @@ fn build_errors_come_back_with_hints() {
 
     let mut unsynced = job(BuildTarget::Component {
         name: "shell".into(),
+        profile: None,
     });
     unsynced.worktree = "never-synced".into();
     let (line, _) = run(root.path(), &path, &unsynced);

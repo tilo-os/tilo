@@ -22,8 +22,10 @@ use crate::cli::{Builder, Command, CreateArgs, InputCommand, SeatCommand, SlotCo
 use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
 use crate::disk;
+use crate::doctor::{self, Check};
 use crate::error::CliError;
 use crate::guide;
+use crate::host::{self, HostFacts};
 use crate::hypervisor::{self, CommandLine, Hypervisor, Runner, SystemRunner, Vm, run_all};
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
@@ -66,6 +68,48 @@ impl Resolved {
             name: &self.name,
             entry: &self.entry,
         }
+    }
+}
+
+/// A published dev disk, found but not yet downloaded.
+struct Published {
+    tag: String,
+    disk: disk::Disk,
+    dest: PathBuf,
+    auth: disk::AuthHeader,
+}
+
+/// What `vm create` will do, settled before it does anything.
+struct Plan {
+    choice: host::Choice,
+    image: Option<PathBuf>,
+    published: Option<Published>,
+    disk_path: Option<PathBuf>,
+}
+
+impl Plan {
+    fn describe(&self) -> String {
+        let mut lines = vec![format!("  hypervisor: {}", self.choice.describe())];
+        match (&self.image, &self.published) {
+            (Some(image), _) => lines.push(format!("  image: {}", image.display())),
+            (None, Some(p)) => lines.push(format!(
+                "  image: published dev disk {} ({} {}, {}{})",
+                p.tag,
+                p.disk.arch,
+                p.disk.format,
+                human_bytes(p.disk.size),
+                if disk::cached(&p.dest, &p.disk) {
+                    ", already downloaded"
+                } else {
+                    ", to download"
+                }
+            )),
+            (None, None) => lines.push("  image: the UTM template".into()),
+        }
+        if let Some(disk) = &self.disk_path {
+            lines.push(format!("  VM disk: {}", disk.display()));
+        }
+        lines.join("\n")
     }
 }
 
@@ -205,14 +249,22 @@ pub fn looks_like_deploy(command: &[String]) -> bool {
         .any(|pattern| line.contains(pattern))
 }
 
-/// Free bytes of the filesystem holding `path`, where the host can tell.
+/// `path`, or its nearest ancestor that exists.
+fn existing_ancestor(path: &Path) -> &Path {
+    path.ancestors()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| Path::new("/"))
+}
+
+/// Free bytes of the filesystem that holds (or will hold) `path`, where the
+/// host can tell.
 fn host_free(path: &Path) -> Option<u64> {
     if !cfg!(unix) {
         return None;
     }
     let output = std::process::Command::new("df")
         .arg("-Pk")
-        .arg(path)
+        .arg(existing_ancestor(path))
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -369,10 +421,12 @@ impl App {
             Some(Command::Vm(command)) => self.vm(command),
             Some(Command::Slot(command)) => self.slot(command),
             Some(Command::Swap {
-                target,
+                component,
+                slot,
                 from,
                 builder,
-            }) => self.swap(&target, &from, builder),
+                profile,
+            }) => self.swap(slot, component, &from, builder, profile.as_deref()),
             Some(Command::Input { slot, action }) => self.input(slot, action),
             Some(Command::Rollback { slot, to }) => {
                 let slot = self.slot_name(slot)?;
@@ -558,143 +612,57 @@ impl App {
 
     // ---- doctor ---------------------------------------------------------------
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat checklist reads best in one place"
-    )]
     fn doctor(&mut self) -> Outcome {
-        let mut checks: Vec<Value> = Vec::new();
-        let mut check = |name: &str, state: &str, detail: String, fix: Option<String>| {
-            checks.push(json!({ "check": name, "state": state, "detail": detail, "fix": fix }));
-        };
-        for (tool, purpose) in [
-            ("ssh", "reach the VM"),
-            ("git", "name your slot and record provenance"),
-            ("rsync", "sync this worktree into the VM for in-VM builds"),
-            ("curl", "download the published dev disk"),
-        ] {
-            if on_path(tool) {
-                check(tool, "ok", format!("{tool} found"), None);
-            } else {
-                check(
-                    tool,
-                    "fail",
-                    format!("{tool} is not on PATH (needed to {purpose})"),
-                    Some(format!("install {tool}")),
-                );
-            }
-        }
-        if cfg!(target_os = "linux") {
-            for tool in ["cargo", "python3"] {
-                if on_path(tool) {
-                    check(
-                        tool,
-                        "ok",
-                        format!("{tool} found (for swap --builder host)"),
-                        None,
-                    );
-                } else {
-                    check(
-                        tool,
-                        "warn",
-                        format!(
-                            "{tool} missing: swap --builder host cannot build here (the in-VM builder still can)"
-                        ),
-                        Some(format!("install {tool}")),
-                    );
-                }
-            }
-        } else {
-            check(
-                "host builds",
-                "ok",
-                "not possible on this OS; swaps build in the VM (--builder vm, the default)".into(),
-                None,
-            );
-        }
-        match disk::find_token() {
-            Some(token) => check(
-                "forge token",
-                "ok",
-                format!("from {} (for vm create downloads)", token.source),
-                None,
-            ),
-            None => check(
-                "forge token",
-                "warn",
-                "none found: vm create cannot download the published disk".into(),
-                Some("export FORGEJO_TOKEN=<token with package read access>, or log in with fgj or tea".into()),
-            ),
-        }
+        let facts = HostFacts::probe(&mut self.runner);
+        let mut checks = doctor::host_checks(&facts);
+        let token = disk::find_token();
+        checks.extend(doctor::credential_checks(
+            token.as_ref(),
+            registry_login(&mut self.runner),
+        ));
+        let root = self.base_dir();
         match self.manifest() {
-            Ok(Some(_)) => check("manifest", "ok", "os/components.toml found".into(), None),
-            Ok(None) => check(
+            Ok(Some(_)) => checks.push(Check::ok("manifest", "os/components.toml found")),
+            Ok(None) => checks.push(Check::warn(
                 "manifest",
-                "warn",
-                "no os/components.toml here".into(),
-                Some("run from a Tilo worktree".into()),
-            ),
-            Err(e) => check("manifest", "fail", e.to_string(), Some(e.hint())),
+                "no os/components.toml here",
+                "run from a Tilo worktree",
+            )),
+            Err(e) => checks.push(Check::fail("manifest", e.to_string(), e.hint())),
         }
-        match registry_login(&mut self.runner) {
-            Ok(user) => check(
-                "registry",
-                "ok",
-                format!("logged in to {REGISTRY} as {user}"),
-                None,
-            ),
-            Err(e) => check(
-                "registry",
-                "warn",
-                format!("{e} (needed for vm create from {REGISTRY}, vm upgrade and CI layers)"),
-                Some(e.hint()),
-            ),
-        }
+        let listing = disk::AuthHeader::new(token.as_ref())
+            .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
+        checks.push(doctor::disk_check(
+            listing,
+            token.as_ref(),
+            doctor::local_build(&root).as_deref(),
+        ));
         let vm = match self.resolve_vm(None) {
             Ok(vm) => vm,
             Err(e) => {
-                check("vm", "fail", e.to_string(), Some(e.hint()));
+                checks.push(Check::fail("vm", e.to_string(), e.hint()));
                 return doctor_outcome(&checks);
             }
         };
-        check(
+        checks.push(Check::ok(
             "vm",
-            "ok",
             format!("{} ({})", vm.name, vm.source.describe()),
-            None,
-        );
+        ));
         let adapter = match Self::adapter(&vm) {
             Ok(adapter) => adapter,
             Err(e) => {
-                check("hypervisor", "fail", e.to_string(), Some(e.hint()));
+                checks.push(Check::fail("vm hypervisor", e.to_string(), e.hint()));
                 return doctor_outcome(&checks);
             }
         };
-        let missing: Vec<&str> = adapter
-            .tools()
-            .iter()
-            .copied()
-            .filter(|t| !on_path(t))
-            .collect();
-        if missing.is_empty() {
-            check(
-                "hypervisor",
-                "ok",
-                format!("{}: {} found", adapter.name(), adapter.tools().join(", ")),
-                None,
-            );
-        } else {
-            check(
-                "hypervisor",
-                "warn",
-                format!("{}: missing {}", adapter.name(), missing.join(", ")),
-                Some(format!("install {}", missing.join(", "))),
-            );
-        }
+        checks.extend(doctor::vm_adapter_checks(
+            &vm.entry,
+            host::evaluate(&facts, &vm.entry.hypervisor),
+            root.join("os/dev/vm.sh").is_file(),
+        ));
         let caps = adapter.capabilities();
-        check(
+        checks.push(Check::ok(
             "debug capabilities",
-            "ok",
             format!(
                 "serial {}, screenshot {}, reset {}, control {}",
                 yes(caps.serial),
@@ -702,114 +670,99 @@ impl App {
                 yes(caps.reset),
                 caps.control.unwrap_or("no")
             ),
-            None,
-        );
+        ));
         if let Some(disk) = vm.entry.disk.as_deref()
             && let Ok(meta) = std::fs::metadata(disk)
         {
             let limit = self.registry().map_or(u64::MAX, |r| r.warn_disk_bytes());
-            let state = if meta.len() > limit { "warn" } else { "ok" };
-            check(
-                "vm disk",
-                state,
-                format!("{disk} is {}", human_bytes(meta.len())),
-                (state == "warn").then(|| "tilo-vm gc".into()),
-            );
+            let detail = format!("{disk} is {}", human_bytes(meta.len()));
+            checks.push(if meta.len() > limit {
+                Check::warn("vm disk", detail, "tilo-vm gc")
+            } else {
+                Check::ok("vm disk", detail)
+            });
         }
         match self.connect(&vm) {
-            Ok(mut remote) => {
-                let hello = remote.hello.clone();
-                check(
-                    "daemon",
-                    "ok",
-                    format!(
-                        "tilo-vmd {} speaks protocol {}",
-                        hello.daemon_version, hello.protocol
-                    ),
-                    None,
-                );
-                let tools = &hello.tools;
-                let builds = describe_tools(tools);
-                if tools.can_build() {
-                    check("vm builder", "ok", builds, None);
-                } else {
-                    check(
-                        "vm builder",
-                        if cfg!(target_os = "linux") {
-                            "warn"
-                        } else {
-                            "fail"
-                        },
-                        builds,
-                        Some(
-                            "tilo-vm vm upgrade   (a dev image with cargo, rsync and python3)"
-                                .into(),
-                        ),
-                    );
-                }
-                let emulated = vm.entry.emulated;
-                if hello.arch == std::env::consts::ARCH || emulated {
-                    check("arch", "ok", format!("VM is {}", hello.arch), None);
-                } else {
-                    check(
-                        "arch",
-                        "warn",
-                        format!(
-                            "VM is {} but this host is {}",
-                            hello.arch,
-                            std::env::consts::ARCH
-                        ),
-                        Some(
-                            "host builds will not run there; build in the VM: --builder vm".into(),
-                        ),
-                    );
-                }
-                if let Ok(status) = remote.call(Status { slot: None }) {
-                    let floor = self.registry().map_or(0, |r| r.min_free_bytes());
-                    if let Some(free) = status.storage.free_bytes {
-                        let state = if free < floor { "fail" } else { "ok" };
-                        check(
-                            "vm free space",
-                            state,
-                            format!("{} free, floor {}", human_bytes(free), human_bytes(floor)),
-                            (state == "fail").then(|| "tilo-vm gc".into()),
-                        );
-                    }
-                    for slot in status.slots.iter().filter(|s| s.user.is_some()) {
-                        match (&slot.parity, slot.session.as_str()) {
-                            (Some(problem), _) => check(
-                                "session parity",
-                                "fail",
-                                format!("slot {}: {problem}", slot.name),
-                                Some("slot session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting".into()),
-                            ),
-                            (None, "active") => check(
-                                "session parity",
-                                "ok",
-                                format!("slot {} matches a greetd session (no capabilities, user domain)", slot.name),
-                                None,
-                            ),
-                            _ => {}
-                        }
-                    }
-                    for issue in status
-                        .issues
-                        .into_iter()
-                        .filter(|i| !i.problem.contains("greetd session"))
-                    {
-                        check(
-                            "vm state",
-                            "warn",
-                            format!("slot {}: {}", issue.slot, issue.problem),
-                            Some(issue.hint),
-                        );
-                    }
-                }
-            }
-            Err(e) => check("daemon", "fail", e.to_string(), Some(e.hint())),
+            Ok(mut remote) => self.vm_checks(&mut remote, &vm, &mut checks),
+            Err(e) => checks.push(Check::fail("daemon", e.to_string(), e.hint())),
         }
         self.warnings.clear();
         doctor_outcome(&checks)
+    }
+
+    /// The checks that need the VM's daemon.
+    fn vm_checks(&self, remote: &mut Remote, vm: &Resolved, checks: &mut Vec<Check>) {
+        let hello = remote.hello.clone();
+        checks.push(Check::ok(
+            "daemon",
+            format!(
+                "tilo-vmd {} speaks protocol {}",
+                hello.daemon_version, hello.protocol
+            ),
+        ));
+        let tools = &hello.tools;
+        let builds = describe_tools(tools);
+        let upgrade = "tilo-vm vm upgrade   (a dev image with cargo, rsync and python3)";
+        checks.push(if tools.can_build() {
+            Check::ok("vm builder", builds)
+        } else if cfg!(target_os = "linux") {
+            Check::warn("vm builder", builds, upgrade)
+        } else {
+            Check::fail("vm builder", builds, upgrade)
+        });
+        if hello.arch == std::env::consts::ARCH || vm.entry.emulated {
+            checks.push(Check::ok("arch", format!("VM is {}", hello.arch)));
+        } else {
+            checks.push(Check::warn(
+                "arch",
+                format!(
+                    "VM is {} but this host is {}",
+                    hello.arch,
+                    std::env::consts::ARCH
+                ),
+                "host builds will not run there; build in the VM: --builder vm",
+            ));
+        }
+        let Ok(status) = remote.call(Status { slot: None }) else {
+            return;
+        };
+        let floor = self.registry().map_or(0, |r| r.min_free_bytes());
+        if let Some(free) = status.storage.free_bytes {
+            let detail = format!("{} free, floor {}", human_bytes(free), human_bytes(floor));
+            checks.push(if free < floor {
+                Check::fail("vm free space", detail, "tilo-vm gc")
+            } else {
+                Check::ok("vm free space", detail)
+            });
+        }
+        for slot in status.slots.iter().filter(|s| s.user.is_some()) {
+            match (&slot.parity, slot.session.as_str()) {
+                (Some(problem), _) => checks.push(Check::fail(
+                    "session parity",
+                    format!("slot {}: {problem}", slot.name),
+                    "slot session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting",
+                )),
+                (None, "active") => checks.push(Check::ok(
+                    "session parity",
+                    format!(
+                        "slot {} matches a greetd session (no capabilities, user domain)",
+                        slot.name
+                    ),
+                )),
+                _ => {}
+            }
+        }
+        for issue in status
+            .issues
+            .into_iter()
+            .filter(|i| !i.problem.contains("greetd session"))
+        {
+            checks.push(Check::warn(
+                "vm state",
+                format!("slot {}: {}", issue.slot, issue.problem),
+                issue.hint,
+            ));
+        }
     }
 
     // ---- vm -------------------------------------------------------------------
@@ -1054,9 +1007,105 @@ impl App {
         }
     }
 
+    /// Everything `vm create` needs, checked before anything is downloaded
+    /// or created: the hypervisor and its tools, a local `--image`, the
+    /// published disk for the tag, the VM disk path, and free space.
+    fn preflight_create(
+        &mut self,
+        facts: &HostFacts,
+        args: &CreateArgs,
+        arch: &str,
+    ) -> Result<Plan, CliError> {
+        let choice = match args.hypervisor.as_deref() {
+            Some(name) => {
+                hypervisor::adapter(name)?;
+                host::evaluate(facts, name)
+            }
+            None => host::auto(facts),
+        }
+        .map_err(CliError::NoHypervisor)?;
+        if choice.adapter == "qemu" && !self.base_dir().join("os/dev/vm.sh").is_file() {
+            return Err(CliError::Unsupported {
+                what: "the qemu adapter outside a Tilo worktree".into(),
+                alternative: "run tilo-vm vm create from a Tilo worktree: the qemu adapter drives os/dev/vm.sh".into(),
+            });
+        }
+        let format = disk::format_for(choice.adapter);
+        let image = match &args.image {
+            Some(path) => {
+                let path = absolute(Path::new(path));
+                if !path.is_file() {
+                    return Err(CliError::ImageNotFound {
+                        path: path.display().to_string(),
+                    });
+                }
+                Some(path)
+            }
+            None => None,
+        };
+        let published = if image.is_none() && args.template.is_none() {
+            Some(self.resolve_published(args.tag.as_deref(), arch, format)?)
+        } else {
+            None
+        };
+        let floor = self.registry()?.min_free_bytes();
+        if let Some(published) = &published
+            && !disk::cached(&published.dest, &published.disk)
+        {
+            let part = published.dest.with_extension("part");
+            let have = std::fs::metadata(&part).map_or(0, |m| m.len());
+            let needed = published.disk.size.saturating_sub(have);
+            let dir = published.dest.parent().unwrap_or_else(|| Path::new("."));
+            if let Some(free) = host_free(dir)
+                && free < needed
+            {
+                return Err(CliError::NoSpace {
+                    place: existing_ancestor(dir).display().to_string(),
+                    free: human_bytes(free),
+                    what: format!("the {} dev disk download", published.tag),
+                    needed: human_bytes(needed),
+                });
+            }
+        }
+        let disk_path = match (&args.disk, image.is_some() || published.is_some()) {
+            (Some(path), _) => Some(absolute(Path::new(path))),
+            (None, true) => Some(
+                dirs::data_local_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("tilo-vm")
+                    .join("vms")
+                    .join(format!("{}.{format}", args.name)),
+            ),
+            (None, false) => None,
+        };
+        if let Some(path) = &disk_path {
+            if path.exists() && choice.adapter != "utm" {
+                return Err(CliError::DiskExists {
+                    path: path.display().to_string(),
+                });
+            }
+            let dir = path.parent().unwrap_or_else(|| Path::new("."));
+            if let Some(free) = host_free(dir)
+                && free < floor
+            {
+                return Err(CliError::LowDisk {
+                    place: existing_ancestor(dir).display().to_string(),
+                    free: human_bytes(free),
+                    floor: human_bytes(floor),
+                });
+            }
+        }
+        Ok(Plan {
+            choice,
+            image,
+            published,
+            disk_path,
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
-        reason = "one linear sequence: checks, disk, adapter, registry"
+        reason = "one linear sequence: preflight, download, adapter, registry"
     )]
     fn vm_create(&mut self, args: CreateArgs) -> Result<Outcome, CliError> {
         let host = std::env::consts::ARCH;
@@ -1083,19 +1132,27 @@ impl App {
             )
             .next(&["tilo-vm vm start", "tilo-vm vm status"]));
         }
-        let hypervisor_name = args
-            .hypervisor
-            .clone()
-            .unwrap_or_else(|| hypervisor::native().into());
-        let format = disk::format_for(&hypervisor_name);
-        let mut image = args.image.clone();
-        let mut tag = None;
-        if image.is_none() && args.template.is_none() {
-            let (path, published) = self.download_disk(args.tag.as_deref(), &arch, format)?;
-            image = Some(path);
-            tag = Some(published);
+        let facts = HostFacts::probe(&mut self.runner);
+        let plan = self.preflight_create(&facts, &args, &arch)?;
+        let summary = plan.describe();
+        if !self.json {
+            eprintln!("tilo-vm: preflight passed\n{summary}");
         }
-        if hypervisor_name == "utm" && args.template.is_none() {
+        self.receipt.set("preflight", &summary);
+        let mut image = plan.image.as_ref().map(|p| p.display().to_string());
+        let tag = plan.published.as_ref().map(|p| p.tag.clone());
+        if let Some(published) = &plan.published {
+            let runner = &mut self.runner;
+            self.receipt.phase("download", || {
+                disk::fetch(runner, &published.disk, &published.dest, &published.auth)
+            })?;
+            self.receipt.set(
+                "disk",
+                json!({ "tag": published.tag, "file": published.disk.file, "sha256": published.disk.sha256 }),
+            );
+            image = Some(published.dest.display().to_string());
+        }
+        if plan.choice.adapter == "utm" && args.template.is_none() {
             return Err(CliError::Unsupported {
                 what: "creating a UTM VM from a disk on the command line".into(),
                 alternative: format!(
@@ -1105,43 +1162,24 @@ impl App {
                 ),
             });
         }
-        let disk_path = match args.disk.clone() {
-            Some(path) => Some(path),
-            None if image.is_some() => {
-                let dir = dirs::data_local_dir()
-                    .unwrap_or_else(std::env::temp_dir)
-                    .join("tilo-vm")
-                    .join("vms");
-                std::fs::create_dir_all(&dir)
-                    .map_err(CliError::io(format!("create {}", dir.display())))?;
-                Some(
-                    dir.join(format!("{}.{format}", args.name))
-                        .display()
-                        .to_string(),
-                )
-            }
-            None => None,
-        };
+        if let Some(dir) = plan.disk_path.as_deref().and_then(Path::parent) {
+            std::fs::create_dir_all(dir)
+                .map_err(CliError::io(format!("create {}", dir.display())))?;
+        }
         let entry = VmEntry {
-            hypervisor: hypervisor_name,
+            hypervisor: plan.choice.adapter.to_owned(),
             ssh: args.ssh,
             image,
-            disk: disk_path,
+            disk: plan.disk_path.as_ref().map(|p| p.display().to_string()),
             arch: (arch != host).then_some(arch),
             emulated: args.emulated,
             memory_mb: args.memory_mb,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
             template: args.template,
+            qemu_img: plan.choice.tool("qemu-img").map(str::to_owned),
             ..VmEntry::default()
         };
-        if entry
-            .image
-            .as_deref()
-            .is_some_and(|i| i.starts_with(REGISTRY))
-        {
-            registry_login(&mut self.runner)?;
-        }
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
         let commands = adapter.create(&Vm {
             name: &args.name,
@@ -1156,7 +1194,7 @@ impl App {
         let mut text = format!(
             "VM {} created with {} and registered in {}",
             args.name,
-            adapter.name(),
+            plan.choice.describe(),
             self.registry_path.display()
         );
         if let (Some(tag), Some(image)) = (&tag, &entry_image(&registry, &args.name)) {
@@ -1165,26 +1203,30 @@ impl App {
                 "\n  from the published dev disk {tag}, cached at {image} (the VM's disk is a copy-on-write child of it: keep that file)"
             );
         }
+        if plan.choice.adapter == "libvirt" {
+            let _ = write!(text, "\n  {}", host::VIRT_MANAGER_TIP);
+        }
         let start = format!("tilo-vm vm start {}", args.name);
         let slot = "tilo-vm slot create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "commands": commands }),
         );
         outcome.next = vec![start, slot];
         Ok(outcome)
     }
 
-    /// Fetch the published dev disk for `arch`/`format` into the cache and
-    /// return its path and tag.
-    fn download_disk(
+    /// Find the published dev disk for `arch`/`format` (the newest tag when
+    /// none is given) without downloading it.
+    fn resolve_published(
         &mut self,
         tag: Option<&str>,
         arch: &str,
         format: &str,
-    ) -> Result<(String, String), CliError> {
+    ) -> Result<Published, CliError> {
         let token = disk::find_token();
         let auth = disk::AuthHeader::new(token.as_ref())?;
+        let local_build = doctor::local_build(&self.base_dir());
         let refused = |url: &str, status: u16| CliError::ForgeAuth {
             url: url.to_owned(),
             status,
@@ -1200,9 +1242,17 @@ impl App {
         } else {
             let (status, body) = disk::get(&mut self.runner, disk::VERSIONS, &auth)?;
             match status {
-                200 => disk::newest_tag(&body).ok_or_else(|| CliError::NoDiskPublished {
-                    tag: "(any)".into(),
-                    url: disk::VERSIONS.into(),
+                200 => disk::newest_tag(&body).ok_or_else(|| {
+                    if token.is_none() {
+                        self.warnings.push(
+                            "no forge token was found, and the forge hides private packages from anonymous requests: export FORGEJO_TOKEN=<token with package read access>".into(),
+                        );
+                    }
+                    CliError::NoDiskPublished {
+                        tag: "(any)".into(),
+                        url: disk::VERSIONS.into(),
+                        local_build: local_build.clone(),
+                    }
                 })?,
                 401 | 403 => return Err(refused(disk::VERSIONS, status)),
                 _ => return Err(unexpected(disk::VERSIONS, status, &body)),
@@ -1219,7 +1269,11 @@ impl App {
                         "no forge token was found, and the forge answers 404 for private packages: export FORGEJO_TOKEN=<token with package read access>".into(),
                     );
                 }
-                return Err(CliError::NoDiskPublished { tag, url });
+                return Err(CliError::NoDiskPublished {
+                    tag,
+                    url,
+                    local_build,
+                });
             }
             _ => return Err(unexpected(&url, status, &body)),
         }
@@ -1238,16 +1292,15 @@ impl App {
                     arch: arch.to_owned(),
                     format: format.to_owned(),
                     available: manifest.offered(),
+                    local_build,
                 })?;
         let dest = disk::cache_path(&tag, &chosen.file);
-        let runner = &mut self.runner;
-        self.receipt
-            .phase("download", || disk::fetch(runner, &chosen, &dest, &auth))?;
-        self.receipt.set(
-            "disk",
-            json!({ "tag": tag, "file": chosen.file, "sha256": chosen.sha256 }),
-        );
-        Ok((dest.display().to_string(), tag))
+        Ok(Published {
+            tag,
+            disk: chosen,
+            dest,
+            auth,
+        })
     }
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
@@ -1427,17 +1480,19 @@ impl App {
 
     fn swap(
         &mut self,
-        target: &[String],
+        slot: Option<String>,
+        component: String,
         from: &str,
         builder: Option<Builder>,
+        profile: Option<&str>,
     ) -> Result<Outcome, CliError> {
-        let (slot, component) = match target {
-            [component] => (self.slot_name(None)?, component.clone()),
-            [slot, component] => (slot.clone(), component.clone()),
-            _ => return Err(CliError::InvalidSource(target.join(" "))),
-        };
+        let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
+        if let Some(profile) = profile {
+            check_profile(profile, &component, from)?;
+            self.receipt.set("profile", profile);
+        }
         if let Some(app) = component.strip_prefix("app:") {
             return self.swap_app(&slot, app, from, builder);
         }
@@ -1496,7 +1551,8 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                self.build_worktree_layer(&mut remote, &vm, entry, builder)?
+                let entry = entry.clone().with_profile(profile);
+                self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
             }
         };
         self.receipt.set("layer", &layer);
@@ -1623,6 +1679,7 @@ impl App {
             worktree: id,
             target: BuildTarget::Component {
                 name: component.name.clone(),
+                profile: Some(component.profile.clone()),
             },
             provenance: build::source_provenance(&worktree, &component.name, "vm"),
             owner: worktree.owner(),
@@ -2055,6 +2112,25 @@ impl App {
     }
 }
 
+/// `swap --profile` names a cargo profile and builds a component from the worktree.
+fn check_profile(profile: &str, component: &str, from: &str) -> Result<(), CliError> {
+    if !tilo_vm_protocol::manifest::valid_profile(profile) {
+        return Err(CliError::InvalidInput(format!(
+            "'{profile}' is not a cargo profile name"
+        )));
+    }
+    if from != "worktree" || component.starts_with("app:") {
+        return Err(CliError::Unsupported {
+            what: format!(
+                "--profile with {}",
+                if from == "worktree" { "an app" } else { from }
+            ),
+            alternative: "--profile applies to components built from this worktree: tilo-vm swap <component> --profile dev".into(),
+        });
+    }
+    Ok(())
+}
+
 fn yes(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -2175,22 +2251,18 @@ fn slot_line(info: &SlotInfo) -> String {
     )
 }
 
-fn doctor_outcome(checks: &[Value]) -> Outcome {
-    let failed = checks.iter().any(|c| c["state"] == "fail");
+fn doctor_outcome(checks: &[Check]) -> Outcome {
+    let failed = checks.iter().any(|c| c.state == "fail");
     let text = checks
         .iter()
         .map(|c| {
-            let mark = match c["state"].as_str() {
-                Some("ok") => "ok  ",
-                Some("warn") => "warn",
+            let mark = match c.state {
+                "ok" => "ok  ",
+                "warn" => "warn",
                 _ => "FAIL",
             };
-            let mut line = format!(
-                "{mark} {:<18} {}",
-                c["check"].as_str().unwrap_or_default(),
-                c["detail"].as_str().unwrap_or_default()
-            );
-            if let Some(fix) = c["fix"].as_str() {
+            let mut line = format!("{mark} {:<18} {}", c.check, c.detail);
+            if let Some(fix) = &c.fix {
                 let _ = write!(line, "\n     fix: {fix}");
             }
             line
@@ -2430,6 +2502,105 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains('ï'));
         assert!(error.hint().contains("tilo-vm input key"));
+    }
+
+    fn create_args(name: &str) -> CreateArgs {
+        CreateArgs {
+            name: name.into(),
+            hypervisor: None,
+            image: None,
+            tag: None,
+            disk: None,
+            arch: None,
+            emulated: false,
+            memory_mb: None,
+            cpus: None,
+            ssh: None,
+            ssh_port: None,
+            template: None,
+        }
+    }
+
+    #[test]
+    fn preflight_names_the_missing_hypervisor_before_anything_else() {
+        use crate::host::HostKind;
+        use crate::host::tests::linux;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        // Only an Android SDK's qemu-img: refused, and nothing downloaded
+        // (no --image, so the next step would have been the network).
+        let facts = linux(
+            HostKind::RpmOstree,
+            &[("qemu-img", "/home/u/Android/Sdk/emulator/qemu-img")],
+        );
+        let error = app
+            .preflight_create(&facts, &create_args("dev"), "x86_64")
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::NoHypervisor(_)), "{error}");
+        assert!(error.to_string().contains("libvirt"), "{error}");
+        assert!(
+            error
+                .hint()
+                .contains("rpm-ostree install libvirt-daemon-kvm"),
+            "{}",
+            error.hint()
+        );
+        assert!(!dir.path().join("vms.toml").exists());
+    }
+
+    #[test]
+    fn preflight_checks_the_image_and_the_vm_disk() {
+        use crate::host::HostKind;
+        use crate::host::tests::{LIBVIRT, linux};
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let facts = linux(HostKind::Dnf, LIBVIRT);
+
+        let mut args = create_args("dev");
+        args.image = Some(dir.path().join("missing.qcow2").display().to_string());
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(matches!(error, CliError::ImageNotFound { .. }), "{error}");
+
+        let image = dir.path().join("tilo-vm.qcow2");
+        std::fs::write(&image, "").unwrap();
+        let disk = dir.path().join("dev.qcow2");
+        std::fs::write(&disk, "").unwrap();
+        args.image = Some(image.display().to_string());
+        args.disk = Some(disk.display().to_string());
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(matches!(error, CliError::DiskExists { .. }), "{error}");
+
+        args.disk = Some(dir.path().join("vms/new.qcow2").display().to_string());
+        let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+        assert_eq!(plan.choice.adapter, "libvirt");
+        assert_eq!(plan.choice.tool("qemu-img"), Some("/usr/bin/qemu-img"));
+        let text = plan.describe();
+        assert!(text.contains("qemu:///session"), "{text}");
+        assert!(text.contains("tilo-vm.qcow2"), "{text}");
+    }
+
+    #[test]
+    fn preflight_keeps_raw_qemu_to_tilo_worktrees() {
+        use crate::host::HostKind;
+        use crate::host::tests::linux;
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let facts = linux(
+            HostKind::Dnf,
+            &[
+                ("qemu-system-x86_64", "/usr/bin/qemu-system-x86_64"),
+                ("qemu-img", "/usr/bin/qemu-img"),
+                ("bash", "/usr/bin/bash"),
+            ],
+        );
+        let mut args = create_args("ci");
+        args.hypervisor = Some("qemu".into());
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(
+            error.to_string().contains("outside a Tilo worktree"),
+            "{error}"
+        );
     }
 
     #[test]

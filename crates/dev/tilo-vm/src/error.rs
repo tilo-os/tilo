@@ -4,8 +4,35 @@
 use serde_json::json;
 use tilo_vm_protocol::RpcError;
 
-/// How to get a dev disk without the published one.
-pub const LOCAL_DISK: &str = "or build a disk locally: os/dev/build-dev-image.sh, then tilo-vm vm create <name> --image <disk.qcow2>";
+use crate::host::Missing;
+
+/// The script that builds a dev disk locally, relative to the worktree.
+pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
+
+// Two separate credentials, never interchangeable, although both take a
+// forge token with package read access as the secret.
+
+/// What the forge token (`FORGEJO_TOKEN`, or an fgj or tea login) is for.
+pub const FORGE_TOKEN_USE: &str =
+    "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
+/// What a podman registry login for code.podesta.ai is for.
+pub const REGISTRY_LOGIN_USE: &str = "used only for image pulls: swap --from ci:/sha: layers (pulled in the VM when it has podman, else on this host) and vm upgrade (in the VM, with the VM's own login)";
+
+/// What to do when no dev disk is published: `local_build` is the path of
+/// [`LOCAL_BUILD_SCRIPT`] when this checkout has it.
+pub fn no_disk_help(local_build: Option<&str>) -> String {
+    let local = match local_build {
+        Some(script) => format!(
+            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>"
+        ),
+        None => format!(
+            "no local dev-image build is available in this checkout ({LOCAL_BUILD_SCRIPT} is missing)"
+        ),
+    };
+    format!(
+        "ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R qos/qos, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+    )
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -76,13 +103,32 @@ pub enum CliError {
     #[error("the VM's image cannot build: it has no {}", missing.join(", "))]
     VmCannotBuild { missing: Vec<String> },
     #[error("no dev disk is published for tag '{tag}' ({url})")]
-    NoDiskPublished { tag: String, url: String },
+    NoDiskPublished {
+        tag: String,
+        url: String,
+        /// The local build script, when this checkout has one.
+        local_build: Option<String>,
+    },
     #[error("tag '{tag}' has no {format} disk for {arch} (published: {})", if available.is_empty() { "none".to_owned() } else { available.join(", ") })]
     NoDiskForHost {
         tag: String,
         arch: String,
         format: String,
         available: Vec<String>,
+        local_build: Option<String>,
+    },
+    #[error("the {} adapter cannot run here: {}", .0.adapter, .0.detail)]
+    NoHypervisor(Missing),
+    #[error("--image {path} is not a file")]
+    ImageNotFound { path: String },
+    #[error("the VM disk {path} already exists")]
+    DiskExists { path: String },
+    #[error("{place} has {free} free, but {what} needs {needed}")]
+    NoSpace {
+        place: String,
+        free: String,
+        what: String,
+        needed: String,
     },
     #[error("{url} refused the request (HTTP {status})")]
     ForgeAuth {
@@ -135,7 +181,7 @@ impl CliError {
                 known.join(", ")
             ),
             Self::Config { path, .. } => format!("fix or remove {path}; tilo-vm doctor re-checks it"),
-            Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap my-slot shell".into(),
+            Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot shell".into(),
             Self::SlotName { .. } => {
                 "name the slot explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm slot create my-slot"
                     .into()
@@ -169,7 +215,7 @@ impl CliError {
             Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
             Self::BootComponent { driver, .. } => format!("use the boot scenario driver instead: {driver}"),
             Self::ScopeMismatch { component, scope, .. } if scope == "vm" => {
-                format!("VM-wide components go into the vm slot: tilo-vm swap vm {component}")
+                format!("VM-wide components go into the vm slot: tilo-vm swap --slot vm {component}")
             }
             Self::ScopeMismatch { component, .. } => {
                 format!("session components go into your own slot: tilo-vm swap {component}")
@@ -178,11 +224,11 @@ impl CliError {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
             Self::LowDisk { .. } => "tilo-vm gc --dry-run   then   tilo-vm gc".into(),
-            Self::RegistryLogin { place, registry } if place == "this host" => {
-                format!("podman login {registry}   (with a forge token that has package read access)")
-            }
+            Self::RegistryLogin { place, registry } if place == "this host" => format!(
+                "podman login {registry}   (user: your forge login, password: a forge token with package read access). podman keeps its own login: FORGEJO_TOKEN and fgj/tea logins do not count for image pulls"
+            ),
             Self::RegistryLogin { registry, .. } => format!(
-                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json {registry}   (forge token with package read access)"
+                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json {registry}   (password: a forge token with package read access). The VM keeps its own login for image pulls; this host's logins do not reach it"
             ),
             Self::RawDeploy { .. } => {
                 "deploy with tilo-vm swap <component> (it records a generation you can roll back); pass --raw to run it anyway"
@@ -200,11 +246,27 @@ impl CliError {
             Self::VmCannotBuild { .. } => {
                 "move the VM to a dev image with a toolchain: tilo-vm vm upgrade   |   or swap a CI build: --from ci:<tag>".into()
             }
-            Self::NoDiskPublished { .. } | Self::NoDiskForHost { .. } => format!(
-                "pick a published tag: tilo-vm vm create <name> --tag <tag>   |   {LOCAL_DISK}"
+            Self::NoDiskPublished { tag, local_build, .. } if tag != "(any)" => format!(
+                "pick a published tag (tilo-vm vm create <name> without --tag takes the newest)   |   {}",
+                no_disk_help(local_build.as_deref())
             ),
+            Self::NoDiskPublished { local_build, .. } => no_disk_help(local_build.as_deref()),
+            Self::NoDiskForHost { local_build, .. } => format!(
+                "pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+                no_disk_help(local_build.as_deref())
+            ),
+            Self::NoHypervisor(missing) => missing.fix.clone(),
+            Self::ImageNotFound { .. } => {
+                "check the path, or leave out --image to download the published dev disk (tilo-vm doctor says whether one is published)".into()
+            }
+            Self::DiskExists { .. } => {
+                "pass another path with --disk, or delete that file if no registered VM uses it (tilo-vm vm list)".into()
+            }
+            Self::NoSpace { .. } => {
+                "free space on that filesystem and rerun; an interrupted download resumes".into()
+            }
             Self::ForgeAuth { token: None, .. } => {
-                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun".into()
+                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these, never podman's registry login".into()
             }
             Self::ForgeAuth { token: Some(source), .. } => format!(
                 "the token from {source} lacks package read access or has expired; export FORGEJO_TOKEN=<token with package read access> and rerun"
@@ -243,6 +305,9 @@ impl CliError {
             | Self::ArchMismatch { .. }
             | Self::NoDiskPublished { .. }
             | Self::NoDiskForHost { .. }
+            | Self::NoHypervisor(_)
+            | Self::ImageNotFound { .. }
+            | Self::DiskExists { .. }
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. } => "platforms",
             Self::NotInWorktree | Self::SlotName { .. } => "concepts",
@@ -257,7 +322,7 @@ impl CliError {
             | Self::VmCannotBuild { .. }
             | Self::UnknownApp { .. }
             | Self::MissingInImage { .. } => "swapping",
-            Self::LowDisk { .. } => "storage",
+            Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
             Self::InvalidInput(_) => "driving",
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
@@ -417,12 +482,32 @@ mod tests {
             CliError::NoDiskPublished {
                 tag: "main-abc1234".into(),
                 url: "https://x/tilo-vm-disk.json".into(),
+                local_build: None,
+            },
+            CliError::NoDiskPublished {
+                tag: "(any)".into(),
+                url: "u".into(),
+                local_build: Some("/w/os/dev/build-dev-image.sh".into()),
             },
             CliError::NoDiskForHost {
                 tag: "t".into(),
                 arch: "aarch64".into(),
                 format: "qcow2".into(),
                 available: vec!["x86_64 qcow2".into()],
+                local_build: None,
+            },
+            CliError::NoHypervisor(Missing {
+                adapter: "libvirt".into(),
+                detail: "virsh not on PATH".into(),
+                fix: "sudo dnf install libvirt-daemon-kvm virt-install virt-manager".into(),
+            }),
+            CliError::ImageNotFound { path: "x".into() },
+            CliError::DiskExists { path: "x".into() },
+            CliError::NoSpace {
+                place: "p".into(),
+                free: "1 GB".into(),
+                what: "the download".into(),
+                needed: "4 GB".into(),
             },
             CliError::ForgeAuth {
                 url: "u".into(),
@@ -468,6 +553,10 @@ mod tests {
                 | CliError::VmCannotBuild { .. }
                 | CliError::NoDiskPublished { .. }
                 | CliError::NoDiskForHost { .. }
+                | CliError::NoHypervisor(_)
+                | CliError::ImageNotFound { .. }
+                | CliError::DiskExists { .. }
+                | CliError::NoSpace { .. }
                 | CliError::ForgeAuth { .. }
                 | CliError::ChecksumMismatch { .. }
                 | CliError::DownloadFailed { .. }
@@ -530,12 +619,79 @@ mod tests {
         assert!(hint.contains("/cfg/vms.toml"), "{hint}");
         let host = CliError::HostBuildUnsupported { os: "macos".into() }.hint();
         assert!(host.contains("--builder vm"), "{host}");
-        let disk = CliError::NoDiskPublished {
-            tag: "t".into(),
+    }
+
+    #[test]
+    fn no_published_disk_says_plainly_what_to_do() {
+        let without = CliError::NoDiskPublished {
+            tag: "(any)".into(),
             url: "u".into(),
+            local_build: None,
         }
         .hint();
-        assert!(disk.contains("os/dev/build-dev-image.sh"), "{disk}");
+        assert!(without.contains("Release / Dev VM disk"), "{without}");
+        assert!(
+            without.contains(".forgejo/workflows/dev-disk.yml"),
+            "{without}"
+        );
+        assert!(
+            without.contains("fgj workflow run dev-disk.yml"),
+            "{without}"
+        );
+        assert!(without.contains("tilo-vm vm use <name>"), "{without}");
+        assert!(
+            without.contains("no local dev-image build is available in this checkout"),
+            "{without}"
+        );
+        let with = CliError::NoDiskPublished {
+            tag: "(any)".into(),
+            url: "u".into(),
+            local_build: Some("/w/os/dev/build-dev-image.sh".into()),
+        }
+        .hint();
+        assert!(
+            with.contains("build a disk locally: /w/os/dev/build-dev-image.sh"),
+            "{with}"
+        );
+    }
+
+    #[test]
+    fn credential_hints_name_the_one_login_each_operation_reads() {
+        let host = CliError::RegistryLogin {
+            place: "this host".into(),
+            registry: "code.podesta.ai".into(),
+        }
+        .hint();
+        assert!(host.contains("podman login code.podesta.ai"), "{host}");
+        assert!(
+            host.contains("FORGEJO_TOKEN and fgj/tea logins do not count"),
+            "{host}"
+        );
+        let forge = CliError::ForgeAuth {
+            url: "u".into(),
+            status: 401,
+            token: None,
+        }
+        .hint();
+        assert!(forge.contains("FORGEJO_TOKEN"), "{forge}");
+        assert!(forge.contains("never podman's registry login"), "{forge}");
+        assert!(FORGE_TOKEN_USE.contains("dev disk downloads"));
+        assert!(REGISTRY_LOGIN_USE.contains("swap --from ci:/sha:"));
+        assert!(REGISTRY_LOGIN_USE.contains("vm upgrade"));
+    }
+
+    #[test]
+    fn a_missing_hypervisor_names_the_adapter_and_the_fix() {
+        let error = CliError::NoHypervisor(Missing {
+            adapter: "libvirt".into(),
+            detail: "virsh not on PATH".into(),
+            fix: "sudo dnf install libvirt".into(),
+        });
+        assert_eq!(
+            error.to_string(),
+            "the libvirt adapter cannot run here: virsh not on PATH"
+        );
+        assert_eq!(error.hint(), "sudo dnf install libvirt");
     }
 
     #[test]
@@ -543,10 +699,10 @@ mod tests {
         let error = CliError::Remote(RpcError {
             code: 5,
             message: "scope".into(),
-            hint: "tilo-vm swap vm fs".into(),
+            hint: "tilo-vm swap --slot vm fs".into(),
             see: Some("tilo-vm guide swapping".into()),
         });
-        assert_eq!(error.hint(), "tilo-vm swap vm fs");
+        assert_eq!(error.hint(), "tilo-vm swap --slot vm fs");
         assert_eq!(error.see().as_deref(), Some("tilo-vm guide swapping"));
     }
 }

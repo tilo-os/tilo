@@ -2,7 +2,8 @@
 
 **VM.** A Tilo dev image (production image plus `tilo-vmd`, sshd, toolchain)
 running under the host's native hypervisor. Humans watch it in UTM, Hyper-V
-Manager or virt-manager. One VM is shared by several agents.
+Manager or virt-manager (libvirt's QEMU/KVM user session). One VM is shared
+by several agents.
 
 **Slot.** Your private piece of a VM: Linux user `tds-<slot>`, session unit
 `tilo-vm-session@<slot>`, and an ordered list of layers. A slot's layers
@@ -14,6 +15,8 @@ the VM itself do not see them.
 - `headful`: gets its own virtual display (a vkms card), its own logind seat
   and, on first `tilo-vm input`, its own keyboard and pointer, so the real
   DRM and libinput paths run. The card is re-created after a VM reboot.
+  The hypervisor window does not show it; `shot` does, and `seat claim`
+  moves the session onto seat0, which the window does show.
 
 **Layer.** An immutable, content-addressed directory (`usr/...`) holding one
 component's build, with `provenance.json` saying how it was built. The same

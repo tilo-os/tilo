@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use serde_json::{Value, json};
 use tilo_vm::app::App;
-use tilo_vm::cli::{Cli, Command};
+use tilo_vm::cli::{Cli, writes_receipt};
 use tilo_vm::context::Worktree;
 use tilo_vm::hypervisor::SystemRunner;
 use tilo_vm::receipt::Receipt;
@@ -23,12 +23,15 @@ fn main() -> ExitCode {
     );
     let receipt = Receipt::new(&base, std::env::args().collect());
     let json_mode = cli.json;
-    let quiet_receipt = matches!(cli.command, Some(Command::Guide { .. }));
+    let keep_receipt = writes_receipt(cli.command.as_ref());
     let mut app = App {
         json: json_mode,
+        // External tools (os/dev/vm.sh, cargo) run from the worktree root.
+        runner: SystemRunner {
+            cwd: worktree.as_ref().map(|w| w.root.clone()),
+        },
         worktree,
         registry_path: tilo_vm::config::registry_path(),
-        runner: SystemRunner { cwd: None },
         receipt,
         warnings: Vec::new(),
     };
@@ -36,6 +39,8 @@ fn main() -> ExitCode {
     let App {
         receipt, warnings, ..
     } = app;
+    let finish =
+        |result: Result<&Value, &Value>| keep_receipt.then(|| receipt.finish(result)).flatten();
     match outcome {
         Ok(outcome) => {
             let mut data = outcome.data;
@@ -43,9 +48,9 @@ fn main() -> ExitCode {
                 map.insert("next".into(), json!(outcome.next));
                 map.insert("warnings".into(), json!(warnings));
             }
-            let path = receipt.finish(Ok(&data));
+            let path = finish(Ok(&data));
             if json_mode {
-                if let Value::Object(map) = &mut data {
+                if let (Value::Object(map), Some(path)) = (&mut data, &path) {
                     map.insert("receipt".into(), json!(path));
                 }
                 println!("{data:#}");
@@ -59,7 +64,7 @@ fn main() -> ExitCode {
                 if !outcome.next.is_empty() {
                     println!("next: {}", outcome.next.join("   |   "));
                 }
-                if let (Some(path), false) = (path, quiet_receipt) {
+                if let Some(path) = path {
                     eprintln!("receipt: {}", path.display());
                 }
             }
@@ -71,10 +76,10 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             let data = error.to_json();
-            let path = receipt.finish(Err(&data));
+            let path = finish(Err(&data));
             if json_mode {
                 let mut data = data;
-                if let Value::Object(map) = &mut data {
+                if let (Value::Object(map), Some(path)) = (&mut data, &path) {
                     map.insert("receipt".into(), json!(path));
                 }
                 println!("{data:#}");

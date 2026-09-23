@@ -27,17 +27,35 @@ the ambient capability pam_systemd grants; if the check still fails, the dev
 image's unit template or the expected domain (`tilo-vmd rpc --expect-domain`)
 is out of date: `tilo-vm vm upgrade`.
 
-**401 or reqPackageAccess from code.podesta.ai.** Log in with a forge token that
-has package read access: `podman login code.podesta.ai` on the host; inside
-the VM (for `vm upgrade` and CI layers pulled there)
-`tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.podesta.ai`.
-The error names which one.
+**Which credential does what.** There are two, and neither stands in for
+the other, although both use a forge token with package read access as the
+secret:
 
-**`vm create` cannot download.** It needs a forge token: `FORGEJO_TOKEN`, or an
-fgj or tea login for code.podesta.ai (`tilo-vm doctor` says which it found).
-"No dev disk published" means CI has not published that tag; pick another
-with `--tag`, or build a disk with `os/dev/build-dev-image.sh` and pass
-`--image`. An interrupted download resumes when you rerun the command.
+| Operation | Needs | Where |
+|---|---|---|
+| `vm create` without `--image` (disk download), doctor's published-disk check | a forge token: `FORGEJO_TOKEN`, or an fgj or tea login for code.podesta.ai | this host |
+| `swap --from ci:`/`sha:` when the VM has podman, `vm upgrade` | a podman registry login | in the VM: `tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.podesta.ai` |
+| `swap --from ci:`/`sha:` when the VM has no podman | a podman registry login | this host: `podman login code.podesta.ai` |
+
+`tilo-vm doctor` shows which of the host's two it found.
+
+**401 or reqPackageAccess from code.podesta.ai on a pull.** A podman
+registry login is missing where the pull ran; the error names the place and
+the exact `podman login` line. `FORGEJO_TOKEN` does not help here.
+
+**`vm create` stops before downloading.** It checks the hypervisor, an
+`--image`, the published disk, the VM disk path and free space first, and
+names the missing piece with its fix. A 401/403 on the disk means the forge
+token is missing or lacks package read access. "No dev disk is published"
+means CI has not published one (or that tag): ask a human to dispatch the
+"Release / Dev VM disk" workflow (`.forgejo/workflows/dev-disk.yml`), or
+dispatch it with fgj if you may, or ask a human for a shared VM
+(`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
+interrupted download resumes when you rerun the command.
+
+**No hypervisor.** `tilo-vm doctor` names what is missing (virsh,
+virt-install, `qemu:///session`, `/dev/kvm`; UTM's `utmctl`; Hyper-V) and the
+install line for your host.
 
 **The VM cannot build.** Its image lacks cargo, rsync or python3 (`tilo-vm
 status` shows where builds run). `tilo-vm vm upgrade` to a current dev image;
@@ -47,7 +65,8 @@ exit 1 from flock means another build of the same worktree is running.
 **Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc`,
 upgrades and `vm stop` take the whole VM; wait and retry.
 
-**Receipts.** Every run leaves `target/dev-runs/<id>/run.json` with phase
-timings (sync, build, assemble, transfer, import, apply, session-ready,
+**Receipts.** Every command that changes something or runs long leaves
+`target/dev-runs/<id>/run.json` (status, doctor, guide, lists and logs do
+not) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
 download) and flags phases slower than the goals: warm build < 60s, swap
 plus restart < 10s, cached boot < 30s.

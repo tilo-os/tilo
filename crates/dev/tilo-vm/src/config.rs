@@ -81,6 +81,10 @@ pub struct VmEntry {
     /// UTM VM to clone from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// The `qemu-img` that creates the VM's disk, resolved when the VM was
+    /// created: the one beside the adapter's own tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qemu_img: Option<String>,
 }
 
 pub const DEFAULT_MIN_FREE_GB: u64 = 5;
