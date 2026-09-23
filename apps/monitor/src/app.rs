@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -29,10 +30,6 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
@@ -520,40 +517,16 @@ impl MonitorProcessSearchProvider {
     }
 }
 
-impl SearchProvider for MonitorProcessSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for MonitorProcessSearchProvider {
+    fn provider_name(&self) -> &str {
         "Processes"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         (address.action == "inspect")
             .then(|| {
                 self.snapshot

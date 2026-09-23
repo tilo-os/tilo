@@ -12,7 +12,7 @@ use tilo_actions::{
     RetryPolicy,
 };
 use ui::icons::Icon;
-use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 const DEFAULT_RESULT_LIMIT: usize = 100;
 
@@ -244,63 +244,30 @@ fn navigation_contract() -> ActionContract {
     }
 }
 
-impl SearchProvider for BrowserSearchProvider {
-    #[allow(
-        clippy::unnecessary_literal_bound,
-        reason = "The shared SearchProvider trait requires a borrowed literal name."
-    )]
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for BrowserSearchProvider {
+    const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
+
+    fn provider_name(&self) -> &str {
         "Browser"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
+    fn catalog(&self) -> Option<SearchCatalog> {
         Some(
             self.index
                 .state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .catalog
-                .stats()
-                .generation,
+                .clone(),
         )
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .cursor_is_current(cursor)
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, 100)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(query, None, limit, limit.min(DEFAULT_RESULT_LIMIT))
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&ui::search::SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let catalog = self
-            .index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .clone();
-        catalog.query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         let row = self
             .index
             .state
@@ -321,6 +288,7 @@ impl SearchProvider for BrowserSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
 
     #[test]
     fn full_corpus_is_cursor_paged_and_canonical() {
