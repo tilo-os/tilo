@@ -42,7 +42,7 @@ taffy.workspace = true
 # gated by `live`; the default build uses the offline path.
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
-roxmltree = "0.20"
+roxmltree.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
