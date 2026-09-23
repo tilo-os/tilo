@@ -614,7 +614,7 @@ impl LibrarySearchProvider {
 }
 
 impl CatalogSearchProvider for LibrarySearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         // Default group label / diagnostic name; individual rows carry their own
         // per-type kind ("Songs", "Albums", …) so the overlay sections them.
         "Music"

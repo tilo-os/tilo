@@ -171,7 +171,7 @@ pub struct ContainerSearchProvider {
 }
 
 impl CatalogSearchProvider for ContainerSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Containers"
     }
 

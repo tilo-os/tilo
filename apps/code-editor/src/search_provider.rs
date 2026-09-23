@@ -100,7 +100,7 @@ impl FileSearchProvider {
 }
 
 impl CatalogSearchProvider for FileSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Code"
     }
 

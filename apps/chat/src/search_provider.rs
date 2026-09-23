@@ -189,7 +189,7 @@ impl ChatSearchProvider {
 }
 
 impl CatalogSearchProvider for ChatSearchProvider {
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Chat"
     }
 

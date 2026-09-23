@@ -247,7 +247,7 @@ fn navigation_contract() -> ActionContract {
 impl CatalogSearchProvider for BrowserSearchProvider {
     const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
 
-    fn provider_name(&self) -> &str {
+    fn provider_name(&self) -> &'static str {
         "Browser"
     }
 
