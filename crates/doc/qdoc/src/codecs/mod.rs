@@ -38,9 +38,7 @@ use crate::format::{ProviderTier, Registry};
 /// Decode the UTF-8 attribute values required by OOXML and ODF and resolve XML
 /// entities. Keeping this here avoids tying leaf parsers to `quick-xml`'s
 /// optional legacy-encoding feature, which is unified across the workspace.
-pub(crate) fn unescape_attr(
-    attribute: &quick_xml::events::attributes::Attribute<'_>,
-) -> Option<String> {
+pub fn unescape_attr(attribute: &quick_xml::events::attributes::Attribute<'_>) -> Option<String> {
     let raw = std::str::from_utf8(attribute.value.as_ref()).ok()?;
     quick_xml::escape::unescape(raw)
         .ok()
@@ -59,7 +57,7 @@ pub(crate) fn unescape_attr(
 /// is no character to recover: it yields `None`, so readers drop the reference
 /// and keep the text on either side. Readers that copy XML through verbatim
 /// (unmodeled metadata) copy the reference as written instead.
-pub(crate) fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
     if let Ok(Some(c)) = reference.resolve_char_ref() {
         return Some(c);
     }

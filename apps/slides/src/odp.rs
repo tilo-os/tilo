@@ -339,25 +339,6 @@ fn xml_attr(s: &str) -> String {
     xml_text(s).replace('"', "&quot;")
 }
 
-/// Resolve an XML entity reference — a numeric `&#NN;` / `&#xNN;` or one of the
-/// five predefined named entities — back to its character. `quick_xml` delivers
-/// these as standalone `GeneralRef` events (splitting the text run), so the read
-/// loop folds them back in through this. An unknown named entity resolves to
-/// `None` (a deck we author only ever emits the predefined five, via `xml_text`).
-fn resolve_entity(r: &quick_xml::events::BytesRef) -> Option<char> {
-    if let Ok(Some(ch)) = r.resolve_char_ref() {
-        return Some(ch);
-    }
-    match r.decode().ok()?.as_ref() {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        _ => None,
-    }
-}
-
 // ===========================================================================
 // Read
 // ===========================================================================
@@ -517,7 +498,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p && let Some(ch) = resolve_entity(&r) {
+                if in_text_p && let Some(ch) = qdoc::codecs::resolve_general_ref(&r) {
                     p_buf.push(ch);
                 }
                 continue;
@@ -707,12 +688,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| {
-            let raw = std::str::from_utf8(a.value.as_ref()).ok()?;
-            quick_xml::escape::unescape(raw)
-                .ok()
-                .map(std::borrow::Cow::into_owned)
-        })
+        .and_then(|a| qdoc::codecs::unescape_attr(&a))
 }
 
 #[cfg(test)]
