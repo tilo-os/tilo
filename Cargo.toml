@@ -293,6 +293,7 @@ winit = "0.30.13"
 automerge = "0.8.0"
 pollster = "0.4.0"
 rustc-hash = "2.1"
+cosmic-text = { version = "0.19.0", default-features = false }
 
 # ---------------------------------------------------------------------------
 # Async runtime and networking
