@@ -73,6 +73,12 @@ PURPOSE = 'tilo-internal-installer'
 LIVE_ROOT_FLOOR = 40 * GIB
 ROOT_SLACK = GIB
 FALLBACK_LOADERS = {'x86_64': '/EFI/BOOT/BOOTX64.EFI', 'aarch64': '/EFI/BOOT/BOOTAA64.EFI'}
+# Fixed-size, space-filled files the Imager staging helper overwrites in place
+# on the staging ESP (apps/imager/src/setup/staging/fat.rs). Reserving them here
+# lets the helper write the handoff without mounting the ESP; it hashes their
+# bytes as spaces, so the ESP still verifies against this manifest's digest.
+STAGING_PLACEHOLDERS = ('EFI/tilo-staging/handoff.json', 'EFI/tilo-staging/record.json')
+STAGING_PLACEHOLDER_BYTES = 64 * 1024
 # Length-stable live placeholder and its binding: 47 bytes each.
 ROOT_PLACEHOLDER = 'tilo.root=' + '0' * 37
 # The specialised live command line: flags and exact values. tilo.generation
@@ -845,7 +851,21 @@ def specialize_esp_tree(esp, filesystem_uuid, arch):
     prepared = specialize_uki(unsigned, filesystem_uuid)
     _replace_contents(uki, prepared)
     _replace_contents(fallback, prepared)
+    reserve_staging_placeholders(esp)
     return uki.relative_to(esp), prepared
+
+
+def reserve_staging_placeholders(esp):
+    directory = esp / 'EFI' / 'tilo-staging'
+    require(not directory.is_symlink(), 'staging placeholder directory is a symlink')
+    directory.mkdir(mode=0o755, exist_ok=True)
+    for relative in STAGING_PLACEHOLDERS:
+        path = esp / relative
+        require(not path.exists() or _regular(path), 'staging placeholder is not a regular file')
+        with open(path, 'wb') as output:
+            output.write(b' ' * STAGING_PLACEHOLDER_BYTES)
+            output.flush()
+            os.fsync(output.fileno())
 
 
 def verify_esp_tree(esp, uki, arch, prepared):
@@ -853,6 +873,10 @@ def verify_esp_tree(esp, uki, arch, prepared):
     for path in (esp / uki, esp / FALLBACK_LOADERS[arch].lstrip('/')):
         require(_regular(path) and path.read_bytes() == prepared,
                 'specialised loader readback mismatch: ' + str(path.relative_to(esp)))
+    for relative in STAGING_PLACEHOLDERS:
+        path = esp / relative
+        require(_regular(path) and path.read_bytes() == b' ' * STAGING_PLACEHOLDER_BYTES,
+                'staging placeholder readback mismatch: ' + relative)
     return inspect_uki(prepared)
 
 
