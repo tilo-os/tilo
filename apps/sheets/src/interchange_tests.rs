@@ -58,9 +58,10 @@ fn at<'a>(table: &'a SheetTable, a1: &str) -> Option<&'a ImportedCell> {
 }
 
 fn raw<'a>(table: &'a SheetTable, a1: &str) -> &'a str {
-    at(table, a1)
-        .map(|cell| cell.raw.as_str())
-        .unwrap_or_else(|| panic!("no cell at {a1} in {table:?}"))
+    at(table, a1).map_or_else(
+        || panic!("no cell at {a1} in {table:?}"),
+        |cell| cell.raw.as_str(),
+    )
 }
 
 fn formula<'a>(table: &'a SheetTable, a1: &str) -> Option<&'a str> {
@@ -161,6 +162,8 @@ fn excel_workbook_imports_tabs_values_formats_and_formulas() {
     assert_eq!(raw(budget, "E2"), "big");
     assert_eq!(formula(budget, "D2"), Some("=B2/0"));
     assert_eq!(format(budget, "D2"), CellFormat::Text);
+    // An error result keeps Excel's own spelling.
+    assert_eq!(raw(budget, "D2"), "#DIV/0!");
 
     // A shared formula expands to every cell of its fill-down.
     assert_eq!(formula(budget, "C2"), Some("=B2*2"));
@@ -285,9 +288,9 @@ fn assert_sheets_round_trip(back: &[SheetTable]) {
     assert_eq!(names, ["Budget 2026", "Empty", "Q1"]);
     let budget = &back[0];
     assert_eq!(raw(budget, "A1"), "Item");
-    assert_eq!(raw(budget, "B2").parse::<f64>().unwrap(), 1200.0);
+    assert_eq!(raw(budget, "B2"), "1200");
     assert!((raw(budget, "B3").parse::<f64>().unwrap() - 0.21).abs() < 1e-9);
-    assert_eq!(raw(budget, "B4").parse::<f64>().unwrap(), 45000.0);
+    assert_eq!(raw(budget, "B4"), "45000");
     assert_eq!(raw(budget, "B5"), "TRUE");
     assert_eq!(format(budget, "B5"), CellFormat::Boolean);
     // A text-formatted cell is written and read back as text (its payload is
@@ -321,4 +324,70 @@ fn sheets_ods_export_round_trips() {
     crate::ods::write_ods(&file.0, &tables).unwrap();
     let back = crate::ods::read_ods(&file.0).unwrap();
     assert_sheets_round_trip(&back);
+}
+
+/// A one-tab `.xlsx` with the given worksheet body.
+fn xlsx_sheet(sheet_xml: &str) -> Vec<u8> {
+    let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    zip_of(&[
+        ("[Content_Types].xml", XLSX_CONTENT_TYPES),
+        ("_rels/.rels", XLSX_ROOT_RELS),
+        ("xl/workbook.xml", workbook),
+        ("xl/_rels/workbook.xml.rels", rels),
+        ("xl/worksheets/sheet1.xml", sheet_xml),
+    ])
+}
+
+#[test]
+fn a_tab_that_starts_below_a1_keeps_its_cell_positions() {
+    let file = TempFile::with(
+        "offset.xlsx",
+        &xlsx_sheet(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="3"><c r="C3"><v>1</v></c><c r="D3"><f>C3*2</f><v>2</v></c></row></sheetData></worksheet>"#,
+        ),
+    );
+    let tables = crate::xlsx::read_xlsx(&file.0).unwrap();
+    assert!(at(&tables[0], "A1").is_none());
+    assert_eq!(raw(&tables[0], "C3"), "1");
+    // The formula still points at the cell it was written against.
+    assert_eq!(formula(&tables[0], "D3"), Some("=C3*2"));
+}
+
+#[test]
+fn a_far_flung_sparse_tab_is_refused_before_it_is_materialised() {
+    let file = TempFile::with(
+        "far.xlsx",
+        &xlsx_sheet(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>2</v></c></row></sheetData></worksheet>"#,
+        ),
+    );
+    let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
+    assert!(error.to_string().contains("import limit"), "{error:#}");
+}
+
+#[test]
+fn a_package_carrying_a_dtd_is_refused() {
+    let xxe = r#"<?xml version="1.0"?><!DOCTYPE w [<!ENTITY x SYSTEM "file:///etc/passwd">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&x;</t></is></c></row></sheetData></worksheet>"#;
+    let file = TempFile::with("xxe.xlsx", &xlsx_sheet(xxe));
+    let error = crate::xlsx::read_xlsx(&file.0).unwrap_err();
+    assert!(error.to_string().contains("DTD"), "{error:#}");
+
+    let content = ODS_CONTENT.replacen(
+        "<office:document-content",
+        r#"<!DOCTYPE d [<!ENTITY x "boom">]><office:document-content"#,
+        1,
+    );
+    let file = TempFile::with(
+        "xxe.ods",
+        &zip_of(&[
+            ("mimetype", "application/vnd.oasis.opendocument.spreadsheet"),
+            ("META-INF/manifest.xml", ODS_MANIFEST),
+            ("content.xml", &content),
+        ]),
+    );
+    let error = crate::ods::read_ods(&file.0).unwrap_err();
+    assert!(error.to_string().contains("DTD"), "{error:#}");
 }

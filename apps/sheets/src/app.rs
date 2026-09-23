@@ -148,7 +148,7 @@ const MAX_IMPORT_CELLS: usize = actions::MAX_IMPORTED_CELLS;
 /// populated cell at a hostile far-away coordinate must not turn into a
 /// trillion-slot dense `Vec`; this caps the actually materialised rectangle,
 /// independently of the populated-cell action limit above.
-const MAX_CSV_MATERIALIZED_SLOTS: usize = 1_000_000;
+const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 type ImportedCellWrite = (Addr, String, Option<CellFormat>);
 type ImportedWorkbook = Vec<(String, Vec<ImportedCellWrite>)>;
