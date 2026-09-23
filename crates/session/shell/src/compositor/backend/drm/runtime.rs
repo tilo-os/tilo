@@ -1085,10 +1085,9 @@ impl DrmDispatchState {
         entries
     }
 
-    /// Re-pack the live outputs side by side, re-derive their scales, and
-    /// bring the pointer and cursor planes back into the new space.
-    ///
-    /// Called after any change to the live set — re-packing (not leaving survivors in place) closes the hole an unplugged middle monitor would leave.
+    /// Apply configured topology (falling back to side-by-side), re-derive
+    /// scales, and bring the pointer and cursor planes back onto a live
+    /// output. Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
         let config = settings_store::hardware::DisplayConfig::load_effective();
         self.live.sort_by_key(|l| {
@@ -1163,7 +1162,13 @@ impl DrmDispatchState {
         }
         let extent = hotplug::combined_extent(&positions, &sizes);
         self.output_size = extent;
-        self.pointer = hotplug::clamp_pointer(self.pointer, extent);
+        self.pointer = hotplug::clamp_pointer_to_outputs(
+            self.pointer,
+            self.live
+                .iter()
+                .zip(&sizes)
+                .map(|(entry, &size)| (entry.position, size)),
+        );
 
         self.output_meta = self
             .live
@@ -1935,8 +1940,16 @@ impl DrmDispatchState {
         match event {
             InputEvent::PointerMotionAbsolute { event } => {
                 let (w, h) = self.output_size;
-                let x = event.x_transformed(w.max(1));
-                let y = event.y_transformed(h.max(1));
+                let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
+                let (x, y) = hotplug::clamp_pointer_to_outputs(
+                    requested,
+                    self.live.iter().map(|output| {
+                        (
+                            output.position,
+                            logical_output_size(output.size, output.transform),
+                        )
+                    }),
+                );
                 self.pointer = (x, y);
                 // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
                 self.hw_cursor.move_to(x, y);
@@ -1944,14 +1957,19 @@ impl DrmDispatchState {
             }
             // Relative motion (mouse): accumulate + clamp to output.
             InputEvent::PointerMotion { event } => {
-                let (w, h) = self.output_size;
-                // `w`/`h` are clamped to at least 1 just above, so this
-                // never underflows; `saturating_sub` just avoids a raw `-`
-                // clippy can't see is bounded.
-                let max_x = f64::from(w.max(1).saturating_sub(1));
-                let max_y = f64::from(h.max(1).saturating_sub(1));
-                let x = (self.pointer.0 + event.delta_x()).clamp(0.0, max_x);
-                let y = (self.pointer.1 + event.delta_y()).clamp(0.0, max_y);
+                let requested = (
+                    self.pointer.0 + event.delta_x(),
+                    self.pointer.1 + event.delta_y(),
+                );
+                let (x, y) = hotplug::clamp_pointer_to_outputs(
+                    requested,
+                    self.live.iter().map(|output| {
+                        (
+                            output.position,
+                            logical_output_size(output.size, output.transform),
+                        )
+                    }),
+                );
                 self.pointer = (x, y);
                 self.hw_cursor.move_to(x, y);
                 self.push(BackendEvent::RelativePointerMotion {
