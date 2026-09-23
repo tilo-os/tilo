@@ -14530,7 +14530,7 @@ dependencies = [
  "hex",
  "libc",
  "object 0.39.1",
- "p256 0.13.2",
+ "p256 0.14.0",
  "rcgen",
  "ring",
  "rsa",
