@@ -274,7 +274,7 @@ impl<T: Transport> Session<T> {
         let result = self.transport.finish();
         check_cancel(cancel)?;
         let (hashes, issues) = result?;
-        let empty = format!("{:x}", Sha256::digest([]));
+        let empty = hex::encode(Sha256::digest([]));
         let mut expected = BTreeMap::new();
         let mut expected_issues = Vec::new();
         for e in &manifest.entries {

@@ -684,7 +684,7 @@ fn copy_and_hash(from: &Path, to: &Path) -> Result<(u64, String)> {
         total = total.saturating_add(read as u64);
     }
     output.sync_all()?;
-    Ok((total, format!("{:x}", hasher.finalize())))
+    Ok((total, hex::encode(hasher.finalize())))
 }
 
 fn hash_file(path: &Path) -> Result<(u64, String)> {
@@ -705,7 +705,7 @@ fn hash_file(path: &Path) -> Result<(u64, String)> {
         hasher.update(chunk);
         total = total.saturating_add(read as u64);
     }
-    Ok((total, format!("{:x}", hasher.finalize())))
+    Ok((total, hex::encode(hasher.finalize())))
 }
 
 fn integrity<T>(path: &Path, message: &str) -> Result<T> {

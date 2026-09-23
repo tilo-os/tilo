@@ -16,6 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 authenticode = { version = "0.6", features = ["object", "std"] }
+# authenticode 0.6 hashes PE images through digest 0.10's `Update` trait and
+# has no release on the digest 0.11 / der 0.8 generation, so its digest input
+# comes from the matching sha2 release.
+authenticode-sha2 = { package = "sha2", version = "0.10" }
 base64.workspace = true
 cms = "0.2"
 const-oid = { version = "0.9", features = ["db"] }

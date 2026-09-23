@@ -430,7 +430,7 @@ impl Action for CodeEditorAction {
 }
 
 pub fn text_digest(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    hex::encode(Sha256::digest(text.as_bytes()))
 }
 
 /// Convert two complete text states into the one smallest character splice.
