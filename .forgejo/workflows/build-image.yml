@@ -1361,4 +1361,4 @@ jobs:
             -H 'Content-Type: application/json' \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/dev-disk.yml/dispatches" \
             --data "$payload"
-          echo "::notice::requested tilo-dev:$tag disks from $image"
+          echo "::notice::requested tilo-vm:$tag disks from $image"

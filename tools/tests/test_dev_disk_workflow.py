@@ -33,7 +33,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("  workflow_dispatch:\n", triggers)
         for event in ("push:", "pull_request:", "schedule:"):
             self.assertNotIn(event, triggers)
-        self.assertIn("group: tilo-dev-disk\n  cancel-in-progress: false", self.source)
+        self.assertIn("group: tilo-vm-disk\n  cancel-in-progress: false", self.source)
 
     def test_native_lanes_and_formats_are_one_entry_away(self) -> None:
         plan = job(self.source, "plan")
@@ -67,7 +67,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn('TILO_SKIP_BUILD: "1"', disk)
         self.assertIn("./os/dev/build-image.sh", disk)
         self.assertIn(
-            "TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-dev:${{ needs.plan.outputs.tag }}",
+            "TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-vm:${{ needs.plan.outputs.tag }}",
             disk,
         )
         smoke = step(build, "Boot the disk and reach it over SSH")
@@ -89,8 +89,8 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("-O qcow2 -c -o compression_type=zstd", convert)
         self.assertIn("-O vhdx -o subformat=dynamic", convert)
         publish = step(build, "Publish the immutable disks")
-        self.assertIn("vars.TILO_DEV_DISK_RELEASE_AUDIENCE", publish)
-        self.assertIn('"$package_api/tilo-dev-disk/$DEV_TAG/$file"', publish)
+        self.assertIn("vars.TILO_VM_DISK_RELEASE_AUDIENCE", publish)
+        self.assertIn('"$package_api/tilo-vm-disk/$DEV_TAG/$file"', publish)
         self.assertIn("tools/upload_immutable_packages.sh", publish)
         self.assertNotIn("REGISTRY_TOKEN", publish)
         self.assertNotIn("actions/cache", self.source)
@@ -98,17 +98,17 @@ class DevDiskWorkflowTests(unittest.TestCase):
     def test_manifest_commits_after_the_durable_tag_and_latest_moves_last(self) -> None:
         publish = job(self.source, "publish")
         order = [
-            "Assemble the tilo-dev index and disk manifest",
+            "Assemble the tilo-vm index and disk manifest",
             "Publish the disk manifest",
-            "Advance tilo-dev:latest",
+            "Advance tilo-vm:latest",
         ]
         positions = [publish.index(f"- name: {name}") for name in order]
         self.assertEqual(positions, sorted(positions))
-        assemble = step(publish, "Assemble the tilo-dev index and disk manifest")
+        assemble = step(publish, "Assemble the tilo-vm index and disk manifest")
         self.assertIn("already binds", assemble)
         for field in ("tag:", "baseDigest:", "arch:", "format:", "sha256:", "size:"):
             self.assertIn(field, assemble)
-        latest = step(publish, "Advance tilo-dev:latest")
+        latest = step(publish, "Advance tilo-vm:latest")
         self.assertIn("if: needs.plan.outputs.channel == 'true'", latest)
         self.assertIn("git merge-base --is-ancestor", latest)
 
