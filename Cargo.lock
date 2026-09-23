@@ -1981,6 +1981,7 @@ dependencies = [
 name = "channel-crypto"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "chacha20poly1305",
  "collab-types",
  "ed25519-dalek 2.2.0",
@@ -12181,6 +12182,7 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "atomic-file",
  "bounded-command",
  "chacha20poly1305",
  "ed25519-dalek 2.2.0",
@@ -14536,6 +14538,7 @@ dependencies = [
 name = "thumbnail"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "blake3",
  "hex",
  "image",
@@ -14588,6 +14591,7 @@ name = "tilo-app-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "clap",
  "fluent",
  "fluent-syntax",
@@ -16260,6 +16264,7 @@ name = "ush"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "bounded-command",
  "collab-types",
  "dirs 6.0.0",
@@ -17908,6 +17913,7 @@ dependencies = [
 name = "windows-vm"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "base64 0.22.1",
  "bounded-command",
  "hex",

@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -107,24 +106,7 @@ impl ProvisioningStore {
         let parent = self.path.parent().ok_or(ProvisioningError::MissingParent)?;
         fs::create_dir_all(parent)?;
         let bytes = serde_json::to_vec_pretty(state)?;
-        let temp = parent.join(format!(".windows-state.{}.tmp", std::process::id()));
-        {
-            use std::io::Write;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        if let Err(error) = fs::rename(&temp, &self.path) {
-            let _ = fs::remove_file(&temp);
-            return Err(error.into());
-        }
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
