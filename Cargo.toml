@@ -180,6 +180,7 @@ members = [
     "crates/system/accounts",
     "crates/system/app-state",
     "crates/system/atomic-file",
+    "crates/system/block-devices",
     "crates/system/bounded-command",
     "crates/system/private-fs",
     "crates/system/desktop-entry",

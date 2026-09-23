@@ -1,25 +1,19 @@
 //! Target-disk and partition discovery.
 //!
-//! We list block devices with:
+//! Devices come from `lsblk -J -b -p` with [`LSBLK_COLUMNS`], parsed by the
+//! shared `block-devices` inventory. Only `TYPE == "disk"` rows with a real
+//! size are candidates; memory- and loop-backed pseudo disks never are, and a
+//! disk whose holder tree carries a live system mount is marked as the
+//! running system.
 //!
-//! ```text
-//! lsblk -dnpo NAME,SIZE,MODEL,TYPE
-//! ```
-//!
-//! * `-d` — no partitions / holders (whole devices only).
-//! * `-n` — no header row.
-//! * `-p` — full device path (`/dev/sda`, not `sda`).
-//! * `-o NAME,SIZE,MODEL,TYPE` — the four columns we care about.
-//!
-//! Only rows whose `TYPE` is exactly `disk` are kept (filters out `rom`,
-//! `loop`, etc.). The `MODEL` column may be empty (multiple spaces) or
-//! contain spaces — so the parser treats the first token as `NAME`, the
-//! second as `SIZE`, the **last** as `TYPE`, and everything in between as
-//! `MODEL`. That keeps us robust to multi-word model strings without
-//! depending on fixed column widths.
+//! [`parse_lsblk`] still accepts the older whitespace form of
+//! `lsblk -dnpo NAME,SIZE,MODEL,TYPE`: the first token is `NAME`, the second
+//! `SIZE`, the **last** `TYPE`, and everything in between `MODEL`, which keeps
+//! multi-word model strings intact without depending on column widths.
 
 use std::time::Duration;
 
+use block_devices::{BlockDevice, Lsblk, lsblk};
 use serde_json::Value;
 
 /// GPT type used for an ordinary Linux data/filesystem partition.
@@ -368,15 +362,15 @@ fn align_down(value: u64, alignment: u64) -> u64 {
     value / alignment * alignment
 }
 
-/// The `lsblk` argument vector. Kept as a constant so the call site and
-/// any docs/tests reference exactly one source of truth.
-pub const LSBLK_ARGS: [&str; 5] = [
-    "-J",
-    "-b",
-    "-p",
-    "--output",
-    "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINTS,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN",
-];
+/// Exactly the columns discovery reads, listed by full device path.
+pub const LSBLK_COLUMNS: &str = "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINTS,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN";
+
+fn lsblk() -> Lsblk {
+    Lsblk::new(LSBLK_COLUMNS)
+        .full_paths(true)
+        .output_limit(4 * 1024 * 1024)
+        .timeout(Duration::from_secs(10))
+}
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
 /// whole-disk devices. Rows that aren't `TYPE == "disk"`, blank lines,
@@ -427,23 +421,21 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
 }
 
 fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
-    let Some(devices) = json.get("blockdevices").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+    lsblk::parse(json).map_or_else(Vec::new, |devices| disks_from(&devices))
+}
+
+fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
     devices
         .iter()
-        .filter(|d| field(d, "type") == "disk")
+        .filter(|d| d.kind == "disk")
         .filter_map(|d| {
-            let name = field(d, "name");
-            let size_bytes = number(d, "size");
+            let name = d.name.clone();
+            let size_bytes = d.size;
             if !is_installable_device_name(&name) || size_bytes == 0 {
                 return None;
             }
-            let partitions: Vec<DiskPartition> = d
-                .get("children")
-                .and_then(Value::as_array)
-                .map(|children| children.iter().filter_map(parse_partition).collect())
-                .unwrap_or_default();
+            let partitions: Vec<DiskPartition> =
+                d.children.iter().filter_map(parse_partition).collect();
             // A normal encrypted Fedora/Tilo root is not mounted directly from
             // the partition: lsblk reports disk -> part -> crypt (and often
             // -> lvm) before the node carrying `/` or `/sysroot`. Keep only
@@ -451,20 +443,22 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
             // holder tree when deciding whether the whole disk is the running
             // system. Otherwise the UI offers a disk that the privileged
             // backend correctly rejects only after the user has reviewed it.
-            let is_system = device_tree_has_live_system_mount(d);
+            let is_system = d
+                .descendants()
+                .any(|device| is_live_system_mount(&mountpoints(device)));
             Some(Disk {
                 name,
                 size: format_bytes(size_bytes),
-                model: field(d, "model"),
+                model: text(d.model.as_ref()),
                 size_bytes,
-                partition_table: field(d, "pttype"),
-                partition_table_uuid: field(d, "ptuuid"),
-                logical_sector_size: number(d, "log-sec"),
-                major_minor: field(d, "maj:min"),
-                wwn: field(d, "wwn"),
-                serial: field(d, "serial"),
-                removable: boolean(d, "rm"),
-                read_only: boolean(d, "ro"),
+                partition_table: text(d.pttype.as_ref()),
+                partition_table_uuid: text(d.ptuuid.as_ref()),
+                logical_sector_size: d.log_sec.unwrap_or(0),
+                major_minor: text(d.maj_min.as_ref()),
+                wwn: text(d.wwn.as_ref()),
+                serial: text(d.serial.as_ref()),
+                removable: d.removable,
+                read_only: d.read_only,
                 is_system,
                 partitions,
             })
@@ -480,50 +474,31 @@ fn is_installable_device_name(name: &str) -> bool {
         )
 }
 
-fn parse_partition(value: &Value) -> Option<DiskPartition> {
-    if field(value, "type") != "part" {
+fn parse_partition(device: &BlockDevice) -> Option<DiskPartition> {
+    if device.kind != "part" {
         return None;
     }
     Some(DiskPartition {
-        name: field(value, "name"),
+        name: device.name.clone(),
         // util-linux documents START in 512-byte sectors even when the device
         // has a different logical sector size.
-        start_bytes: number(value, "start").saturating_mul(512),
-        size_bytes: number(value, "size"),
-        part_uuid: field(value, "partuuid"),
-        filesystem: field(value, "fstype"),
-        label: field(value, "label"),
-        mountpoint: mountpoints(value),
-        part_type: field(value, "parttype"),
+        start_bytes: device.start.unwrap_or(0).saturating_mul(512),
+        size_bytes: device.size,
+        part_uuid: text(device.partuuid.as_ref()),
+        filesystem: text(device.fstype.as_ref()),
+        label: text(device.label.as_ref()),
+        mountpoint: mountpoints(device),
+        part_type: text(device.parttype.as_ref()),
     })
 }
 
-/// `MOUNTPOINTS` is an array in lsblk JSON. A single `MOUNTPOINT` is not
-/// sufficient here: on a Btrfs system one partition commonly backs `/`,
-/// `/var`, and `/home`, and lsblk may choose any one of them for the singular
-/// column. Keep a newline-separated representation so existing empty/mounted
-/// checks remain simple while running-system detection sees every mount.
-fn mountpoints(value: &Value) -> String {
-    if let Some(points) = value.get("mountpoints").and_then(Value::as_array) {
-        return points
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::trim)
-            .filter(|point| !point.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-    // Compatibility with older fixtures and callers that still provide the
-    // singular field.
-    field(value, "mountpoint")
-}
-
-fn device_tree_has_live_system_mount(value: &Value) -> bool {
-    is_live_system_mount(&mountpoints(value))
-        || value
-            .get("children")
-            .and_then(Value::as_array)
-            .is_some_and(|children| children.iter().any(device_tree_has_live_system_mount))
+/// A single `MOUNTPOINT` is not sufficient here: on a Btrfs system one
+/// partition commonly backs `/`, `/var`, and `/home`, and lsblk may choose any
+/// one of them for the singular column. Keep a newline-separated
+/// representation of every mount so existing empty/mounted checks remain
+/// simple while running-system detection sees every mount.
+fn mountpoints(device: &BlockDevice) -> String {
+    device.all_mountpoints().join("\n")
 }
 
 fn is_live_system_mount(mountpoints: &str) -> bool {
@@ -537,27 +512,8 @@ fn is_live_system_mount(mountpoints: &str) -> bool {
     })
 }
 
-fn field(value: &Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn number(value: &Value, key: &str) -> u64 {
-    value
-        .get(key)
-        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
-        .unwrap_or(0)
-}
-
-fn boolean(value: &Value, key: &str) -> bool {
-    value
-        .get(key)
-        .and_then(|v| v.as_bool().or_else(|| Some(v.as_u64()? != 0)))
-        .unwrap_or(false)
+fn text(value: Option<&String>) -> String {
+    value.cloned().unwrap_or_default()
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -573,16 +529,9 @@ fn format_bytes(bytes: u64) -> String {
 /// Run `lsblk` and parse its output. Returns an empty vec when `lsblk`
 /// is missing or fails — the UI surfaces that as "No disks found".
 pub fn read_disks() -> Vec<Disk> {
-    match bounded_command::run(
-        "lsblk",
-        &LSBLK_ARGS,
-        None,
-        4 * 1024 * 1024,
-        Duration::from_secs(10),
-    ) {
-        Ok(out) if out.status.success() => parse_lsblk(&String::from_utf8_lossy(&out.stdout)),
-        _ => Vec::new(),
-    }
+    lsblk()
+        .output()
+        .map_or_else(Vec::new, |out| parse_lsblk(&String::from_utf8_lossy(&out)))
 }
 
 #[cfg(test)]
@@ -590,9 +539,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lsblk_arguments_use_the_portable_output_form() {
-        assert_eq!(LSBLK_ARGS[3], "--output");
-        assert!(!LSBLK_ARGS[4].starts_with('='));
+    fn parse_lsblk_matches_the_captured_inventory() {
+        // Real `lsblk` output for exactly LSBLK_COLUMNS, and the disks this
+        // module derived from it before the shared parser existed.
+        let disks = parse_lsblk(include_str!(
+            "../../../system/block-devices/tests/fixtures/installer.json"
+        ));
+        assert_eq!(
+            format!("{disks:#?}\n"),
+            include_str!("../tests/fixtures/lsblk-disks.txt")
+        );
+    }
+
+    #[test]
+    fn lsblk_lists_full_paths_in_the_portable_output_form() {
+        assert_eq!(
+            lsblk().args(),
+            ["-J", "-b", "-p", "--output", LSBLK_COLUMNS]
+        );
     }
 
     #[test]

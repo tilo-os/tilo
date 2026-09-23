@@ -1407,6 +1407,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-devices"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "serde_json",
+ "zbus",
+]
+
+[[package]]
 name = "block-padding"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3463,13 +3472,13 @@ dependencies = [
 name = "disks"
 version = "0.1.0"
 dependencies = [
+ "block-devices",
  "bounded-command",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tilo-actions",
  "tilo-app",
- "zbus",
 ]
 
 [[package]]
@@ -6633,6 +6642,7 @@ name = "imager"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "block-devices",
  "bounded-command",
  "cap-fs-ext",
  "cap-primitives",
@@ -6791,6 +6801,7 @@ name = "installer"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "block-devices",
  "bounded-command",
  "libc",
  "os-actions",

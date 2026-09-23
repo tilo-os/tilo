@@ -1,0 +1,183 @@
+{
+  "blockdevices": [
+    {
+      "name": "/dev/zram0",
+      "size": 42949672960,
+      "start": null,
+      "model": null,
+      "type": "disk",
+      "fstype": "swap",
+      "label": "zram0",
+      "mountpoints": [
+        "[SWAP]"
+      ],
+      "parttype": null,
+      "partuuid": null,
+      "pttype": null,
+      "ptuuid": null,
+      "log-sec": 4096,
+      "rm": false,
+      "ro": false,
+      "wwn": null,
+      "serial": null,
+      "maj:min": "251:0"
+    },
+    {
+      "name": "/dev/nvme0n1",
+      "size": 2000398934016,
+      "start": null,
+      "model": "CT2000P310SSD8",
+      "type": "disk",
+      "fstype": null,
+      "label": null,
+      "mountpoints": [],
+      "parttype": null,
+      "partuuid": null,
+      "pttype": "gpt",
+      "ptuuid": "132a5393-ef1f-f77e-04b9-2b04b1afe9a4",
+      "log-sec": 512,
+      "rm": false,
+      "ro": false,
+      "wwn": "eui.0000000000000000d06885095069cf4e",
+      "serial": "SERIAL73D2FB",
+      "maj:min": "259:0",
+      "children": [
+        {
+          "name": "/dev/nvme0n1p1",
+          "size": 629145600,
+          "start": 2048,
+          "model": null,
+          "type": "part",
+          "fstype": "vfat",
+          "label": null,
+          "mountpoints": [
+            "/boot/efi"
+          ],
+          "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+          "partuuid": "f5987198-881a-d3a5-93e5-d11872d6b325",
+          "pttype": "gpt",
+          "ptuuid": "132a5393-ef1f-f77e-04b9-2b04b1afe9a4",
+          "log-sec": 512,
+          "rm": false,
+          "ro": false,
+          "wwn": "eui.0000000000000000d06885095069cf4e",
+          "serial": null,
+          "maj:min": "259:2"
+        },
+        {
+          "name": "/dev/nvme0n1p2",
+          "size": 1073741824,
+          "start": 1230848,
+          "model": null,
+          "type": "part",
+          "fstype": "ext4",
+          "label": null,
+          "mountpoints": [
+            "/boot"
+          ],
+          "parttype": "bc13c2ff-59e6-4262-a352-b275fd6f7172",
+          "partuuid": "c5fa908d-3935-f830-0f37-08a5fbeb4acc",
+          "pttype": "gpt",
+          "ptuuid": "132a5393-ef1f-f77e-04b9-2b04b1afe9a4",
+          "log-sec": 512,
+          "rm": false,
+          "ro": false,
+          "wwn": "eui.0000000000000000d06885095069cf4e",
+          "serial": null,
+          "maj:min": "259:3"
+        },
+        {
+          "name": "/dev/nvme0n1p3",
+          "size": 1998694907904,
+          "start": 3328000,
+          "model": null,
+          "type": "part",
+          "fstype": "btrfs",
+          "label": "fedora",
+          "mountpoints": [
+            "/run/media/system/fedora",
+            "/var/home",
+            "/var",
+            "/sysroot/ostree/deploy/default/var",
+            "/sysroot",
+            "/etc"
+          ],
+          "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+          "partuuid": "efafb505-2f26-927f-99d2-67bfbe0764e8",
+          "pttype": "gpt",
+          "ptuuid": "132a5393-ef1f-f77e-04b9-2b04b1afe9a4",
+          "log-sec": 512,
+          "rm": false,
+          "ro": false,
+          "wwn": "eui.0000000000000000d06885095069cf4e",
+          "serial": null,
+          "maj:min": "259:4"
+        }
+      ]
+    },
+    {
+      "name": "/dev/nvme1n1",
+      "size": 1024209543168,
+      "start": null,
+      "model": "WD PC SN560 SDDPNQE-1T00-1002",
+      "type": "disk",
+      "fstype": null,
+      "label": null,
+      "mountpoints": [],
+      "parttype": null,
+      "partuuid": null,
+      "pttype": "gpt",
+      "ptuuid": "1c014103-0406-7588-6436-ca5f28cf13ab",
+      "log-sec": 512,
+      "rm": false,
+      "ro": false,
+      "wwn": "eui.00000000000000000969bd1af40cbd7e",
+      "serial": "SERIAL278596",
+      "maj:min": "259:1",
+      "children": [
+        {
+          "name": "/dev/nvme1n1p1",
+          "size": 31999393792,
+          "start": 2048,
+          "model": null,
+          "type": "part",
+          "fstype": "swap",
+          "label": "Swap 2",
+          "mountpoints": [
+            "[SWAP]"
+          ],
+          "parttype": "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f",
+          "partuuid": "01041010-c909-33b2-e943-c523632258c7",
+          "pttype": "gpt",
+          "ptuuid": "1c014103-0406-7588-6436-ca5f28cf13ab",
+          "log-sec": 512,
+          "rm": false,
+          "ro": false,
+          "wwn": "eui.00000000000000000969bd1af40cbd7e",
+          "serial": null,
+          "maj:min": "259:5"
+        },
+        {
+          "name": "/dev/nvme1n1p2",
+          "size": 992208748544,
+          "start": 62500864,
+          "model": null,
+          "type": "part",
+          "fstype": "btrfs",
+          "label": "fedora",
+          "mountpoints": [],
+          "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+          "partuuid": "dcc20f3f-1819-f54c-673d-b4b47db0ba13",
+          "pttype": "gpt",
+          "ptuuid": "1c014103-0406-7588-6436-ca5f28cf13ab",
+          "log-sec": 512,
+          "rm": false,
+          "ro": false,
+          "wwn": "eui.00000000000000000969bd1af40cbd7e",
+          "serial": null,
+          "maj:min": "259:6"
+        }
+      ]
+    }
+  ]
+}
