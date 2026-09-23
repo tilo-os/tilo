@@ -2307,17 +2307,31 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let target_host = frame_builder
+        let store = frame_builder.chrome().records().clone();
+        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
+        if !store.open_record(&checkout) {
+            store
+                .create_record(&checkout)
+                .expect("capture fixture creates its Notes record");
+        }
+        frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
-            .and_then(|group| group.active_host_mut())
-            .expect("target Notes host");
-        let mut notes = crate::shell::notes_app::NotesApp::with_seed(long_note);
-        notes.prime_complete_content_for_test(Rect::new(0.0, 0.0, 700.0, 400.0));
-        target_host.replace_content(ui::widget::TileContent::App(Box::new(notes)));
-        // This test exercises compositor capture, not record custody. Keep its
-        // Notes fixture hermetic and prime its semantic canvas before the shell
-        // moves the hosted group wholly offscreen.
+            .expect("target Notes group")
+            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+        store
+            .with(&checkout.id, |doc| {
+                let mut body =
+                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
+                body.sync(doc, &automerge::ROOT);
+                let end = body.clamp(usize::MAX);
+                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
+            })
+            .expect("capture fixture writes the canonical Notes record");
+        let mut shell_document = automerge::AutoCommit::new();
+        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
+        frame_builder.relayout();
+        let _ = frame_builder.paint();
         assert!(
             frame_builder
                 .host_mut()
