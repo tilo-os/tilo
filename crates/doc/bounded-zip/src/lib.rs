@@ -18,6 +18,9 @@
 //! callers whose formats warrant tighter bounds pass their own [`ZipLimits`] or a
 //! smaller per-read cap, which can only narrow the limits.
 
+#[cfg(feature = "epub")]
+pub mod epub;
+
 use std::io::{Cursor, Read, Seek};
 
 use zip::ZipArchive;

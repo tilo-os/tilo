@@ -10,16 +10,18 @@
 //! <base>/toc.ncx | nav.xhtml   → the table of contents
 //! ```
 //!
-//! We open the ZIP ([`zip`]), read `container.xml` to find the OPF, parse the
-//! OPF ([`roxmltree`]) for metadata + the ordered spine, then read each spine
-//! document and lower its XHTML into [`Block`]s via [`crate::xhtml`]. The TOC
-//! (nav doc preferred, NCX fallback) supplies chapter titles.
+//! We open the ZIP under the shared zip-bomb bounds, resolve `container.xml` →
+//! OPF → metadata, spine and cover through [`bounded_zip::epub`] (the same
+//! resolution the thumbnailer uses), then read each spine document and lower its
+//! XHTML into [`Block`]s via [`crate::xhtml`]. The TOC (nav doc preferred, NCX
+//! fallback, parsed with [`roxmltree`]) supplies chapter titles.
 
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use bounded_zip::epub::{self, OpfPackage, join, parent_dir, strip_fragment};
 use bounded_zip::{BoundedArchive, ZipLimits};
 use roxmltree::Document;
 
@@ -42,8 +44,7 @@ pub const MAX_EPUB_BYTES: usize = 128 * 1024 * 1024;
 /// uncompressed length, so check it before allocating a buffer rather than
 /// trusting a compressed member to be small. The aggregate spine budget also
 /// prevents many individually-valid XHTML files from exhausting memory.
-const MAX_CONTAINER_BYTES: usize = 512 * 1024;
-const MAX_PACKAGE_BYTES: usize = 2 * 1024 * 1024;
+/// (`container.xml` and the OPF are bounded by [`bounded_zip::epub`].)
 const MAX_NAV_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHAPTER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOTAL_SPINE_BYTES: usize = 64 * 1024 * 1024;
@@ -93,11 +94,13 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
     let mut archive =
         BoundedArchive::from_bytes(bytes, ZipLimits::default()).context("open epub zip")?;
 
-    let opf_path = find_opf_path(&mut archive)?;
-    let opf_src = read_entry(&mut archive, &opf_path, MAX_PACKAGE_BYTES)?;
+    let opf_path = epub::find_opf_path(&mut archive)?;
     let base = parent_dir(&opf_path);
 
-    let pkg = OpfPackage::parse(&opf_src, &base)?;
+    let pkg = epub::read_package(&mut archive, &opf_path)?;
+    if pkg.spine.is_empty() {
+        return Err(anyhow!("OPF spine is empty"));
+    }
 
     // Build href -> title map from the TOC (nav doc first, then NCX).
     let toc = read_toc(&mut archive, &pkg, &base);
@@ -229,163 +232,6 @@ fn decode_cover(bytes: &[u8]) -> Option<Cover> {
 }
 
 // ---------------------------------------------------------------------------
-// container.xml -> OPF path
-// ---------------------------------------------------------------------------
-
-fn find_opf_path(archive: &mut Archive<'_>) -> Result<String> {
-    let xml = read_entry(archive, "META-INF/container.xml", MAX_CONTAINER_BYTES)
-        .context("read META-INF/container.xml")?;
-    let doc = Document::parse(&xml).context("parse container.xml")?;
-    let rootfile = doc
-        .descendants()
-        .find(|n| n.has_tag_name("rootfile"))
-        .ok_or_else(|| anyhow!("no <rootfile> in container.xml"))?;
-    let path = rootfile
-        .attribute("full-path")
-        .ok_or_else(|| anyhow!("<rootfile> missing full-path"))?;
-    Ok(normalize(path))
-}
-
-// ---------------------------------------------------------------------------
-// OPF package document
-// ---------------------------------------------------------------------------
-
-struct OpfPackage {
-    title: String,
-    creator: String,
-    publisher: String,
-    language: String,
-    description: String,
-    subject: String,
-    /// Spine hrefs in reading order (resolved relative to the OPF base).
-    spine: Vec<String>,
-    /// href of the EPUB3 nav document, if declared (properties="nav").
-    nav_href: Option<String>,
-    /// href of the NCX, if any (spine toc= idref or manifest media-type).
-    ncx_href: Option<String>,
-    /// Resolved href of the cover image, from `properties="cover-image"`, the
-    /// legacy `<meta name="cover">` pointer, or a cover-named image item.
-    cover_href: Option<String>,
-}
-
-impl OpfPackage {
-    fn parse(src: &str, base: &str) -> Result<Self> {
-        let doc = Document::parse(src).context("parse OPF")?;
-
-        let meta_text = |tag: &str| -> String {
-            doc.descendants()
-                .find(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case(tag))
-                .and_then(|n| n.text())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default()
-        };
-
-        let title = meta_text("title");
-        let creator = meta_text("creator");
-        let publisher = meta_text("publisher");
-        let language = meta_text("language");
-        let description = meta_text("description");
-        let subject = meta_text("subject");
-
-        // The legacy cover pointer: `<meta name="cover" content="item-id"/>`.
-        let cover_meta_id = doc
-            .descendants()
-            .find(|n| {
-                n.has_tag_name("meta")
-                    && n.attribute("name") == Some("cover")
-                    && n.attribute("content").is_some()
-            })
-            .and_then(|n| n.attribute("content"))
-            .map(std::string::ToString::to_string);
-
-        // Manifest: id -> (href, properties, media-type)
-        let mut manifest = HashMap::new();
-        let mut nav_href = None;
-        let mut ncx_by_id: HashMap<String, String> = HashMap::new();
-        // Cover candidates, in descending confidence.
-        let mut cover_by_props: Option<String> = None;
-        let mut cover_by_name: Option<String> = None;
-        if let Some(man) = doc.descendants().find(|n| n.has_tag_name("manifest")) {
-            for item in man.children().filter(|n| n.has_tag_name("item")) {
-                let id = item.attribute("id").unwrap_or_default().to_string();
-                let href = item.attribute("href").unwrap_or_default();
-                if id.is_empty() || href.is_empty() {
-                    continue;
-                }
-                let resolved = join(base, href);
-                let props = item.attribute("properties").unwrap_or_default();
-                let media = item.attribute("media-type").unwrap_or_default();
-                if props.split_whitespace().any(|p| p == "nav") {
-                    nav_href = Some(resolved.clone());
-                }
-                if props.split_whitespace().any(|p| p == "cover-image") {
-                    cover_by_props = Some(resolved.clone());
-                }
-                // The id/href checks are deliberately symmetric (either one
-                // naming "cover" is a signal), not a copy-paste of one field.
-                #[allow(
-                    clippy::suspicious_operation_groupings,
-                    reason = "id and href are intentionally checked the same way, not swapped"
-                )]
-                let looks_like_cover = media.starts_with("image/")
-                    && cover_by_name.is_none()
-                    && (id.to_ascii_lowercase().contains("cover")
-                        || href.to_ascii_lowercase().contains("cover"));
-                if looks_like_cover {
-                    cover_by_name = Some(resolved.clone());
-                }
-                if media == "application/x-dtbncx+xml" {
-                    ncx_by_id.insert(id.clone(), resolved.clone());
-                }
-                manifest.insert(id, resolved);
-            }
-        }
-        let cover_href = cover_by_props
-            .or_else(|| cover_meta_id.and_then(|id| manifest.get(&id).cloned()))
-            .or(cover_by_name);
-
-        // Spine: ordered idrefs -> hrefs; `toc` attr names the NCX item.
-        let mut spine = Vec::new();
-        let mut ncx_href = None;
-        if let Some(sp) = doc.descendants().find(|n| n.has_tag_name("spine")) {
-            if let Some(toc_id) = sp.attribute("toc") {
-                ncx_href = ncx_by_id
-                    .get(toc_id)
-                    .cloned()
-                    .or_else(|| manifest.get(toc_id).cloned());
-            }
-            for itemref in sp.children().filter(|n| n.has_tag_name("itemref")) {
-                if let Some(idref) = itemref.attribute("idref")
-                    && let Some(href) = manifest.get(idref)
-                {
-                    spine.push(href.clone());
-                }
-            }
-        }
-        if ncx_href.is_none() {
-            ncx_href = ncx_by_id.into_values().next();
-        }
-
-        if spine.is_empty() {
-            return Err(anyhow!("OPF spine is empty"));
-        }
-
-        Ok(Self {
-            title,
-            creator,
-            publisher,
-            language,
-            description,
-            subject,
-            spine,
-            nav_href,
-            ncx_href,
-            cover_href,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Table of contents -> href(no fragment) -> label
 // ---------------------------------------------------------------------------
 
@@ -507,65 +353,9 @@ fn read_entry_bytes(archive: &mut Archive<'_>, name: &str, limit: usize) -> Resu
     Ok(archive.read(name, limit as u64)?)
 }
 
-fn strip_fragment(href: &str) -> &str {
-    href.split('#').next().unwrap_or(href)
-}
-
-fn parent_dir(path: &str) -> String {
-    match path.rfind('/') {
-        Some(i) => path.get(..i).unwrap_or_default().to_string(),
-        None => String::new(),
-    }
-}
-
-/// Join a relative href onto a base directory and normalise.
-fn join(base: &str, href: &str) -> String {
-    if let Some(stripped) = href.strip_prefix('/') {
-        return normalize(stripped);
-    }
-    if base.is_empty() {
-        return normalize(href);
-    }
-    normalize(&format!("{base}/{href}"))
-}
-
-/// Collapse `.` / `..` segments and `./` prefixes; ZIP names use `/`.
-fn normalize(path: &str) -> String {
-    let mut stack: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                stack.pop();
-            }
-            s => stack.push(s),
-        }
-    }
-    stack.join("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_resolves_dot_segments() {
-        assert_eq!(normalize("OEBPS/./ch1.xhtml"), "OEBPS/ch1.xhtml");
-        assert_eq!(normalize("OEBPS/text/../ch1.xhtml"), "OEBPS/ch1.xhtml");
-    }
-
-    #[test]
-    fn join_resolves_relative() {
-        assert_eq!(join("OEBPS", "ch1.xhtml"), "OEBPS/ch1.xhtml");
-        assert_eq!(join("OEBPS/text", "../images/c.png"), "OEBPS/images/c.png");
-        assert_eq!(join("", "ch1.xhtml"), "ch1.xhtml");
-    }
-
-    #[test]
-    fn strip_fragment_works() {
-        assert_eq!(strip_fragment("ch1.xhtml#sec2"), "ch1.xhtml");
-        assert_eq!(strip_fragment("ch1.xhtml"), "ch1.xhtml");
-    }
 
     #[test]
     fn identity_is_the_content_hash_not_the_path() {
