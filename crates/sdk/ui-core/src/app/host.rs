@@ -281,6 +281,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         text_renderer: &mut TextRenderer,
         depth: usize,
         cycle: &[Color; 3],
+        label_ground: Color,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
             return;
@@ -305,7 +306,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 180),
+            label_ground,
             None,
             &bg_rect,
         );
@@ -329,6 +330,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
                 text_renderer,
                 depth.saturating_add(1),
                 cycle,
+                label_ground,
             );
         });
     }
@@ -337,6 +339,13 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         app.theme.tokens.colors.semantic.info,
         app.theme.tokens.colors.semantic.success,
     ];
+    let label_ground = app
+        .theme
+        .tokens
+        .colors
+        .surfaces
+        .scrim
+        .with_alpha(180.0 / 255.0);
     draw_debug_recursive(
         app.root_widget.as_ref(),
         scene,
@@ -344,6 +353,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         &mut app.text_renderer,
         0,
         &debug_outline_cycle,
+        label_ground,
     );
 }
 
@@ -435,6 +445,18 @@ fn run_layout_pass(
                 if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
+            } else {
+                // Anonymous retained widgets have no identity by which state
+                // could safely cross to a replacement. If the same live
+                // widget survived the rebuild, recover only its newly
+                // admitted node from the focus flags it still owns.
+                app.focused_node = unsafe {
+                    CompositionFocus::current(
+                        &app.layout.node_map,
+                        &app.bindings,
+                        Some(&app.focusable_order),
+                    )
+                };
             }
             current_root = app
                 .layout
@@ -3294,6 +3316,12 @@ mod pointer_broadcast_tests {
         let app_state = State::load(&base_bytes).unwrap();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
+        let route =
+            crate::collaboration::RouteSpec::app("snapshot-merge-test", uuid::Uuid::from_u128(1));
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: route.clone(),
+            epoch: uuid::Uuid::from_u128(2),
+        });
         {
             let doc = &mut app.state_mut_for_test().doc;
             let Ok(Some((automerge::Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "m") else {
@@ -3301,8 +3329,10 @@ mod pointer_broadcast_tests {
             };
             doc.put(&m, "a", 10).unwrap();
         }
+        app.commit_action();
 
         let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
+        peer.set_actor(automerge::ActorId::from(b"snapshot-merge-peer".as_slice()));
         let Ok(Some((automerge::Value::Object(ObjType::Map), pm))) = peer.get(&ROOT, "m") else {
             panic!("m exists")
         };
@@ -3313,9 +3343,17 @@ mod pointer_broadcast_tests {
             collab_types::DocumentMutation::Snapshot(incoming)
                 .encode()
                 .unwrap(),
-            collab_types::ArtifactId::new(),
+            collab_types::document_artifact_id(
+                &route.app_id,
+                &route.cluster_id.to_string(),
+                route.record.as_deref().unwrap_or(""),
+            ),
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-            collab_types::AttestationId::new(),
+            collab_types::document_attestation_id(
+                &route.app_id,
+                &route.cluster_id.to_string(),
+                route.record.as_deref().unwrap_or(""),
+            ),
             collab_types::OpClass::Splice,
             std::time::SystemTime::UNIX_EPOCH,
             0,
