@@ -1063,9 +1063,8 @@ mod remedies {
     pub(super) fn run(command: HostCommand) -> Result<(), String> {
         #[cfg(windows)]
         {
-            // MERGE: `staging::windows::remedies` comes from the Windows
-            // workstream; each call raises its own UAC prompt, and the
-            // firmware restart suspends BitLocker for one restart when asked.
+            // Each call raises its own UAC prompt; the firmware restart
+            // suspends BitLocker for one restart when asked.
             use crate::setup::staging::windows::remedies;
             match command {
                 HostCommand::Restart => remedies::restart_now(),
