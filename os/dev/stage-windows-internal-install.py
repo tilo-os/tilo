@@ -284,14 +284,25 @@ def atomic_json(path, value):
         except FileNotFoundError: pass
 
 
-def make_live_record(plan, staged):
+def development_backend():
+    path = Path(__file__).resolve().parents[1] / "usr/libexec/tilo-install"
+    data = path.read_bytes()
+    if b"--internal-source)" not in data:
+        fail("development backend lacks protected internal-source support")
+    return path, data, hashlib.sha256(data).hexdigest()
+
+
+def make_live_record(plan, staged, backend_sha256=None):
+    if backend_sha256 is None:
+        backend_sha256 = "0" * 64
     return {"schema": "tilo.internal-install-source.v1", "source_sha256": plan["source"]["sha256"],
+            "development_backend": {"efi_path": "/EFI/tilo/dev/tilo-install", "sha256": backend_sha256},
             "disk": {key: plan["windows_disk"][key] for key in ("size_bytes", "unique_id", "serial")},
             "preserve_partitions": plan["preserve_partitions"],
             "target_free_extent": plan["target_free_extent"], "staging": staged}
 
 
-def publish_live_record(plan, record):
+def publish_live_record(plan, record, backend_data):
     disk = plan["windows_disk"]["number"]
     esp = next(row for row in record["staging"] if row["role"] == "staging-esp")
     partuuid = guid(esp["partuuid"])
@@ -310,6 +321,11 @@ if(-not $p.DriveLetter){{throw 'Windows could not mount the staged ESP'}}
     data = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
     try:
         root.mkdir(parents=True, exist_ok=True)
+        backend = root / "dev/tilo-install"
+        backend.parent.mkdir(parents=True, exist_ok=True)
+        backend.write_bytes(backend_data)
+        if hashlib.sha256(backend.read_bytes()).hexdigest() != record["development_backend"]["sha256"]:
+            fail("development installer backend failed staged-ESP readback")
         temporary = root / ".internal-stage.json.tmp"
         temporary.write_bytes(data)
         os.replace(temporary, path)
@@ -367,8 +383,9 @@ def execute(args):
             actual = next(item for item in additions if item["offset_bytes"] == row["offset_bytes"])
             results.append({"role": row["role"], "partuuid": actual["partuuid"], "sha256": digest,
                             "offset_bytes": row["offset_bytes"], "size_bytes": row["size_bytes"]})
-    live_record = make_live_record(plan, results)
-    record_hash = publish_live_record(plan, live_record)
+    _backend_path, backend_data, backend_hash = development_backend()
+    live_record = make_live_record(plan, results, backend_hash)
+    record_hash = publish_live_record(plan, live_record, backend_data)
     receipt = {"schema": "tilo.windows-internal-stage.v1", "disk": plan["windows_disk"],
                "target_free_extent": plan["target_free_extent"], "staging": results,
                "source_sha256": plan["source"]["sha256"], "readback_verified": True,
