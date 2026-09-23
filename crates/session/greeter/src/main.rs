@@ -29,22 +29,14 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use greeter::GreeterApp;
 use greeter::greeter_app::AuthScenario;
-use taffy::prelude::*;
 use ui::app::UserEvent;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{ShotFrame, ShotLayout};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -221,15 +213,14 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
-/// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+/// resulting RGBA to `out` as a PNG.
 ///
 /// `username` pre-populates the non-secret username CRDT object. The caller
 /// seeds representative passcode text through `GreeterApp`'s process-local
-/// buffer, never the document. Because the composed
-/// children are only created *inside* `build_layout`, we sync a second time
-/// afterwards so those children (the `TextInputs`) pull their values from the
-/// document — the live App achieves the same via its per-frame sync.
+/// buffer, never the document. Because the composed children are only
+/// created *inside* `build_layout`, the frame syncs a second time afterwards
+/// so those children (the `TextInputs`) pull their values from the document
+/// — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -239,83 +230,24 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
-    let (w, h) = viewport;
-    // Viewport dimensions are screen/image sizes (1280x800 by default),
-    // always far under f32's 24-bit mantissa — never enough to lose precision.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "viewport dimensions are screen/image sizes, always far under 2^24"
-    )]
-    let (wf, hf) = (w as f32, h as f32);
     let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
+    let mut frame = ShotFrame::new(viewport, theme)
+        .with_unscaled_text()
+        .with_layout(ShotLayout::Measured)
+        .with_resync_after_build();
 
     if let Some(username) = username {
+        let state = &mut frame.state;
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
         let _ = state.doc.splice_text(&uobj, 0, 0, username);
     }
 
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-
-    // Second sync so the freshly-composed children pull from the doc.
-    widget.sync(&mut state.doc, &state.root);
-
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(wf),
-                height: Dimension::length(hf),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(wf),
-                height: AvailableSpace::Definite(hf),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
+    let scene = frame.draw(widget.as_mut());
+    frame.write_png(&scene, out);
     println!("tilo-greeter: wrote shot to {}", out.display());
     Ok(())
 }
