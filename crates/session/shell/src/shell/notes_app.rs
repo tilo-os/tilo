@@ -144,20 +144,6 @@ impl NotesApp {
         app
     }
 
-    #[cfg(test)]
-    pub(crate) fn prime_complete_content_for_test(&mut self, rect: Rect) {
-        self.rect = rect;
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        self.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
-    }
-
     fn clamp_cursor(&mut self) {
         self.selection.cursor = self.body.clamp(self.selection.cursor);
         self.selection.anchor = self.body.clamp(self.selection.anchor);
