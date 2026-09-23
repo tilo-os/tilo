@@ -711,6 +711,9 @@ pub struct RoomActivityPane {
     /// The viewport `layout` was last given, so `draw` can lay the sheet
     /// out again when the theme's text scale changes the header's height.
     viewport: Rect,
+    /// Whether `viewport` belongs to an ordinary tiled Activity window or
+    /// the legacy right-anchored overlay layout.
+    window_layout: bool,
     /// The user's text scale as of the last draw. The header band is sized
     /// from it (`header_h`), so 200 % type has room instead of the title,
     /// subtitle and "Latest" line stacking on top of one another.
@@ -887,6 +890,7 @@ impl RoomActivityPane {
             contributors: Vec::new(),
             sheet: Rect::ZERO,
             viewport: Rect::ZERO,
+            window_layout: false,
             text_scale: 1.0,
             period_rects: Vec::new(),
             author_rects: Vec::new(),
@@ -2505,6 +2509,7 @@ impl RoomActivityPane {
     /// full-bleed — a 360px sheet over a 600px desktop is two unusable halves.
     pub fn layout(&mut self, viewport: Rect) {
         self.viewport = viewport;
+        self.window_layout = false;
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
             (vw - 2.0 * SHEET_INSET).max(0.0)
@@ -2539,6 +2544,8 @@ impl RoomActivityPane {
     /// Window chrome, clipping, sizing and movement remain owned by the
     /// shared `WindowGroup`; this method only consumes its content viewport.
     pub fn layout_window(&mut self, viewport: Rect) {
+        self.viewport = viewport;
+        self.window_layout = true;
         let inset = 2.0;
         self.sheet = Rect::new(
             viewport.x0 + inset,
@@ -2566,7 +2573,7 @@ impl RoomActivityPane {
 
     fn chrome_height(&self) -> f64 {
         if self.view == ActivityView::CatchUp {
-            return HEADER_H;
+            return self.header_h();
         }
         if self.shows_chip_rows() {
             self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H
@@ -2618,7 +2625,11 @@ impl RoomActivityPane {
         if (self.text_scale - theme.text_scale).abs() > f32::EPSILON {
             self.text_scale = theme.text_scale;
             if self.viewport.area() > 0.0 {
-                self.layout(self.viewport);
+                if self.window_layout {
+                    self.layout_window(self.viewport);
+                } else {
+                    self.layout(self.viewport);
+                }
             }
         }
         // Panel role (HIG §9.1/§9.2/§9.5): the sheet's corner is the Panel
@@ -2645,11 +2656,19 @@ impl RoomActivityPane {
             &card,
         );
 
-        // Scope pills first: the title is elided to the room left of them,
-        // so at 200 % the two never paint over each other.
-        self.draw_scope_chips(scene, transform, tr, theme);
         self.draw_title_and_subtitle(scene, transform, tr, theme);
-        self.draw_view_tabs(scene, transform, tr, theme);
+        if self.view == ActivityView::CatchUp {
+            // Catch Up is the friendly, focused recap. Full-history scope and
+            // mode tabs belong to the deeper views and must not leak into its
+            // paint, hit-testing, keyboard order, or accessibility snapshot.
+            self.scope_rects.clear();
+            self.view_rects.clear();
+        } else {
+            // Scope pills first: the title is elided to the room left of them,
+            // so at 200 % the two never paint over each other.
+            self.draw_scope_chips(scene, transform, tr, theme);
+            self.draw_view_tabs(scene, transform, tr, theme);
+        }
 
         self.period_rects.clear();
         self.author_rects.clear();
@@ -3515,7 +3534,7 @@ impl RoomActivityPane {
                 Some(inner_w),
             );
             for (line, text) in lines.iter().enumerate() {
-                tr.draw_text_weighted(
+                tr.draw_text(
                     scene,
                     text,
                     body_size,
@@ -3534,6 +3553,7 @@ impl RoomActivityPane {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
+        let mut previous_index: Option<usize> = None;
         for (index, brief) in self
             .digest
             .briefs
@@ -3556,6 +3576,42 @@ impl RoomActivityPane {
                 0.0
             };
             let expanded = self.expanded_brief == Some(index);
+            if let Some(newer) = previous_index
+                && (expanded || self.expanded_brief == Some(newer))
+            {
+                let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
+                draw_work_session_boundary(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    rail,
+                    brief.changes > 1,
+                    self.digest.briefs[newer].changes > 1,
+                );
+                let (into_newer, into_older) = work_session_boundary_button_rects(rail);
+                if self.digest.briefs[newer].changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoOlder,
+                        },
+                        into_older,
+                    ));
+                }
+                if brief.changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoNewer,
+                        },
+                        into_newer,
+                    ));
+                }
+                y += 26.0;
+            }
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
@@ -3564,10 +3620,9 @@ impl RoomActivityPane {
                 text_width(x1 - x0 - 24.0),
                 2,
             );
-            let height = metrics.height(
-                title_lines.len(),
-                if expanded { brief.actions.len() } else { 0 },
-            );
+            let collapsed_height = metrics.height(title_lines.len(), 0);
+            let expanded_height = metrics.height(title_lines.len(), brief.actions.len());
+            let height = collapsed_height + (expanded_height - collapsed_height) * expansion;
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
@@ -3575,9 +3630,8 @@ impl RoomActivityPane {
                 || self.brief_offset > 0;
             let available_height =
                 (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
-                    .max(112.0 + title_extra);
-            let height =
-                (112.0 + (expanded_height - 112.0) * expansion + title_extra).min(available_height);
+                    .max(collapsed_height);
+            let height = height.min(available_height);
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
@@ -3604,6 +3658,7 @@ impl RoomActivityPane {
             scene.pop_layer();
             y += height + 8.0;
             shown = shown.saturating_add(1);
+            previous_index = Some(index);
         }
         let remaining = self
             .digest
@@ -5814,7 +5869,7 @@ impl RoomActivityPane {
                     "A causal replay of workspace layout and participant activity"
                 }
             })
-            .with_state(AccessState::new().modal(true));
+            .with_state(AccessState::new());
         if self.sheet.area() > 0.0 {
             root = root.with_bounds(self.sheet);
         }
@@ -6808,7 +6863,7 @@ fn draw_brief_card(
     scene.stroke(
         &Stroke::new(2.0),
         transform,
-        theme.tokens.colors.border_standard,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
         None,
         &Line::new((rail_x, rect.y0), (rail_x, rect.y1 + 8.0)),
     );
@@ -6857,7 +6912,7 @@ fn draw_brief_card(
         tr,
         theme,
         &brief.authors,
-        content_x,
+        rect.x0 + 12.0,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
@@ -6873,14 +6928,6 @@ fn draw_brief_card(
         theme.tokens.colors.text_dim,
         at(transform, byline_x, byline_y),
         None,
-    );
-    tr.draw_text(
-        scene,
-        &format_activity_range(brief.first_at, brief.last_at, now),
-        theme.tokens.typography.scale.sm,
-        theme.tokens.colors.text_dim,
-        at(transform, content_x, rect.y0 + 56.0 + title_extra),
-        Some(width),
     );
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
@@ -6932,9 +6979,9 @@ fn draw_brief_card(
                 scene,
                 transform,
                 Rect::new(
-                    content_x + 8.0,
+                    rect.x0 + 18.0,
                     action_y - 2.0,
-                    content_x + 24.0,
+                    rect.x0 + 34.0,
                     action_y + 14.0,
                 ),
                 &initial,
@@ -6942,7 +6989,12 @@ fn draw_brief_card(
                 theme,
                 tr,
             );
-            let action_line = format!("{} · {}", action.author.name, action.summary);
+            let action_line = format!(
+                "{} · {} · {}",
+                action.author.name,
+                action.summary,
+                format_relative_time(action.timestamp, now)
+            );
             let action_line = tr.elide_to_width(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
@@ -6953,20 +7005,11 @@ fn draw_brief_card(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, content_x + 32.0, action_y),
+                at(transform, rect.x0 + 40.0, action_y),
                 None,
             );
             action_y += m.action_pitch();
         }
-        tr.draw_text(
-            scene,
-            "Open in full history  →",
-            theme.tokens.typography.scale.sm,
-            theme.tokens.colors.accent[4],
-            at(transform, content_x, (action_y + 6.0).min(rect.y1 - 12.0)),
-            Some(width),
-        );
-        return;
     }
     let affordance = if expanded {
         "Open this work session in Explorer →"
@@ -7212,54 +7255,13 @@ fn draw_work_session_boundary(
     }
 }
 
-fn format_activity_timestamp(timestamp: SystemTime, now: SystemTime) -> String {
-    use chrono::{DateTime, Local};
-    let local: DateTime<Local> = timestamp.into();
-    format!(
-        "{}, {}",
-        activity_day_label(timestamp, now),
-        local.format("%H:%M")
+fn work_session_boundary_button_rects(rect: Rect) -> (Rect, Rect) {
+    let center = rect.x0 + rect.width() / 2.0;
+    let button_width = 104.0_f64.min((rect.width() - 16.0).max(0.0) / 2.0);
+    (
+        Rect::new(center - 6.0 - button_width, rect.y0, center - 6.0, rect.y1),
+        Rect::new(center + 6.0, rect.y0, center + 6.0 + button_width, rect.y1),
     )
-}
-
-fn format_activity_range(first: SystemTime, last: SystemTime, now: SystemTime) -> String {
-    use chrono::{DateTime, Local};
-    if first == last {
-        return format_activity_timestamp(last, now);
-    }
-    let first_local: DateTime<Local> = first.into();
-    let last_local: DateTime<Local> = last.into();
-    let minutes = last
-        .duration_since(first)
-        .unwrap_or_default()
-        .as_secs()
-        .saturating_add(30)
-        / 60;
-    let duration = if minutes >= 60 {
-        let hours = minutes / 60;
-        let remainder = minutes % 60;
-        if remainder == 0 {
-            format!("{hours} hr")
-        } else {
-            format!("{hours} hr {remainder} min")
-        }
-    } else {
-        format!("{} min", minutes.max(1))
-    };
-    if first_local.date_naive() == last_local.date_naive() {
-        format!(
-            "{}, {} – {} ({duration})",
-            activity_day_label(first, now),
-            first_local.format("%H:%M"),
-            last_local.format("%H:%M")
-        )
-    } else {
-        format!(
-            "{} – {} ({duration})",
-            format_activity_timestamp(first, now),
-            format_activity_timestamp(last, now)
-        )
-    }
 }
 
 fn draw_brief_author_stack(

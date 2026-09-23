@@ -3709,34 +3709,30 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
             .expect("the destination client belongs to a durable window group");
     assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
 
-    drag_file_row_onto_client(&compositor, &mut target, &photo, row, target_point);
-    // The client's accept-mime/action requests from `enter` must reach the
-    // compositor before release, or the drop is refused as unaccepted —
-    // matching the protocol and what a real client's event loop avoids by
-    // flushing as it goes.
+    drag_file_row_to_shell_target(&compositor, &mut target, &photo, row, target_point);
+    // The visible body zone belongs to the shell. Flush the foreign client
+    // before release so this assertion would observe an accidental Wayland
+    // handoff rather than merely checking an undrained queue.
     target.roundtrip();
     assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "text/uri-list"),
-        "the offer must carry the path list; offered {:?}",
-        target.state.dnd_offer_mimes
+        !target.state.dnd_entered && target.state.dnd_offer.is_none(),
+        "a shell-owned place-and-open target must not offer the payload to the client"
     );
-    assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "image/png"),
-        "a single image is also offered as its own bytes; offered {:?}",
-        target.state.dnd_offer_mimes
-    );
-
-    release_and_wait_for_drop(&compositor, &mut target);
-
-    let uris = target.read_dnd_bytes("text/uri-list", None);
+    compositor.pointer_button(false);
+    let started = Instant::now();
+    let after = loop {
+        let tree = compositor.workspace_tree();
+        let shape = tree_shape(&tree);
+        if shape.1 == before.1 + 1 && group_for_tab_title(&tree, "photo.png").is_some() {
+            break (shape, tree);
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the shell never opened photo.png at the body target.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
         after.0.0, before.0,
         "an interior body drop joins the existing group rather than creating a new one"
