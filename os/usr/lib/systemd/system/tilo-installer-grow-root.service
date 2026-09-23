@@ -1,0 +1,50 @@
+[Unit]
+Description=Grow the live installer root to fill its partition
+Documentation=man:systemd-growfs@.service(8)
+# A staged (USB-free) installer root is written as a minimised btrfs image into
+# a larger partition, so the download is roughly the used size. Grow it before
+# the installer copies the running image into local container storage. USB
+# media already fill their partition, where this is a no-op.
+ConditionKernelCommandLine=tilo.install
+ConditionPathIsMountPoint=/sysroot
+After=sysroot.mount local-fs.target
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The same block-backed /sysroot growth as tilo-growfs-sysroot.service (which
+# grows btrfs, ext4 and xfs to their partition and is idempotent), but on the
+# installer's critical path instead of after a login-friendly delay.
+ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
+TimeoutSec=infinity
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ReadWritePaths=/sysroot
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
