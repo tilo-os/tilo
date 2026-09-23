@@ -347,8 +347,8 @@ pub fn mask(chunk: &mut [u8], at: u64, ranges: &[Range]) {
 pub(crate) mod tests {
     use super::*;
 
-    /// A tiny FAT image builder for tests: 512-byte sectors, one sector per
-    /// cluster, one FAT. `fat32` switches to a FAT32 layout with enough
+    /// A tiny FAT image builder for tests: 512-byte sectors (or `sector`
+    /// via [`Builder::with_sector`]), one sector per cluster, one FAT. `fat32` switches to a FAT32 layout with enough
     /// clusters to be classified as FAT32.
     pub(crate) struct Builder {
         pub image: Vec<u8>,
@@ -358,17 +358,26 @@ pub(crate) mod tests {
         data_offset: usize,
         root_offset: usize,
         next: u32,
+        sector: usize,
     }
 
     impl Builder {
         pub(crate) fn new(fat32: bool) -> Self {
+            Self::with_sector(fat32, 512)
+        }
+
+        pub(crate) fn with_sector(fat32: bool, sector: usize) -> Self {
+            assert!(
+                !fat32 || sector == 512,
+                "the FAT32 fixture is sized for 512-byte sectors"
+            );
             let (total, fat_sectors, root_entries): (u32, u32, u16) = if fat32 {
                 (66_000 + 1 + 520, 520, 0)
             } else {
                 (128, 1, 16)
             };
-            let mut image = vec![0_u8; total as usize * 512];
-            image[11..13].copy_from_slice(&512_u16.to_le_bytes());
+            let mut image = vec![0_u8; total as usize * sector];
+            image[11..13].copy_from_slice(&(sector as u16).to_le_bytes());
             image[13] = 1;
             image[14..16].copy_from_slice(&1_u16.to_le_bytes());
             image[16] = 1;
@@ -383,16 +392,17 @@ pub(crate) mod tests {
             }
             image[510] = 0x55;
             image[511] = 0xaa;
-            let root_sectors = (u32::from(root_entries) * 32).div_ceil(512);
+            let root_sectors = (u32::from(root_entries) * 32).div_ceil(sector as u32);
             let data = 1 + fat_sectors + root_sectors;
             let mut b = Self {
                 image,
                 fat32,
                 clusters: total - data,
-                fat_offset: 512,
-                data_offset: data as usize * 512,
-                root_offset: (1 + fat_sectors) as usize * 512,
+                fat_offset: sector,
+                data_offset: data as usize * sector,
+                root_offset: (1 + fat_sectors) as usize * sector,
                 next: 2,
+                sector,
             };
             if fat32 {
                 b.next = 3;
@@ -421,7 +431,7 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn cluster_offset(&self, c: u32) -> usize {
-            self.data_offset + (c as usize - 2) * 512
+            self.data_offset + (c as usize - 2) * self.sector
         }
 
         /// Allocate `count` clusters as one chain, optionally leaving a hole
@@ -515,11 +525,14 @@ pub(crate) mod tests {
             content: &[u8],
             fragment: bool,
         ) -> Vec<u32> {
-            let chain = self.alloc((content.len() as u32).div_ceil(512).max(1), fragment);
+            let chain = self.alloc(
+                (content.len() as u32).div_ceil(self.sector as u32).max(1),
+                fragment,
+            );
             self.entry(dir, long, short, 0x20, chain[0], content.len() as u32);
             for (i, c) in chain.iter().enumerate() {
-                let piece =
-                    &content[(i * 512).min(content.len())..((i + 1) * 512).min(content.len())];
+                let piece = &content[(i * self.sector).min(content.len())
+                    ..((i + 1) * self.sector).min(content.len())];
                 let at = self.cluster_offset(*c);
                 self.image[at..at + piece.len()].copy_from_slice(piece);
             }
@@ -529,7 +542,15 @@ pub(crate) mod tests {
 
     /// The layout the exporter must produce: `/EFI/tilo-staging/{handoff,record}.json`.
     pub(crate) fn staging_esp_image(fat32: bool, placeholder: usize) -> Vec<u8> {
-        let mut b = Builder::new(fat32);
+        staging_esp_image_with_sector(fat32, placeholder, 512)
+    }
+
+    pub(crate) fn staging_esp_image_with_sector(
+        fat32: bool,
+        placeholder: usize,
+        sector: usize,
+    ) -> Vec<u8> {
+        let mut b = Builder::with_sector(fat32, sector);
         let efi = b.mkdir(None, None, b"EFI        ");
         let boot = b.mkdir(Some(efi), None, b"BOOT       ");
         b.file(Some(boot), None, b"BOOTX64 EFI", &[0x4d; 700], false);

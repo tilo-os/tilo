@@ -94,6 +94,8 @@ pub mod codes {
     pub const DIGEST_MISMATCH: &str = "digest-mismatch";
     /// The staging ESP image lacks the handoff/record placeholders.
     pub const ESP_PLACEHOLDER: &str = "esp-placeholder-missing";
+    /// The staging ESP image's FAT sectors are smaller than the disk's.
+    pub const SECTOR_SIZE: &str = "sector-size-unsupported";
     /// Another operation on this disk is unfinished.
     pub const PENDING_OPERATION: &str = "pending-operation";
     pub const SECURE_BOOT_ON: &str = "secure-boot-on";
@@ -354,6 +356,27 @@ fn read_input(path: &str, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Primary Btrfs superblock position in the filesystem.
+const BTRFS_SUPERBLOCK_OFFSET: u64 = 0x1_0000;
+
+/// The canonical fsid of a Btrfs superblock (`sb` starts at the superblock),
+/// or `None` when the magic is absent.
+fn btrfs_fsid(sb: &[u8]) -> Option<String> {
+    if sb.get(0x40..0x48)? != b"_BHRfS_M" {
+        return None;
+    }
+    let id: [u8; 16] = sb.get(0x20..0x30)?.try_into().ok()?;
+    let u = u128::from_be_bytes(id);
+    Some(format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u >> 96,
+        (u >> 80) & 0xffff,
+        (u >> 64) & 0xffff,
+        (u >> 48) & 0xffff,
+        u & 0xffff_ffff_ffff
+    ))
+}
+
 fn sha_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -484,6 +507,48 @@ impl Engine<'_> {
         Ok(())
     }
 
+    /// The request's plan must be exactly what the planner produces for its
+    /// (already revalidated) basis, the bundle's sizes and the reviewed Tilo
+    /// size. Nothing about placement or the shrink amount is taken from the
+    /// unprivileged caller; pre-generated partition GUIDs are the only
+    /// caller-chosen values.
+    fn check_plan_geometry(&self) -> Result<(), Refusal> {
+        let plan = self.plan();
+        let target_bytes = plan.target_extent.lbas() * plan.basis.disk.sector_bytes;
+        let facts = self.facts();
+        let expected = super::plan::compute(&plan.basis, facts.requirements(target_bytes))
+            .map(|p| super::plan::with_loader_path(p, &facts.efi_path))
+            .map_err(|e| {
+                Refusal::new(
+                    codes::REQUEST_INVALID,
+                    format!("the plan cannot be reproduced for this host: {e:?}"),
+                )
+            })?;
+        let mut comparable = plan.clone();
+        comparable
+            .staging_esp
+            .partition_guid
+            .clone_from(&expected.staging_esp.partition_guid);
+        comparable
+            .staging_root
+            .partition_guid
+            .clone_from(&expected.staging_root.partition_guid);
+        let guids_valid = [&plan.staging_esp, &plan.staging_root]
+            .iter()
+            .all(|p| p.partition_guid.as_deref().is_none_or(super::is_guid))
+            && plan.staging_esp.partition_guid.is_some()
+                == expected.staging_esp.partition_guid.is_some()
+            && plan.staging_root.partition_guid.is_some()
+                == expected.staging_root.partition_guid.is_some();
+        if comparable != expected || !guids_valid {
+            return Err(Refusal::new(
+                codes::REQUEST_INVALID,
+                "the plan's placement or shrink differs from what this host and bundle require",
+            ));
+        }
+        Ok(())
+    }
+
     fn load_record(&mut self) -> Result<Option<Record>, Refusal> {
         let record = self
             .store
@@ -509,12 +574,14 @@ impl Engine<'_> {
         if let Some(other) = records.iter().find(|r| {
             r.operation_id != self.request.operation_id
                 && super::same_guid(&r.plan.basis.disk.guid, disk)
-                && r.status() == RecordStatus::InProgress
+                // A fully staged operation still owns partitions and a boot
+                // entry; a second one would orphan them. Only removal ends it.
+                && r.status() != RecordStatus::Removed
         }) {
             return Err(Refusal::new(
                 codes::PENDING_OPERATION,
                 format!(
-                    "operation {} on this disk is unfinished",
+                    "operation {} on this disk is not removed",
                     other.operation_id
                 ),
             ));
@@ -687,11 +754,27 @@ impl Engine<'_> {
             }
         }
         let size = self.facts().esp.byte_size;
+        let disk_sector = self.plan().basis.disk.sector_bytes;
         let file = self.esp_file.as_mut().expect("opened");
         let mut read = |at: u64, buf: &mut [u8]| -> Result<(), String> {
             file.seek(SeekFrom::Start(at)).map_err(|e| e.to_string())?;
             file.read_exact(buf).map_err(|e| e.to_string())
         };
+        // Linux vfat (and firmware FAT drivers) refuse a FAT whose logical
+        // sector is smaller than the device's, so a 512-byte ESP image on a
+        // 4Kn disk would stage fine and then never boot. Refuse before any
+        // mutation instead of after shrinking C:.
+        let mut bpb = [0_u8; 2];
+        read(11, &mut bpb).map_err(io_refusal)?;
+        let fat_sector = u64::from(u16::from_le_bytes(bpb));
+        if fat_sector < disk_sector {
+            return Err(Refusal::new(
+                codes::SECTOR_SIZE,
+                format!(
+                    "the staging ESP uses {fat_sector}-byte sectors; this disk needs {disk_sector}"
+                ),
+            ));
+        }
         let placeholders = find_placeholders(&mut read, size)?;
         for r in placeholders.all() {
             let mut buf = vec![0_u8; r.len as usize];
@@ -1238,7 +1321,7 @@ impl Engine<'_> {
 
     fn check_verify(&mut self) -> Result<Actual, Refusal> {
         for which in [Which::Esp, Which::Root] {
-            if !self.component_matches(which)? {
+            if !self.component_matches(which)? && !self.booted_root_holds(which)? {
                 return Ok(Actual::Conflict(Refusal::new(
                     codes::DIGEST_MISMATCH,
                     "a staging partition does not read back as the manifest digest",
@@ -1246,6 +1329,29 @@ impl Engine<'_> {
             }
         }
         Ok(Actual::Done(Detail::new()))
+    }
+
+    /// Once BootNext has been armed the staged installer may have booted:
+    /// its first boot mounts the root read-write and grows the filesystem to
+    /// the partition, so the root no longer hashes to the download. Such a
+    /// root is still ours when the partition identity checks hold (done by
+    /// `require_staged`) and its Btrfs superblock carries the fsid the
+    /// manifest bound. The ESP never gets this allowance.
+    fn booted_root_holds(&mut self, which: Which) -> Result<bool, Refusal> {
+        if which != Which::Root || !self.record().is_done(Step::BootNext) {
+            return Ok(false);
+        }
+        let expected = self.facts().root.filesystem_uuid.clone();
+        if !super::is_guid(&expected) {
+            return Ok(false);
+        }
+        let (disk, p) = self.require_staged(Which::Root)?;
+        let sector = disk.sector_bytes;
+        let start = BTRFS_SUPERBLOCK_OFFSET / sector * sector;
+        let mut buf = vec![0_u8; sector.max(4096) as usize];
+        self.read_at(&disk, &p.guid, start, &mut buf)?;
+        let at = (BTRFS_SUPERBLOCK_OFFSET - start) as usize;
+        Ok(btrfs_fsid(&buf[at..]).is_some_and(|fsid| super::same_guid(&fsid, &expected)))
     }
 
     // ----- handoff -------------------------------------------------------------
@@ -1544,6 +1650,7 @@ impl Engine<'_> {
         }
         self.firmware_preconditions()?;
         self.check_basis()?;
+        self.check_plan_geometry()?;
         self.open_components()?;
         self.verify_sources()?;
         if self.record.is_none() {
@@ -1577,10 +1684,12 @@ impl Engine<'_> {
                 esp: RecordedComponent {
                     byte_size: facts.esp.byte_size,
                     sha256: facts.esp.sha256.clone(),
+                    filesystem_uuid: Some(facts.esp.filesystem_uuid.clone()),
                 },
                 root: RecordedComponent {
                     byte_size: facts.root.byte_size,
                     sha256: facts.root.sha256.clone(),
+                    filesystem_uuid: Some(facts.root.filesystem_uuid.clone()),
                 },
             };
             self.record_mut().bundle = Some(bundle);
@@ -1621,6 +1730,7 @@ impl Engine<'_> {
             byte_size: c.byte_size,
             sha256: c.sha256.clone(),
             minimum_partition_bytes: c.byte_size,
+            filesystem_uuid: c.filesystem_uuid.clone().unwrap_or_default(),
         };
         let release = &self.record().release;
         self.facts = Some(BundleFacts {

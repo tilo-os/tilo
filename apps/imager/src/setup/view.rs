@@ -5545,7 +5545,7 @@ mod tests {
             composition.as_ref(),
             "setup.internal.install"
         ));
-        let reviewed = app.internal_install.reviewed_digest().unwrap();
+        let reviewed_plan = app.internal_install.plan().unwrap().clone().unwrap();
         let projection = invoke_internal(app, "setup.internal.install").unwrap();
         assert_eq!(projection["internal"]["run"], "running");
         wait_for_app(app, "staging outcome", |app| {
@@ -5561,8 +5561,19 @@ mod tests {
             let launches = fixture.fakes.launches.lock().unwrap();
             assert_eq!(launches.len(), 1);
             assert_eq!(launches[0].action, HelperAction::Stage);
-            assert_eq!(launches[0].plan_sha256, reviewed);
-            assert_eq!(launches[0].plan.digest(), reviewed);
+            // Review ran on provisional installer sizes; the stage request
+            // carries the planner's layout for the verified bundle's sizes,
+            // with the same Tilo size and no further shrink than reviewed.
+            let staged = &launches[0].plan;
+            assert_eq!(launches[0].plan_sha256, staged.digest());
+            assert_eq!(
+                staged.target_extent.lbas(),
+                reviewed_plan.target_extent.lbas()
+            );
+            let kept = |p: &super::super::staging::plan::Plan| {
+                p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes)
+            };
+            assert!(kept(staged) >= kept(&reviewed_plan));
             assert_eq!(
                 launches[0].component_paths.staging_root,
                 "/verified/staging-root.img"
