@@ -526,6 +526,7 @@ dependencies = [
  "blake3",
  "clap",
  "fuser",
+ "hex",
  "libc",
  "moka",
  "tempfile",
@@ -2403,6 +2404,7 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "compat-catalogue",
+ "hex",
  "launcher",
  "libc",
  "serde",

@@ -100,7 +100,7 @@ pub fn inspect_installer(
     Ok(InstallerInspection {
         source_name: source_name.to_string(),
         display_name: display_name(source_name),
-        sha256: hex_lower(digest.finalize()),
+        sha256: hex::encode(digest.finalize()),
         size: total,
         kind,
         machine,
@@ -161,14 +161,6 @@ fn display_name(source_name: &str) -> String {
     } else {
         display
     }
-}
-
-fn hex_lower(bytes: impl IntoIterator<Item = u8>) -> String {
-    use std::fmt::Write as _;
-    bytes.into_iter().fold(String::new(), |mut output, byte| {
-        let _ = write!(output, "{byte:02x}");
-        output
-    })
 }
 
 #[derive(Debug, Error)]
