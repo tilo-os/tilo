@@ -263,12 +263,12 @@ jobs:
       - name: Discard any earlier local image for this commit
         run: docker image rm -f 'code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' >/dev/null 2>&1 || true
 
-      # Publication runs push; pull requests only build and load. A failed
-      # registry write after a completed build falls through to the bounded
-      # push retry instead of discarding the compile.
+      # Publication runs push; pull requests only build and load. A failure
+      # always reaches the next step, which retries only a publication push
+      # of a completed build and otherwise fails the job.
       - name: Build the tilo-kernel image (push only on tags/dispatch)
         id: build
-        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
+        continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -299,18 +299,24 @@ jobs:
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
 
-      # Reached only when the publication build step failed. The image is
-      # loaded before buildx pushes it, so a present local image means the
-      # compile succeeded and only the registry write failed; an absent one
-      # is a real build failure and stays fatal.
+      # Reached only when the build step failed. Pull request builds do not
+      # push, so their failure is always fatal. The image is loaded before
+      # buildx pushes it, so a present local image means the compile
+      # succeeded and only the registry write failed; an absent one is a real
+      # build failure and stays fatal.
       - name: Retry the registry push of the completed build
         id: push-retry
         if: ${{ steps.build.outcome == 'failure' }}
         env:
+          PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
           LOCAL_IMAGE: code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
           PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
+          [ "$PUBLISH" = true ] || {
+            echo '::error::the kernel image build failed'
+            exit 1
+          }
           docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1 || {
             echo '::error::the kernel image build failed before producing an image'
             exit 1
