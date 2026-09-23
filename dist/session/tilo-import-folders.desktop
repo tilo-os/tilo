@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Add folders to Tilo
+Comment=Review saved setup folders and copy files without changing originals
+Exec=/usr/bin/tilo-import-folders --import-folders
+TryExec=/usr/bin/tilo-import-folders
+Icon=folder
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=import;folders;setup;copy;
+StartupWMClass=so.tilo.imager
