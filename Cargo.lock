@@ -14954,55 +14954,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-dev"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "clap",
- "dirs 6.0.0",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tilo-dev-protocol",
- "toml 0.8.23",
- "uuid",
-]
-
-[[package]]
-name = "tilo-dev-protocol"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "tilo-devd"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "clap",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tilo-dev-protocol",
- "uuid",
-]
-
-[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -15300,6 +15251,56 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-model-gateway",
  "url",
+]
+
+[[package]]
+name = "tilo-vm"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "dirs 6.0.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-vm-protocol",
+ "toml 0.8.23",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-vm-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "tilo-vmd"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-vm-protocol",
+ "uuid",
 ]
 
 [[package]]
