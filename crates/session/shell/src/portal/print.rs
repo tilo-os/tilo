@@ -10,10 +10,10 @@
 //! or cancel *other users'* jobs — trading the whole sandbox for one
 //! feature. So the app gets only a file descriptor for bytes and a
 //! prompt asking where to send them; everything else is decided here.
-//! [`Capability::Print`] has **no arm** in `SandboxProfile::apply_grants`
-//! for the same reason: granting it adds no bind mount, so nothing ever
-//! puts the CUPS socket inside the sandbox (enforced by construction —
-//! see `print_grant_never_binds_the_cups_socket` in `tests/portal_test.rs`).
+//! For the same reason [`Capability::Print`] never becomes a bind mount:
+//! `tilo-launcher` turns a workspace's grants into sandbox binds in
+//! `launcher::capabilities`, which binds only filesystem paths, devices and
+//! network access, so no grant puts the CUPS socket inside the sandbox.
 //!
 //! **Both** methods go through [`flow::resolve`], including
 //! `PreparePrint`: the printer list is itself the disclosure an app
