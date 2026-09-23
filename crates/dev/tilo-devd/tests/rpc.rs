@@ -275,6 +275,8 @@ fn full_slot_lifecycle_over_stdio() {
         .call(Gc {
             keep: 0,
             dry_run: true,
+            keep_targets: None,
+            free_goal_bytes: None,
         })
         .unwrap();
     assert_eq!(dry.removed_generations, ["agent-a/2"]);
@@ -292,6 +294,8 @@ fn full_slot_lifecycle_over_stdio() {
         .call(Gc {
             keep: 0,
             dry_run: false,
+            keep_targets: None,
+            free_goal_bytes: None,
         })
         .unwrap();
     assert_eq!(gc.removed_generations, ["agent-a/2"]);
@@ -353,4 +357,63 @@ fn malformed_lines_get_error_responses() {
     }
     drop(input);
     assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn input_goes_to_headful_seats_and_apps_install_per_slot() {
+    use tilo_dev_protocol::{AppInstall, Input, InputAction};
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    let client = &mut daemon.client;
+    client.hello("test").unwrap();
+    for (name, kind) in [("a", SlotKind::Headless), ("b", SlotKind::Headful)] {
+        client
+            .call(SlotCreate {
+                name: name.into(),
+                kind,
+                owner: Owner::default(),
+            })
+            .unwrap();
+    }
+    let keys = vec![InputAction::Key {
+        combos: vec!["ctrl+alt+t".into()],
+    }];
+    let error = rpc_error(client.call(Input {
+        slot: "a".into(),
+        actions: keys.clone(),
+    }));
+    assert_eq!(error.code, code::INVALID);
+    assert!(error.hint.contains("tilo-dev control"), "{}", error.hint);
+    let sent = client
+        .call(Input {
+            slot: "b".into(),
+            actions: keys,
+        })
+        .unwrap();
+    assert_eq!(sent.seat, "seat-b");
+    assert!(sent.events > 0);
+    let error = rpc_error(client.call(Input {
+        slot: "b".into(),
+        actions: vec![InputAction::Key {
+            combos: vec!["ctrl+nokey".into()],
+        }],
+    }));
+    assert_eq!(error.code, code::INVALID_PARAMS);
+    assert!(error.message.contains("nokey"), "{}", error.message);
+
+    let upload = client.upload(&b"tapp bytes"[..]).unwrap();
+    let installed = client
+        .call(AppInstall {
+            slot: "b".into(),
+            source: LayerSource::Upload(upload),
+        })
+        .unwrap();
+    assert_eq!(installed.slot, "b");
+    assert!(installed.id.is_some_and(|id| id.starts_with("so.tilo.")));
+    let upload = client.upload(&b"tapp bytes"[..]).unwrap();
+    let error = rpc_error(client.call(AppInstall {
+        slot: "vm".into(),
+        source: LayerSource::Upload(upload),
+    }));
+    assert!(error.hint.contains("headful or headless"), "{}", error.hint);
 }

@@ -10,11 +10,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_dev_protocol::{
-    Action, ApplyResult, BaseInfo, ComponentInfo, GcResult, HelloResult, Issue, LayerImportResult,
-    LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest,
-    Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult,
-    SlotCreateResult, SlotInfo, SlotKind, SlotRmResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES,
-    VM_SLOT,
+    Action, AppInstallResult, ApplyResult, BaseInfo, ComponentInfo, GcResult, HelloResult,
+    InputAction, InputResult, Issue, LayerImportResult, LayerSource, LayerUploadBeginResult,
+    LayerUploadChunkResult, Lease, LogsResult, Manifest, Owner, PROTOCOL_VERSION, Policy,
+    Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult, SlotInfo, SlotKind,
+    SlotRmResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
@@ -22,6 +22,7 @@ use crate::error::DaemonError;
 use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
 use crate::slots::{self, Generation, SlotRecord, SlotStore};
+use crate::targets::TargetStore;
 
 /// The domain of a greetd session unless the image says otherwise.
 pub const DEFAULT_DOMAIN: &str = "unconfined_t";
@@ -30,18 +31,81 @@ pub const DEFAULT_DOMAIN: &str = "unconfined_t";
 /// swap that is still in flight on another connection.
 const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
+/// In-VM build dirs `gc` keeps by default, most recently used first.
+pub const DEFAULT_KEEP_TARGETS: u32 = 2;
+
 pub struct Daemon {
-    layers: LayerStore,
+    pub(crate) layers: LayerStore,
     slots: SlotStore,
-    locks: Locks,
+    pub(crate) locks: Locks,
+    pub(crate) targets: TargetStore,
     uploads_dir: PathBuf,
     uploads: BTreeMap<String, PathBuf>,
-    apply: Box<dyn Apply>,
+    pub(crate) apply: Box<dyn Apply>,
     manifest: Option<Manifest>,
-    base: BaseInfo,
+    pub(crate) base: BaseInfo,
     client_protocol: Option<u32>,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     expected_domain: String,
+    /// Problems found re-creating vkms seats when this process started.
+    seat_issues: Option<Vec<Issue>>,
+}
+
+/// Is `tool` on `PATH` (or in `/usr/local/bin`, which a non-login SSH
+/// shell may lack)?
+pub fn on_path(tool: &str) -> bool {
+    let paths = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&paths)
+        .chain([PathBuf::from("/usr/local/bin")])
+        .any(|dir| dir.join(tool).is_file())
+}
+
+/// What this VM can build and pull with.
+pub fn detect_tools() -> VmTools {
+    VmTools {
+        cargo: on_path("cargo"),
+        rsync: on_path("rsync"),
+        python3: on_path("python3"),
+        sccache: on_path("sccache"),
+        podman: on_path("podman"),
+    }
+}
+
+/// Re-create the vkms card of every headful slot. configfs is empty after
+/// a reboot, and a slot whose card is missing cannot start its session.
+/// Slots another command is changing are left to that command.
+pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    for record in slots.list().unwrap_or_default() {
+        if record.kind != SlotKind::Headful || record.seat.is_none() {
+            continue;
+        }
+        let Ok(_guard) = locks.slot(&record.name) else {
+            continue;
+        };
+        if let Err(error) = apply.allocate_seat(&record.name) {
+            issues.push(Issue {
+                slot: record.name.clone(),
+                problem: format!("its vkms seat could not be re-created: {error}"),
+                hint: format!(
+                    "tilo-dev slot restart {}   (tilo-dev doctor checks vkms and configfs)",
+                    record.name
+                ),
+            });
+        }
+    }
+    issues
+}
+
+/// `installed: <id> <version>` from tilo-install's output.
+pub fn parse_installed(output: &str) -> (Option<String>, Option<String>) {
+    output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("installed:"))
+        .map_or((None, None), |rest| {
+            let mut words = rest.split_whitespace().map(str::to_owned);
+            (words.next(), words.next())
+        })
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<serde_json::Value, DaemonError> {
@@ -118,6 +182,8 @@ impl Daemon {
             layers: LayerStore::new(root),
             slots: SlotStore::new(root),
             locks: Locks::new(root),
+            targets: TargetStore::new(root),
+            seat_issues: None,
             uploads_dir: root.join("uploads"),
             uploads: BTreeMap::new(),
             apply,
@@ -172,9 +238,20 @@ impl Daemon {
     ///
     /// # Errors
     /// Whatever the method reports; see [`DaemonError::hint`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per method, each a line or three"
+    )]
     pub fn handle(&mut self, request: Request) -> Result<serde_json::Value, DaemonError> {
         if let Request::Hello(hello) = &request {
             self.client_protocol = Some(hello.protocol);
+            if self.seat_issues.is_none() {
+                self.seat_issues = Some(reconcile_seats(
+                    &self.slots,
+                    &self.locks,
+                    self.apply.as_mut(),
+                ));
+            }
             return to_value(&HelloResult {
                 protocol: PROTOCOL_VERSION,
                 daemon_version: env!("CARGO_PKG_VERSION").into(),
@@ -182,6 +259,7 @@ impl Daemon {
                 arch: std::env::consts::ARCH.into(),
                 base: self.base.clone(),
                 issues: self.issues()?,
+                tools: detect_tools(),
             });
         }
         match self.client_protocol {
@@ -263,9 +341,68 @@ impl Daemon {
             }
             Request::Gc(p) => {
                 let _vm = self.locks.vm_exclusive()?;
-                to_value(&self.gc(p.keep, p.dry_run)?)
+                to_value(&self.gc(&p)?)
+            }
+            Request::Input(p) => {
+                let _locks = self.slot_locks(&p.slot)?;
+                to_value(&self.input(&p.slot, &p.actions)?)
+            }
+            Request::AppInstall(p) => {
+                let _locks = self.slot_locks(&p.slot)?;
+                to_value(&self.install_app(&p.slot, p.source)?)
             }
         }
+    }
+
+    fn input(&mut self, name: &str, actions: &[InputAction]) -> Result<InputResult, DaemonError> {
+        tilo_dev_protocol::input::validate(actions).map_err(DaemonError::InvalidParams)?;
+        let (record, _) = self.user_slot(name)?;
+        let seat = match (&record.seat0, record.kind, &record.seat) {
+            (Some(_), _, _) => "seat0".to_owned(),
+            (None, SlotKind::Headful, Some(seat)) => seat.clone(),
+            (None, SlotKind::Headful, None) => return Err(DaemonError::NoSession(name.to_owned())),
+            _ => return Err(DaemonError::HeadlessInput(name.to_owned())),
+        };
+        let events = self.apply.input(name, &seat, actions)?;
+        Ok(InputResult {
+            slot: record.name,
+            seat,
+            events,
+        })
+    }
+
+    /// Install a `.tapp` into the slot user's app store. Not a generation:
+    /// the user store shadows the image's apps, live at their next launch.
+    ///
+    /// # Errors
+    /// Unknown slots, the `vm` slot, missing uploads and tilo-install failures.
+    pub fn install_app(
+        &mut self,
+        slot: &str,
+        source: LayerSource,
+    ) -> Result<AppInstallResult, DaemonError> {
+        let (record, user) = self.user_slot(slot)?;
+        let (path, uploaded) = match source {
+            LayerSource::Upload(id) => (
+                self.uploads
+                    .remove(&id)
+                    .ok_or(DaemonError::UploadNotFound(id))?,
+                true,
+            ),
+            LayerSource::Path(path) => (PathBuf::from(path), false),
+        };
+        let output = self.apply.install_app(&user, &path);
+        if uploaded {
+            let _ = fs::remove_file(&path);
+        }
+        let output = output?;
+        let (id, version) = parse_installed(&output);
+        Ok(AppInstallResult {
+            slot: record.name,
+            id,
+            version,
+            output,
+        })
     }
 
     fn status(&mut self, slot: Option<String>) -> Result<StatusResult, DaemonError> {
@@ -359,7 +496,7 @@ impl Daemon {
 
     /// VM-wide work on the `vm` slot excludes everything; slot work shares
     /// the VM and excludes other work on the same slot.
-    fn slot_locks(&self, name: &str) -> Result<(Guard, Option<Guard>), DaemonError> {
+    pub(crate) fn slot_locks(&self, name: &str) -> Result<(Guard, Option<Guard>), DaemonError> {
         if name == VM_SLOT {
             Ok((self.locks.vm_exclusive()?, None))
         } else {
@@ -367,7 +504,7 @@ impl Daemon {
         }
     }
 
-    fn user_slot(&self, name: &str) -> Result<(SlotRecord, String), DaemonError> {
+    pub(crate) fn user_slot(&self, name: &str) -> Result<(SlotRecord, String), DaemonError> {
         let record = self.slots.load(name)?;
         let user = record
             .user()
@@ -379,6 +516,7 @@ impl Daemon {
         let space = self.apply.disk_space(&self.root);
         Storage {
             layers_bytes: self.layers.allocated_bytes(),
+            targets_bytes: self.targets.total_bytes(),
             free_bytes: space.map(|s| s.0),
             total_bytes: space.map(|s| s.1),
         }
@@ -386,7 +524,7 @@ impl Daemon {
 
     /// Reconcile recorded state with what is running.
     fn issues(&mut self) -> Result<Vec<Issue>, DaemonError> {
-        let mut issues = Vec::new();
+        let mut issues = self.seat_issues.clone().unwrap_or_default();
         for record in self.slots.list()? {
             if let Some(number) = self.slots.pending(&record.name) {
                 issues.push(Issue {
@@ -802,7 +940,8 @@ impl Daemon {
         })
     }
 
-    fn gc(&mut self, keep: u32, dry_run: bool) -> Result<GcResult, DaemonError> {
+    fn gc(&mut self, request: &tilo_dev_protocol::Gc) -> Result<GcResult, DaemonError> {
+        let (keep, dry_run) = (request.keep, request.dry_run);
         let mut referenced = BTreeSet::new();
         let mut removed_generations = Vec::new();
         let mut records = self.slots.list()?;
@@ -836,11 +975,37 @@ impl Daemon {
                 }
             }
         }
+        // Build dirs, least recently used first; never one mid-build.
+        let free = self
+            .apply
+            .disk_space(&self.root)
+            .map(|(free, _)| free.saturating_add(if dry_run { freed_bytes } else { 0 }));
+        let locks = &self.locks;
+        let plan = self.targets.plan_eviction(
+            request.keep_targets.unwrap_or(DEFAULT_KEEP_TARGETS),
+            request.free_goal_bytes,
+            free,
+            &mut |worktree| locks.src(worktree).is_err(),
+        );
+        let mut removed_targets = Vec::new();
+        let mut freed_target_bytes: u64 = 0;
+        for record in plan {
+            if !dry_run {
+                let Ok(_guard) = self.locks.src(&record.worktree) else {
+                    continue;
+                };
+                self.targets.evict(&record.worktree)?;
+            }
+            freed_target_bytes = freed_target_bytes.saturating_add(record.bytes);
+            removed_targets.push(record.worktree);
+        }
         Ok(GcResult {
             dry_run,
             removed_layers,
             removed_generations,
             freed_bytes,
+            removed_targets,
+            freed_target_bytes,
             storage: self.storage(),
         })
     }
@@ -849,6 +1014,40 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apply::RecordingApply;
+
+    #[test]
+    fn headful_seats_are_recreated_at_start() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let locks = Locks::new(root.path());
+        for (name, kind) in [
+            ("a", SlotKind::Headful),
+            ("b", SlotKind::Headless),
+            ("c", SlotKind::Headful),
+        ] {
+            let (mut record, _) = slots.create(name, kind, Owner::default()).unwrap();
+            if kind == SlotKind::Headful {
+                record.seat = Some(format!("seat-{name}"));
+                slots.save(&record).unwrap();
+            }
+        }
+        let mut apply = RecordingApply::default();
+        // A slot another command is changing is left to that command.
+        let busy = locks.slot("c").unwrap();
+        assert!(reconcile_seats(&slots, &locks, &mut apply).is_empty());
+        assert_eq!(apply.calls, ["allocate_seat a"]);
+        drop(busy);
+    }
+
+    #[test]
+    fn installed_line_names_the_app() {
+        assert_eq!(
+            parse_installed("tilo-install: WARN self-signed\ninstalled: so.tilo.notes 0.1.0\n"),
+            (Some("so.tilo.notes".into()), Some("0.1.0".into()))
+        );
+        assert_eq!(parse_installed("nothing"), (None, None));
+    }
 
     #[test]
     fn abi_refuses_foreign_arch_and_builder() {

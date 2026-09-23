@@ -12,8 +12,10 @@
 //! profile = "release"         # cargo profile, default release
 //! packages = ["fs"]
 //! features = ["fs/foo"]       # package-qualified
+//! dev_features = ["fs/dev-overrides"]  # dev builds only
 //! units = ["fs.service"]      # system units a vm-scope swap restarts
 //! user_units = ["tilo-fs-recipient.service"]
+//! files = [{ from = "fs", to = "/usr/bin/fs", mode = "0755" }]
 //! ```
 //!
 //! Everything else is ignored, so the schema can grow without breaking dev
@@ -76,7 +78,81 @@ pub struct Component {
     pub packages: Vec<String>,
     /// Package-qualified cargo features (`pkg/feature`).
     pub features: Vec<String>,
+    /// Features only dev builds enable, package-qualified.
+    pub dev_features: Vec<String>,
     pub profile: String,
+    /// Absolute install paths (`to`) of the component's files; a trailing
+    /// `/` marks a whole directory tree. What a CI layer extracts.
+    pub paths: Vec<String>,
+}
+
+impl Component {
+    /// Every feature a dev build enables: the manifest's, its dev features,
+    /// then `extra` (e.g. `pkg/dev-overrides` found in `cargo metadata`).
+    pub fn build_features(&self, extra: &[String]) -> Vec<String> {
+        let mut features: Vec<String> = Vec::new();
+        for feature in self.features.iter().chain(&self.dev_features).chain(extra) {
+            if !features.contains(feature) {
+                features.push(feature.clone());
+            }
+        }
+        features
+    }
+
+    /// `cargo` arguments (after the program name) that build this
+    /// component for a dev layer. Both builders run exactly these.
+    pub fn cargo_args(&self, extra: &[String]) -> Vec<String> {
+        let mut args: Vec<String> = ["build", "--locked", "--profile", &self.profile]
+            .map(str::to_owned)
+            .to_vec();
+        for package in &self.packages {
+            args.push("-p".into());
+            args.push(package.clone());
+        }
+        let features = self.build_features(extra);
+        if !features.is_empty() {
+            args.push("--features".into());
+            args.push(features.join(","));
+        }
+        args
+    }
+
+    /// Arguments for `python3` that lay the build out under `dest` with the
+    /// manifest installer, which owns every path decision.
+    pub fn installer_args(&self, from: &str, dest: &str) -> Vec<String> {
+        [
+            INSTALLER, "--quiet", "--from", from, "--dest", dest, &self.name,
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+}
+
+/// The manifest installer, relative to the repository root.
+pub const INSTALLER: &str = "os/scripts/install-components.py";
+
+/// The cargo feature that turns on developer overrides in a package.
+pub const DEV_FEATURE: &str = "dev-overrides";
+
+/// `pkg/dev-overrides` for each of `packages` that declares the feature,
+/// read from `cargo metadata --no-deps --format-version 1` output.
+pub fn dev_override_features(metadata: &serde_json::Value, packages: &[String]) -> Vec<String> {
+    let Some(all) = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    packages
+        .iter()
+        .filter(|name| {
+            all.iter().any(|p| {
+                p.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+                    && p.get("features").and_then(|f| f.get(DEV_FEATURE)).is_some()
+            })
+        })
+        .map(|name| format!("{name}/{DEV_FEATURE}"))
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -168,8 +244,22 @@ fn component(name: &str, entry: &toml::Table) -> Component {
         user_units: strings(entry, "user_units"),
         packages: strings(entry, "packages"),
         features: strings(entry, "features"),
+        dev_features: strings(entry, "dev_features"),
         profile: text("profile").unwrap_or_else(|| "release".into()),
+        paths: file_paths(entry),
     }
+}
+
+fn file_paths(entry: &toml::Table) -> Vec<String> {
+    let Some(Value::Array(files)) = entry.get("files") else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .filter_map(Value::as_table)
+        .filter_map(|file| file.get("to").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// A string or array of strings; non-strings are dropped.
@@ -229,10 +319,38 @@ mod tests {
         assert!(!fs.boot);
         assert_eq!(fs.profile, "release");
         assert_eq!(m.get("browser").unwrap().features, ["browser/wpe"]);
+        assert_eq!(fs.paths, ["/usr/bin/fs"]);
         assert_eq!(m.get("apps+runtime").unwrap().profile, "thin-app");
         let kernel = m.get("kernel").unwrap();
         assert!(kernel.boot);
         assert_eq!(kernel.scenario.as_deref(), Some("os/dev/vm.sh"));
+    }
+
+    #[test]
+    fn cargo_and_installer_arguments() {
+        let m = Manifest::parse(
+            "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\ndev_features = [\"browser/dev-overrides\"]\n",
+        )
+        .unwrap();
+        let browser = m.get("browser").unwrap();
+        let extra = dev_override_features(
+            &serde_json::json!({"packages": [
+                {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                {"name": "helper", "features": {"dev-overrides": []}},
+            ]}),
+            &browser.packages,
+        );
+        assert_eq!(extra, ["browser/dev-overrides", "helper/dev-overrides"]);
+        assert_eq!(
+            browser.cargo_args(&extra).join(" "),
+            "build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides,helper/dev-overrides"
+        );
+        assert_eq!(
+            browser
+                .installer_args("target/release", "/l/tree")
+                .join(" "),
+            "os/scripts/install-components.py --quiet --from target/release --dest /l/tree browser"
+        );
     }
 
     #[test]

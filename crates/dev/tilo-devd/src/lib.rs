@@ -6,11 +6,14 @@ pub mod apply;
 pub mod daemon;
 pub mod error;
 mod fsutil;
+pub mod input;
+pub mod jobs;
 pub mod layers;
 pub mod locks;
 pub mod server;
 pub mod slots;
 pub mod systemd;
+pub mod targets;
 
 pub use daemon::Daemon;
 pub use error::DaemonError;
