@@ -440,12 +440,22 @@ impl DisplayConfig {
                     continue;
                 };
                 let target_mode = self.outputs.get(target).and_then(|output| output.mode);
+                // Tilo renders the shared viewport into each connector's
+                // scanout independently. Mirroring therefore needs a common
+                // pixel extent, not an identical timing: a 60.000 Hz laptop
+                // panel and a 59.940 Hz USB-C sink can show the same viewport
+                // at their own presentation cadences.
+                let same_extent = |left: OutputMode, right: OutputMode| {
+                    left.width == right.width && left.height == right.height
+                };
                 let compatible = match (cfg.mode, target_mode) {
-                    (Some(source), Some(target)) => source == target,
-                    _ => desc
-                        .modes
-                        .iter()
-                        .any(|mode| target_desc.modes.contains(mode)),
+                    (Some(source), Some(target)) => same_extent(source, target),
+                    _ => desc.modes.iter().any(|source| {
+                        target_desc
+                            .modes
+                            .iter()
+                            .any(|target| same_extent(*source, *target))
+                    }),
                 };
                 if !compatible {
                     return Err(DisplayConfigError::IncompatibleMirrorModes {
@@ -1449,6 +1459,33 @@ mod tests {
             cfg.validate_for(&[left, right]),
             Err(DisplayConfigError::IncompatibleMirrorModes { .. })
         ));
+    }
+
+    #[test]
+    fn mirror_pair_accepts_same_resolution_at_different_refresh_rates() {
+        let mut panel = display("eDP-1");
+        panel.modes[0].refresh_mhz = 60_000;
+        let mut usb_c = display("DP-1");
+        usb_c.modes[0].refresh_mhz = 59_940;
+        let mut cfg = DisplayConfig::default();
+        cfg.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: Some(panel.modes[0]),
+                ..Default::default()
+            },
+        );
+        cfg.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                mode: Some(usb_c.modes[0]),
+                mirror_of: Some("eDP-1".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
     }
 
     #[test]
