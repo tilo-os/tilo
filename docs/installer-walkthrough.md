@@ -273,6 +273,25 @@ mapping, and its filesystem into the freed space. Any mismatch leaves every
 partition untouched and logs why; an interrupted reclaim resumes from the
 disk's actual state on the next run.
 
+The VM round trip `os/dev/test-internal-install-cycle.sh` (CI:
+`.forgejo/workflows/internal-install-cycle.yml`, and the opt-in
+`internal-install-cycle` job of the release lane) exercises this path end to
+end. It uses a real Fedora Cloud Base guest pinned by SHA-256, with at least
+120 GiB unallocated after its root:
+1. The real Imager stages the bundle from Fedora.
+2. The firmware's BootNext starts the staged installer, which is driven by
+   keyboard, pointer and OCR, including the Review lines above.
+3. The installed Tilo boots once, completes its first sign-in and reclaims the
+   staging space.
+4. A cold boot without BootNext must start Fedora again, with its BootOrder,
+   ESP loaders and partitions unchanged.
+
+Separate scenarios cover an interrupted helper resuming, `remove`, and a
+foreign BootNext refused with `boot-next-busy`. The helper accepts only
+releases in the Imager's compiled-in catalog, so the harness builds a test
+Imager for the exported bundle with `os/dev/build-internal-cycle-imager.sh`,
+which uses the production catalog merger. Every step leaves JSON evidence.
+
 ## Account setup and first boot
 
 The account password and mandatory disk passphrase stay outside collaborative document
