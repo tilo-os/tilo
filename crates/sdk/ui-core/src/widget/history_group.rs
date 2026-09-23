@@ -630,34 +630,15 @@ fn finish_group(
 /// Lower-case hex of an entry id. Also the document key a name is stored under,
 /// which is why it lives here rather than in the persistence layer.
 pub fn hex16(id: &HistoryEntryId) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(32);
-    for b in id.as_bytes() {
-        // `write!` to a `String` never fails.
-        let _ = write!(s, "{b:02x}");
-    }
-    s
+    hex::encode(id.as_bytes())
 }
 
 /// Parse the hex produced by [`hex16`] back into an id. `None` on anything that
-/// is not exactly 32 hex characters, so a corrupted document key is skipped
-/// rather than silently resolving to a wrong change.
+/// is not exactly 32 hex characters (either case), so a corrupted document key
+/// is skipped rather than silently resolving to a wrong change.
 pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
-    if s.len() != 32 {
-        return None;
-    }
-    let bytes = s.as_bytes();
     let mut out = [0u8; 16];
-    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
-        let [hi_b, lo_b] = pair else {
-            return None;
-        };
-        let hi = (*hi_b as char).to_digit(16)?;
-        let lo = (*lo_b as char).to_digit(16)?;
-        // Both digits are 0..=15, so the combined value is 0..=255 and always
-        // fits in a `u8`; `try_from` expresses that constraint.
-        *slot = u8::try_from(hi.saturating_mul(16).saturating_add(lo)).ok()?;
-    }
+    hex::decode_to_slice(s, &mut out).ok()?;
     Some(HistoryEntryId(out))
 }
 
@@ -1068,5 +1049,17 @@ mod tests {
         assert_eq!(from_hex16(&hex16(&id)), Some(id));
         assert_eq!(from_hex16("nope"), None);
         assert_eq!(from_hex16(&"z".repeat(32)), None);
+        assert_eq!(from_hex16(&"a".repeat(31)), None);
+        assert_eq!(from_hex16(&"a".repeat(34)), None);
+    }
+
+    #[test]
+    fn hex16_is_lowercase_and_parsing_accepts_either_case() {
+        let mut bytes = [0u8; 16];
+        bytes[0] = 0xab;
+        bytes[15] = 0xcd;
+        let id = HistoryEntryId(bytes);
+        assert_eq!(hex16(&id), format!("ab{}cd", "0".repeat(28)));
+        assert_eq!(from_hex16(&hex16(&id).to_ascii_uppercase()), Some(id));
     }
 }
