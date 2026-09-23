@@ -18,9 +18,10 @@ MODULES=(
 # Integration tests require bwrap for launcher confinement, rust-analyzer for
 # the code editor's language-server checks, and a software TPM plus LUKS tools
 # for the rollback mechanism suite. The image also supplies sccache so workflows
-# do not download or compile it.
+# do not download or compile it. The NTFS helper bootstraps its pinned reader
+# with autotools.
 BINARIES=(
-  capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
+  capnp autoreconf libtoolize bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
   cryptsetup swtpm swtpm_setup tpm2_getcap
 )
 FONTS=(
@@ -32,6 +33,8 @@ FONTS=(
   "Noto Sans CJK JP"
   "Noto Color Emoji"
 )
+# The NTFS helper's configure needs libgcrypt's m4 macro even with crypto off.
+ACLOCAL_MACROS=(libgcrypt.m4)
 GSTREAMER_ELEMENTS=(h264parse openh264dec)
 
 missing=0
@@ -65,6 +68,15 @@ for b in "${BINARIES[@]}"; do
     printf '  ok      %-20s %s\n' "$b" "$p"
   else
     printf '  MISSING %-20s (binary)\n' "$b"; missing=$((missing + 1))
+  fi
+done
+
+aclocal_dir=$(aclocal --print-ac-dir 2>/dev/null || echo /usr/share/aclocal)
+for m in "${ACLOCAL_MACROS[@]}"; do
+  if [ -f "$aclocal_dir/$m" ]; then
+    printf '  ok      %-20s %s\n' "$m" "$aclocal_dir/$m"
+  else
+    printf '  MISSING %-20s (autoconf macro)\n' "$m"; missing=$((missing + 1))
   fi
 done
 

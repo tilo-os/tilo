@@ -562,9 +562,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
-    # Files is also a privileged, directly-invoked system recovery surface.
-    # In source mode package that standalone binary. With a release collection,
-    # every tapp already contains its independently built app binary.
+    # Files stays a standalone /usr/bin binary for recovery; its package is the
+    # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
@@ -586,7 +585,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
               [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
             done \
-         && cp /out/file-explorer /out/thin-apps/file-explorer \
          && cp target/thin-app/libruntime_dylib.so /out/ \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
