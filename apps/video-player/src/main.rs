@@ -40,20 +40,11 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -160,72 +151,17 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-/// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
-/// `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+/// Render one offscreen frame of `widget` and write it as a PNG.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut state = ui::State::new();
-    let (w, h) = viewport;
-
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     // The offscreen renderer bypasses the regular app loop, so explicitly
     // propagate the accessibility motion preference before building the scene.
     widget.set_motion_reduced(theme.reduce_motion);
-    widget.sync(&mut state.doc, &state.root);
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            &mut text_renderer,
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    ui::launch::render_widget_png(widget.as_mut(), viewport, theme, out)?;
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
 }

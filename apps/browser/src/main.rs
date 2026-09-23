@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use browser::browsing_mode::BrowsingMode;
 use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
 use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -731,90 +731,32 @@ fn render_live_shot_to_png(
 }
 
 /// Render one offscreen frame against `widget` at `viewport` and write
-/// the resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+/// the resulting RGBA to `out` as a PNG.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
     args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
     let theme = ui::launch::shot_theme(args);
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    // `BrowserWidget` composes fresh children inside `build_layout`, so
-    // they missed the sync above and would draw blank (the address bar
-    // would show its placeholder instead of the page URL). Re-sync
-    // against the built tree — the same post-build re-sync `ui::App`
-    // performs each frame.
-    widget.sync(&mut state.doc, &state.root);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-    // Overlay pass (dropdowns, floating panels), as the live App runs it.
-    widget.draw_overlay(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
     // Clear to the app background (as the live App does) so a widget that
     // doesn't paint its own backdrop — e.g. the settings pane — shows its
     // theme-coloured text instead of vanishing on transparent.
-    renderer.render_png(&scene, theme.bg_app, out);
+    let background = theme.bg_app;
+    // `BrowserWidget` composes fresh children inside `build_layout`, so they
+    // would miss the first sync and draw blank (the address bar would show
+    // its placeholder instead of the page URL); re-sync against the built
+    // tree, as `ui::App` does each frame.
+    let mut frame = ShotFrame::new(viewport, theme)
+        .with_layout(ShotLayout::Measured)
+        .with_resync_after_build()
+        .with_background(background);
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
+    let mut scene = frame.draw(widget.as_mut());
+    // Overlay pass (dropdowns, floating panels), as the live App runs it.
+    frame.draw_overlay(widget.as_mut(), &mut scene);
+    frame.write_png(&scene, out);
     println!("browser: wrote shot to {}", out.display());
     Ok(())
 }
