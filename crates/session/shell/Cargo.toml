@@ -258,10 +258,8 @@ pollster.workspace = true
 wgpu.workspace = true
 vello_encoding.workspace = true
 futures-util.workspace = true
-# Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`
-# that share a process-wide `SCAN_MEMO` static. Without this, parallel
-# `cargo test` races on the memo's walk-counter and surfaces as a
-# flaky `apply_grants_dev_scan_is_memoised` failure.
+# Serializes tests that share process-wide state (environment variables,
+# static registries).
 serial_test.workspace = true
 # Naga is the WGSL parser/validator wgpu already pulls in transitively.
 # `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
@@ -302,15 +300,6 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_session_libseat",
     "renderer_gl",
 ] }
-# Host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
-# latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
-# aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
-seccompiler.workspace = true
-# Landlock per-capability in-kernel FS/net enforcement (`docs/architecture/security.md`
-# §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
-# the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
-# best-effort at runtime (degrades silently on kernels without Landlock).
-landlock.workspace = true
 # `ui::App` publishes ordinary app windows through `accesskit_winit`. The
 # compositor owns no winit application window, so its trusted chrome (including
 # OOBE and the desktop tour) uses AccessKit's native Unix/AT-SPI adapter.

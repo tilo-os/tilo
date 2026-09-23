@@ -84,18 +84,29 @@ fn install_crash_log_hook() {
     }));
 }
 
-/// Landlock launcher shim short-circuit: `shell __sandbox-exec --ro PATH... --rw
-/// PATH... [--net-restricted] -- APP-ARGV`, execed by bwrap from inside the
-/// sandbox. Applies the in-kernel Landlock ruleset and `execvp`s the real
-/// app when `raw_args` is that invocation; otherwise a no-op. Split out of
-/// `main` to keep it short.
-fn maybe_run_sandbox_exec(raw_args: &[String]) {
+/// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
+/// the compositor never builds a sandbox.
+const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
+
+/// Refuse `shell __sandbox-exec …`. Something that still execs the
+/// compositor as a Landlock shim expects the program after `--` to run
+/// confined; starting a compositor, or the program unconfined, would both
+/// be silent failures of that expectation, so the process exits instead.
+/// Split out of `main` to keep it short.
+#[allow(
+    clippy::exit,
+    reason = "refusing before any compositor state exists; there is no caller to return to"
+)]
+fn refuse_sandbox_exec(raw_args: &[String]) {
     if raw_args
         .get(1)
-        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
+        .is_some_and(|a| a == SANDBOX_EXEC_SUBCOMMAND)
     {
-        tracing_subscriber::fmt::init();
-        shell::sandbox::run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
+        eprintln!(
+            "tilo-sandbox-exec: the compositor does not install sandboxes; \
+             launch through tilo-launcher"
+        );
+        std::process::exit(126);
     }
 }
 
@@ -367,7 +378,7 @@ pub fn run() -> std::process::ExitCode {
     // distro name, desktop variable or backend would conflate independent
     // facts and break on a different display manager.
     let raw_args: Vec<String> = std::env::args().collect();
-    maybe_run_sandbox_exec(&raw_args);
+    refuse_sandbox_exec(&raw_args);
     let arg_refs: Vec<&str> = raw_args
         .iter()
         .skip(1)
