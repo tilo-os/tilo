@@ -89,12 +89,7 @@ impl Principal {
     /// Name a person by their Ed25519 public key (canonical lowercase hex),
     /// keeping `Subject::User` and `Principal::Person` interchangeable.
     pub fn person_from_key(key: Ed25519PublicKey) -> Self {
-        let mut s = String::with_capacity(64);
-        for b in &key.0 {
-            use std::fmt::Write as _;
-            let _ = write!(s, "{b:02x}");
-        }
-        Principal::Person(s)
+        Principal::Person(hex::encode(key.0))
     }
 
     /// Is this principal a human?

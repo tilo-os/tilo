@@ -56,6 +56,9 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 # RevocationEntry ABI.
 blake3.workspace = true
 
+# Lower-case hex names the per-user key files.
+hex.workspace = true
+
 # Canonical wire encoding for everything that gets signed. Same
 # choice as `collab-types`; postcard is little-endian +
 # varint-encoded with no field-reorder leeway, so signatures are
