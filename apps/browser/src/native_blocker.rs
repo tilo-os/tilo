@@ -109,21 +109,16 @@ fn fetch_rules(
         let _private_write = crate::storage::private_root_write_guard(directory)?;
         std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
         for (path, text) in &downloads {
-            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-            std::fs::write(&temporary, text)
-                .and_then(|()| std::fs::rename(&temporary, path))
-                .map_err(|_| "Cannot save filter cache")?;
+            atomic_file::write(path, text.as_bytes()).map_err(|_| "Cannot save filter cache")?;
         }
         let updated = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs());
-        let path = directory.join("native-filter-updated.json");
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        if std::fs::write(&temporary, serde_json::to_vec(&updated).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(&temporary, path);
-        }
-        let _ = std::fs::remove_file(temporary);
+        let _ = atomic_file::write(
+            &directory.join("native-filter-updated.json"),
+            &serde_json::to_vec(&updated).unwrap_or_default(),
+        );
     }
     Ok((rules, !downloads.is_empty()))
 }
