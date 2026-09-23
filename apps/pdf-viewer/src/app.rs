@@ -163,22 +163,10 @@ fn today_ymd() -> String {
     ymd_from_unix_secs(secs)
 }
 
-/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string using
-/// the civil-from-days algorithm (Howard Hinnant, public domain). Pure and
-/// dependency-free so the date logic is unit-testable without a clock.
+/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string. Pure,
+/// so the date logic is unit-testable without a clock.
 fn ymd_from_unix_secs(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    // Shift onto a calendar whose era begins 0000-03-01 (day 0 == that date).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // day-of-era, [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year, [0, 365]
-    let mp = (5 * doy + 2) / 153; // month shifted so March == 0, [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
+    let (year, m, d) = ui::date::civil_from_days(secs.div_euclid(86_400));
     format!("{year:04}-{m:02}-{d:02}")
 }
 

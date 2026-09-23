@@ -128,6 +128,7 @@ pub mod collection_transition;
 pub mod color_compat;
 pub mod content_layout;
 mod damage;
+pub mod date;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware

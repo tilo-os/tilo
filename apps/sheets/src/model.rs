@@ -697,63 +697,16 @@ pub fn now_serial() -> f64 {
 }
 
 /// Inverse of `days_from_civil`: days since Unix epoch -> (year, month, day).
+/// Bounded to ±4 000 000 days (years ~ -9000..13000), the range a serial date
+/// can mean.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    // The algorithm only ever scales the input by small constants, so bounding
-    // it to ±4 000 000 days (years ~ -9000..13000) makes every intermediate
-    // below exact: the `saturating_*` calls state that, they never trigger.
-    let z = z.clamp(-4_000_000, 4_000_000).saturating_add(719_468);
-    let era = if z >= 0 { z } else { z.saturating_sub(146_096) } / 146_097;
-    let doe = z.saturating_sub(era.saturating_mul(146_097)); // [0, 146096]
-    let yoe = doe
-        .saturating_sub(doe / 1460)
-        .saturating_add(doe / 36_524)
-        .saturating_sub(doe / 146_096)
-        / 365; // [0, 399]
-    let y = yoe.saturating_add(era.saturating_mul(400));
-    let doy = doe.saturating_sub(
-        yoe.saturating_mul(365)
-            .saturating_add(yoe / 4)
-            .saturating_sub(yoe / 100),
-    ); // [0, 365]
-    let mp = doy.saturating_mul(5).saturating_add(2) / 153; // [0, 11]
-    let day = doy
-        .saturating_sub(mp.saturating_mul(153).saturating_add(2) / 5)
-        .saturating_add(1); // [1, 31]
-    let month = if mp < 10 {
-        mp.saturating_add(3)
-    } else {
-        mp.saturating_sub(9)
-    }; // [1, 12]
-    let d = u32::try_from(day).unwrap_or(1);
-    let m = u32::try_from(month).unwrap_or(1);
-    (if m <= 2 { y.saturating_add(1) } else { y }, m, d)
+    ui::date::civil_from_days(z.clamp(-4_000_000, 4_000_000))
 }
 
-/// Days since Unix epoch for a civil date (Howard Hinnant).
+/// Days since Unix epoch for a civil date. A year outside ±10 000 000 is not a
+/// date any document can mean, so it is bounded first.
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    // A year outside ±10 000 000 is not a date any document can mean; bounding
-    // it keeps `era * 146_097` and everything below exact, so the
-    // `saturating_*` calls never actually clamp.
-    let y = y.clamp(-10_000_000, 10_000_000);
-    let y = if m <= 2 { y.saturating_sub(1) } else { y };
-    let era = if y >= 0 { y } else { y.saturating_sub(399) } / 400;
-    let yoe = y.saturating_sub(era.saturating_mul(400)); // [0, 399]
-    let mp = i64::from(if m > 2 {
-        m.saturating_sub(3)
-    } else {
-        m.saturating_add(9)
-    }); // [0, 11]
-    let doy = (mp.saturating_mul(153).saturating_add(2) / 5)
-        .saturating_add(i64::from(d))
-        .saturating_sub(1); // [0, 365]
-    let doe = yoe
-        .saturating_mul(365)
-        .saturating_add(yoe / 4)
-        .saturating_sub(yoe / 100)
-        .saturating_add(doy); // [0, 146096]
-    era.saturating_mul(146_097)
-        .saturating_add(doe)
-        .saturating_sub(719_468)
+    ui::date::days_from_civil(y.clamp(-10_000_000, 10_000_000), m, d)
 }
 
 #[cfg(test)]
