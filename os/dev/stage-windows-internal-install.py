@@ -22,6 +22,8 @@ import uuid
 
 PLAN_SCHEMA = "tilo.windows-internal-install-plan.v1"
 CHUNK = 8 * 1024 * 1024
+ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+TILO_ROOT_GUID = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
 
 
 def fail(message):
@@ -73,6 +75,8 @@ def load_plan(path: Path) -> dict:
     staging = value["staging"]
     if type(staging) is not list or [row.get("role") for row in staging] != ["staging-root", "staging-esp"]:
         fail("plan must stage root first and ESP last")
+    if [guid(row.get("type_guid")) for row in staging] != [TILO_ROOT_GUID, ESP_GUID]:
+        fail("staging partition types do not match root-then-ESP policy")
     for row in staging:
         guid(row.get("type_guid"))
         for field in ("offset_bytes", "size_bytes", "source_offset_bytes"):
@@ -81,6 +85,24 @@ def load_plan(path: Path) -> dict:
     if type(source) is not dict or not re.fullmatch(r"[0-9a-f]{64}", str(source.get("sha256", ""))):
         fail("invalid source binding")
     integer(source.get("size_bytes"), "source size", 1)
+    reviewed = value["reviewed_extent"]
+    target = value["target_free_extent"]
+    reviewed_start = integer(reviewed.get("offset_bytes"), "reviewed offset", 1)
+    reviewed_size = integer(reviewed.get("size_bytes"), "reviewed size", 1)
+    target_start = integer(target.get("offset_bytes"), "target offset", 1)
+    target_size = integer(target.get("size_bytes"), "target size", 1)
+    root, esp = staging
+    if (target_start != reviewed_start or target_start + target_size != root["offset_bytes"]
+            or root["offset_bytes"] + root["size_bytes"] != esp["offset_bytes"]
+            or esp["offset_bytes"] + esp["size_bytes"] != reviewed_start + reviewed_size):
+        fail("target and staging extents do not exactly partition the reviewed extent")
+    for row in staging:
+        if row["source_offset_bytes"] + row["size_bytes"] > source["size_bytes"]:
+            fail("staging source extent exceeds the installer image")
+    for row in value["preserve_partitions"]:
+        if (row["offset_bytes"] < reviewed_start + reviewed_size
+                and reviewed_start < row["offset_bytes"] + row["size_bytes"]):
+            fail("a preserved partition overlaps the reviewed extent")
     return value
 
 
@@ -277,11 +299,11 @@ def execute(args):
     current = snapshot(plan["windows_disk"]["number"])
     if not disk_matches(plan, current):
         fail("Windows disk identity or state changed")
+    windows_install_gate()
     observed = normalized_rows(plan["observed_partitions"])
     preserve = normalized_rows(plan["preserve_partitions"])
     rows = normalized_rows(current["partitions"])
     if rows == observed:
-        windows_install_gate()
         resize_windows(plan)
         current = snapshot(plan["windows_disk"]["number"])
         if not disk_matches(plan, current) or normalized_rows(current["partitions"]) != preserve:
