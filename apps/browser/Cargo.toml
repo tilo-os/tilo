@@ -42,7 +42,6 @@ dirs.workspace = true
 libc.workspace = true
 sha2.workspace = true
 base64.workspace = true
-png.workspace = true
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives

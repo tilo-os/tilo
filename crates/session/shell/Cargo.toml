@@ -174,7 +174,6 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
 zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
-png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them

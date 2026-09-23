@@ -54,7 +54,6 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true
-png.workspace = true
 
 [lints]
 workspace = true

@@ -1379,17 +1379,9 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         if rgba.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
             return false;
         }
-        let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(&mut png, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let Ok(mut writer) = encoder.write_header() else {
+        let Ok(png) = ui::png::encode_rgba8(width, height, rgba) else {
             return false;
         };
-        if writer.write_image_data(rgba).is_err() {
-            return false;
-        }
-        drop(writer);
         if png.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
             return false;
         }

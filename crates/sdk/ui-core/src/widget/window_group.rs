@@ -3732,12 +3732,7 @@ mod tests {
 
     /// Writes an RGBA frame as a PNG — the by-eye half of the evidence.
     fn write_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) {
-        let file = std::fs::File::create(path).expect("create evidence png");
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(rgba).expect("png data");
+        crate::png::write_rgba8(path, w, h, rgba).expect("write evidence png");
     }
 
     /// The composited colour at (`x`, `y`) of a `w`-wide RGBA frame.

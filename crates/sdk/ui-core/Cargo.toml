@@ -143,7 +143,6 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
-png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 chrono = { workspace = true, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.

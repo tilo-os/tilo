@@ -1367,29 +1367,12 @@ struct DecodedRgba {
 }
 
 fn decode_rgba(path: &Path) -> DecodedRgba {
-    let file =
-        std::fs::File::open(path).unwrap_or_else(|e| panic!("open PNG {}: {e}", path.display()));
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .unwrap_or_else(|e| panic!("read PNG header {}: {e}", path.display()));
-    let mut bytes = vec![0; reader.output_buffer_size().expect("PNG output size")];
-    let info = reader
-        .next_frame(&mut bytes)
-        .unwrap_or_else(|e| panic!("decode PNG {}: {e}", path.display()));
-    bytes.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => bytes,
-        png::ColorType::Rgb => bytes
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
-            .collect(),
-        other => panic!("unexpected PNG format {other:?} in {}", path.display()),
-    };
+    let decoded =
+        ui::png::read_rgba8(path).unwrap_or_else(|e| panic!("decode PNG {}: {e}", path.display()));
     DecodedRgba {
-        width: info.width,
-        height: info.height,
-        rgba,
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
     }
 }
 

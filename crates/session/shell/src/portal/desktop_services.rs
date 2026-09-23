@@ -1134,16 +1134,7 @@ fn normalise_wallpaper(bytes: &[u8]) -> Result<Vec<u8>, String> {
         return Err("image dimensions are unsupported".into());
     }
     let rgba = image.into_rgba8().into_raw();
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
-    writer
-        .write_image_data(&rgba)
-        .map_err(|error| error.to_string())?;
-    drop(writer);
-    Ok(out)
+    ui::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())
 }
 
 fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1396,20 +1387,22 @@ mod tests {
 
     #[test]
     fn imported_wallpaper_is_normalised_and_private() {
+        use image::ImageEncoder as _;
         let mut original = Vec::new();
-        let mut encoder = png::Encoder::new(&mut original, 1, 1);
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&[12, 34, 56]).unwrap();
-        drop(writer);
+        image::codecs::png::PngEncoder::new(&mut original)
+            .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let normalized = normalise_wallpaper(&original).unwrap();
-        let decoder = png::Decoder::new(std::io::Cursor::new(normalized));
-        let mut reader = decoder.read_info().unwrap();
-        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut pixels).unwrap();
-        assert_eq!(info.color_type, png::ColorType::Rgba);
-        assert_eq!(&pixels[..4], &[12, 34, 56, 255]);
+        let decoder =
+            image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
+        assert_eq!(
+            image::ImageDecoder::color_type(&decoder),
+            image::ColorType::Rgba8
+        );
+        assert_eq!(
+            ui::png::decode_rgba8(&normalized).unwrap().rgba,
+            [12, 34, 56, 255]
+        );
 
         let cache = tempfile::tempdir().unwrap();
         let file = cache.path().join("private.png");

@@ -188,13 +188,7 @@ fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if rgba.len() != expected_len {
         return None;
     }
-    let mut bytes = Vec::new();
-    let mut encoder = png::Encoder::new(&mut bytes, width_u32, height_u32);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().ok()?;
-    writer.write_image_data(rgba).ok()?;
-    drop(writer);
+    let bytes = crate::png::encode_rgba8(width_u32, height_u32, rgba).ok()?;
     (bytes.len() <= MAX_CLIPBOARD_IMAGE_BYTES).then_some(bytes)
 }
 
@@ -961,12 +955,9 @@ mod tests {
     fn rgba_image_is_encoded_as_lossless_png() {
         let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
         let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
-        let decoder = png::Decoder::new(std::io::Cursor::new(png));
-        let mut reader = decoder.read_info().expect("PNG header");
-        let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-        let info = reader.next_frame(&mut frame).expect("PNG frame");
-        assert_eq!((info.width, info.height), (2, 1));
-        assert_eq!(&frame[..info.buffer_size()], &rgba);
+        let decoded = crate::png::decode_rgba8(&png).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.rgba, rgba);
     }
 
     #[cfg(target_os = "linux")]

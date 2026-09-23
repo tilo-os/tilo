@@ -2086,15 +2086,7 @@ impl OffscreenRenderer {
         reason = "PNG encoding is internal to the explicitly infallible render_png debug helper"
     )]
     fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, width, height);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().expect("png header");
-            writer.write_image_data(rgba).expect("png write");
-        }
-        bytes
+        crate::png::encode_rgba8(width, height, rgba).expect("png encode")
     }
 
     /// Convenience: render `scene` and write the result to `path` as a
@@ -2207,16 +2199,9 @@ mod tests {
         atomic_file::write_creating_parent(&path, &OffscreenRenderer::encode_png(1, 1, &rgba))
             .expect("publish png");
 
-        let file = std::fs::File::open(&path).expect("published png exists");
-        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
-            .read_info()
-            .expect("published png header is complete");
-        let mut decoded = vec![0; reader.output_buffer_size().expect("decoded output size")];
-        let info = reader
-            .next_frame(&mut decoded)
-            .expect("published png image is complete");
-        assert_eq!((info.width, info.height), (1, 1));
-        assert_eq!(&decoded[..info.buffer_size()], &rgba);
+        let decoded = crate::png::read_rgba8(&path).expect("published png is complete");
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.rgba, rgba);
     }
 
     #[test]
