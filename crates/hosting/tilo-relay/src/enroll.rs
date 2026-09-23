@@ -3126,4 +3126,124 @@ mod tests {
         consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
         assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
     }
+
+    // Byte fixtures produced by the enrollment code before a crypto-stack
+    // upgrade. Enrollment blobs cross devices running different builds, so
+    // decrypting them proves Ed25519-to-X25519 conversion, X25519 agreement,
+    // ChaCha20-Poly1305 and the postcard framing all stayed byte-compatible.
+    const KAT_PAIR_OFFER: &str = "d0e014c51b6faaf168eb9a629804a5cf9eabbb666318369dccaec9eb3a8dbc0d\
+        07189ed4428bc2d1c596e9782167343cec81004105d1275f7105e70365bedcfe\
+        fc511381c19fef25960fd9444a62";
+    const KAT_REQUEST: &str = "49681ddb0d310c132f72f076bbaac37b9be5edbe98ee074e216b42299532274d\
+        1465fd79f168e36085d553de66f27e784ca62d250acb45d8040a55346ccd5dd3\
+        4f78c085e59326b7fd8374279b404d0f3ef67bcf405fda1a8d83f706d3420904\
+        26aaf976690c8a63213d242e47765f3640906728c76823bc3e189762bf3eae40\
+        c6883b3a5176c6d99d12fff3f424405981e733";
+    const KAT_RESPONSE: &str = "7a7009cf2b5bedfe755de254721eca30a874669a6694d7014baece97b5448510\
+        b6817a3cf12ffce507ab4b2ce7022762eb9d9dfc5fc8ce997f151429a3b17c46\
+        8bc8b61e724e5064d8918ec4e5450388294a24e29b8626145fd6d5cb782a3f27\
+        c18725e4f9664fe265ee832db061bf70d49082a4f8946133bc784aa36ec8565a\
+        90ca8fb99ff752c06f3b6677b7a95d4409d4eb1985fdebd10044f1e7b72e0347\
+        3beeea80a610ba90b6d027b81211ecf818304d6fbba3bab98908e8e2ebaf584d\
+        6b511b9f4c017c7476d2a144b5e519c73a6de2a1ed8e36415e5081553b6b6b37\
+        27603b281f6e9ead1c690fafbaa1286d39a3eb685e9fb154a87800aa1e580015\
+        8061468aec871810f870d33413b8fb61d48c8760ce1bf1f94075a9a48441beb7\
+        aebe3cf154d76054060ee25110c7e78481abbd493f8d47ec8c7215c48d086f5a\
+        d42343e8923340ae8e1461dd874130c8907631761c1169f9cd89afca1c316025\
+        3b8ab6ba3b0eef0eff1abaf1f1c45a2028801ecdbdfcd5c8f2589f12aeaad3ea\
+        fb16e4d76d3037caef5a0f242c4f5547bf575f6450";
+    const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
+        e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
+    const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
+        b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
+        f52d9e543b4aa167cf6472c602c8079a40440274b6b4d4b42e7fd529bbbdf4f0\
+        1cfc5dd55c7f0755cf6d7cc821f1cb7fdb971e77b7e4c0b1cffcadc3b3be2aef\
+        423888209b7aab3703f999ab61869f950d";
+
+    #[test]
+    fn known_answer_x25519_agreement_and_ed25519_conversion() {
+        let a = x25519_dalek::StaticSecret::from([0x11; 32]);
+        let b = x25519_dalek::StaticSecret::from([0x22; 32]);
+        assert_eq!(
+            hex::encode(x25519_dalek::PublicKey::from(&a).to_bytes()),
+            "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
+        );
+        assert_eq!(
+            hex::encode(
+                a.diffie_hellman(&x25519_dalek::PublicKey::from(&b))
+                    .as_bytes()
+            ),
+            "9e004098efc091d4ec2663b4e9f5cfd4d7064571690b4bea97ab146ab9f35056"
+        );
+        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+        assert_eq!(
+            hex::encode(recipient.to_scalar_bytes()),
+            "c25a999cf27ed91865db781f67e404f9d541d12e3e761786c409131fe595096d"
+        );
+        assert_eq!(
+            hex::encode(recipient.verifying_key().to_montgomery().to_bytes()),
+            "931aad030ad93d3ff8042699324fdb230585be4daf500266eaa4b8f747543f50"
+        );
+    }
+
+    #[test]
+    fn known_answer_pair_offer_opens() {
+        let recipient = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+        let offer = hex::decode(KAT_PAIR_OFFER).unwrap();
+        assert_eq!(
+            decrypt_pair_offer(&offer, &recipient).unwrap(),
+            "kat-pairing-token"
+        );
+        let wrong = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+        assert!(decrypt_pair_offer(&offer, &wrong).is_err());
+    }
+
+    #[test]
+    fn known_answer_request_opens() {
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+        let bytes = hex::decode(KAT_REQUEST).unwrap();
+        let (request, ephemeral_public_key) = decrypt_request(&bytes, &issuer).unwrap();
+        assert_eq!(request.token, "kat-bearer-token");
+        assert_eq!(request.device_public_key, [7; 32]);
+        assert_eq!(request.relay_service_node_id, [8; 32]);
+        assert_eq!(request.label, "NAS");
+        assert!(matches!(request.kind, EnrollmentKind::HomePeer));
+        assert_eq!(ephemeral_public_key, bytes[..32]);
+    }
+
+    #[test]
+    fn known_answer_response_opens_and_verifies() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let signed = sign_response(payload(&root), &root).unwrap();
+        assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
+        let request_ephemeral = x25519_dalek::StaticSecret::from([0x5a; 32]);
+        let decrypted = decrypt_response(
+            &hex::decode(KAT_RESPONSE).unwrap(),
+            [3; 16],
+            device.verifying_key().to_bytes(),
+            &request_ephemeral,
+        )
+        .unwrap();
+        assert_eq!(hex::encode(&decrypted.signature), KAT_RESPONSE_SIGNATURE);
+        assert_eq!(
+            postcard::to_stdvec(&decrypted.payload).unwrap(),
+            postcard::to_stdvec(&signed.payload).unwrap()
+        );
+        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+    }
+
+    #[test]
+    fn known_answer_ack_signature() {
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]);
+        let ack = make_ack(b"kat-response", [4; 16], &device).unwrap();
+        assert_eq!(hex::encode(&ack), KAT_ACK);
+        verify_ack(
+            &ack,
+            b"kat-response",
+            [4; 16],
+            device.verifying_key().to_bytes(),
+        )
+        .unwrap();
+    }
 }

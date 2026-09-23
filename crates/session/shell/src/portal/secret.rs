@@ -257,6 +257,19 @@ fn decode(encoded: &str) -> zbus::fdo::Result<[u8; SECRET_BYTES]> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    /// Store bytes sealed before a crypto-stack upgrade; the store file
+    /// persists across builds, so its XChaCha20-Poly1305 framing is pinned.
+    #[test]
+    fn store_sealed_by_an_earlier_build_still_opens() {
+        let sealed = hex::decode(
+            "5150535631fe105a9d3cbaac1fff4a19f97c5828f2f06d7e76faf40fd49a44a4\
+            88a73129fd8ce138dfb14fce0f9c172b78c6e80ceba4e509460d98c901",
+        )
+        .unwrap();
+        let opened = open_store(&[0x61; SECRET_BYTES], &sealed).unwrap();
+        assert_eq!(opened.as_slice(), b"kat-portal-store");
+        assert!(open_store(&[0x62; SECRET_BYTES], &sealed).is_none());
+    }
     #[test]
     fn app_secret_persists_and_is_separate() {
         let dir = tempfile::tempdir().unwrap();
