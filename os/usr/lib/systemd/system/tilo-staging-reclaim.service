@@ -13,6 +13,10 @@ After=local-fs.target tilo-firstboot-user.service tilo-boot-health.service greet
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-staging-reclaim
+# Its `done` / `refused:` markers must be readable from the serial console of a
+# machine whose session never came up, and by the VM round trip.
+StandardOutput=journal+console
+StandardError=journal+console
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

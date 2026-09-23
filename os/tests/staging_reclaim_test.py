@@ -189,6 +189,7 @@ class ReclaimTests(unittest.TestCase):
         self.assertIn(['cryptsetup', 'resize', '--batch-mode', 'luks-1234'], calls)
         self.assertIn(['btrfs', 'filesystem', 'resize', 'max', '/sysroot'], calls)
         self.assertFalse(self.record_path.exists())
+        self.assertEqual(result.stdout.splitlines()[-1], 'tilo-staging-reclaim: done')
 
     def test_resumes_after_a_crash_between_the_two_deletions(self):
         state = initial_state()
@@ -226,6 +227,8 @@ class ReclaimTests(unittest.TestCase):
         result = self.reclaim()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(fragment, result.stdout)
+        self.assertIn('tilo-staging-reclaim: refused: ', result.stdout)
+        self.assertNotIn('tilo-staging-reclaim: done', result.stdout)
         self.assertEqual(self.partitions(), before)
         self.assertEqual(self.mutations(), [])
         self.assertTrue(self.record_path.exists(), 'a refused reclaim keeps its evidence')
