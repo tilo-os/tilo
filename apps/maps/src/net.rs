@@ -103,7 +103,7 @@ fn fetch_json(url: &str) -> Result<Value, String> {
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
-    let q = urlencode(query);
+    let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
@@ -121,7 +121,7 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
-    let q = urlencode(query);
+    let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
@@ -243,7 +243,7 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
     );
     format!(
         "https://overpass-api.de/api/interpreter?data={}",
-        urlencode(&ql)
+        ui::uri::encode_component(&ql)
     )
 }
 
@@ -519,7 +519,7 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
         from.lat, from.lon, to.lat, to.lon
     );
     if let Some(time) = &when.time {
-        let _ = write!(url, "&time={}", urlencode(time));
+        let _ = write!(url, "&time={}", ui::uri::encode_component(time));
     }
     if when.arrive_by {
         url.push_str("&arriveBy=true");
@@ -689,23 +689,6 @@ fn hhmm(iso: &str) -> String {
     iso.to_string()
 }
 
-/// Minimal percent-encoding for query strings (space + reserved chars).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,11 +697,6 @@ mod tests {
     fn hhmm_extracts_clock() {
         assert_eq!(hhmm("2026-06-30T09:17:00+02:00"), "09:17");
         assert_eq!(hhmm("garbage"), "garbage");
-    }
-
-    #[test]
-    fn urlencode_basic() {
-        assert_eq!(urlencode("a b&c"), "a%20b%26c");
     }
 
     /// A region candidate carries the Nominatim `boundingbox`
