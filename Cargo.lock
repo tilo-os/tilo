@@ -11215,33 +11215,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "qdoc-epub"
-version = "0.1.0"
-dependencies = [
- "qdoc",
- "zip",
-]
-
-[[package]]
-name = "qdoc-html"
-version = "0.1.0"
-dependencies = [
- "qdoc",
-]
-
-[[package]]
 name = "qdoc-pdf"
 version = "0.1.0"
 dependencies = [
  "flate2",
  "image",
- "qdoc",
-]
-
-[[package]]
-name = "qdoc-rtf"
-version = "0.1.0"
-dependencies = [
  "qdoc",
 ]
 
@@ -18406,10 +18384,7 @@ dependencies = [
  "automerge",
  "fluent",
  "qdoc",
- "qdoc-epub",
- "qdoc-html",
  "qdoc-pdf",
- "qdoc-rtf",
  "regex",
  "runtime-dylib",
  "serde",
