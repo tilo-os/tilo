@@ -314,6 +314,14 @@ impl CompleteContentProvider for NotesApp {
 }
 
 impl Widget for NotesApp {
+    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+        Some(self)
+    }
+
+    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
+        Some(self)
+    }
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&HISTORY)
     }
