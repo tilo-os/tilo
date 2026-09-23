@@ -10,6 +10,13 @@ use crate::hypervisor::{CommandLine, SshEndpoint};
 
 pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
 
+/// The VM's own `known_hosts`, beside its key. Local VMs all answer on
+/// 127.0.0.1 with forwarded ports, and a recreated VM has new host keys, so
+/// one shared `~/.ssh/known_hosts` entry per port would refuse the next VM.
+pub fn known_hosts_path(key: &str) -> String {
+    format!("{key}.known_hosts")
+}
+
 /// `ssh` arguments for a non-interactive, key-only connection.
 pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> Vec<String> {
     let mut args: Vec<String> = [
@@ -28,7 +35,12 @@ pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) ->
         args.push("-t".into());
     }
     if let Some(key) = key {
-        args.extend(["-i".into(), key.to_owned()]);
+        args.extend([
+            "-o".into(),
+            format!("UserKnownHostsFile={}", known_hosts_path(key)),
+            "-i".into(),
+            key.to_owned(),
+        ]);
     }
     args.extend([
         "-p".into(),
@@ -262,7 +274,7 @@ mod tests {
         assert_eq!(
             line.display(),
             "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
-             -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
+             -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
         );
         let interactive = ssh_command(&endpoint, None, &[], true);
         assert!(interactive.args.contains(&"-t".to_string()));
