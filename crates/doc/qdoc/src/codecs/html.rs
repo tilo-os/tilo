@@ -1,5 +1,5 @@
 //! Built-in HTML **import** codec — parses `.html`/`.htm` onto the canonical
-//! rich-text model (`qdoc-html` handles export). HTML in the wild isn't strict
+//! rich-text model ([`crate::export_html`] handles export). HTML in the wild isn't strict
 //! XML, so this hand-rolls a tolerant tokenizer: never errors on malformed
 //! markup, degrades unknown tags to text, unescapes entities itself.
 //!
@@ -14,8 +14,8 @@
 //! inline `<code>`→`fontFamily`=mono.
 //!
 //! `<head>`/`<script>`/`<style>` is skipped. `export` is `Unsupported`: HTML
-//! export lives in `qdoc-html` (needs a `DocSnapshot`, not the `DocRef` a
-//! `FormatProvider` gets), and `qdoc` can't depend on it without a cycle.
+//! export is [`crate::export_html::render_html`], which needs a `DocSnapshot`,
+//! not the `DocRef` a `FormatProvider` gets.
 
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
@@ -52,9 +52,9 @@ impl FormatProvider for HtmlCodec {
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Reusing `qdoc-html`'s writer here would need `qdoc` to depend on it — a cycle.
+        // The HTML writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
-            "HTML export is provided by the `qdoc-html` crate (editor), not the qdoc codec"
+            "HTML export is provided by qdoc::export_html::render_html, not the qdoc codec"
                 .to_string(),
         ))
     }
@@ -892,7 +892,7 @@ fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
 }
 
 /// Decodes a `data:[mime][;base64],payload` URI into bytes; `None` for a non-data
-/// URI or undecodable payload (base64 only, matching `qdoc-html`).
+/// URI or undecodable payload (base64 only, matching `export_html`).
 fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let rest = src
         .strip_prefix("data:")

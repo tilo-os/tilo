@@ -1,7 +1,7 @@
 //! Minimal standard-alphabet base64 encoder for image `data:` URIs.
 //!
-//! Hand-rolled (rather than pulling the `base64` crate) so adding `qdoc-html`
-//! doesn't touch the workspace lockfile. Standard RFC 4648 alphabet with `=`
+//! Hand-rolled (rather than pulling the `base64` crate) so the HTML exporter
+//! adds nothing to the workspace lockfile. Standard RFC 4648 alphabet with `=`
 //! padding — exactly what a browser expects in a `data:image/png;base64,…` URI.
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -8,7 +8,7 @@
 //! OPF metadata, nav TOC, image manifest items).
 
 use super::*;
-use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
+use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::io::Read;

@@ -35,9 +35,6 @@ tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
-qdoc-html = { path = "../../crates/doc/qdoc-html" }
-qdoc-rtf = { path = "../../crates/doc/qdoc-rtf" }
-qdoc-epub = { path = "../../crates/doc/qdoc-epub" }
 automerge.workspace = true
 vello.workspace = true
 taffy.workspace = true
