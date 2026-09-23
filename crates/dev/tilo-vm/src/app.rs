@@ -865,16 +865,30 @@ impl App {
             }
         }
         run_all(&mut self.runner, &adapter.stop(&vm.vm()))?;
-        let down = lock
-            .as_mut()
-            .map(|l| l.wait_for_shutdown(Duration::from_secs(120)));
+        let started = Instant::now();
+        let limit = Duration::from_secs(120);
+        let mut down = lock.as_mut().map(|l| l.wait_for_shutdown(limit));
+        // SSH closes early in a shutdown; where the hypervisor can say, "down"
+        // means the VM is off, so a following vm start finds it stopped.
+        if down != Some(false) && adapter.running(&vm.vm(), &mut self.runner).is_some() {
+            down = Some(loop {
+                match adapter.running(&vm.vm(), &mut self.runner) {
+                    Some(true) if started.elapsed() < limit => {
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    Some(true) => break false,
+                    _ => break true,
+                }
+            });
+        }
         let text = match down {
-            Some(true) => format!(
+            Some(true) if lock.is_some() => format!(
                 "VM {} shut down (it held the VM lock until it was down)",
                 vm.name
             ),
+            Some(true) => format!("VM {} shut down", vm.name),
             Some(false) => format!(
-                "VM {} was asked to shut down but still answers after 120s; tilo-vm vm status",
+                "VM {} was asked to shut down but is still up after 120s; tilo-vm vm status",
                 vm.name
             ),
             None => format!("VM {} is shutting down", vm.name),
@@ -997,6 +1011,18 @@ impl App {
                 insert(&mut data, "reachable", json!(true));
                 insert(&mut data, "daemon", json!(remote.hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
+            }
+            Err(error @ CliError::DaemonMissing { .. }) => {
+                lines.push(
+                    "  reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
+                        .into(),
+                );
+                insert(&mut data, "reachable", json!(true));
+                insert(&mut data, "daemon", Value::Null);
+                insert(&mut data, "error", error.to_json());
+                let mut outcome = Outcome::new(lines.join("\n"), data);
+                outcome.next = vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)];
+                Ok(outcome)
             }
             Err(error) => {
                 lines.push(format!("  not reachable: {error}"));
@@ -1360,6 +1386,7 @@ impl App {
         run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
         let started = Instant::now();
         let mut reachable = false;
+        let mut no_daemon = None;
         while started.elapsed() < Duration::from_secs(180) {
             match self.connect(&vm) {
                 Ok(_) => {
@@ -1368,6 +1395,12 @@ impl App {
                 }
                 // sshd is up and says no: waiting will not change that.
                 Err(error @ CliError::RootKeyRefused { .. }) => return Err(error),
+                // SSH works; the image just has no daemon, and never will.
+                Err(error @ CliError::DaemonMissing { .. }) => {
+                    reachable = true;
+                    no_daemon = Some(error);
+                    break;
+                }
                 Err(_) => std::thread::sleep(Duration::from_secs(2)),
             }
         }
@@ -1381,6 +1414,18 @@ impl App {
         }
         self.warnings.extend(self.receipt.slow());
         let seconds = started.elapsed().as_secs_f64();
+        if let Some(error) = no_daemon {
+            return Ok(Outcome {
+                next: vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)],
+                ..Outcome::new(
+                    format!(
+                        "VM {} is up; SSH answered after {seconds:.0}s, but it runs no tilo-vmd (not a Tilo dev image), so slots and swaps cannot use it",
+                        vm.name
+                    ),
+                    json!({ "vm": vm.name, "boot_seconds": seconds, "daemon": false }),
+                )
+            });
+        }
         Ok(Outcome::new(
             format!("VM {} is up; SSH answered after {seconds:.0}s", vm.name),
             json!({ "vm": vm.name, "boot_seconds": seconds }),
