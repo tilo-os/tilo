@@ -39,6 +39,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use ui::doc::{read_bool, read_str_or_text};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
@@ -1702,7 +1703,7 @@ impl DisplayPane {
             self.last_prefs.night_light = b;
             let _ = Self::persist_display(|d| d.night_light = b);
         }
-        if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
+        if let Some(label) = read_str_or_text(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
             && let Some(kelvin) = temperature_from_label(&label)
             && kelvin != self.last_prefs.night_light_temperature
         {
@@ -1713,7 +1714,7 @@ impl DisplayPane {
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
         if has_pending_operation
-            && let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+            && let Some(label) = read_str_or_text(state, root, DISPLAY_SCALE_KEY)
             && let Some(v) = scale_factor_of(&label)
             && (v - self.last_prefs.scale).abs() > f64::EPSILON
         {
@@ -1797,14 +1798,14 @@ impl DisplayPane {
             cfg.primary = primary;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "scale"))
+        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "scale"))
             && let Some(scale) = scale_factor_of(&label)
             && (scale - cfg.scale).abs() > f64::EPSILON
         {
             cfg.scale = scale;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mode"))
+        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "mode"))
             && let Some(mode) = output
                 .modes
                 .iter()
@@ -1815,7 +1816,8 @@ impl DisplayPane {
             cfg.mode = Some(mode);
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "transform"))
+        if let Some(label) =
+            read_str_or_text(state, root, &output_key(&output.connector, "transform"))
             && let Some(transform) = transform_from_label(&label)
             && transform != cfg.transform
         {
@@ -1836,7 +1838,8 @@ impl DisplayPane {
             cfg.vrr = enabled;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "color_profile"))
+        if let Some(label) =
+            read_str_or_text(state, root, &output_key(&output.connector, "color_profile"))
         {
             let selected = if label == "System default" {
                 None
@@ -1867,7 +1870,8 @@ impl DisplayPane {
         cfg: &mut OutputConfig,
     ) -> bool {
         let mut changed = false;
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mirror")) {
+        if let Some(label) = read_str_or_text(state, root, &output_key(&output.connector, "mirror"))
+        {
             let mirror = if label == "Extend workspace" {
                 None
             } else {
@@ -1881,7 +1885,9 @@ impl DisplayPane {
                 changed = true;
             }
         }
-        if let Some(position) = read_str(state, root, &output_key(&output.connector, "position")) {
+        if let Some(position) =
+            read_str_or_text(state, root, &output_key(&output.connector, "position"))
+        {
             let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
                 let label = position.strip_prefix(&format!("{side} of "))?;
                 let target = connected
@@ -2130,30 +2136,6 @@ impl DisplayPane {
                 }
             }
         }
-    }
-}
-
-/// Read a `bool` scalar at `key`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Read a string at `key` — handles both a scalar `Str` and an Automerge
-/// `Text` object (a `Dropdown` may write either).
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 
@@ -2580,7 +2562,7 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         assert_eq!(
-            read_str(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
             Some("100%"),
             "seed should write the default 100% scale label"
         );
@@ -2655,7 +2637,7 @@ mod tests {
         pane.sync(&mut doc, &root);
         assert!(pane.pending_candidate.is_none());
         assert_eq!(
-            read_str(&doc, &root, &transform_key).as_deref(),
+            read_str_or_text(&doc, &root, &transform_key).as_deref(),
             Some("Landscape"),
             "revert resets controls to last known-good rather than reoffering the failed plan"
         );

@@ -54,8 +54,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use ui::doc::{read_bool, read_f64, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
@@ -1261,7 +1262,7 @@ impl AudioPane {
     /// rest doesn't re-fire. Routes through the injected [`GraphControl`].
     fn dispatch_stream(&mut self, state: &mut AutoCommit, root: &ObjId, s: &AudioStream) {
         // Route: match the chosen label to a device serial (or follow default).
-        if let Some(choice) = read_str(state, root, stream_sink_key(s.id).as_str())
+        if let Some(choice) = read_str_or_text(state, root, stream_sink_key(s.id).as_str())
             && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
         {
             let target_id = if choice == FOLLOW_DEFAULT {
@@ -1815,7 +1816,7 @@ impl AudioPane {
     fn apply_device_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Output-device (sink) selection → wpctl set-default, guarded so a
         // selection at rest doesn't re-fire.
-        if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY)
+        if let Some(name) = read_str_or_text(state, root, OUTPUT_DEVICE_KEY)
             && self.last_sink.as_deref() != Some(name.as_str())
             && let Some(id) = self.devices.sink_id(&name)
         {
@@ -1853,7 +1854,7 @@ impl AudioPane {
             }
         }
         // Input-device (source) selection → wpctl set-default.
-        if let Some(name) = read_str(state, root, INPUT_DEVICE_KEY)
+        if let Some(name) = read_str_or_text(state, root, INPUT_DEVICE_KEY)
             && self.last_source.as_deref() != Some(name.as_str())
             && let Some(id) = self.devices.source_id(&name)
         {
@@ -1912,7 +1913,7 @@ impl AudioPane {
             self.dispatch_stream(state, root, s);
         }
         for hw in &self.graph.hardware {
-            let Some(choice) = read_str(state, root, &device_profile_key(hw.id)) else {
+            let Some(choice) = read_str_or_text(state, root, &device_profile_key(hw.id)) else {
                 continue;
             };
             if self.last_device_profile.get(&hw.id) == Some(&choice) {
@@ -2108,41 +2109,6 @@ impl Widget for AudioPane {
                 .composed
                 .as_mut()
                 .is_some_and(|child| child.take_structure_dirty())
-    }
-}
-
-/// Read an `f64` scalar at `key`.
-fn read_f64(state: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::F64(f) => Some(*f),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Read a `bool` scalar at `key`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Read a string at `key` — dropdowns write an Automerge `Text` object, so
-/// handle both a plain scalar string and a `Text`.
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 
@@ -2643,7 +2609,7 @@ Video
         );
         // The stream on the default sink seeds its picker to "Default".
         assert_eq!(
-            read_str(&doc, &root, &stream_sink_key(84)).as_deref(),
+            read_str_or_text(&doc, &root, &stream_sink_key(84)).as_deref(),
             Some(FOLLOW_DEFAULT)
         );
     }
