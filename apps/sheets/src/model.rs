@@ -18,50 +18,17 @@ pub type Row = u32;
 pub type Addr = (Col, Row);
 
 /// Convert a zero-based column index to spreadsheet letters.
-/// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`.
+/// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`. The letters are
+/// qdoc's, the same the `.xlsx`/`.ods` codecs write.
 pub fn col_to_letters(col: Col) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    // Bijective base-26 over the zero-based index: the remainder picks a
-    // letter and `checked_sub` supplies the borrow for the next digit, ending
-    // the loop when there is none left to take.
-    let mut n = u64::from(col);
-    let mut out = Vec::new();
-    loop {
-        // `n % 26` is below the alphabet's length, so the lookup always hits.
-        let digit = usize::try_from(n % 26).unwrap_or(0);
-        let Some(&letter) = ALPHABET.get(digit) else {
-            break;
-        };
-        out.push(letter);
-        let Some(next) = (n / 26).checked_sub(1) else {
-            break;
-        };
-        n = next;
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
+    qdoc::sheet::a1::index_to_col(col.saturating_add(1))
 }
 
 /// Parse spreadsheet column letters (case-insensitive) into a zero-based
 /// index. Returns `None` for empty or non-alphabetic input, and for a run of
-/// letters too long to name a column.
+/// more than three letters (`XFD`, the last column, has three).
 pub fn letters_to_col(s: &str) -> Option<Col> {
-    if s.is_empty() {
-        return None;
-    }
-    let a = u32::from('A');
-    let mut n: Col = 0;
-    for ch in s.chars() {
-        let up = ch.to_ascii_uppercase();
-        if !up.is_ascii_uppercase() {
-            return None;
-        }
-        // `up` is in `A..=Z`, so the digit lands in `1..=26`; past `ZZZZZZZ`
-        // the running total leaves the column range and parsing fails.
-        let digit = u32::from(up).checked_sub(a)?.checked_add(1)?;
-        n = n.checked_mul(26)?.checked_add(digit)?;
-    }
-    n.checked_sub(1)
+    qdoc::sheet::a1::col_to_index(s)?.checked_sub(1)
 }
 
 /// Format an address as an A1 string: `(0, 0) -> "A1"`.
@@ -404,10 +371,10 @@ impl CellFormat {
 
     /// Convenience parse with the USD/ISO/24h defaults — used where the
     /// document currency isn't handy (e.g. tests).
-    // Deliberately not `FromStr`: parsing cannot fail (an unknown code reads
-    // as `General`), and the trait would hand every caller a `Result` to
-    // unwrap for no gain.
-    #[allow(clippy::should_implement_trait)]
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
+    )]
     pub fn from_str(s: &str) -> CellFormat {
         Self::from_str_with(s, Currency::USD)
     }
@@ -637,9 +604,10 @@ fn serial_to_unix_days(serial: f64) -> i64 {
     // Excel epoch 1899-12-30 corresponds to Unix day -25569.
     const EXCEL_EPOCH_UNIX_DAY: i64 = -25569;
     let bounded = serial.floor().clamp(-4_000_000.0, 4_000_000.0);
-    // Bounded to ±4e6 on the line above, so the truncation is exact; a NaN
-    // serial converts to 0 and reads as the Excel epoch.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded to ±4e6 on the line above, so the truncation is exact; a NaN serial converts to 0 and reads as the Excel epoch"
+    )]
     let days = bounded as i64;
     days.saturating_add(EXCEL_EPOCH_UNIX_DAY)
 }
@@ -661,9 +629,10 @@ pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
 /// Convert the fractional part of an Excel serial into a clock time.
 pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let frac = serial.fract().abs();
-    // `frac` is a fractional part in [0, 1), so the product is at most 86400
-    // and the truncation is exact.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "`frac` is a fractional part in [0, 1), so the product is at most 86400 and the truncation is exact"
+    )]
     let total_secs = (frac * 86400.0).round() as i64;
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
@@ -801,6 +770,9 @@ mod tests {
         assert_eq!(letters_to_col("Z"), Some(25));
         assert_eq!(letters_to_col("AA"), Some(26));
         assert_eq!(letters_to_col("ZZ"), Some(701));
+        assert_eq!(letters_to_col("XFD"), Some(16_383));
+        // Past the last column a run of letters is a name, not a column.
+        assert_eq!(letters_to_col("ABCD"), None);
     }
 
     #[test]
@@ -822,9 +794,10 @@ mod tests {
     }
 
     #[test]
-    // 3.14 is the value under test, not an approximation of PI; the assertion
-    // is that it formats back to the same digits.
-    #[allow(clippy::approx_constant)]
+    #[allow(
+        clippy::approx_constant,
+        reason = "3.14 is the value under test, not an approximation of PI"
+    )]
     fn general_trims_trailing_zeros() {
         assert_eq!(format_number_general(42.0), "42");
         assert_eq!(format_number_general(3.14), "3.14");
