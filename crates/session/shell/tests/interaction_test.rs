@@ -138,6 +138,25 @@ fn wait_for_ready_surface(
     captured_surface_id
 }
 
+fn wait_for_first_frame(
+    rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
+    surface: u32,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, WaylandEvent::Frame { surface_id, .. } if surface_id == surface) {
+                return true;
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 fn wait_for_any_surface(
     rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
     timeout: Duration,
@@ -223,6 +242,12 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
                 .unwrap_or_default();
             panic!("GNOME Text Editor did not create a Wayland window; log:\n{log}")
         });
+    // A toplevel exists before its first buffer; input sent to it then is
+    // never delivered. Type only once the editor has presented a frame.
+    assert!(
+        wait_for_first_frame(&mut rx, surface, Duration::from_secs(20)),
+        "GNOME Text Editor created a window but never presented a frame"
+    );
     let x = f64::from(width) * 0.5;
     let y = f64::from(height) * 0.5;
     input_tx
