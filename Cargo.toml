@@ -372,7 +372,9 @@ iroh-mdns-address-lookup = "0.5.0"
 # The gstreamer crates are optional everywhere — the hermetic build, `--shots`
 # and CI must never need the gstreamer-1.0 dev stack.
 # ---------------------------------------------------------------------------
-image = { version = "0.25", default-features = false }
+# 0.25.10 decodes TIFF through tiff 0.11, which shares zune-jpeg 0.5 with the
+# JPEG decoder instead of linking a second zune-jpeg/zune-core generation.
+image = { version = "0.25.10", default-features = false }
 qrcode = { version = "0.14", default-features = false }
 rqrr = { version = "0.10", default-features = false }
 openh264 = { version = "0.9", features = ["source"] }
