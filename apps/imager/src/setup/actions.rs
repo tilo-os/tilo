@@ -18,12 +18,25 @@ pub const SETUP_OPERATION_TYPE: &str = "imager.setup.operation";
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum SetupOperation {
-    ChooseExperience { experience: String },
-    SetCommonMode { mode: String },
-    SetFolderMode { folder: String, mode: String },
-    ClearFolderMode { folder: String },
-    RemoveFolder { folder: String },
-    SelectSuggestion { suggestion: String },
+    ChooseExperience {
+        experience: String,
+    },
+    SetCommonMode {
+        mode: String,
+    },
+    SetFolderMode {
+        folder: String,
+        mode: String,
+    },
+    ClearFolderMode {
+        folder: String,
+    },
+    RemoveFolder {
+        folder: String,
+    },
+    SelectSuggestion {
+        suggestion: String,
+    },
     ChooseFolder,
     ToggleHelp,
     Next,
@@ -843,4 +856,167 @@ const fn yes_no(value: bool) -> &'static str {
 
 const fn open_closed(value: bool) -> &'static str {
     if value { "open" } else { "closed" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn projection(internal: InternalProjection) -> SetupProjection {
+        SetupProjection {
+            page: "review",
+            selection: SelectionProjection {
+                experience: Some("full_os"),
+                common_mode: "copy",
+                folder_count: 0,
+                active_folder_count: 0,
+                folders: Vec::new(),
+                suggestions: Vec::new(),
+                help_open: false,
+                imports_open: false,
+            },
+            review: ReviewProjection { ready: true },
+            availability: AvailabilityProjection {
+                desktop: false,
+                full_os: false,
+                connected: false,
+                next: false,
+                back: true,
+                folder_policies: false,
+                folder_edits: false,
+                help: false,
+                open_imports: true,
+                choose_folder: false,
+            },
+            internal,
+        }
+    }
+
+    fn internal_actions(state: &SetupProjection) -> Vec<ActionSpec> {
+        resource(state)
+            .children
+            .into_iter()
+            .find(|child| child.kind == "imager.setup.internal")
+            .expect("internal resource")
+            .actions
+    }
+
+    fn code(action: &ActionSpec) -> Option<&str> {
+        match &action.contract.availability {
+            tilo_actions::Availability::Available => None,
+            tilo_actions::Availability::Unavailable { code, .. } => Some(code),
+        }
+    }
+
+    // Catches an install command reachable only by clicking (spec §8).
+    #[test]
+    fn internal_resource_publishes_every_install_command() {
+        let actions = internal_actions(&projection(InternalProjection::default()));
+        for id in [
+            "setup.internal.set-target-size",
+            "setup.internal.install",
+            "setup.internal.restart",
+            "setup.internal.retry",
+            "setup.internal.remove",
+            "setup.internal.firmware-settings",
+            "setup.internal.disable-fast-startup",
+            "setup.internal.restart-later",
+            "setup.internal.recheck",
+            "setup.internal.download",
+            "setup.internal.pause-download",
+            "setup.internal.resume-download",
+            "setup.internal.cancel-download",
+            "setup.internal.discard-download",
+            "setup.internal.release-download",
+        ] {
+            let action = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"));
+            assert!(!action.contract.availability.is_available(), "{id}");
+        }
+        let install = actions
+            .iter()
+            .find(|action| action.id == "setup.internal.install")
+            .unwrap();
+        assert_eq!(code(install), Some("full_os_review_only"));
+    }
+
+    // Catches availability flags wired to the wrong action.
+    #[test]
+    fn internal_availability_follows_each_flag() {
+        let actions = internal_actions(&projection(InternalProjection {
+            on_review: true,
+            availability: InternalAvailability {
+                install: true,
+                firmware_settings: true,
+                ..InternalAvailability::default()
+            },
+            ..InternalProjection::default()
+        }));
+        for action in &actions {
+            let expected = matches!(
+                action.id.as_str(),
+                "setup.internal.install" | "setup.internal.firmware-settings"
+            );
+            assert_eq!(
+                action.contract.availability.is_available(),
+                expected,
+                "{}",
+                action.id
+            );
+        }
+        let restart = actions
+            .iter()
+            .find(|action| action.id == "setup.internal.restart")
+            .unwrap();
+        assert_eq!(code(restart), Some("internal_not_staged"));
+    }
+
+    // Catches an install or removal that does not name what the invoker saw,
+    // which is what lets the view refuse a stale invocation.
+    #[test]
+    fn internal_actions_carry_the_reviewed_digest_and_operation() {
+        let state = projection(InternalProjection {
+            on_review: true,
+            reviewed: Some("a".repeat(64)),
+            pending_operation: Some("op-7".into()),
+            ..InternalProjection::default()
+        });
+        let actions = internal_actions(&state);
+        let decode_action = |id: &str| {
+            let encoded = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap()
+                .build_json(&serde_json::Map::new())
+                .unwrap();
+            decode(&encoded.type_id, &encoded.payload).unwrap().unwrap()
+        };
+        assert_eq!(
+            decode_action("setup.internal.install"),
+            SetupOperation::InstallInternal {
+                reviewed: "a".repeat(64)
+            }
+        );
+        assert_eq!(
+            decode_action("setup.internal.remove"),
+            SetupOperation::RemoveInternal {
+                operation_id: "op-7".into()
+            }
+        );
+        let size = actions
+            .iter()
+            .find(|action| action.id == "setup.internal.set-target-size")
+            .unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert("gib".into(), serde_json::json!(80));
+        let encoded = size.build_json(&args).unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(SetupOperation::SetInternalTargetSize { gib: 80 })
+        );
+        args.insert("gib".into(), serde_json::json!("eighty"));
+        assert!(size.build_json(&args).is_err());
+    }
 }

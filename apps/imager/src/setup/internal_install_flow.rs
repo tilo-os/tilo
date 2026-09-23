@@ -17,10 +17,10 @@ use super::internal_cache::HeldReadSeek;
 use super::internal_cache::coordinator::Cancellation;
 use super::internal_download::SelectedManifest;
 use super::model::HostOs;
+use super::staging::DEFAULT_TARGET_BYTES;
 use super::staging::helper::{self, Action, ComponentPaths, Outcome, Poll, Progress, Request};
 use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBounds};
 use super::staging::probe::{self, Blocker, HostFacts};
-use super::staging::DEFAULT_TARGET_BYTES;
 use super::staging::record::{Record, ReleaseRef, Step};
 
 /// Release jobs set this at build time only after the round trip passed.
@@ -46,10 +46,7 @@ pub(super) fn gate_open(build: Option<&str>, runtime: Option<&str>) -> bool {
 /// The gate as this process sees it.
 #[must_use]
 pub(super) fn live_gate_open() -> bool {
-    gate_open(
-        BUILD_GATE,
-        std::env::var(RUNTIME_GATE_VAR).ok().as_deref(),
-    )
+    gate_open(BUILD_GATE, std::env::var(RUNTIME_GATE_VAR).ok().as_deref())
 }
 
 /// A running elevated helper, as the UI observes it.
@@ -243,11 +240,7 @@ fn refusal(code: &str, message: impl Into<String>) -> Outcome {
 /// Launch the helper and follow its progress until it reports an outcome.
 /// When the owner stops watching, the helper keeps running on its own; its
 /// host record, not this process, is the source of truth afterwards.
-fn drive(
-    link: &StagingLink,
-    request: &Request,
-    cancelled: &dyn Fn() -> bool,
-) -> Outcome {
+fn drive(link: &StagingLink, request: &Request, cancelled: &dyn Fn() -> bool) -> Outcome {
     let mut running = match (link.runtime.launch)(request) {
         Ok(running) => running,
         Err(error) => return refusal("launch-failed", error),
@@ -305,8 +298,11 @@ fn stage_request(
     link.lock().requirements = Some((esp_min, root_min));
     let plan = &intent.plan;
     if partition_bytes(plan, plan.staging_esp.first_lba, plan.staging_esp.last_lba) < esp_min
-        || partition_bytes(plan, plan.staging_root.first_lba, plan.staging_root.last_lba)
-            < root_min
+        || partition_bytes(
+            plan,
+            plan.staging_root.first_lba,
+            plan.staging_root.last_lba,
+        ) < root_min
     {
         return Err(refusal(
             "plan-stale",
@@ -316,8 +312,12 @@ fn stage_request(
     let component_paths =
         (link.runtime.component_paths)(selected).map_err(|error| refusal("paths", error))?;
     let manifest_path = manifest_dir.join("manifest.json");
-    std::fs::write(&manifest_path, selected.bytes())
-        .map_err(|error| refusal("manifest", format!("The manifest could not be saved: {error}")))?;
+    std::fs::write(&manifest_path, selected.bytes()).map_err(|error| {
+        refusal(
+            "manifest",
+            format!("The manifest could not be saved: {error}"),
+        )
+    })?;
     let bundle = selected.bundle();
     Ok(Request {
         schema: 1,
@@ -386,30 +386,26 @@ pub(super) fn staging_consumer(
 /// operation's record, and the helper refuses to reuse a finished one.
 fn new_operation_id() -> String {
     use std::hash::{BuildHasher, Hasher};
-    let mut bytes = [0u8; 16];
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    for (index, chunk) in bytes.chunks_mut(8).enumerate() {
+    let half = |index: usize| {
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
         hasher.write_u128(nanos);
         hasher.write_usize(index);
         hasher.write_u32(std::process::id());
-        chunk.copy_from_slice(&hasher.finish().to_le_bytes());
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+        u128::from(hasher.finish())
+    };
+    let random = (half(0) << 64) | half(1);
+    // Version 4 in bits 76..80, RFC 4122 variant in bits 62..64.
+    let value = (random & !(0xf << 76) & !(0x3 << 62)) | (0x4 << 76) | (0x2 << 62);
     format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        value >> 96,
+        (value >> 80) & 0xffff,
+        (value >> 64) & 0xffff,
+        (value >> 48) & 0xffff,
+        value & 0xffff_ffff_ffff
     )
 }
 
@@ -510,7 +506,9 @@ impl InternalInstall {
 
     /// A probe task, or `None` when the gate is closed. It returns the facts
     /// and unfinished records for [`Self::accept_probe`].
-    pub(super) fn probe_task(&mut self) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
+    pub(super) fn probe_task(
+        &mut self,
+    ) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
         if !self.gate || self.probing {
             return None;
         }
@@ -711,10 +709,16 @@ impl InternalInstall {
     /// Queue the reviewed `stage` for the staging consumer. The caller then
     /// asks the download worker to consume; on failure it calls
     /// [`Self::abort_stage`].
-    pub(super) fn begin_stage(&mut self, reviewed: &str, download_ready: bool) -> Result<(), String> {
+    pub(super) fn begin_stage(
+        &mut self,
+        reviewed: &str,
+        download_ready: bool,
+    ) -> Result<(), String> {
         self.install_blocker(download_ready)?;
         if self.reviewed_digest().as_deref() != Some(reviewed) {
-            return Err(super::strings::t("imager-setup-internal-error-plan-changed"));
+            return Err(super::strings::t(
+                "imager-setup-internal-error-plan-changed",
+            ));
         }
         let intent = if let Some(record) = self.pending() {
             Intent {
@@ -772,7 +776,9 @@ impl InternalInstall {
             .cloned()
             .ok_or_else(|| super::strings::t("imager-setup-internal-error-no-pending"))?;
         if record.operation_id != operation {
-            return Err(super::strings::t("imager-setup-internal-error-pending-changed"));
+            return Err(super::strings::t(
+                "imager-setup-internal-error-pending-changed",
+            ));
         }
         if self.is_running() {
             return Err(super::strings::t("imager-setup-internal-error-running"));
@@ -847,7 +853,10 @@ impl InternalInstall {
         match blocker {
             Blocker::SecureBootOn => Some(HostCommand::FirmwareSettings {
                 suspend_bitlocker: self.host == HostOs::Windows
-                    && self.facts.as_ref().is_some_and(|facts| facts.bitlocker_protected),
+                    && self
+                        .facts
+                        .as_ref()
+                        .is_some_and(|facts| facts.bitlocker_protected),
             }),
             Blocker::Hibernation if self.host == HostOs::Windows => {
                 Some(HostCommand::DisableFastStartup)
@@ -860,10 +869,10 @@ impl InternalInstall {
     pub(super) fn command_available(&self, command: HostCommand) -> bool {
         match command {
             HostCommand::Restart => self.can_restart(),
-            HostCommand::FirmwareSettings { .. } => self
-                .blockers()
-                .iter()
-                .any(|blocker| self.remedy(*blocker).is_some_and(|remedy| remedy == command)),
+            HostCommand::FirmwareSettings { .. } => self.blockers().iter().any(|blocker| {
+                self.remedy(*blocker)
+                    .is_some_and(|remedy| remedy == command)
+            }),
             HostCommand::DisableFastStartup => {
                 self.remedy(Blocker::Hibernation) == Some(command)
                     && self.blockers().contains(&Blocker::Hibernation)
@@ -1008,88 +1017,88 @@ pub(super) fn failure_text(failure: &Failure, host: HostOs) -> String {
 #[must_use]
 pub(super) fn staging_bytes(plan: &Plan) -> u64 {
     partition_bytes(plan, plan.staging_esp.first_lba, plan.staging_esp.last_lba).saturating_add(
-        partition_bytes(plan, plan.staging_root.first_lba, plan.staging_root.last_lba),
+        partition_bytes(
+            plan,
+            plan.staging_root.first_lba,
+            plan.staging_root.last_lba,
+        ),
     )
 }
 
 /// Size of the target extent in `plan`, in bytes.
 #[must_use]
 pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
-    partition_bytes(plan, plan.target_extent.first_lba, plan.target_extent.last_lba)
-}
-
-#[cfg(any(windows, target_os = "linux"))]
-const COMMAND_OUTPUT_LIMIT: usize = 64 * 1024;
-/// Administrator prompts wait for a person.
-#[cfg(any(windows, target_os = "linux"))]
-const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
-
-#[cfg(windows)]
-fn run_elevated_powershell(inner: &str) -> Result<(), String> {
-    // Start-Process joins ArgumentList with spaces; `-Command` takes the rest
-    // of the line, so `inner` must not contain single quotes.
-    debug_assert!(!inner.contains('\''));
-    let script = format!(
-        "$p = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-Command','{inner}'); exit $p.ExitCode"
-    );
-    run_checked(
-        "powershell.exe",
-        &["-NoProfile", "-NonInteractive", "-Command", &script],
+    partition_bytes(
+        plan,
+        plan.target_extent.first_lba,
+        plan.target_extent.last_lba,
     )
 }
 
-#[cfg(any(windows, target_os = "linux"))]
-fn run_checked(program: &str, args: &[&str]) -> Result<(), String> {
-    let output = bounded_command::run(program, args, None, COMMAND_OUTPUT_LIMIT, PROMPT_TIMEOUT)
-        .map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "{program} exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ))
+/// The platform remedies behind [`StagingRuntime::host_command`]. Tests and
+/// shots inject fakes; nothing here runs outside a live session.
+mod remedies {
+    use super::HostCommand;
+
+    #[cfg(target_os = "linux")]
+    fn run_checked(program: &str, args: &[&str]) -> Result<(), String> {
+        const OUTPUT_LIMIT: usize = 64 * 1024;
+        // polkit may wait for a person to authorise the restart.
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+        let output = bounded_command::run(program, args, None, OUTPUT_LIMIT, TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!(
+                "{program} exited with {}: {}",
+                output.status,
+                stderr.trim()
+            ))
+        }
+    }
+
+    /// Unverified on real hardware.
+    pub(super) fn run(command: HostCommand) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            // MERGE: `staging::windows::remedies` comes from the Windows
+            // workstream; each call raises its own UAC prompt, and the
+            // firmware restart suspends BitLocker for one restart when asked.
+            use crate::setup::staging::windows::remedies;
+            match command {
+                HostCommand::Restart => remedies::restart_now(),
+                HostCommand::FirmwareSettings { suspend_bitlocker } => {
+                    remedies::restart_to_firmware_settings(suspend_bitlocker)
+                }
+                HostCommand::DisableFastStartup => remedies::disable_fast_startup(),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            match command {
+                HostCommand::Restart => run_checked("systemctl", &["reboot"]),
+                HostCommand::FirmwareSettings { .. } => {
+                    run_checked("systemctl", &["reboot", "--firmware-setup"])
+                }
+                HostCommand::DisableFastStartup => Err(crate::setup::strings::t(
+                    "imager-setup-internal-error-remedy-unavailable",
+                )),
+            }
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = command;
+            Err(crate::setup::strings::t(
+                "imager-setup-internal-error-remedy-unavailable",
+            ))
+        }
     }
 }
 
-/// Platform commands. Unverified on real Windows hardware; never run in tests.
 fn live_host_command(command: HostCommand) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        match command {
-            HostCommand::Restart => run_checked("shutdown.exe", &["/r", "/t", "0"]),
-            HostCommand::FirmwareSettings {
-                suspend_bitlocker: true,
-            } => run_elevated_powershell(
-                "try { Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 1 -ErrorAction Stop | Out-Null } catch { exit 1 }; shutdown.exe /r /fw /t 0; exit $LASTEXITCODE",
-            ),
-            HostCommand::FirmwareSettings {
-                suspend_bitlocker: false,
-            } => run_elevated_powershell("shutdown.exe /r /fw /t 0; exit $LASTEXITCODE"),
-            HostCommand::DisableFastStartup => {
-                run_elevated_powershell("powercfg.exe /h off; exit $LASTEXITCODE")
-            }
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        match command {
-            HostCommand::Restart => run_checked("systemctl", &["reboot"]),
-            HostCommand::FirmwareSettings { .. } => {
-                run_checked("systemctl", &["reboot", "--firmware-setup"])
-            }
-            HostCommand::DisableFastStartup => {
-                Err(super::strings::t("imager-setup-internal-error-remedy-unavailable"))
-            }
-        }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = command;
-        Err(super::strings::t("imager-setup-internal-error-remedy-unavailable"))
-    }
+    remedies::run(command)
 }
 
 /// Deterministic host facts and a spec-shaped planner for `--shots` and
@@ -1161,7 +1170,10 @@ pub(super) mod fixture {
     }
 
     /// A plan shaped like spec §2: shrink C:, target extent, then staging.
-    pub(in crate::setup) fn fake_plan(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanError> {
+    pub(in crate::setup) fn fake_plan(
+        basis: &Basis,
+        requirements: Requirements,
+    ) -> Result<Plan, PlanError> {
         let volume = basis.system_volume.as_ref().unwrap();
         let need = requirements.staging_esp_bytes
             + requirements.staging_root_bytes
@@ -1217,7 +1229,6 @@ pub(super) mod fixture {
                 - requirements.staging_root_bytes,
         })
     }
-
 }
 
 #[cfg(all(test, unix))]
@@ -1272,6 +1283,8 @@ pub(super) mod tests {
         pub script: Vec<Poll>,
         pub commands: Arc<Mutex<Vec<HostCommand>>>,
         pub launches: Launches,
+        /// Manifest bytes readable at each launch.
+        pub manifests: Arc<Mutex<Vec<Vec<u8>>>>,
         pub probes: Arc<AtomicUsize>,
     }
 
@@ -1283,6 +1296,7 @@ pub(super) mod tests {
                 script: vec![finished(true, None)],
                 commands: Arc::default(),
                 launches: Arc::default(),
+                manifests: Arc::default(),
                 probes: Arc::default(),
             }
         }
@@ -1293,6 +1307,7 @@ pub(super) mod tests {
             let script = self.script.clone();
             let commands = Arc::clone(&self.commands);
             let launches = Arc::clone(&self.launches);
+            let manifests = Arc::clone(&self.manifests);
             let probes = Arc::clone(&self.probes);
             StagingRuntime {
                 probe: Arc::new(move || {
@@ -1302,6 +1317,9 @@ pub(super) mod tests {
                 compute: Arc::new(fake_plan),
                 target_bounds: Arc::new(fake_bounds),
                 launch: Arc::new(move |request| {
+                    if let Ok(bytes) = std::fs::read(&request.manifest_path) {
+                        manifests.lock().unwrap().push(bytes);
+                    }
                     launches.lock().unwrap().push(request.clone());
                     Ok(Box::new(ScriptedHelper(script.clone().into())) as Box<dyn HelperRun>)
                 }),
@@ -1521,6 +1539,77 @@ pub(super) mod tests {
         assert!(install.link.lock().intent.is_none());
     }
 
+    fn selected(root_minimum: u64) -> SelectedManifest {
+        let mut manifest = crate::setup::internal_bundle::tests::fixture();
+        manifest["components"][1]["minimum_partition_bytes"] = serde_json::json!(root_minimum);
+        let bytes = crate::setup::internal_bundle::tests::bytes(&manifest);
+        let release = crate::release::InternalRelease::transport_fixture(
+            &bytes,
+            "https://code.podesta.ai/releases/manifest.json",
+        );
+        SelectedManifest::from_bytes(&release, bytes).unwrap()
+    }
+
+    // Catches a request that names the wrong release, loses the reviewed
+    // plan digest, or hands the helper a manifest it cannot re-hash.
+    #[test]
+    fn stage_request_binds_release_plan_paths_and_manifest_bytes() {
+        let fakes = Fakes::new(Vec::new());
+        let mut install = probed(&fakes, true);
+        let digest = install.reviewed_digest().unwrap();
+        install.begin_stage(&digest, true).unwrap();
+        let intent = install.link.lock().intent.clone().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = selected(8192);
+        let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
+        assert_eq!(request.action, Action::Stage);
+        assert_eq!(request.plan_sha256, digest);
+        assert_eq!(request.plan.digest(), digest);
+        assert_eq!(request.release.release_id, "fixture-only");
+        assert_eq!(request.release.architecture, "x86_64");
+        assert_eq!(request.release.manifest_sha256, manifest.manifest_sha256());
+        assert_eq!(
+            request.component_paths.staging_esp,
+            "/verified/staging-esp.img"
+        );
+        assert_eq!(
+            std::fs::read(&request.manifest_path).unwrap(),
+            manifest.bytes()
+        );
+        assert_eq!(install.link.lock().requirements, Some((4096, 8192)));
+    }
+
+    // Catches staging a plan whose installer partitions are smaller than the
+    // verified manifest requires, and a re-review that ignores the real size.
+    #[test]
+    fn undersized_plan_is_refused_as_stale_and_replanned_with_manifest_sizes() {
+        let fakes = Fakes::new(Vec::new());
+        let mut install = probed(&fakes, true);
+        let digest = install.reviewed_digest().unwrap();
+        install.begin_stage(&digest, true).unwrap();
+        let intent = install.link.lock().intent.take().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let outcome =
+            stage_request(&install.link, &selected(48 * GIB), intent, dir.path()).unwrap_err();
+        assert_eq!(outcome.code.as_deref(), Some("plan-stale"));
+        install.link.finish(Action::Stage, &outcome);
+        install.poll();
+        assert!(install.take_reprobe());
+        let (facts, records) = install.probe_task().unwrap()();
+        install.accept_probe(facts, records, true);
+        let Some(Ok(plan)) = install.plan() else {
+            panic!("replanned")
+        };
+        assert!(
+            partition_bytes(
+                plan,
+                plan.staging_root.first_lba,
+                plan.staging_root.last_lba
+            ) >= 48 * GIB
+        );
+        assert_ne!(install.reviewed_digest().unwrap(), digest);
+    }
+
     #[test]
     fn operation_ids_are_distinct_version_four_uuids() {
         let a = new_operation_id();
@@ -1557,7 +1646,11 @@ pub(super) mod tests {
             })
         );
         assert!(!linux.command_available(HostCommand::DisableFastStartup));
-        assert!(probed(&Fakes::new(Vec::new()), true).firmware_command().is_none());
+        assert!(
+            probed(&Fakes::new(Vec::new()), true)
+                .firmware_command()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1601,10 +1694,8 @@ pub(super) mod tests {
                 serde_json::to_value(step).unwrap(),
                 serde_json::json!(step_key(step))
             );
-            let text = super::super::strings::t(&format!(
-                "imager-setup-internal-step-{}",
-                step_key(step)
-            ));
+            let text =
+                super::super::strings::t(&format!("imager-setup-internal-step-{}", step_key(step)));
             assert!(!text.starts_with("imager-setup"), "{text}");
         }
     }
@@ -1622,7 +1713,9 @@ pub(super) mod tests {
         let mut install = probed(&fakes, true);
         let task = install.helper_task(Action::Remove, "op-1").unwrap();
         let thread = std::thread::spawn(task);
-        wait_state(&mut install, |state| !matches!(state, RunState::Running { .. }));
+        wait_state(&mut install, |state| {
+            !matches!(state, RunState::Running { .. })
+        });
         thread.join().unwrap();
         assert_eq!(
             install.run_state(),

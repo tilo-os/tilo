@@ -37,10 +37,10 @@ use super::internal_download_flow::InternalDownloadFlow;
 use super::internal_install_flow::{
     self as install_flow, HostCommand, InternalInstall, Readiness, RunState,
 };
-#[cfg(any(target_os = "linux", windows, all(test, unix)))]
-use super::staging::helper::Action as HelperAction;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use super::staging::helper::Action as HelperAction;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use super::{page, stack};
 use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
@@ -428,7 +428,7 @@ impl SetupApp {
         }
         self.internal_install = install;
         if let Some(flow) = &mut self.internal_download_flow {
-            flow.pose_ready_for_shot();
+            flow.pose_for_shot(staged);
         }
     }
 
@@ -2077,9 +2077,8 @@ impl SetupApp {
                 {
                     return Err(t("imager-setup-internal-error-command-unavailable"));
                 }
-                let gib = u64::try_from(gib).map_err(|_| {
-                    t("imager-setup-internal-error-command-unavailable")
-                })?;
+                let gib = u64::try_from(gib)
+                    .map_err(|_| t("imager-setup-internal-error-command-unavailable"))?;
                 self.internal_install.set_target_gib(gib)?;
                 self.status = super::strings::t_args(
                     "imager-setup-internal-status-size",
@@ -2215,8 +2214,7 @@ impl SetupApp {
             .ok_or_else(|| super::strings::t("imager-setup-internal-error-download"))
             .and_then(InternalDownloadFlow::consume);
         if let Err(error) = consumed {
-            self.internal_install
-                .abort_stage("download", error.clone());
+            self.internal_install.abort_stage("download", error.clone());
             return Err(error);
         }
         Ok(())
@@ -2426,10 +2424,8 @@ impl SetupApp {
                 pause_download: on_review && flow.is_some_and(InternalDownloadFlow::can_pause),
                 resume_download: on_review && flow.is_some_and(InternalDownloadFlow::can_resume),
                 cancel_download: on_review && flow.is_some_and(InternalDownloadFlow::can_cancel),
-                discard_download: on_review
-                    && flow.is_some_and(InternalDownloadFlow::can_discard),
-                release_download: on_review
-                    && flow.is_some_and(InternalDownloadFlow::can_release),
+                discard_download: on_review && flow.is_some_and(InternalDownloadFlow::can_discard),
+                release_download: on_review && flow.is_some_and(InternalDownloadFlow::can_release),
                 set_target_size: on_review
                     && ready
                     && bounds.is_some()
@@ -2467,7 +2463,9 @@ impl SetupApp {
                     "reasons",
                     blockers
                         .iter()
-                        .map(|blocker| install_flow::blocker_text(*blocker, self.internal_install.host()))
+                        .map(|blocker| {
+                            install_flow::blocker_text(*blocker, self.internal_install.host())
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                         .into(),
@@ -2590,7 +2588,11 @@ impl SetupApp {
                 .push(Box::new(
                     Text::new(&t_args(
                         "imager-setup-internal-size-help",
-                        &[("min", min.into()), ("max", max.into()), ("host", host.into())],
+                        &[
+                            ("min", min.into()),
+                            ("max", max.into()),
+                            ("host", host.into()),
+                        ],
                     ))
                     .dimmed(),
                 ));
@@ -2606,7 +2608,7 @@ impl SetupApp {
                     .dimmed(),
             ));
         }
-        Card::titled(&t("imager-setup-internal-plan-title"), Box::new(content))
+        Card::titled(t("imager-setup-internal-plan-title"), Box::new(content))
     }
 
     fn internal_blockers_card(&self, extra: Option<&str>) -> Card {
@@ -2661,7 +2663,7 @@ impl SetupApp {
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
         ));
-        Card::titled(&t("imager-setup-internal-blockers-title"), Box::new(content))
+        Card::titled(t("imager-setup-internal-blockers-title"), Box::new(content))
     }
 
     fn internal_resume_card(&self) -> Option<Card> {
@@ -2670,7 +2672,7 @@ impl SetupApp {
         install.pending()?;
         let enabled = !install.is_running();
         Some(Card::titled(
-            &t("imager-setup-internal-resume-title"),
+            t("imager-setup-internal-resume-title"),
             Box::new(
                 stack()
                     .push(Box::new(
@@ -2803,13 +2805,17 @@ impl SetupApp {
             t("imager-setup-internal-install")
         };
         nav.push(Box::new(
-            self.button("setup.internal.install", &label, SetupCommand::InstallInternal)
-                .primary()
-                .with_enabled(
-                    install
-                        .install_blocker(self.internal_download_ready())
-                        .is_ok(),
-                ),
+            self.button(
+                "setup.internal.install",
+                &label,
+                SetupCommand::InstallInternal,
+            )
+            .primary()
+            .with_enabled(
+                install
+                    .install_blocker(self.internal_download_ready())
+                    .is_ok(),
+            ),
         ))
     }
 }
@@ -3654,7 +3660,8 @@ mod tests {
         assert_eq!(app.controller().folders().len(), 1);
     }
 
-    // Catches routing Full qOS through the Desktop installer or implying installation is ready.
+    // Catches routing Full qOS through the Desktop installer or implying
+    // installation is ready while the product gate is closed.
     #[test]
     fn full_os_review_has_a_distinct_download_surface_and_no_install_action() {
         let mut app = supported_fixture();
@@ -3662,6 +3669,20 @@ mod tests {
         app.apply_command(SetupCommand::Next);
         app.apply_command(SetupCommand::SetMode(FolderMode::Later));
         app.apply_command(SetupCommand::Next);
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.install"),
+            0
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(&app, "setup.internal.install", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(invoke_internal(&mut app, "setup.internal.install").is_err());
+        assert_eq!(app.internal_install.run_state(), &RunState::Idle);
         let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
 
         harness
@@ -5320,5 +5341,439 @@ mod tests {
         assert_eq!(app.controller().folders()[0].mode, FolderMode::Later);
         assert_eq!(app.controller().folders()[1].scan.bytes, 3);
         assert_eq!(app.controller().folders()[1].mode, FolderMode::Copy);
+    }
+
+    fn retained_widget_count(root: &dyn Widget, id: &str) -> usize {
+        usize::from(root.test_id() == Some(id))
+            + root
+                .children()
+                .into_iter()
+                .map(|child| retained_widget_count(child, id))
+                .sum::<usize>()
+    }
+
+    fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
+        if root.test_id() == Some(id) {
+            return root.accessibility().and_then(|node| node.name);
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| retained_name(child, id))
+    }
+
+    fn internal_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app, doc), "imager.setup.internal")
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("missing internal action {id}"))
+            .clone()
+    }
+
+    fn invoke_internal(app: &mut SetupApp, id: &str) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let encoded = internal_action(app, id, &doc)
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| error.to_string())?;
+        invoke_encoded_setup(app, &encoded)
+    }
+
+    fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {
+        task();
+        Ok(())
+    }
+
+    struct GatedFixture {
+        app: SetupApp,
+        fakes: install_flow::tests::Fakes,
+        bytes: Vec<u8>,
+        _server: Server,
+        _root: tempfile::TempDir,
+        _preference: tempfile::TempDir,
+    }
+
+    /// Setup with the product gate open, a fake host and helper, and a real
+    /// fixture download worker whose consumer is the staging consumer.
+    fn gated_app(fakes: install_flow::tests::Fakes, host: HostOs) -> GatedFixture {
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let preference = tempfile::tempdir().unwrap();
+        let capabilities = SetupCapabilities {
+            platform: Capabilities {
+                host,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        };
+        let install = InternalInstall::new(fakes.runtime(), true, host);
+        let worker = Worker::fixture_for_test(
+            root.path(),
+            server.transport(),
+            install_flow::staging_consumer(install.link()),
+        );
+        let mut app = SetupApp::with_parts(capabilities, run_inline, install);
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            capabilities.platform,
+            preference.path().join("selection.json"),
+            worker,
+            vec![
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+            ],
+            "x86_64",
+        ));
+        GatedFixture {
+            app,
+            fakes,
+            bytes,
+            _server: server,
+            _root: root,
+            _preference: preference,
+        }
+    }
+
+    fn open_full_review(app: &mut SetupApp) {
+        app.start_host_probe();
+        app.poll_background();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+        assert!(app.on_full_os_review(), "{}", app.status);
+    }
+
+    fn wait_for_app(app: &mut SetupApp, what: &str, done: impl Fn(&SetupApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if done(app) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    // Catches Full Tilo being offered before the host probe reports, and the
+    // gate, probe and catalog not all being required.
+    #[test]
+    fn full_os_is_checking_until_the_probe_passes_with_the_gate_open() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        assert!(!app.capabilities.platform.supports(Experience::FullOs));
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.experience.full"
+        ));
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.readiness")
+                .unwrap()
+                .starts_with("Checking whether Tilo can be installed")
+        );
+        app.start_host_probe();
+        assert!(app.poll_background());
+        assert!(app.capabilities.platform.supports(Experience::FullOs));
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.experience.full"
+        ));
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
+
+        let mut blocked = gated_app(
+            install_flow::tests::Fakes::new(vec![super::super::staging::probe::Blocker::NotGpt]),
+            HostOs::Linux,
+        );
+        blocked.app.start_host_probe();
+        blocked.app.poll_background();
+        assert!(
+            !blocked
+                .app
+                .capabilities
+                .platform
+                .supports(Experience::FullOs)
+        );
+        let composition = blocked.app.build_composition();
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.readiness")
+                .unwrap()
+                .contains("MBR")
+        );
+    }
+
+    // Catches Install enabling before the verified download is held, the
+    // helper receiving anything but the reviewed plan and verified paths, or
+    // a success that does not offer the restart.
+    #[test]
+    fn gated_full_os_install_stages_the_reviewed_plan_and_offers_restart() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        open_full_review(app);
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.install-unavailable"),
+            0
+        );
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.target-size"),
+            1
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(app, "setup.internal.install", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        let reviewed = app.internal_install.reviewed_digest().unwrap();
+        let projection = invoke_internal(app, "setup.internal.install").unwrap();
+        assert_eq!(projection["internal"]["run"], "running");
+        wait_for_app(app, "staging outcome", |app| {
+            !app.internal_install.is_running()
+        });
+        assert_eq!(
+            app.internal_install.run_state(),
+            &RunState::Succeeded {
+                action: HelperAction::Stage
+            }
+        );
+        {
+            let launches = fixture.fakes.launches.lock().unwrap();
+            assert_eq!(launches.len(), 1);
+            assert_eq!(launches[0].action, HelperAction::Stage);
+            assert_eq!(launches[0].plan_sha256, reviewed);
+            assert_eq!(launches[0].plan.digest(), reviewed);
+            assert_eq!(
+                launches[0].component_paths.staging_root,
+                "/verified/staging-root.img"
+            );
+            assert_eq!(fixture.fakes.manifests.lock().unwrap()[0], fixture.bytes);
+        }
+        wait_for_app(app, "download consumed", |app| {
+            app.internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Consumed))
+        });
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.restart"
+        ));
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.restart-later"),
+            1
+        );
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.run")
+                .unwrap()
+                .contains("stays the startup default")
+        );
+        assert!(invoke_internal(app, "setup.internal.install").is_err());
+
+        invoke_internal(app, "setup.internal.restart-later").unwrap();
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.restart-later"),
+            0
+        );
+        invoke_internal(app, "setup.internal.restart").unwrap();
+        app.poll_background();
+        assert_eq!(
+            *fixture.fakes.commands.lock().unwrap(),
+            vec![HostCommand::Restart]
+        );
+    }
+
+    // Catches an install invoked with a digest read before the plan changed.
+    #[test]
+    fn install_action_refuses_a_plan_digest_from_before_a_size_change() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        open_full_review(app);
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let doc = AutoCommit::new();
+        let stale = internal_action(app, "setup.internal.install", &doc)
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        let size = internal_action(app, "setup.internal.set-target-size", &doc)
+            .build_json(&setup_args(&[("gib", serde_json::json!(100))]))
+            .unwrap();
+        invoke_encoded_setup(app, &size).unwrap();
+        assert_eq!(app.internal_install.target_bytes(), 100 << 30);
+        let out_of_range = internal_action(app, "setup.internal.set-target-size", &doc)
+            .build_json(&setup_args(&[("gib", serde_json::json!(10))]))
+            .unwrap();
+        assert!(invoke_encoded_setup(app, &out_of_range).is_err());
+        assert_eq!(app.internal_install.target_bytes(), 100 << 30);
+
+        let error = invoke_encoded_setup(app, &stale).unwrap_err();
+        assert!(error.contains("plan changed"), "{error}");
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        assert!(app.internal_download_ready());
+        invoke_internal(app, "setup.internal.install").unwrap();
+        assert!(app.internal_install.is_running());
+    }
+
+    // Catches remedies offered for blockers that do not have them, Install
+    // enabling while a blocker remains, or a remedy action running the wrong
+    // host command.
+    #[test]
+    fn blockers_show_remedies_and_keep_install_disabled() {
+        use super::super::staging::probe::Blocker;
+        let mut fixture = gated_app(
+            install_flow::tests::Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]),
+            HostOs::Windows,
+        );
+        let app = &mut fixture.app;
+        open_full_review(app);
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.firmware-settings"
+        ));
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.disable-fast-startup"
+        ));
+        assert!(invoke_internal(app, "setup.internal.install").is_err());
+        invoke_internal(app, "setup.internal.disable-fast-startup").unwrap();
+        app.poll_background();
+        invoke_internal(app, "setup.internal.firmware-settings").unwrap();
+        app.poll_background();
+        assert_eq!(
+            *fixture.fakes.commands.lock().unwrap(),
+            vec![
+                HostCommand::DisableFastStartup,
+                HostCommand::FirmwareSettings {
+                    suspend_bitlocker: false
+                }
+            ]
+        );
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+
+        let mut battery = gated_app(
+            install_flow::tests::Fakes::new(vec![Blocker::OnBattery]),
+            HostOs::Linux,
+        );
+        open_full_review(&mut battery.app);
+        let composition = battery.app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.blocker.on-battery"),
+            1
+        );
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.firmware-settings"),
+            0
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(&battery.app, "setup.internal.firmware-settings", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(invoke_internal(&mut battery.app, "setup.internal.firmware-settings").is_err());
+        assert!(battery.fakes.commands.lock().unwrap().is_empty());
+    }
+
+    // Catches the resume card acting on a record other than the one shown,
+    // and a removal that leaves stale records on screen.
+    #[test]
+    fn unfinished_record_shows_a_resume_card_and_acts_on_that_record_only() {
+        use super::super::staging::probe::Blocker;
+        let mut fakes = install_flow::tests::Fakes::new(vec![Blocker::PendingOperation]);
+        fakes.records = vec![install_flow::tests::record("op-1")];
+        let mut fixture = gated_app(fakes, HostOs::Linux);
+        let app = &mut fixture.app;
+        app.start_host_probe();
+        app.poll_background();
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.resume"),
+            1
+        );
+        let stale = super::super::actions::SetupOperation::RemoveInternal {
+            operation_id: "op-0".into(),
+        };
+        assert!(
+            invoke_setup_raw(app, stale)
+                .unwrap_err()
+                .contains("no longer the current")
+        );
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+
+        invoke_internal(app, "setup.internal.retry").unwrap();
+        app.poll_background();
+        assert_eq!(
+            app.internal_install.run_state(),
+            &RunState::Succeeded {
+                action: HelperAction::Arm
+            }
+        );
+        invoke_internal(app, "setup.internal.remove").unwrap();
+        app.poll_background();
+        let launches = fixture.fakes.launches.lock().unwrap();
+        assert_eq!(
+            launches
+                .iter()
+                .map(|request| (request.action, request.operation_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(HelperAction::Arm, "op-1"), (HelperAction::Remove, "op-1")]
+        );
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn full_os_shot_fixtures_pose_a_plan_blocker_and_restart() {
+        let review = SetupApp::for_shot("setup-full-review");
+        assert!(review.on_full_os_review());
+        let composition = review.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.firmware-settings"),
+            1
+        );
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.plan")
+                .unwrap()
+                .contains("Windows (C:) shrinks by")
+        );
+        let staged = SetupApp::for_shot("setup-full-restart");
+        let composition = staged.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.restart"
+        ));
     }
 }
