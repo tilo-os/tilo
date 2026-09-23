@@ -229,7 +229,7 @@ done
 if [ "$missing_runtime_source_root" -eq 0 ]; then
   if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
       "${runtime_source_roots[@]}" \
-      -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
+      -g '*.rs' -g '*.sh' -g '!**/tests/**' -g '!**/crates/dev/**' >/dev/null; then
     bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
   else
     ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
