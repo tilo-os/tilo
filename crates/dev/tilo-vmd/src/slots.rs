@@ -413,10 +413,7 @@ mod tests {
     use super::*;
 
     fn session() -> ComponentInfo {
-        ComponentInfo {
-            scope: Scope::Session,
-            units: vec![],
-        }
+        ComponentInfo::new(Scope::Session, vec![])
     }
 
     fn swap(

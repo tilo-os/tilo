@@ -47,7 +47,11 @@ COPY --from=github-assets / /
 # SAME base as os/Containerfile — one BASE_REF for both — so the produced
 # modules link against the exact glibc + userspace the OS image ships.  A drift
 # here would show up as "invalid module format" at boot.
-FROM ${BASE_REF} AS build
+#
+# This stage ends with the Fedora source tree after %prep. os/kernel/dev-build.sh
+# builds it (`--target build-toolchain`) as the dev builder image, and both it
+# and the `build` stage below run os/kernel/build-support.sh on that tree.
+FROM ${BASE_REF} AS build-toolchain
 
 COPY --from=external-assets /v4l2loopback-0.15.3-a7e4a4d.tar.gz /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz
 RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz' \
@@ -160,205 +164,29 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
     test -n "$KERN_SPEC"; \
     rpmbuild -bp --nodeps --define "_topdir /work/rpmbuild" "$KERN_SPEC"
 
+# ---- Build on the prepared tree ---------------------------------------------
+# Everything from here on is os/kernel/build-support.sh, which the dev build
+# (os/kernel/dev-build.sh) runs on its persistent copy of the same tree.
+FROM build-toolchain AS build
+
 # One ephemeral signing identity per kernel build. Only the public
 # certificate is compiled into the kernel; the key is deleted before publish.
-RUN mkdir -p -m 0700 /work/module-signing \
-    && tilo-crypto generate-secure-boot-cert \
-         'Tilo ephemeral kernel module signing key' \
-         /work/module-signing/signing-key.pem \
-         /work/module-signing/signing-cert.pem \
-    && tilo-crypto certificate-der \
-         /work/module-signing/signing-cert.pem \
-         /work/module-signing/signing-cert.der
+COPY os/kernel/build-support.sh /work/kernel-build-support.sh
+RUN sh /work/kernel-build-support.sh signing-key "$(uname -m)" /work/module-signing
 
 # ---- Merge our config fragment on top of Fedora's --------------------------
 COPY os/kernel/config-fragments/ /work/kernel-config/
-COPY os/kernel/build-support.sh /work/kernel-build-support.sh
 COPY os/kernel/check-config.py /work/check-config.py
 COPY os/kernel/patches/ /work/kernel-patches/
 
-# The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
-# with a resolved .config in place.  Use the in-tree merge_config.sh (the
-# canonical kconfig fragment merger) to overlay our overrides, then
-# olddefconfig to resolve any newly-exposed symbols non-interactively.
-#
-# After olddefconfig, every fragment assignment is compared with the resolved
-# config. A Fedora rename or dependency change therefore fails this stage
-# instead of silently dropping a hardening or performance knob.
+# Patches, the libcrypto-free signing shim, the fragment merge and every
+# required-option check (build-support.sh prepare-source).
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
-    cd "$KSRC"; \
-    git apply --check /work/kernel-patches/*.patch; \
-    git apply /work/kernel-patches/*.patch; \
-    # Do not compile upstream's libcrypto-backed sign-file/extract-cert.
-    # Kbuild still asks extract-cert for our CONFIG_MODULE_SIG_KEY, so provide
-    # the already-validated DER certificate through a deliberately tiny shim.
-    sed -i '/hostprogs-always-$(CONFIG_MODULE_SIG_FORMAT).*sign-file/d' scripts/Makefile; \
-    sed -i '/^hostprogs := extract-cert$/d' certs/Makefile; \
-    ! grep -q 'hostprogs-always-$(CONFIG_MODULE_SIG_FORMAT).*sign-file' scripts/Makefile; \
-    ! grep -q '^hostprogs := extract-cert$' certs/Makefile; \
-    printf '%s\n' '#!/bin/sh' 'set -eu' 'out=$2' \
-      'case ${1:-} in' \
-      '  "") : > "$out" ;;' \
-      '  /work/module-signing/signing-key.pem) cp /work/module-signing/signing-cert.der "$out" ;;' \
-      '  *) echo "unexpected certificate input: $1" >&2; exit 1 ;;' \
-      'esac' \
-      > certs/extract-cert; \
-    chmod 0755 certs/extract-cert; \
-    # `rpmbuild -bp` runs %prep which extracts + patches, but does NOT drop
-    # the target .config into the source tree — Fedora's kernel spec does
-    # that inside %build. Copy the right config manually:
-    # `kernel-<arch>-fedora.config` is Fedora's non-debug baseline.
     ARCH="$(uname -m)"; \
     sh /work/kernel-build-support.sh validate-arch "$ARCH"; \
-    CANDIDATES="kernel-${ARCH}-fedora.config kernel-${ARCH}.config"; \
-    FOUND=""; \
-    for c in $CANDIDATES; do \
-        [ -f "/work/rpmbuild/SOURCES/$c" ] && FOUND="/work/rpmbuild/SOURCES/$c" && break; \
-    done; \
-    [ -n "$FOUND" ] || { \
-        echo "no matching .config in /work/rpmbuild/SOURCES/ (tried: $CANDIDATES)"; \
-        ls -1 /work/rpmbuild/SOURCES/ | grep -F .config | head; \
-        exit 1; \
-    }; \
-    cp "$FOUND" .config; \
-    cp .config /work/fedora.config; \
-    cat /work/kernel-config/tilo.config \
-        "/work/kernel-config/$ARCH.config" > /work/tilo-effective.config; \
-    scripts/kconfig/merge_config.sh -m .config /work/tilo-effective.config; \
-    make olddefconfig; \
-    python3 /work/check-config.py .config --fragment /work/tilo-effective.config; \
-    diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
-    echo "----- effective config diff (top 200 lines) -----"; \
-    cat /work/config.diff; \
-    # `merge_config.sh -m` warns about a symbol it could not place and carries
-    # on, and `olddefconfig` will silently drop one whose dependencies are not
-    # met.  Both are exactly how a security option goes missing without anyone
-    # noticing until the running kernel is asked about it.  Assert the ones
-    # that must be in the resolved .config, and fail the build if they aren't.
-    echo "----- required security options -----"; \
-    missing=""; \
-    for opt in \
-        CONFIG_MODULE_SIG=y \
-        '# CONFIG_MODULE_SIG_ALL is not set' \
-        CONFIG_MODULE_SIG_FORCE=y \
-        '# CONFIG_MODULE_FORCE_LOAD is not set' \
-        '# CONFIG_MODULE_UNLOAD is not set' \
-        '# CONFIG_LIVEPATCH is not set' \
-        '# CONFIG_DEBUG_FS is not set' \
-        '# CONFIG_PROC_PAGE_MONITOR is not set' \
-        CONFIG_USER_NS=y \
-        CONFIG_SECCOMP_FILTER=y \
-        CONFIG_SECURITY_LANDLOCK=y \
-        CONFIG_SECURITY_YAMA=y \
-        CONFIG_SECURITY_LOCKDOWN_LSM=y \
-        CONFIG_SECURITY_DMESG_RESTRICT=y \
-        CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
-        '# CONFIG_ACPI_CUSTOM_METHOD is not set' \
-        '# CONFIG_ACPI_CONFIGFS is not set' \
-        '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' \
-        CONFIG_PREEMPT=y \
-        CONFIG_PREEMPT_DYNAMIC=y \
-        CONFIG_HZ_1000=y \
-        CONFIG_HZ=1000 \
-        CONFIG_SCSI_VIRTIO=y \
-        CONFIG_DRM_VIRTIO_GPU=y \
-        CONFIG_HW_RANDOM_VIRTIO=y \
-        CONFIG_IWLWIFI=m \
-        CONFIG_SCHED_AUTOGROUP=y \
-        CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y \
-        CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y \
-        CONFIG_IRQ_TIME_ACCOUNTING=y \
-        CONFIG_HIGH_RES_TIMERS=y \
-        CONFIG_NO_HZ_IDLE=y \
-        '# CONFIG_HZ_PERIODIC is not set' \
-        '# CONFIG_NO_HZ_FULL is not set' \
-        CONFIG_UCLAMP_TASK=y \
-        CONFIG_UCLAMP_TASK_GROUP=y \
-        CONFIG_UCLAMP_BUCKETS_COUNT=5 \
-        CONFIG_ENERGY_MODEL=y \
-        CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y \
-        CONFIG_MODULE_COMPRESS_ZSTD=y \
-        CONFIG_MODULE_COMPRESS_ALL=y \
-        CONFIG_RD_ZSTD=y \
-        CONFIG_CRYPTO_LZ4=y \
-        CONFIG_LZ4_COMPRESS=y \
-        CONFIG_ZRAM=y \
-        CONFIG_ZRAM_BACKEND_LZ4=y \
-        CONFIG_ZRAM_DEF_COMP_LZ4=y \
-        CONFIG_DEBUG_INFO_NONE=y \
-        '# CONFIG_DEBUG_INFO is not set' \
-        CONFIG_KALLSYMS=y \
-        '# CONFIG_KALLSYMS_ALL is not set' \
-        CONFIG_STRICT_KERNEL_RWX=y \
-        CONFIG_STACKPROTECTOR_STRONG=y \
-        CONFIG_FORTIFY_SOURCE=y \
-        CONFIG_HARDENED_USERCOPY=y \
-        '# CONFIG_SCHED_CLASS_EXT is not set' \
-        '# CONFIG_SCHED_CORE is not set' \
-        '# CONFIG_SCHED_DEBUG is not set' \
-        CONFIG_VMAP_STACK=y \
-        CONFIG_SLAB_FREELIST_HARDENED=y \
-        CONFIG_RANDOMIZE_KSTACK_OFFSET=y \
-        CONFIG_LIST_HARDENED=y \
-        '# CONFIG_LEGACY_PTYS is not set' \
-        '# CONFIG_LEGACY_TIOCSTI is not set' \
-        '# CONFIG_USB_CONFIGFS is not set' \
-        '# CONFIG_USB_GADGETFS is not set' \
-        '# CONFIG_USB_FUNCTIONFS is not set' \
-        '# CONFIG_USB_MASS_STORAGE is not set' \
-        '# CONFIG_USB_G_SERIAL is not set' \
-        '# CONFIG_USB_G_PRINTER is not set' \
-        '# CONFIG_USB_G_WEBCAM is not set' \
-        '# CONFIG_USB_RAW_GADGET is not set' \
-        '# CONFIG_USBIP_CORE is not set' \
-        '# CONFIG_ATM is not set' \
-        '# CONFIG_ATALK is not set' \
-        '# CONFIG_CAN is not set' \
-        '# CONFIG_HAMRADIO is not set' \
-        '# CONFIG_6LOWPAN is not set' \
-        '# CONFIG_IEEE802154 is not set' \
-        '# CONFIG_IP_DCCP is not set' \
-        '# CONFIG_IP_SCTP is not set' \
-        '# CONFIG_LAPB is not set' \
-        '# CONFIG_MCTP is not set' \
-        '# CONFIG_MISDN is not set' \
-        '# CONFIG_NFC is not set' \
-        '# CONFIG_PHONET is not set' \
-        '# CONFIG_RDS is not set' \
-        '# CONFIG_TIPC is not set' \
-        '# CONFIG_X25 is not set' \
-    ; do \
-        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
-        else echo "  MISSING $opt (resolved to: $(grep -E "^(# )?${opt%%=*}[ =]" .config || echo 'absent'))"; missing="$missing $opt"; fi; \
-    done; \
-    if [ "$ARCH" = x86_64 ]; then \
-      for opt in CONFIG_X86_USER_SHADOW_STACK=y CONFIG_X86_INTEL_PSTATE=y \
-          CONFIG_X86_AMD_PSTATE=y CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3 \
-          CONFIG_X86_KERNEL_IBT=y CONFIG_LEGACY_VSYSCALL_NONE=y \
-          CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y \
-          CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set' \
-          '# CONFIG_USELIB is not set' \
-          '# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set' \
-          '# CONFIG_X86_CPUID is not set' \
-          '# CONFIG_USB_GADGET is not set' \
-          '# CONFIG_PARPORT is not set' '# CONFIG_BLK_DEV_FD is not set' \
-          '# CONFIG_PCCARD is not set' \
-          CONFIG_SCHED_MC_PRIO=y; do \
-        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
-        else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
-      done; \
-    else \
-      for opt in CONFIG_ARM64_PTR_AUTH=y CONFIG_ARM64_PTR_AUTH_KERNEL=y \
-          CONFIG_ARM64_BTI=y CONFIG_RANDOMIZE_BASE=y \
-          CONFIG_RANDOMIZE_MODULE_REGION_FULL=y; do \
-        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
-        else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
-      done; \
-    fi; \
-    if [ -n "$missing" ]; then echo "kernel config lost required security options:$missing"; exit 1; fi; \
-    sh /work/kernel-build-support.sh check-config "$ARCH" .config
+    sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC"
 
 # ---- Rebuild as tilo-kernel-* -----------------------------------------------
 # `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
@@ -369,7 +197,8 @@ RUN set -eux; \
 # swapped in cleanly via `dnf swap kernel-core tilo-kernel-core`.
 #
 # Reproducible timestamp: buildkit passes SOURCE_DATE_EPOCH; the kernel's
-# KBUILD_BUILD_TIMESTAMP honours it.
+# KBUILD_BUILD_TIMESTAMP honours it. os/kernel/dev-build.sh passes the same
+# environment; tools/policy/check_kernel_dev_build.py keeps the two equal.
 ARG SOURCE_DATE_EPOCH=0
 # Override on memory-constrained native builders; an empty value uses all CPUs.
 ARG KERNEL_BUILD_JOBS
@@ -391,81 +220,22 @@ RUN set -eux; \
     cd "$KSRC"; \
     JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
     case "$JOBS" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1;; esac; \
-    make -j"$JOBS" all; \
-    make -C "$KSRC" M=/work/v4l2loopback-0.15.3 -j"$JOBS" modules; \
+    sh /work/kernel-build-support.sh compile "$(uname -m)" "$KSRC" "$JOBS" /work/v4l2loopback-0.15.3; \
     KVER="$(make -s kernelrelease)"; \
     printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
     STAGE=/work/stage; \
-    rm -rf "$STAGE"; \
-    mkdir -p "$STAGE/lib/modules/$KVER"; \
-    # bootc / ostree find the boot artifacts alongside the modules,
-    # NOT under /boot: `bootc install` fails "Failed to find kernel in
-    # /usr/lib/modules, /usr/lib/ostree-boot or /boot" if vmlinuz isn't
-    # co-located with the module tree. /boot itself is populated at
-    # deploy time from these files.
-    sh /work/kernel-build-support.sh stage-boot "$(uname -m)" "$KSRC" "$STAGE" "$KVER"; \
+    sh /work/kernel-build-support.sh stage-modules "$(uname -m)" "$KSRC" "$STAGE" "$KVER" \
+      /work/v4l2loopback-0.15.3 /work/module-signing "$JOBS"; \
     mkdir -p /work/secureboot-probe-inputs; \
     cp "$STAGE/lib/modules/$KVER/vmlinuz" /work/secureboot-probe-inputs/vmlinuz; \
     cp usr/gen_init_cpio /work/secureboot-probe-inputs/gen_init_cpio; \
     cp /usr/local/bin/tilo-crypto /work/secureboot-probe-inputs/tilo-crypto; \
     cp /work/secureboot_vm_app.efi /work/secureboot-probe-inputs/secureboot_vm_app.efi; \
-    cp System.map            "$STAGE/lib/modules/$KVER/System.map"; \
-    cp .config               "$STAGE/lib/modules/$KVER/config"; \
-    # Install and strip before signing. Automatic Kbuild signing is disabled
-    # because its host utility links libcrypto.
-    make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
-    install -Dm0644 /work/v4l2loopback-0.15.3/v4l2loopback.ko \
-      "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
-    strip --strip-debug "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
-    test "$(modinfo -F name "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" = v4l2loopback; \
-    case "$(modinfo -F vermagic "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" in \
-      "$KVER "*) ;; \
-      *) echo "v4l2loopback was not built for $KVER" >&2; exit 1 ;; \
-    esac; \
-    install -Dm0644 /work/v4l2loopback-0.15.3/COPYING \
-      "$STAGE/usr/share/licenses/tilo-kernel-core/v4l2loopback-COPYING"; \
-    find "$STAGE/lib/modules/$KVER" -name '*.ko.zst' -type f -print0 \
-      | while IFS= read -r -d '' compressed; do \
-          module="${compressed%.zst}"; \
-          zstd -q -d --rm "$compressed" -o "$module"; \
-          tilo-crypto sign-module /work/module-signing/signing-key.pem \
-            /work/module-signing/signing-cert.pem "$module" "$module.signed"; \
-          tilo-crypto verify-module /work/module-signing/signing-cert.pem "$module.signed"; \
-          mv "$module.signed" "$module"; \
-          zstd -q --rm "$module" -o "$compressed"; \
-        done; \
-    find "$STAGE/lib/modules/$KVER" -name '*.ko' -type f -print0 \
-      | while IFS= read -r -d '' module; do \
-          tilo-crypto sign-module /work/module-signing/signing-key.pem \
-            /work/module-signing/signing-cert.pem "$module" "$module.signed"; \
-          tilo-crypto verify-module /work/module-signing/signing-cert.pem "$module.signed"; \
-          mv "$module.signed" "$module"; \
-        done; \
-    # Prove the modules really are signed rather than trusting the config —
-    # with MODULE_SIG_FORCE a silently unsigned module tree is a kernel that
-    # boots without its drivers.  `modinfo -F sig_id` reads the signature out
-    # of the installed file and understands the compressed .ko.xz / .ko.zst
-    # shapes, which a raw tail-for-the-marker check would not.
-    total=$(find "$STAGE/lib/modules/$KVER" -name '*.ko*' -type f | wc -l); \
-    unsigned=$(find "$STAGE/lib/modules/$KVER" -name '*.ko*' -type f \
-        -exec sh -c 'modinfo -F sig_id "$1" 2>/dev/null | grep -q . || echo "$1"' _ {} \;); \
-    echo "modules: $total installed, $(printf '%s' "$unsigned" | grep -c . || true) unsigned"; \
-    test "$total" -gt 0; \
-    if [ -n "$unsigned" ]; then \
-        echo "unsigned modules under MODULE_SIG_FORCE:"; printf '%s\n' "$unsigned" | head -20; exit 1; \
-    fi; \
     # The signing key existed for this build and no longer exists after it.
     # Nothing needs to sign as this identity again: the certificate that
     # verifies it is already compiled into the vmlinuz above, and an
     # image-based OS loads no out-of-tree modules.
     rm -f /work/module-signing/signing-key.pem; \
-    # `depmod` builds modules.dep + friends inside the staging tree so
-    # `dnf install` doesn't have to run scriptlets on the live system.
-    /sbin/depmod -a -b "$STAGE" "$KVER"; \
-    # Remove the source + build symlinks that `modules_install` creates
-    # — they point outside the staging tree and rpm would fail file
-    # ownership checks on them.
-    rm -f "$STAGE/lib/modules/$KVER/source" "$STAGE/lib/modules/$KVER/build"; \
     du -sh "$STAGE"; \
     # The RPM step consumes only STAGE and kver.env. Exporting the compiler \
     # tree in a cached layer duplicates tens of GiB during image commit. \

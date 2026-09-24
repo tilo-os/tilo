@@ -162,6 +162,15 @@ pub enum CliError {
     Busy { what: String },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("the kernel build failed")]
+    KernelBuild { log: String },
+    #[error("VM '{vm}' runs kernel {running}, not the {expected} just installed ({detail})")]
+    KernelNotRunning {
+        vm: String,
+        expected: String,
+        running: String,
+        detail: String,
+    },
     #[error("{image} {problem}")]
     ImageRefused {
         image: String,
@@ -243,7 +252,9 @@ impl CliError {
                 "run from a Tilo worktree that has os/components.toml, or swap a prebuilt layer: --from layer:<hash>".into()
             }
             Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
-            Self::BootComponent { driver, .. } => format!("use the boot scenario driver instead: {driver}"),
+            Self::BootComponent { driver, .. } => format!(
+                "use the boot scenario driver instead: {driver}   (of the boot components only the kernel swaps: tilo-vm swap kernel)"
+            ),
             Self::ScopeMismatch { component, scope, .. } if scope == "vm" => {
                 format!("VM-wide components go into the vm slot: tilo-vm swap --slot vm {component}")
             }
@@ -323,6 +334,12 @@ impl CliError {
             Self::InvalidInput(_) => {
                 "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input move 400 300   |   input click left --at 400 300   (text beyond a US layout: tilo-vm control type '<text>')".into()
             }
+            Self::KernelBuild { log } => format!(
+                "the build output above names the cause (full log: {log}); fix os/kernel/config-fragments/ or os/kernel/patches/ and rerun tilo-vm swap kernel   (os/kernel/dev-build.sh runs the same build by hand)"
+            ),
+            Self::KernelNotRunning { vm, .. } => format!(
+                "the VM fell back to its default boot entry. Watch the new kernel boot on the console: tilo-vm vm serial {vm}   (tilo-vm vm shot {vm} for the screen); fix it and swap again, or go back: tilo-vm rollback --slot vm"
+            ),
             Self::ImageRefused { fix, .. } => fix.clone(),
             Self::BaseOlder { .. } => {
                 "rebuild the base from this worktree: tilo-vm vm upgrade --from local --rebuild-base   |   or rebase onto a newer commit   |   or, to go back on purpose: add --allow-older-base".into()
@@ -360,6 +377,7 @@ impl CliError {
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
             Self::ImageRefused { .. } | Self::BaseOlder { .. } => "images",
             Self::InvalidInput(_) => "driving",
+            Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
@@ -484,6 +502,15 @@ mod tests {
                 alternative: "a".into(),
             },
             CliError::NoManifest { path: "p".into() },
+            CliError::KernelBuild {
+                log: "/home/u/.cache/tilo-kernel/linux-7.2.5/build.log".into(),
+            },
+            CliError::KernelNotRunning {
+                vm: "dev".into(),
+                expected: "7.2.5+dev".into(),
+                running: "7.2.5".into(),
+                detail: "no SSH answer within 240s; the VM was reset".into(),
+            },
             CliError::UnknownComponent {
                 name: "x".into(),
                 known: vec!["shell".into()],
@@ -610,6 +637,8 @@ mod tests {
         for error in &all {
             match error {
                 CliError::NoVm { .. }
+                | CliError::KernelBuild { .. }
+                | CliError::KernelNotRunning { .. }
                 | CliError::HostBuildUnsupported { .. }
                 | CliError::VmCannotBuild { .. }
                 | CliError::NoDiskPublished { .. }
