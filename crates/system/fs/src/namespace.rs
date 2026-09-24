@@ -318,6 +318,9 @@ pub struct Namespace {
     /// only a document import can clear this (and each import re-runs the
     /// migration), which keeps `save_incremental` from rescanning all nodes.
     record_ids_complete: bool,
+    /// Heads after the last post-sync resolution: a sync that brought
+    /// nothing new needs none.
+    resolved_heads: Option<Vec<automerge::ChangeHash>>,
     #[cfg(test)]
     record_index_rebuilds: u64,
     #[cfg(test)]
@@ -412,6 +415,7 @@ impl Namespace {
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
             record_ids_complete: false,
+            resolved_heads: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -469,6 +473,7 @@ impl Namespace {
             record_index_digest: RecordIndexDigest::default(),
             tree: TreeIndex::default(),
             record_ids_complete: false,
+            resolved_heads: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -540,12 +545,10 @@ impl Namespace {
         {
             return false;
         }
-        let matching = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(revision.record_id))
-            .count();
-        if matching != 1 {
+        if self
+            .unique_live_node_for_record(revision.record_id)
+            .is_none()
+        {
             return false;
         }
         let thumbnail = self
@@ -698,18 +701,31 @@ impl Namespace {
         data: &[u8],
     ) -> anyhow::Result<()> {
         let msg = automerge::sync::Message::decode(data)?;
+        let before = self.doc.get_heads();
         self.doc.receive_incoming_sync(state, msg)?;
-        self.ensure_record_ids();
-        self.rebuild_record_index();
+        // Most sync rounds carry heads and bloom filters, not changes; the
+        // indexes are rebuilt only when the document actually changed.
+        if self.doc.get_heads() != before {
+            self.ensure_record_ids();
+            self.rebuild_record_index();
+        }
         Ok(())
     }
 
     /// Discard the pulled changes from the watermark (peers already have them), resolve, and return only the resolution delta.
     pub fn post_sync_resolve(&mut self) -> Vec<u8> {
         let _ = self.doc.save_incremental();
+        let heads = self.doc.get_heads();
+        if self.resolved_heads.as_ref() == Some(&heads) {
+            // Resolution depends only on the document, which has not
+            // changed since it last ran.
+            return Vec::new();
+        }
         self.resolve();
         self.rebuild_record_index();
-        self.doc.save_incremental()
+        let delta = self.doc.save_incremental();
+        self.resolved_heads = Some(self.doc.get_heads());
+        delta
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
@@ -1862,17 +1878,13 @@ impl Namespace {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
         }
-        let matches = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(record_id))
-            .collect::<Vec<_>>();
-        if self.content_authority == ContentAuthority::SignedRecords && matches.len() != 1 {
-            return None;
+        if self.content_authority == ContentAuthority::SignedRecords {
+            let only = self.unique_live_node_for_record(record_id)?;
+            return self.id_to_ino.get(&only).copied();
         }
-        matches
+        self.live_node_ids()
             .into_iter()
-            .next()
+            .find(|id| self.record_id_for_id(id) == Some(record_id))
             .and_then(|id| self.id_to_ino.get(&id).copied())
     }
 
@@ -1884,6 +1896,23 @@ impl Namespace {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
         }
+        let only = self.unique_live_node_for_record(record_id)?;
+        Some(self.ino_for_id(&only))
+    }
+
+    /// The one live node bound to `record_id`, `None` when there is none or
+    /// more than one. The stable-record index answers in O(depth) when it
+    /// names the node: it withholds every record it has seen bound twice,
+    /// and its answer is checked against the document. Only a record the
+    /// index does not name (not placed yet, or placed where the index could
+    /// not follow) costs a scan of the tree.
+    fn unique_live_node_for_record(&self, record_id: FileRecordId) -> Option<String> {
+        if let Some(indexed) = self.record_index.get(&record_id)
+            && self.record_id_for_id(&indexed.node_id) == Some(record_id)
+            && self.reaches_root(&indexed.node_id)
+        {
+            return Some(indexed.node_id.clone());
+        }
         let mut matches = self
             .live_node_ids()
             .into_iter()
@@ -1892,7 +1921,7 @@ impl Namespace {
         if matches.next().is_some() {
             return None;
         }
-        Some(self.ino_for_id(&only))
+        Some(only)
     }
 
     /// Absolute path of `ino` within the mount — `"/"` for the root, `"/a/b/c"`
@@ -2616,13 +2645,7 @@ impl Namespace {
     fn thumbnail_for_id(&self, id: &str) -> Option<Hash> {
         if self.content_authority == ContentAuthority::SignedRecords {
             let record_id = self.record_id_for_id(id)?;
-            if self
-                .live_node_ids()
-                .into_iter()
-                .filter(|candidate| self.record_id_for_id(candidate) == Some(record_id))
-                .count()
-                != 1
-            {
+            if self.unique_live_node_for_record(record_id).as_deref() != Some(id) {
                 return None;
             }
             return self
