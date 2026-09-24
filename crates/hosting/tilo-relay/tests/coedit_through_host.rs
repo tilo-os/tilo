@@ -74,7 +74,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
                 return;
             }
             // Ready / presence carry no document bytes — keep draining.
-            Inbound::Ready { .. } | Inbound::Presence { .. } => {}
+            Inbound::Ready { .. } | Inbound::Presence { .. } | Inbound::RemoteAction { .. } => {}
         }
     }
     panic!("no document delta arrived");
@@ -246,7 +246,9 @@ async fn catch_up_first_connection(
                 assert_eq!(pending, 1, "host reports the one queued co-edit");
                 got_ready = true;
             }
-            other @ Inbound::Presence { .. } => panic!("unexpected inbound {other:?}"),
+            other @ (Inbound::Presence { .. } | Inbound::RemoteAction { .. }) => {
+                panic!("unexpected inbound {other:?}")
+            }
         }
     }
     assert!(got_delta, "B must receive the queued co-edit after restart");
