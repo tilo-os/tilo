@@ -1374,8 +1374,13 @@ async fn replica_workspace(
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             };
+            // Unchanged heads before and after the save prove it persisted
+            // exactly the generation just verified.
+            let unchanged_before = replica_namespace_fingerprint(&namespace) == after;
             match persist_namespace_generation(&namespace, path) {
-                Ok(persisted) if persisted == after => {
+                Ok(persisted)
+                    if unchanged_before && replica_namespace_fingerprint(&namespace) == after =>
+                {
                     status.namespace_generation = Some(hex::encode(persisted));
                 }
                 Ok(_) => {
@@ -1399,12 +1404,13 @@ async fn replica_workspace(
     }
 }
 
-fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
-    let bytes = namespace
+/// The namespace's generation for change detection: its Automerge heads
+/// (every change moves them), not a hash of a full save every heartbeat.
+fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
+    namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .save();
-    *blake3::hash(&bytes).as_bytes()
+        .heads()
 }
 
 #[allow(
