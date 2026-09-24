@@ -726,24 +726,12 @@ impl FreshId for StripId {
     }
 }
 
-/// The toolkit width a persisted [`WindowWidth`] lays out as.
-pub fn window_width_to_ui(width: WindowWidth) -> ui::widget::WindowWidth {
-    match width {
-        WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
-        WindowWidth::Normal => ui::widget::WindowWidth::Normal,
-        WindowWidth::Wide => ui::widget::WindowWidth::Wide,
-        WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
-    }
-}
-
-/// The persisted width for a toolkit width.
-pub fn window_width_from_ui(width: ui::widget::WindowWidth) -> WindowWidth {
-    match width {
-        ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-        ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-        ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-        ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
-    }
+/// Device-local identity needed to reconstruct a hosted document tab.
+/// It is persisted in the local profile but never projected into a room doc.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDocumentReference {
+    pub provider_id: String,
+    pub path: std::path::PathBuf,
 }
 
 /// The model's drop target for the one the toolkit's strip row previewed.
@@ -758,53 +746,6 @@ pub fn drop_target_from_ui(target: ui::widget::TabDropTarget) -> DropTarget {
         },
         ui::widget::TabDropTarget::GroupGap { gap_index } => DropTarget::GroupGap { gap_index },
     }
-}
-
-#[cfg(test)]
-mod window_width_parity_tests {
-    use super::*;
-
-    /// The model and the toolkit each carry the width math; a persisted
-    /// tier must lay out at exactly the fraction it names.
-    #[test]
-    fn model_widths_resolve_like_the_toolkit() {
-        use tilo_desktop_model::width as model;
-        assert_eq!(model::WIDTH_MIN_PERMILLE, ui::widget::WIDTH_MIN_PERMILLE);
-        assert_eq!(model::WIDTH_MAX_PERMILLE, ui::widget::WIDTH_MAX_PERMILLE);
-        for width in [
-            WindowWidth::Narrow,
-            WindowWidth::Normal,
-            WindowWidth::Wide,
-            WindowWidth::Fraction(1),
-            WindowWidth::Fraction(420),
-            WindowWidth::Fraction(5000),
-        ] {
-            let ui = window_width_to_ui(width);
-            assert_eq!(width.permille(), ui.permille(), "{width:?}");
-            for strip in [320.0, 800.0, 1280.0, 3840.0] {
-                assert_eq!(
-                    width.resolve(strip),
-                    ui.resolve(strip),
-                    "{width:?} @ {strip}"
-                );
-            }
-            assert_eq!(window_width_from_ui(ui), width);
-        }
-        for (px, strip) in [(0.0, 1200.0), (400.0, 1200.0), (9999.0, 800.0)] {
-            assert_eq!(
-                model::permille_for_px(px, strip),
-                ui::widget::permille_for_px(px, strip)
-            );
-        }
-    }
-}
-
-/// Device-local identity needed to reconstruct a hosted document tab.
-/// It is persisted in the local profile but never projected into a room doc.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NativeDocumentReference {
-    pub provider_id: String,
-    pub path: std::path::PathBuf,
 }
 
 fn unix_now() -> i64 {
@@ -5262,7 +5203,7 @@ impl WorkspaceTree {
                 id: live.id,
                 tabs: group_tabs,
                 active_tab: live.active_tab,
-                width: window_width_from_ui(live.width),
+                width: live.width,
                 maximized: old_groups
                     .get(&live.id)
                     .is_some_and(|group| group.maximized),
