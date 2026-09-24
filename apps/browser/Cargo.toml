@@ -68,6 +68,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 accesskit_consumer = "0.39"
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true

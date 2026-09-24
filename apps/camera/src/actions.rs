@@ -956,82 +956,63 @@ mod tests {
         );
     }
 
-    /// A scan-history row-insert also converges byte-identically — the dedup +
-    /// cap runs deterministically against the shared base on each replica.
-    #[test]
-    fn record_scan_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = record_scan_action("https://example.test/hello", 1234);
-        let encoded = encode(&action).unwrap();
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "scan replayed identically");
-        let scans = doc::read_scans(&b, &ROOT);
-        assert_eq!(
-            scans.first().map(|s| s.raw.as_str()),
-            Some("https://example.test/hello"),
-            "the scan landed at the front of the peer's history"
-        );
+    /// The resource tree a sample Camera publishes once it has synced `doc`.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let mut app = CameraApp::sample();
+        app.sync(&mut doc.clone(), &ROOT);
+        Widget::resources(&app, doc)
     }
 
-    #[test]
-    fn capture_preferences_are_granular_replayable_actions() {
-        let mut a = AutoCommit::new();
-        doc::init_defaults(&mut a, &ROOT, crate::model::Screen::Camera);
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let action = CameraAction::SetGrid { on: false };
-        let encoded = encode(&action).unwrap();
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-
-        assert!(!doc::read_settings(&a, &ROOT).grid);
-        assert!(!doc::read_settings(&b, &ROOT).grid);
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the preference replayed exactly"
-        );
+    fn encoded(action: &CameraAction) -> EncodedAction {
+        encode(action).unwrap()
     }
 
-    #[test]
-    fn published_capture_replays_as_portable_metadata() {
-        let media_id = crate::media::store(b"portable camera bytes").unwrap();
-        let mut a = AutoCommit::new();
-        doc::init_defaults(&mut a, &ROOT, Screen::Camera);
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let action = CameraAction::RegisterCapture {
-            id: "IMG_peer.jpg".into(),
-            media_id,
-            kind: crate::model::CaptureKind::Photo,
-            ts: 42,
-            w: 64,
-            h: 48,
-            dur_ms: 0,
-            label: "Peer photo".into(),
-            facing: Facing::Back,
-        };
-        let envelope =
-            tilo_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads());
-        let capture = doc::read_recent_capture(&b, &ROOT).expect("recent handoff");
-        assert_eq!(capture.id, "IMG_peer.jpg");
-        assert!(crate::media::is_media_id(&capture.media_id));
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| published(doc),
+        palette: [
+            "Use video mode",
+            "Use 4K resolution",
+            "Turn off composition grid",
+            "Open Photos",
+        ],
+        replay: [
+            // The scan-history row-insert: dedup + cap run deterministically
+            // against the shared base on each replica.
+            record_scan => |_| encoded(&record_scan_action("https://example.test/hello", 1234)),
+            set_grid => |doc| encoded(&CameraAction::SetGrid {
+                on: !doc::read_settings(doc, &ROOT).grid,
+            }),
+            register_capture => |_| encoded(&CameraAction::RegisterCapture {
+                id: "IMG_peer.jpg".into(),
+                media_id: crate::media::store(b"portable camera bytes").unwrap(),
+                kind: crate::model::CaptureKind::Photo,
+                ts: 42,
+                w: 64,
+                h: 48,
+                dur_ms: 0,
+                label: "Peer photo".into(),
+                facing: Facing::Back,
+            }),
+        ],
+        undo: [
+            record_scan => |_| encoded(&record_scan_action("https://example.test/undo", 99)),
+            set_mode => |_| encoded(&CameraAction::SetMode { mode: CaptureMode::Video }),
+        ],
+        encodes: [
+            video_mode => ("camera.capture", "video-mode", |_, _| {
+                encoded(&CameraAction::SetMode { mode: CaptureMode::Video })
+            }),
+            resolution_4k => ("camera.settings", "resolution-4k", |_, _| {
+                encoded(&CameraAction::SetResolution { resolution: Resolution::R4K })
+            }),
+            grid => ("camera.settings", "grid", |doc, _| {
+                encoded(&CameraAction::SetGrid {
+                    on: !doc::read_settings(doc, &ROOT).grid,
+                })
+            }),
+        ],
     }
 
     #[test]

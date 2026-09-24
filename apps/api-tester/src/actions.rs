@@ -46,6 +46,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec,
 };
 
 use crate::doc::ApiDoc;
@@ -152,7 +153,8 @@ pub fn active_request_resource() -> Resource {
         resource = resource.with_action(
             action
                 .with_description("Send the current request using this device's active network")
-                .execution(ExecutionMode::Background { cancellable: false }),
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job),
         );
     }
     resource
@@ -181,6 +183,7 @@ pub fn send_request_operation(
     .map(|spec| {
         spec.with_description("Queue this saved request using the active environment")
             .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job)
     })
 }
 
@@ -817,7 +820,6 @@ impl ResourceProvider for crate::app::ApiTesterApp {
 mod tests {
     use super::*;
     use crate::model::HttpMethod;
-    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -960,92 +962,108 @@ mod tests {
         assert_eq!(variable.value, "keep-this-secret");
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let root: ObjId = ROOT;
-        let (seeded_doc, cid, rid, _eid) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-        // `get_heads` flushes the seed writes into committed changes; the action
-        // that follows lands in its own change bracketed by these heads.
-        let before_heads = state.doc.get_heads();
-        assert_eq!(
-            ApiDoc::collections(&state.doc, &root)[0].requests.len(),
-            1,
-            "precondition: the saved request is present"
-        );
-
-        let action = delete_request_action(cid, rid);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            ApiDoc::collections(&state.doc, &root)[0]
-                .requests
-                .is_empty(),
-            "the action deleted the saved request"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            ApiDoc::collections(&state.doc, &root)[0].requests.len(),
-            1,
-            "undo restored the request and nothing else"
-        );
+    /// The workspace root plus every seeded record, each materialized through
+    /// the app's exact-address resolver the way search and agents reach it
+    /// (the root directory itself is bounded and lists no records).
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let collections = ApiDoc::collections(doc, &ROOT);
+        let environments = ApiDoc::environments(doc, &ROOT);
+        let mut app = crate::app::ApiTesterApp::new_demo();
+        app.refresh_search_records(&collections, &environments);
+        let mut ids = Vec::new();
+        for collection in &collections {
+            ids.push(format!("api_tester.collection:{}", collection.id));
+            for request in &collection.requests {
+                ids.push(format!("api_tester.request:{}", request.id));
+            }
+        }
+        for environment in &environments {
+            ids.push(format!("api_tester.environment:{}", environment.id));
+            for variable in &environment.variables {
+                ids.push(format!(
+                    "api_tester.variable:{}:{}",
+                    environment.id, variable.id
+                ));
+            }
+        }
+        let mut resources = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, doc);
+        resources.extend(ids.iter().map(|id| {
+            <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, doc, id)
+                .expect("a seeded record resolves")
+        }));
+        resources
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let root: ObjId = ROOT;
-        let (mut a, cid, _rid, _eid) = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
+    fn collection_id(doc: &AutoCommit) -> Uuid {
+        ApiDoc::collections(doc, &ROOT)[0].id
+    }
 
-        // A create carrying a pre-minted id so `apply` needs no RNG.
-        let mut req = Request::new("Create user");
-        req.id = Uuid::from_u128(0x1234_5678_90ab_cdef_1234_5678_90ab_cdef);
-        req.method = HttpMethod::Post;
-        let action = save_request_action(cid, req);
-        let encoded = encode(&action);
+    fn request_id(doc: &AutoCommit) -> Uuid {
+        ApiDoc::collections(doc, &ROOT)[0].requests[0].id
+    }
 
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
+    fn environment_id(doc: &AutoCommit) -> Uuid {
+        ApiDoc::environments(doc, &ROOT)[0].id
+    }
 
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            ApiDoc::collections(&a, &root)[0].requests.len(),
-            ApiDoc::collections(&b, &root)[0].requests.len(),
-        );
-        assert!(
-            ApiDoc::collections(&b, &root)[0]
-                .requests
-                .iter()
-                .any(|r| r.name == "Create user"),
-            "the saved request landed on the replica"
-        );
+    fn variable_id(doc: &AutoCommit) -> String {
+        ApiDoc::environments(doc, &ROOT)[0].variables[0].id.clone()
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded().0,
+        registry: registry(),
+        resources: |doc| published(doc),
+        palette: [
+            "New collection",
+            "Delete collection",
+            "Delete request",
+            "Use environment “Production”",
+            "Delete variable",
+        ],
+        replay: [
+            save_request => |doc| {
+                // A create carrying a pre-minted id so `apply` needs no RNG.
+                let mut request = Request::new("Create user");
+                request.id = Uuid::from_u128(0x1234_5678_90ab_cdef_1234_5678_90ab_cdef);
+                request.method = HttpMethod::Post;
+                encode(&save_request_action(collection_id(doc), request))
+            },
+        ],
+        undo: [
+            delete_request => |doc| encode(&delete_request_action(collection_id(doc), request_id(doc))),
+        ],
+        encodes: [
+            delete_collection => ("api_tester.collection", "delete", |doc, _| {
+                encode(&delete_collection_action(collection_id(doc)))
+            }),
+            rename_collection => ("api_tester.collection", "rename", arg: "Accounts API", |doc, _| {
+                encode(&rename_collection_action(collection_id(doc), "Accounts API"))
+            }),
+            delete_request => ("api_tester.request", "delete", |doc, _| {
+                encode(&delete_request_action(collection_id(doc), request_id(doc)))
+            }),
+            rename_request => ("api_tester.request", "rename", arg: "All users", |doc, _| {
+                encode(&rename_request_action(collection_id(doc), request_id(doc), "All users"))
+            }),
+            activate_environment => ("api_tester.environment", "activate", |doc, _| {
+                encode(&set_active_environment_action(Some(environment_id(doc))))
+            }),
+            delete_environment => ("api_tester.environment", "delete", |doc, _| {
+                encode(&delete_environment_action(environment_id(doc)))
+            }),
+            delete_variable => ("api_tester.variable", "delete", |doc, _| {
+                encode(&delete_variable_action(environment_id(doc), variable_id(doc)))
+            }),
+            set_variable_value => ("api_tester.variable", "set-value", arg: "https://staging.example.com", |doc, _| {
+                encode(&set_variable_action(
+                    environment_id(doc),
+                    variable_id(doc),
+                    "base_url",
+                    "https://staging.example.com",
+                ))
+            }),
+        ],
     }
 
     /// `SaveRequest` is insert-or-replace keyed by request id: saving a request
