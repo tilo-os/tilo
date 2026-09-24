@@ -3002,24 +3002,41 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
 }
 
 /// Persist the namespace to disk every few seconds.
-/// Persists the namespace shortly after it changes. Signed records are
-/// durable the moment they are published; a namespace persisted only every
-/// few seconds could lose the placements of records a crash left published,
-/// which a restart then reads as deletions. Checking the document's heads
-/// is cheap, so an idle namespace costs nothing and a burst of changes one
-/// save per interval.
+/// Persists the namespace once it settles after a change. Signed records
+/// are durable the moment they are published; a namespace persisted only
+/// every few seconds could lose the placements of records a crash left
+/// published, which a restart then reads as deletions. A change is saved
+/// after 500 ms without further changes, or after 3 s of continuous ones,
+/// so a burst is one save and an intermediate state of it is rarely one.
+/// Checking the document's heads is cheap; an idle namespace costs nothing.
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
+    const QUIET: Duration = Duration::from_millis(500);
+    const MAX_DELAY: Duration = Duration::from_secs(3);
     tokio::spawn(async move {
         let mut persisted = None;
+        let mut seen = None;
+        let mut seen_at = tokio::time::Instant::now();
+        let mut dirty_since: Option<tokio::time::Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let heads = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .heads();
-            if persisted.as_ref() != Some(&heads) {
+            let now = tokio::time::Instant::now();
+            if seen.as_ref() != Some(&heads) {
+                seen = Some(heads.clone());
+                seen_at = now;
+            }
+            if persisted.as_ref() == Some(&heads) {
+                dirty_since = None;
+                continue;
+            }
+            let since = *dirty_since.get_or_insert(now);
+            if now.duration_since(seen_at) >= QUIET || now.duration_since(since) >= MAX_DELAY {
                 persist_now(&namespace, &path);
                 persisted = Some(heads);
+                dirty_since = None;
             }
         }
     })
