@@ -53,6 +53,7 @@
 )]
 
 pub mod config;
+pub mod http_blobs;
 pub mod index;
 pub mod publish;
 pub mod registry_dir;
@@ -61,6 +62,7 @@ pub mod tapp;
 pub mod transport;
 
 pub use config::{RegistriesConfig, RegistryRef, RegistryTrust};
+pub use http_blobs::HttpBlobs;
 pub use index::{HostProfile, IndexEntry, IndexError, RegistryIndex, RuntimeRef};
 pub use publish::{PublishReceipt, build_entry, publish_to_dir};
 pub use resolve::{FetchOutcome, fetch_tapp, resolve_and_fetch};
