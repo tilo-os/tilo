@@ -18,11 +18,10 @@
 //! by default), a single `read()` syscall just touches multiple
 //! cache entries in one trip.
 
-use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lru::LruCache;
+use moka::sync::Cache;
 
 use crate::store::{BlobError, BlobStore, narrow_u32, narrow_usize};
 
@@ -30,13 +29,15 @@ use crate::store::{BlobError, BlobStore, narrow_u32, narrow_usize};
 /// architectures Tilo supports.
 pub const PAGE_SIZE: u32 = 4096;
 
-/// LRU page cache wrapping a [`BlobStore`].
+/// Bounded page cache wrapping a [`BlobStore`].
 ///
 /// Owned (and shared via `Arc`) by the FUSE filesystem, so all
-/// worker threads see the same cache state.
+/// worker threads see the same cache state. Pages are immutable
+/// slices of content-addressed blobs, so hits hand out a shared
+/// reference instead of copying the page.
 pub struct PageCache<S: BlobStore> {
     store: S,
-    pages: Mutex<LruCache<PageKey, Vec<u8>>>,
+    pages: Cache<PageKey, Arc<[u8]>>,
     hits: AtomicU64,
     misses: AtomicU64,
 }
@@ -57,24 +58,17 @@ pub struct PageCacheStats {
 }
 
 impl<S: BlobStore> PageCache<S> {
-    /// Build a cache that retains the most recent `capacity_pages`
-    /// pages. A 4 KiB page * 4096 capacity = 16 MiB of cache, the
-    /// default the mount uses.
+    /// Build a cache that retains at most `capacity_pages` pages.
+    /// A 4 KiB page * 4096 capacity = 16 MiB of cache, the default
+    /// the mount uses.
     pub fn new(store: S, capacity_pages: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity_pages.max(1)).unwrap_or(NonZeroUsize::MIN);
+        let capacity = u64::try_from(capacity_pages.max(1)).unwrap_or(u64::MAX);
         Self {
             store,
-            pages: Mutex::new(LruCache::new(cap)),
+            pages: Cache::new(capacity),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         }
-    }
-
-    /// Lock the page table, recovering from a poisoned lock instead of
-    /// panicking — a panic elsewhere while the lock was held doesn't
-    /// invalidate the cached pages themselves.
-    fn pages_lock(&self) -> MutexGuard<'_, LruCache<PageKey, Vec<u8>>> {
-        self.pages.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Read `(offset, len)` from `hash`, going through the cache.
@@ -135,21 +129,16 @@ impl<S: BlobStore> PageCache<S> {
         page: u64,
         page_start: u64,
         page_end: u64,
-    ) -> Result<Vec<u8>, BlobError> {
+    ) -> Result<Arc<[u8]>, BlobError> {
         let key = PageKey { hash: *hash, page };
-        {
-            let mut pages = self.pages_lock();
-            if let Some(bytes) = pages.get(&key) {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return Ok(bytes.clone());
-            }
+        if let Some(bytes) = self.pages.get(&key) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(bytes);
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         let want = narrow_u32(page_end.saturating_sub(page_start), PAGE_SIZE);
-        let bytes = self.store.get_range(hash, page_start, want)?;
-        let mut pages = self.pages_lock();
-        pages.put(key, bytes.clone());
-        drop(pages);
+        let bytes: Arc<[u8]> = self.store.get_range(hash, page_start, want)?.into();
+        self.pages.insert(key, Arc::clone(&bytes));
         Ok(bytes)
     }
 
@@ -217,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn lru_evicts_old_pages() {
+    fn capacity_bounds_resident_pages() {
         let inner = MemoryBlobStore::new();
         // 4 pages of distinct bytes.
         let mut payload = vec![0u8; PAGE_SIZE as usize * 4];
@@ -231,18 +220,24 @@ mod tests {
         let counted = CountingStore::new(inner);
         // Only 2 pages of cache capacity.
         let cache = PageCache::new(counted.clone(), 2);
-        // Touch pages 0, 1, 2, 0 in order — page 0's entry is
-        // evicted by page 2, so the second read of page 0 must
-        // re-fetch.
-        let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
-        let _ = cache
-            .read(&h, payload.len() as u64, u64::from(PAGE_SIZE), 16)
-            .unwrap();
-        let _ = cache
-            .read(&h, payload.len() as u64, 2 * u64::from(PAGE_SIZE), 16)
-            .unwrap();
-        let _ = cache.read(&h, payload.len() as u64, 0, 16).unwrap();
-        let snap = counted.snapshot();
-        assert_eq!(snap.range_calls, 4);
+        for page in 0..4 {
+            let got = cache
+                .read(&h, payload.len() as u64, page * u64::from(PAGE_SIZE), 16)
+                .unwrap();
+            assert_eq!(got, vec![u8::try_from(page).unwrap_or(0); 16]);
+        }
+        cache.pages.run_pending_tasks();
+        assert!(
+            cache.pages.entry_count() <= 2,
+            "a full cache must evict or reject pages beyond its capacity"
+        );
+        // Every page is still served correctly after eviction.
+        for page in 0..4 {
+            let got = cache
+                .read(&h, payload.len() as u64, page * u64::from(PAGE_SIZE), 16)
+                .unwrap();
+            assert_eq!(got, vec![u8::try_from(page).unwrap_or(0); 16]);
+        }
+        assert!(counted.snapshot().range_calls > 4, "evicted pages re-fetch");
     }
 }

@@ -21,9 +21,9 @@
 
 pub(crate) mod resource_trace;
 
+use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use vello::Scene;
@@ -39,6 +39,7 @@ pub const FRAME_BUDGET_US: u64 = 16_667;
 
 /// Optional logical desktop position for live profiling with several apps.
 /// Kept in the shared host so benchmarks never need per-app windowing code.
+#[cfg(feature = "native")]
 pub(crate) fn profile_window_position(value: &str) -> Option<(i32, i32)> {
     let (x, y) = value.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
@@ -274,7 +275,7 @@ struct HudLayout {
 impl FrameProfiler {
     fn new(hud: bool, dump: Option<DumpWriter>) -> Self {
         Self {
-            origin: Instant::now(),
+            origin: crate::time::now(),
             frame_index: 0,
             cur: FrameTiming::default(),
             pending_handle_event_us: 0,

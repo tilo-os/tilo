@@ -484,7 +484,7 @@ mod tests {
         FileMutationParticipant, FileMutationParticipantRole, FileMutationTransactionManifest,
         FileNodeKind, FileProvenance, FileVersionId, FileVersionV1,
     };
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     use super::*;
 
@@ -493,7 +493,7 @@ mod tests {
         reason = "The journal fixture builds a signed replacement rename with source/replaced projections and prepare/commit envelopes."
     )] // Complete signed journal fixture construction.
     fn entry() -> RecordTransactionJournalEntry {
-        let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: Ed25519PublicKey([7; 32]),
             device: Ed25519PublicKey(key.verifying_key().to_bytes()),

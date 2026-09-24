@@ -32,6 +32,7 @@ pub struct MemoryStore {
     queued: bool,
     state: RefCell<State>,
     leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
+    claims: RefCell<BTreeMap<StorageKey, String>>,
 }
 
 /// Who holds one key: an exclusive owner, or shared writers.
@@ -143,6 +144,7 @@ impl MemoryStore {
             queued,
             state: RefCell::new(State::default()),
             leases: Rc::default(),
+            claims: RefCell::default(),
         }
     }
 
@@ -351,6 +353,14 @@ impl crate::DurableStore for MemoryStore {
             primary: false,
             leases: Rc::downgrade(&self.leases),
         }))
+    }
+
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
+        let mut claims = self.claims.borrow_mut();
+        let owner = claims
+            .entry(key.clone())
+            .or_insert_with(|| claimant.to_owned());
+        Ok(owner == claimant)
     }
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError> {

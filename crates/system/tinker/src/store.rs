@@ -357,13 +357,7 @@ fn now_secs() -> u64 {
 }
 
 fn dirs_data_home() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
-        let p = PathBuf::from(x);
-        if p.is_absolute() {
-            return Some(p);
-        }
-    }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+    xdg_paths::xdg::data_home()
 }
 
 #[cfg(test)]

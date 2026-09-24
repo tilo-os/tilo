@@ -2,3 +2,14 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# reqwest is built without a bundled crypto provider; these constructors panic
+# unless one is installed. `tilo_net::http` installs it and returns builders.
+disallowed-methods = [
+    { path = "reqwest::Client::new", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::Client::builder", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::blocking::Client::new", reason = "use tilo_net::http::blocking_client()" },
+    { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()" },
+    { path = "reqwest::get", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()" },
+]

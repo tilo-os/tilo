@@ -7,6 +7,7 @@ intentionally short.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 
@@ -55,5 +56,26 @@ def require_ok(resp: dict) -> dict:
     return resp["ok"]
 
 
-def socket_path_from_argv(default: str = "/tmp/tilo.sock") -> str:
-    return sys.argv[1] if len(sys.argv) > 1 else default
+def runtime_socket_path(name: str) -> str:
+    """`$XDG_RUNTIME_DIR/tilo-session/<name>`: a socket path only this user
+    can reach. The compositor creates the directory 0700 when it binds.
+
+    Never a shared directory: a well-known name under /tmp can be bound
+    first by another account, which then receives every command sent.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.path.isabs(runtime):
+        raise SystemExit(
+            "no control socket: pass its path or set TILO_TEST_CONTROL "
+            "(XDG_RUNTIME_DIR is unset, so there is no private default)"
+        )
+    return os.path.join(runtime, "tilo-session", name)
+
+
+def default_socket_path() -> str:
+    """`$TILO_TEST_CONTROL`, else the default `tilo-control` also uses."""
+    return os.environ.get("TILO_TEST_CONTROL") or runtime_socket_path("test-control.sock")
+
+
+def socket_path_from_argv() -> str:
+    return sys.argv[1] if len(sys.argv) > 1 else default_socket_path()

@@ -140,7 +140,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
         let id = runtime_identity::load().ok().or_else(|| {
             config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
         })?;
-        let key_hex = hex_lower(&id.group_public_key());
+        let key_hex = hex::encode(id.group_public_key());
         let name = if id.display_name().is_empty() {
             // First boot writes an empty display name and the user names
             // themselves later. An empty string would render as a blank row, so
@@ -174,7 +174,7 @@ fn config_identity_path() -> Option<PathBuf> {
 /// /non-hex input, non-UTF-8, control chars, empty, or too long); a 32-byte
 /// public key almost never survives this filter.
 pub fn actor_handle(actor_hex: &str) -> Option<String> {
-    let bytes = decode_hex(actor_hex)?;
+    let bytes = hex::decode(actor_hex).ok()?;
     if bytes.is_empty() || bytes.len() > MAX_HANDLE_LEN {
         return None;
     }
@@ -238,40 +238,6 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
         (red - green) / range + 4.0
     };
     (hue * 60.0).rem_euclid(360.0)
-}
-
-#[cfg(unix)]
-fn hex_lower(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        // Writing to a `String` is infallible, so there is no `Err` worth
-        // handling.
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in b.chunks(2) {
-        // `chunks(2)` on a length checked even above only ever yields
-        // full pairs, but the pattern proves that instead of indexing.
-        let [p0, p1] = pair else {
-            return None;
-        };
-        let hi = (*p0 as char).to_digit(16)?;
-        let lo = (*p1 as char).to_digit(16)?;
-        // Both digits are `0..=15`, so `combined` is always `0..=255` and
-        // the cast below does not truncate.
-        let combined = hi.saturating_mul(16).saturating_add(lo);
-        out.push(u8::try_from(combined).unwrap_or(u8::MAX));
-    }
-    Some(out)
 }
 
 #[cfg(test)]
@@ -421,9 +387,9 @@ mod tests {
             &identity,
             display_name,
             avatar_color,
-            std::time::SystemTime::UNIX_EPOCH
-                .checked_add(std::time::Duration::from_secs(1_785_000_000))
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            crate::time::SystemTime::UNIX_EPOCH
+                .checked_add(crate::time::Duration::from_secs(1_785_000_000))
+                .unwrap_or(crate::time::SystemTime::UNIX_EPOCH),
         )
         .expect("a single-device identity is persistable");
         let bytes = record.to_json_bytes().expect("record encodes to JSON");
@@ -526,7 +492,7 @@ mod tests {
             (author.avatar_hue - 120.0).abs() < 0.5,
             "green avatar colour"
         );
-        assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
+        assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
         assert_eq!(author.identity_short.len(), SHORT_LEN);
     }
 
@@ -549,7 +515,7 @@ mod tests {
         let author = local_identity_author().expect("a provisioned identity resolves to an author");
         assert_eq!(author.name, UNKNOWN_AUTHOR_NAME);
         assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
-        assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
+        assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
     }
 
     /// With no identity anywhere, the chrome gets `None` and falls through to

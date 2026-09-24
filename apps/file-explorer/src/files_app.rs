@@ -20,7 +20,6 @@ use crate::{config, favorites, fileops, templates};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -178,12 +177,9 @@ enum CollabPanelAction {
     },
 }
 
+/// Lower-case hex of the first `count` bytes (all of them when shorter).
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
-    let mut output = String::with_capacity(count.saturating_mul(2));
-    for byte in bytes.iter().take(count) {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    hex::encode(bytes.get(..count).unwrap_or(bytes))
 }
 
 fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
@@ -3841,8 +3837,8 @@ impl FileExplorerWidget {
     /// read, focuses the document if it is already open, and launches —
     /// all in one place, shared with every other surface that can open a
     /// file. Only when no host installed a route (a standalone run, off a
-    /// Tilo session) does this fall back to the desktop default handler
-    /// (`open::that`, via `CommandRunner::open_default`).
+    /// Tilo session) does this fall back to the host's default handler
+    /// (its URI opener, via `CommandRunner::open_default`).
     ///
     /// A refusal from the host is shown in the status bar naming the
     /// file; activation never silently does nothing.
@@ -4467,7 +4463,13 @@ impl CommandRunner for SystemRunner {
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
-        open::that(path)
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the desktop opener takes UTF-8 paths",
+            )
+        })?;
+        ui::host::current().opener.open(path)
     }
 }
 

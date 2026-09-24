@@ -14,7 +14,6 @@
 //!
 //! The default transport (feature `broker-transport`) delegates to the
 //! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
-//!
 
 use uuid::Uuid;
 
@@ -88,6 +87,7 @@ pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
 
 /// Decode a hex resume payload and its schema version. Invalid input is
 /// ignored so an app outside Tilo or an older sender opens normally.
+#[cfg(feature = "native")]
 pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
     let bytes = hex::decode(hex).ok()?;
     let schema_version = schema.parse().ok()?;
@@ -671,7 +671,7 @@ impl SigningIdentity {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = std::time::SystemTime::now();
+        let timestamp = crate::time::wall();
         let sequence = self
             .seq
             .checked_add(1)
@@ -1237,12 +1237,7 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     {
         id
     } else {
-        use std::fmt::Write as _;
-        let mut s = String::with_capacity(64);
-        for b in &key {
-            let _ = write!(s, "{b:02x}");
-        }
-        s
+        hex::encode(key)
     }
 }
 

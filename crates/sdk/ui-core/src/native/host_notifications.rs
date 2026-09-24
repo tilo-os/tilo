@@ -4,13 +4,9 @@
 //! Notification settings remain under Windows/user control. Successful submission
 //! does not imply that Windows displayed a banner (e.g. Do Not Disturb).
 
-use std::{
-    marker::PhantomData,
-    path::Path,
-    rc::Rc,
-    sync::OnceLock,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{marker::PhantomData, path::Path, rc::Rc, sync::OnceLock};
+
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{
     NotificationSetting, ScheduledToastNotification, ToastNotification, ToastNotificationManager,
@@ -245,7 +241,7 @@ impl HostNotifications {
                 toast.SetSuppressPopup(true)?;
                 let expiry: windows::Foundation::IReference<windows::Foundation::DateTime> =
                     windows::Foundation::PropertyValue::CreateDateTime(to_windows_time(
-                        SystemTime::now() + Duration::from_secs(15),
+                        crate::time::wall() + Duration::from_secs(15),
                     )?)?
                     .cast()?;
                 toast.SetExpirationTime(&expiry)?;

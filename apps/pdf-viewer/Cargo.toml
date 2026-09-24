@@ -32,10 +32,8 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# PDF page rasterisation via dynamically loaded pdfium, with pure-Rust text
-# extraction when the native library is unavailable.
+# PDF page rasterisation and text extraction via dynamically loaded pdfium.
 pdfium-render = "0.8.37"
-pdf-extract = "0.12.0"
 # Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
 # the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
 image = { workspace = true, features = ["png", "jpeg"] }

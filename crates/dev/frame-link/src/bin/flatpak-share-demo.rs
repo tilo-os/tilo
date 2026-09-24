@@ -43,7 +43,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
 use shell::network::decoder::H264Decoder;
 use shell::network::encoder::H264Encoder;
@@ -286,29 +286,12 @@ where
 struct SourceRenderer {
     width: u32,
     height: u32,
-    font: FontVec,
+    text: TextPainter,
     rgba: Vec<u8>,
 }
 
 impl SourceRenderer {
-    fn new(width: u32, height: u32) -> Result<Self, String> {
-        // Font search: distrobox is Fedora-flavoured so Noto Sans lives at a
-        // well-known path; fall back to Adwaita Mono and a bundled
-        // last-resort for unusual environments.
-        let font_paths = [
-            "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
-            "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
-            "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Bold.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
-        ];
-        let bytes = font_paths
-            .iter()
-            .find_map(|p| fs::read(p).ok())
-            .ok_or_else(|| format!("no font found — tried {font_paths:?}"))?;
-        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
+    fn new(width: u32, height: u32) -> Self {
         // Saturating rather than `*`: a pathological `--width`/`--height`
         // wrapping around usize would allocate an undersized buffer, and
         // every pixel write below would then be silently out of range
@@ -317,12 +300,12 @@ impl SourceRenderer {
             .saturating_mul(height as usize)
             .saturating_mul(4);
         let rgba = vec![0u8; rgba_len];
-        Ok(Self {
+        Self {
             width,
             height,
-            font,
+            text: TextPainter::new(Family::Monospace),
             rgba,
-        })
+        }
     }
 
     /// Render a fresh frame at millisecond `t_ms` into the internal
@@ -365,7 +348,15 @@ impl SourceRenderer {
         }
         // Text stamp — top-left, "SOURCE t=NNNNms".
         let text = format!("t={t_ms:>5}ms   frame #{frame_index:>4}");
-        self.draw_text(24, 24, 48.0, &text, (255, 255, 255));
+        let canvas = (self.width, self.height);
+        self.text.draw(
+            &mut self.rgba,
+            canvas,
+            (24, 24),
+            48.0,
+            &text,
+            (255, 255, 255),
+        );
         &self.rgba
     }
 
@@ -403,38 +394,63 @@ impl SourceRenderer {
             }
         }
     }
+}
 
-    fn draw_text(&mut self, x0: i32, y0: i32, size_px: f32, text: &str, color: (u8, u8, u8)) {
-        let scale = PxScale::from(size_px);
-        let scaled = self.font.as_scaled(scale);
-        let ascent = scaled.ascent();
-        let mut caret_x = i32_as_f32(x0);
-        let baseline = i32_as_f32(y0) + ascent;
-        for ch in text.chars() {
-            let g = self.font.glyph_id(ch);
-            let glyph = g.with_scale(scale);
-            let advance = self.font.as_scaled(scale).h_advance(g);
-            if let Some(outlined) = self.font.outline_glyph(glyph.clone()) {
-                let bounds = outlined.px_bounds();
-                let ox = caret_x + bounds.min.x;
-                let oy = baseline + bounds.min.y;
-                let width = self.width;
-                let height = self.height;
-                outlined.draw(|dx, dy, cov| {
-                    // `dx`/`dy` are glyph-local pixel offsets (small,
-                    // non-negative); `ox`/`oy` are the glyph's screen
-                    // origin. Both convert through the same saturating
-                    // helpers as the rest of this file's pixel math.
-                    let px = f32_as_i32_sat(ox).saturating_add(u32_to_i32_sat(dx));
-                    let py = f32_as_i32_sat(oy).saturating_add(u32_to_i32_sat(dy));
-                    let a = cov.min(1.0);
-                    if let Some(i) = pixel_offset(i64::from(px), i64::from(py), width, height) {
-                        write_pixel(&mut self.rgba, i, color, a);
-                    }
-                });
-            }
-            caret_x += advance;
+/// Shapes and rasterises overlay text with the toolkit's text stack:
+/// cosmic-text resolves `family` through the system font configuration and
+/// swash produces the coverage masks.
+struct TextPainter {
+    fonts: FontSystem,
+    cache: SwashCache,
+    family: Family<'static>,
+}
+
+impl TextPainter {
+    fn new(family: Family<'static>) -> Self {
+        Self {
+            fonts: FontSystem::new(),
+            cache: SwashCache::new(),
+            family,
         }
+    }
+
+    /// Paint `text` in bold with its top-left corner at `origin` into a
+    /// `canvas.0 × canvas.1` RGBA buffer, clipping at the canvas edges.
+    fn draw(
+        &mut self,
+        rgba: &mut [u8],
+        canvas: (u32, u32),
+        origin: (i32, i32),
+        size_px: f32,
+        text: &str,
+        color: (u8, u8, u8),
+    ) {
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(size_px, size_px * 1.2));
+        let mut buffer = buffer.borrow_with(&mut self.fonts);
+        buffer.set_size(None, None);
+        let attrs = Attrs::new().family(self.family).weight(Weight::BOLD);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        let (width, height) = canvas;
+        buffer.draw(
+            &mut self.cache,
+            Color::rgb(255, 255, 255),
+            |x, y, w, h, coverage| {
+                let alpha = f32::from(coverage.a()) / 255.0;
+                for dy in 0..h {
+                    for dx in 0..w {
+                        let px = i64::from(origin.0)
+                            .saturating_add(i64::from(x))
+                            .saturating_add(i64::from(dx));
+                        let py = i64::from(origin.1)
+                            .saturating_add(i64::from(y))
+                            .saturating_add(i64::from(dy));
+                        if let Some(i) = pixel_offset(px, py, width, height) {
+                            write_pixel(rgba, i, color, alpha);
+                        }
+                    }
+                }
+            },
+        );
     }
 }
 
@@ -627,18 +643,19 @@ struct CompositeRenderer {
     canvas_w: u32,
     canvas_h: u32,
     header_h: u32,
-    // Retained for parity with the layout math; not read from `compose`
-    // since the footer text position is fixed relative to `header_h + src_h`.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "retained for parity with the layout math; compose fixes the footer text relative to header_h + src_h"
+    )]
     footer_h: u32,
     out: Vec<u8>,
-    font: FontVec,
+    text: TextPainter,
     header_left: String,
     header_right: String,
 }
 
 impl CompositeRenderer {
-    fn new(src_w: u32, src_h: u32, latency_ms: u32, throughput_kbps: u64) -> Result<Self, String> {
+    fn new(src_w: u32, src_h: u32, latency_ms: u32, throughput_kbps: u64) -> Self {
         // Round to even so the composite encoder is happy (openh264
         // rejects odd dimensions).
         let header_h = 48u32;
@@ -649,22 +666,10 @@ impl CompositeRenderer {
             .saturating_mul(canvas_h as usize)
             .saturating_mul(4);
         let out = vec![0u8; out_len];
-        let font_paths = [
-            "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
-            "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
-            "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Bold.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf",
-        ];
-        let bytes = font_paths
-            .iter()
-            .find_map(|p| fs::read(p).ok())
-            .ok_or_else(|| "no font found for composite text".to_string())?;
-        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let header_left = "SOURCE".to_string();
         let header_right =
             format!("STREAMED · {latency_ms}ms latency · {throughput_kbps} kbps throttle");
-        Ok(Self {
+        Self {
             src_w,
             src_h,
             canvas_w,
@@ -672,10 +677,10 @@ impl CompositeRenderer {
             header_h,
             footer_h,
             out,
-            font,
+            text: TextPainter::new(Family::SansSerif),
             header_left,
             header_right,
-        })
+        }
     }
 
     fn dimensions(&self) -> (u32, u32) {
@@ -742,25 +747,24 @@ impl CompositeRenderer {
                 }
             }
         }
-        // Headers. Clone the strings out first so we don't hold an immutable
-        // borrow on `self` across the mutable-borrow of `draw_text` — cheap,
-        // the strings are short and static.
-        let header_left = self.header_left.clone();
-        let header_right = self.header_right.clone();
+        // Headers.
+        let canvas = (self.canvas_w, self.canvas_h);
         let half_src_w = u32_to_i32_sat(self.src_w / 2);
-        self.draw_text(
-            half_src_w.saturating_sub(40),
-            8,
+        self.text.draw(
+            &mut self.out,
+            canvas,
+            (half_src_w.saturating_sub(40), 8),
             28.0,
-            &header_left,
+            &self.header_left,
             (200, 220, 255),
         );
         let one_and_half_src_w = u32_to_i32_sat(self.src_w.saturating_add(self.src_w / 2));
-        self.draw_text(
-            one_and_half_src_w.saturating_sub(200),
-            8,
+        self.text.draw(
+            &mut self.out,
+            canvas,
+            (one_and_half_src_w.saturating_sub(200), 8),
             28.0,
-            &header_right,
+            &self.header_right,
             (255, 200, 160),
         );
         // Divider strip between the two panes: two fully-zeroed (including
@@ -778,41 +782,15 @@ impl CompositeRenderer {
         }
         // Footer with rolling stats.
         let footer_y0 = u32_to_i32_sat(self.header_h.saturating_add(self.src_h)).saturating_add(8);
-        self.draw_text(24, footer_y0, 22.0, footer, (200, 220, 240));
+        self.text.draw(
+            &mut self.out,
+            canvas,
+            (24, footer_y0),
+            22.0,
+            footer,
+            (200, 220, 240),
+        );
         &self.out
-    }
-
-    fn draw_text(&mut self, x0: i32, y0: i32, size_px: f32, text: &str, color: (u8, u8, u8)) {
-        let scale = PxScale::from(size_px);
-        let scaled = self.font.as_scaled(scale);
-        let ascent = scaled.ascent();
-        let mut caret_x = i32_as_f32(x0);
-        let baseline = i32_as_f32(y0) + ascent;
-        for ch in text.chars() {
-            let g = self.font.glyph_id(ch);
-            let glyph = g.with_scale(scale);
-            let advance = self.font.as_scaled(scale).h_advance(g);
-            if let Some(outlined) = self.font.outline_glyph(glyph.clone()) {
-                let bounds = outlined.px_bounds();
-                let ox = caret_x + bounds.min.x;
-                let oy = baseline + bounds.min.y;
-                let canvas_w = self.canvas_w;
-                let canvas_h = self.canvas_h;
-                outlined.draw(|dx, dy, cov| {
-                    // As `SourceRenderer::draw_text`: `dx`/`dy` are small
-                    // non-negative glyph-local offsets; `ox`/`oy` are the
-                    // glyph's screen origin.
-                    let px = f32_as_i32_sat(ox).saturating_add(u32_to_i32_sat(dx));
-                    let py = f32_as_i32_sat(oy).saturating_add(u32_to_i32_sat(dy));
-                    let a = cov.min(1.0);
-                    if let Some(i) = pixel_offset(i64::from(px), i64::from(py), canvas_w, canvas_h)
-                    {
-                        write_pixel(&mut self.out, i, color, a);
-                    }
-                });
-            }
-            caret_x += advance;
-        }
     }
 }
 
@@ -971,7 +949,10 @@ fn format_footer(
 /// per-frame packet size (real streaming stacks bundle SPS+PPS+IDR
 /// together on keyframes). Kept for downstream callers wanting a
 /// finer-grained throttle.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "kept for callers wanting a per-NAL throttle; the demo pushes whole access units"
+)]
 fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let starts = find_start_codes(nalus);
@@ -996,7 +977,7 @@ fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "only reached through split_annex_b")]
 fn find_start_codes(bytes: &[u8]) -> Vec<usize> {
     let mut out = Vec::new();
     let mut i: usize = 0;
@@ -1112,13 +1093,13 @@ impl Pipeline {
         let recv_decoder = H264Decoder::new();
         let shim = build_shim(args);
 
-        let source_renderer = SourceRenderer::new(args.width, args.height)?;
+        let source_renderer = SourceRenderer::new(args.width, args.height);
         let composite = CompositeRenderer::new(
             args.width,
             args.height,
             args.latency_ms,
             args.throughput_kbps,
-        )?;
+        );
         let (canvas_w, canvas_h) = composite.dimensions();
 
         // Encoder for the side-by-side canvas: bigger canvas → bigger

@@ -10,7 +10,7 @@ apps/browser/src/address_overlay.rs pixel_const 5
 apps/browser/src/browser_tab_strip.rs pixel_const 4
 apps/browser/src/browser_tab_strip.rs taffy_length 4
 apps/browser/src/browser_tabs.rs taffy_length 1
-apps/browser/src/browser_widget.rs pixel_const 7
+apps/browser/src/browser_widget.rs pixel_const 6
 apps/browser/src/history.rs pixel_const 1
 apps/browser/src/settings.rs pixel_const 3
 apps/calculator/src/app.rs pixel_const 5

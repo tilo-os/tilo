@@ -127,7 +127,7 @@ impl Topbar {
         }
 
         let colors = &theme.tokens.colors;
-        fill_rect(scene, transform, colors.surfaces.base, self.rect);
+        fill_rect(scene, transform, self.rect, colors.surfaces.base);
         // Bar role: one chrome hairline under the app bar (HIG §9.5).
         scene.fill(
             Fill::NonZero,
@@ -309,7 +309,7 @@ impl Topbar {
             segmented_x0 - 10.0,
             center_y + new_half_height,
         );
-        fill_round(scene, transform, colors.accent[5], new_event, 9.0);
+        fill_round(scene, transform, new_event, 9.0, colors.accent[5]);
         if self.compact() {
             draw_plus(scene, transform, colors.on_accent(4.5), new_event.center());
         } else {

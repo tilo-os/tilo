@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rand::RngCore as _;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand::Rng as _;
 
 use crate::{
     BrokeredLaunch, CapabilityBroker, LaunchError, LaunchRequest, PortalDocumentAccess,
@@ -136,7 +137,7 @@ impl PortalDocumentStore {
             }
         }
         let mut random = [0_u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut random);
+        UnwrapErr(SysRng).fill_bytes(&mut random);
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         let handle = format!("doc-{}-{}", hex::encode(random), sequence);
         let document = Arc::new(StoredDocument {

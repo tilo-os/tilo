@@ -32,7 +32,7 @@ fn verify_restored(doc: &AutoCommit) {
     assert_eq!(s.name, "Selected theme");
     assert_eq!(s.accent, [12, 34, 56]);
     assert_eq!(
-        crate::doc::get_str(doc, &ROOT, "active").as_deref(),
+        ui::doc::read_str(doc, &ROOT, "active").as_deref(),
         Some("saved-applied-identity")
     );
 }
@@ -171,7 +171,7 @@ fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
             assert!(state.doc.get_change_by_hash(&selected).is_some());
             assert_eq!(std::fs::read(&store).unwrap(), bytes);
             assert_eq!(
-                crate::doc::get_str(&state.doc, &ROOT, "active").as_deref(),
+                ui::doc::read_str(&state.doc, &ROOT, "active").as_deref(),
                 Some("preserved-applied")
             );
         }
@@ -210,7 +210,7 @@ fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
         state.record_committed_action(before.clone(), None, None);
         assert_eq!(state.doc.get_changes(&before).len(), 1);
         assert_eq!(
-            crate::doc::get_text(&state.doc, &ROOT, "catalog").as_deref(),
+            ui::doc::read_text(&state.doc, &ROOT, "catalog").as_deref(),
             Some(legacy.as_str())
         );
         let catalog = crate::doc::load_catalog(&state.doc, &ROOT).unwrap();

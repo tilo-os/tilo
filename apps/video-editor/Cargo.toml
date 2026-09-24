@@ -16,6 +16,7 @@ path = "src/main.rs"
 # Media import uses the shared host file chooser (`ui::portal`) in every build;
 # it is independent of the GStreamer decode/export features.
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 # `gpu-video` brings in the planar upload + YUV shader the compositor
 # paints hardware-decoded frames with. Without it every decoded frame
 # would have to be converted to RGBA on the CPU first.
@@ -45,7 +46,6 @@ gstreamer-app = { version = "0.24", optional = true }
 [dev-dependencies]
 serial_test.workspace = true
 # The compose probe example writes rendered frames for inspection.
-png.workspace = true
 
 [features]
 # Shared-runtime build, as the rest of the fleet has adopted: links the

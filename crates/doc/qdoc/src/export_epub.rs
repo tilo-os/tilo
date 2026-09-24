@@ -1,3 +1,4 @@
+use crate::codecs::xml_escape::{escape_attr_quotes, escape_text};
 use crate::export::{BlockKind, ExportBlock, detect_image_media, walk_blocks};
 use crate::snapshot::AttrVal;
 use crate::{BlockView, DocSnapshot};
@@ -266,7 +267,7 @@ fn is_h1(b: &BlockView) -> bool {
 }
 
 /// Render one chapter as a complete XHTML document. Block markup comes
-/// from `qdoc-html` (fragment mode); we then anchor headings, fix void
+/// from `export_html` (fragment mode); we then anchor headings, fix void
 /// elements, and re-point image `data:` URIs to packaged hrefs.
 fn render_chapter_xhtml(
     snap: &DocSnapshot,
@@ -276,7 +277,7 @@ fn render_chapter_xhtml(
 ) -> String {
     let mut body = String::new();
     for (frag, block) in anchored {
-        // Render this block via qdoc-html by handing it a one-block
+        // Render this block via export_html by handing it a one-block
         // snapshot sharing blobs/styles, since its fragment renderer takes
         // whole snapshots.
         let mut sub = empty_like(snap);
@@ -317,7 +318,7 @@ fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
     }
 }
 
-/// Replace the inline `data:` URI `qdoc-html` emits for an image block
+/// Replace the inline `data:` URI `export_html` emits for an image block
 /// with the packaged file href (relative to the chapter doc, beside
 /// `images/` under OEBPS). Non-image fragments pass through unchanged.
 fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String {
@@ -330,7 +331,7 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
     let Some(item) = images.iter().find(|it| &it.blob_hash == hash) else {
         return frag.to_string();
     };
-    // qdoc-html emits `src="data:<mime>;base64,<...>"`; locate `src="`
+    // export_html emits `src="data:<mime>;base64,<...>"`; locate `src="`
     // and replace up to the closing quote. `"src=\""` is pure ASCII, so
     // `val_start` always lands on a UTF-8 char boundary — `.get()` still
     // guards it rather than trusting that.
@@ -374,7 +375,7 @@ fn inject_id(frag: &str, id: &str) -> String {
         };
         let mut out = String::with_capacity(frag.len().saturating_add(id.len()).saturating_add(8));
         out.push_str(head);
-        let _ = write!(out, " id=\"{}\"", escape_xml_attr(id));
+        let _ = write!(out, " id=\"{}\"", escape_attr_quotes(id));
         out.push_str(tail);
         return out;
     }
@@ -458,7 +459,7 @@ fn wrap_xhtml(title: &str, body: &str) -> String {
 {}</body>
 </html>
 "#,
-        escape_xml_text(title),
+        escape_text(title),
         body
     )
 }
@@ -490,8 +491,8 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
         let _ = writeln!(
             list,
             "    <li><a href=\"{}\">{}</a></li>",
-            escape_xml_attr(href),
-            escape_xml_text(&title)
+            escape_attr_quotes(href),
+            escape_text(&title)
         );
         list.push_str("  </ol>\n");
     } else {
@@ -512,8 +513,8 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
 </body>
 </html>
 "#,
-        escape_xml_text(&title),
-        escape_xml_text(&title),
+        escape_text(&title),
+        escape_text(&title),
         list
     )
 }
@@ -601,8 +602,8 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
         let _ = write!(
             out,
             "<li><a href=\"{}\">{}</a>",
-            escape_xml_attr(&node.link),
-            escape_xml_text(&node.label)
+            escape_attr_quotes(&node.link),
+            escape_text(&node.label)
         );
         if node.children.is_empty() {
             out.push_str("</li>\n");
@@ -643,37 +644,29 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
     let _ = writeln!(
         metadata,
         "    <dc:identifier id=\"book-id\">{}</dc:identifier>",
-        escape_xml_text(&identifier)
+        escape_text(&identifier)
     );
-    let _ = writeln!(
-        metadata,
-        "    <dc:title>{}</dc:title>",
-        escape_xml_text(&title)
-    );
+    let _ = writeln!(metadata, "    <dc:title>{}</dc:title>", escape_text(&title));
     let _ = writeln!(
         metadata,
         "    <dc:language>{}</dc:language>",
-        escape_xml_text(&language)
+        escape_text(&language)
     );
     if let Some(a) = &author {
-        let _ = writeln!(
-            metadata,
-            "    <dc:creator>{}</dc:creator>",
-            escape_xml_text(a)
-        );
+        let _ = writeln!(metadata, "    <dc:creator>{}</dc:creator>", escape_text(a));
     }
     if let Some(subject) = snap.properties.get("subject") {
         let _ = writeln!(
             metadata,
             "    <dc:subject>{}</dc:subject>",
-            escape_xml_text(subject)
+            escape_text(subject)
         );
     }
     // EPUB 3 requires a dcterms:modified meta.
     let _ = writeln!(
         metadata,
         "    <meta property=\"dcterms:modified\">{}</meta>",
-        escape_xml_text(&normalize_modified(&modified))
+        escape_text(&normalize_modified(&modified))
     );
 
     // Manifest: nav + chapters + images.
@@ -685,16 +678,16 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         let _ = writeln!(
             manifest,
             "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>",
-            escape_xml_attr(&ch.id),
-            escape_xml_attr(&ch.href)
+            escape_attr_quotes(&ch.id),
+            escape_attr_quotes(&ch.href)
         );
     }
     for img in images {
         let _ = writeln!(
             manifest,
             "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>",
-            escape_xml_attr(&img.id),
-            escape_xml_attr(&img.href),
+            escape_attr_quotes(&img.id),
+            escape_attr_quotes(&img.href),
             img.media_type
         );
     }
@@ -705,7 +698,7 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         let _ = writeln!(
             spine,
             "    <itemref idref=\"{}\"/>",
-            escape_xml_attr(&ch.id)
+            escape_attr_quotes(&ch.id)
         );
     }
 
@@ -720,7 +713,7 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
 {spine}  </spine>
 </package>
 "#,
-        lang = escape_xml_attr(&language),
+        lang = escape_attr_quotes(&language),
         metadata = metadata,
         manifest = manifest,
         spine = spine,
@@ -767,32 +760,5 @@ fn stable_id(snap: &DocSnapshot, title: &str) -> String {
 
 // ---- XML escaping -----------------------------------------------------------
 
-/// Escape text destined for XML element content.
-fn escape_xml_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Escape a value destined for a double-quoted XML attribute.
-fn escape_xml_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
+#[cfg(test)]
+mod tests;

@@ -148,15 +148,7 @@ impl Rendered {
         };
         std::fs::create_dir_all(&dir).unwrap();
         let path = format!("{dir}/{name}.png");
-        let mut png = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut png, CANVAS_W, CANVAS_H);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut w = enc.write_header().unwrap();
-            w.write_image_data(&self.rgba).unwrap();
-        }
-        std::fs::write(&path, png).unwrap();
+        tilo_ui::png::write_rgba8(&path, CANVAS_W, CANVAS_H, &self.rgba).unwrap();
         eprintln!("wrote {path}");
     }
 }

@@ -14,8 +14,9 @@
 //! on the user's current preference (or the sample default under `--shots`).
 
 use std::collections::HashMap;
+use ui::doc::read_str;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -209,17 +210,6 @@ impl RegionPane {
         crate::widgets::cards(vec![formats, preview, explainer])
     }
 
-    /// Read a dropdown key and, if it matches a known option, return it.
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn draft_key(canonical: &str) -> String {
         format!("{canonical}.edit")
     }
@@ -240,9 +230,9 @@ impl RegionPane {
         key: &str,
         current: &str,
     ) -> (String, bool) {
-        let canonical = Self::read_str(state, root, key).unwrap_or_else(|| current.to_string());
+        let canonical = read_str(state, root, key).unwrap_or_else(|| current.to_string());
         let draft_key = Self::draft_key(key);
-        let draft = Self::read_str(state, root, &draft_key).unwrap_or_else(|| canonical.clone());
+        let draft = read_str(state, root, &draft_key).unwrap_or_else(|| canonical.clone());
         if canonical != current {
             let _ = state.put(root, draft_key, canonical.as_str());
             (canonical, true)
@@ -495,10 +485,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(
-            RegionPane::read_str(&doc, &root, CURRENCY_KEY).as_deref(),
-            Some("EUR")
-        );
+        assert_eq!(read_str(&doc, &root, CURRENCY_KEY).as_deref(), Some("EUR"));
     }
 
     #[test]

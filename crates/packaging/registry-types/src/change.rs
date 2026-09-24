@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use crate::entry::{RegistryVersion, sign_entry};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn change_request_json_roundtrip() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let req = sign_change_request(EntryAction::Add, sample_entry(), &key);
         let s = serde_json::to_string(&req).unwrap();
         let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn sign_change_request_also_signs_entry() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = sample_entry();
         // Real workflow: publisher pubkey on the entry matches
         // the signing key; otherwise verify_entry_signature
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(m1, m2);
         // But the entry sig hex used to be an assertion tool — resign
         // it with a fresh key and prove that too.
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         sign_entry(&mut e, &key);
         let m3 = change_signing_message(EntryAction::Update, &e);
         assert_eq!(m1, m3);

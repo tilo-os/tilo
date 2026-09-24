@@ -73,6 +73,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
+    "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
 }
 # Control-plane files are validated by tests that read or execute the production
 # file in the mandatory repository-policy suite. A file missing from this exact
@@ -88,6 +89,10 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/build-kernel.yml": (
         "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
+    ),
+    ".forgejo/workflows/dev-disk.yml": (
+        "tools/tests/test_dev_disk_workflow.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
     ".forgejo/workflows/check.yml": (

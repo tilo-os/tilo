@@ -999,12 +999,14 @@ impl ActionPalette {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn take_scoped_navigation(
         &mut self,
     ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
         self.pending_nav.take()
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
         self.index
             .values()
@@ -1319,6 +1321,7 @@ impl ActionPalette {
         );
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn layout_with_text(
         &mut self,
         theme: &Theme,

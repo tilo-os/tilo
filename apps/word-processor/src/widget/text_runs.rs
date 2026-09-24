@@ -77,15 +77,7 @@ pub(super) fn char_baseline(index: usize, marks: &[MarkSpan]) -> BaselineShift {
 }
 
 pub(super) fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() != 6 || !hex.is_ascii() {
-        return None;
-    }
-    Some([
-        u8::from_str_radix(hex.get(0..2)?, 16).ok()?,
-        u8::from_str_radix(hex.get(2..4)?, 16).ok()?,
-        u8::from_str_radix(hex.get(4..6)?, 16).ok()?,
-    ])
+    ui::color::parse_hex(value).map(ui::color::to_rgb8)
 }
 
 pub(super) fn block_runs(block: &BlockView) -> BlockRuns {

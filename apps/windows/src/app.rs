@@ -3264,10 +3264,17 @@ mod tests {
         let path = dir.path().join("selected-installer.msi");
         std::fs::write(&path, b"accepted descriptor bytes").unwrap();
         let source = File::open(&path).unwrap();
-        app.portal_rx = Some(ui::portal::inject_open_file_for_test(
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_open_file(OpenFileOutcome::Opened(ui::portal::OpenedFile::new(
             source,
             "display-name.msi",
-        ));
+        )));
+        app.install_signal.set(true);
+        ui::host::scoped(&services, || app.apply_control_signals());
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Add a Windows application"
+        );
         // Replacing the old pathname before the UI drains it must not affect
         // the exact descriptor which the provider receives.
         std::fs::remove_file(&path).unwrap();
@@ -3303,11 +3310,23 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("document.bin");
         std::fs::write(&path, b"portal document bytes").unwrap();
-        app.document_target = Some(entry_id.clone());
-        app.document_portal_rx = Some(ui::portal::inject_open_file_for_test(
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_open_file(OpenFileOutcome::Opened(ui::portal::OpenedFile::new(
             File::open(path).unwrap(),
             "document.bin",
-        ));
+        )));
+        let payload = serde_json::to_vec(&[entry_id.as_str(), ""]).unwrap();
+        assert!(
+            ui::host::scoped(&services, || {
+                app.invoke_portal_operation("windows.open-file", &payload)
+            })
+            .unwrap()
+        );
+        assert_eq!(app.document_target.as_deref(), Some(entry_id.as_str()));
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Open a file in Windows"
+        );
 
         app.drain_document_portal();
 

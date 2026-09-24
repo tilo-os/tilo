@@ -142,7 +142,7 @@ not what the caller is allowed to reach. Standard library only, no SDK.
 Start a compositor, then register the shim:
 
 ```bash
-export TILO_TEST_CONTROL=/tmp/tilo.sock
+export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/test-control.sock
 cargo run --bin shell -- --backend headless &
 
 # Verify the shim reaches the compositor before putting a model behind it:

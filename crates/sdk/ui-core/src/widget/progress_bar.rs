@@ -12,7 +12,7 @@
 //! struct itself, mutated by the parent via `set_progress`. The animation
 //! reference `start` is captured at construction and is the only piece of
 //! frame-derived state the widget keeps.
-use std::time::Instant;
+use crate::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -69,7 +69,7 @@ impl ProgressBar {
             progress: progress.clamp(0.0, 1.0),
             indeterminate: false,
             rect: Rect::ZERO,
-            start: Instant::now(),
+            start: crate::time::now(),
             dirty: true,
             reduce_motion: false,
             last_segment: Rect::ZERO,
@@ -87,7 +87,7 @@ impl ProgressBar {
             progress: 0.0,
             indeterminate: true,
             rect: Rect::ZERO,
-            start: Instant::now(),
+            start: crate::time::now(),
             dirty: true,
             reduce_motion: false,
             last_segment: Rect::ZERO,
@@ -637,12 +637,12 @@ mod tests {
 
     #[test]
     fn indeterminate_wrap_damage_is_available_immediately_after_draw() {
-        use std::time::Duration;
+        use crate::time::Duration;
 
         let mut bar = ProgressBar::indeterminate();
         bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
         bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
-        bar.start = Instant::now()
+        bar.start = crate::time::now()
             .checked_sub(Duration::from_millis(300))
             .expect("the test duration is far shorter than the monotonic clock");
         bar.dirty = false;
@@ -674,11 +674,11 @@ mod tests {
     /// proving the freeze is the reduced-motion path, not a no-op.
     #[test]
     fn reduce_motion_freezes_the_indeterminate_segment() {
-        use std::time::{Duration, Instant};
+        use crate::time::Duration;
         let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
         // A quarter-sweep backdate so the moving segment is plainly off the
         // resting position (a full sweep would alias back to phase 0).
-        let backdate = Instant::now()
+        let backdate = crate::time::now()
             .checked_sub(one_sweep / 4)
             .expect("process has been running longer than a quarter sweep");
 

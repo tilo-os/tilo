@@ -3,7 +3,7 @@ use super::*;
 impl VideoEditorApp {
     pub(super) fn draw_bin_header(&self, ctx: &mut BinPaintCtx<'_>, r: &Regions) {
         let c = &ctx.theme.tokens.colors;
-        fill_rect(ctx.scene, ctx.transform, c.surfaces.raised, r.bin);
+        fill_rect(ctx.scene, ctx.transform, r.bin, c.surfaces.raised);
         stroke_line(
             ctx.scene,
             ctx.transform,
@@ -83,7 +83,7 @@ impl VideoEditorApp {
             thumb_y0 + thumb_height,
         );
         let base = clip_color(ctx.theme, media.palette);
-        fill_rrect(ctx.scene, ctx.transform, darken(base, 0.25), thumb, 5.0);
+        fill_round(ctx.scene, ctx.transform, thumb, 5.0, darken(base, 0.25));
         if media.kind.is_visual() {
             if let Some(thumbnail) = self.thumbnails.get(media_id) {
                 blit_thumb(ctx.scene, ctx.transform, thumbnail, thumb, 5.0);
@@ -91,7 +91,7 @@ impl VideoEditorApp {
                 for index in 0..3 {
                     let x = thumb.x0 + 6.0 + f64::from(index) * 18.0;
                     let block = Rect::new(x, thumb.y0 + 6.0, x + 14.0, thumb.y1 - 6.0);
-                    fill_rrect(ctx.scene, ctx.transform, lighten(base, 0.18), block, 2.0);
+                    fill_round(ctx.scene, ctx.transform, block, 2.0, lighten(base, 0.18));
                 }
             }
         } else {
@@ -228,19 +228,19 @@ impl VideoEditorApp {
             let width = f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 * ctx.scale;
             let top = sub_top - 1.5;
             let chip = Rect::new(x0, top, x0 + width, sub_top + sub_h + 1.5);
-            fill_rrect(
+            fill_round(
                 ctx.scene,
                 ctx.transform,
+                chip,
+                4.0,
                 with_alpha(colors.semantic.warning, 0.20),
-                chip,
-                4.0,
             );
-            stroke_rrect(
+            stroke_round(
                 ctx.scene,
                 ctx.transform,
-                with_alpha(colors.semantic.warning, 0.65),
                 chip,
                 4.0,
+                with_alpha(colors.semantic.warning, 0.65),
                 1.0,
             );
             let baseline = text_baseline(chip, 10.5, ctx.text);
@@ -360,7 +360,7 @@ impl VideoEditorApp {
             // outcome — a portal refusal is tinted as a refusal even though
             // its wording looks nothing like a probe's.
             let tint = notice.level.tint(theme);
-            fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
+            fill_rect(scene, tf, strip, with_alpha(tint, 0.16));
             stroke_line(
                 scene,
                 tf,
@@ -403,8 +403,8 @@ impl VideoEditorApp {
             fill_rect(
                 scene,
                 tf,
-                with_alpha(c.accent[5], 0.16),
                 Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+                with_alpha(c.accent[5], 0.16),
             );
             let t = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
             let x = self.time_to_x(t, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
@@ -415,8 +415,8 @@ impl VideoEditorApp {
             let (w, h) = (154.0, 30.0);
             let gr = Rect::new(p.x + 12.0, p.y - h / 2.0, p.x + 12.0 + w, p.y + h / 2.0);
             let ghost_fill = clip_color(theme, m.palette);
-            fill_rrect(scene, tf, with_alpha(ghost_fill, 0.92), gr, 6.0);
-            stroke_rrect(scene, tf, with_alpha(c.border_focus, 0.9), gr, 6.0, 1.0);
+            fill_round(scene, tf, gr, 6.0, with_alpha(ghost_fill, 0.92));
+            stroke_round(scene, tf, gr, 6.0, with_alpha(c.border_focus, 0.9), 1.0);
             let ghost_label = elide_w(&m.name, (gr.width() - 20.0) as f32, tr);
             let ghost_y = text_baseline(gr, 12.0, tr);
             text_w(

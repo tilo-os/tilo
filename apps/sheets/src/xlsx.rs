@@ -1,20 +1,33 @@
+//! Spreadsheet interchange: the [`SheetTable`] Sheets imports and exports, and
 //! Excel `.xlsx` import and export.
 //!
-//! Reading uses [`calamine`], the standard pure-Rust reader; writing uses
-//! [`rust_xlsxwriter`]. The exchange unit is the [`SheetTable`] — a dense
-//! grid of cells, each carrying the value the user sees plus enough format
-//! information to reproduce basic number/currency/percent/date styling on
-//! the far side. A cell that holds a **formula** carries the formula text
-//! too, so `=SUM(A1:A3)` round-trips through the OOXML `<f>` element (and the
-//! ODF `table:formula` attribute on the `.ods` path) instead of collapsing to
-//! its last computed value — a re-import restores the live formula.
+//! Both package formats go through qdoc's codecs ([`qdoc::XlsxCodec`] here,
+//! [`qdoc::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
+//! shared zip-bomb and DTD/XXE bounds into plain cells, never through a
+//! dense grid, and only then materialised — within
+//! [`MAX_MATERIALIZED_SLOTS`] — as a table. The exchange unit is a dense grid
+//! of cells, each carrying the value the user sees plus enough format
+//! information to reproduce number/currency/percent/date styling on the far
+//! side. A cell that holds a **formula** carries the formula text too, so
+//! `=SUM(A1:A3)` round-trips through the OOXML `<f>` element (and the ODF
+//! `table:formula` attribute on the `.ods` path) instead of collapsing to its
+//! last computed value — a re-import restores the live formula.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use calamine::{Data, Range, Reader};
-use rust_xlsxwriter::{Format, Formula, Workbook};
+use qdoc::codecs::xlsx::{date_style_refs, number_format_styles};
+use qdoc::sheet::a1::{make_ref, parse_ref};
+use qdoc::{CellInput, CellType, CellView, ParsedSheet, SheetView, WorkbookSnapshot, XlsxCodec};
 
-use crate::model::{CellFormat, CellValue, format_value};
+use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
+
+/// The most grid slots (rows plus the cells of every row, up to its last
+/// populated column) one imported tab may materialise into a [`SheetTable`].
+/// A package can name a cell anywhere in the 16384 × 1048576 grid in a few
+/// bytes; this keeps a sparse, far-flung sheet from turning into gigabytes of
+/// empty slots. CSV import applies the same bound.
+pub const MAX_MATERIALIZED_SLOTS: usize = 1_000_000;
 
 /// One exported/imported cell: the canonical raw to store (numbers as plain
 /// numerics, text as-is), the format to render it with, and — when the cell
@@ -45,7 +58,7 @@ impl ImportedCell {
 #[derive(Clone, Debug, Default)]
 pub struct SheetTable {
     pub name: String,
-    /// `rows[r][c]` — ragged rows are tolerated on read.
+    /// `rows[r][c]` — rows may be ragged.
     pub rows: Vec<Vec<Option<ImportedCell>>>,
 }
 
@@ -77,7 +90,7 @@ impl SheetTable {
                     // rendering otherwise). For a formula this is the cached
                     // result; the formula itself rides in `formula`.
                     let stored_raw = match &v {
-                        CellValue::Number(n) => crate::model::format_number_general(*n),
+                        CellValue::Number(n) => format_number_general(*n),
                         _ if is_formula => v.to_plain_string(),
                         _ => raw_s.clone(),
                     };
@@ -102,67 +115,129 @@ impl SheetTable {
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be opened as a valid `.xlsx`
-/// workbook, or if a worksheet's cell or formula range cannot be read.
+/// Returns an error if the file can't be read, isn't a valid `.xlsx` package
+/// (including one over the zip-bomb bounds or carrying a DTD), or a tab
+/// spans more than [`MAX_MATERIALIZED_SLOTS`].
 pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let mut wb: calamine::Xlsx<_> = calamine::open_workbook(path)?;
-    read_calamine(&mut wb)
+    let parsed = XlsxCodec::parse(&std::fs::read(path)?)?;
+    // Excel stores dates as serial numbers; the cell's number format is the
+    // only sign one is a date.
+    let dates = parsed
+        .preserved
+        .get("xl/styles.xml")
+        .map(|styles| date_style_refs(styles))
+        .unwrap_or_default();
+    tables_from_parsed(parsed.sheets, &dates)
 }
 
-/// Shared reader over any calamine workbook (xlsx or ods). Values come from
-/// the worksheet range; a parallel formula range supplies each cell's live
-/// formula (the OOXML `<f>` / ODF `table:formula`) so formulas survive import.
-pub(crate) fn read_calamine<R: Reader<std::io::BufReader<std::fs::File>>>(
-    wb: &mut R,
-) -> anyhow::Result<Vec<SheetTable>>
-where
-    R::Error: std::error::Error + Send + Sync + 'static,
-{
-    let mut tables = Vec::new();
-    let names = wb.sheet_names();
-    for name in names {
-        let range = wb.worksheet_range(&name)?;
-        // Formulas are optional: a value-only workbook (or a reader hiccup)
-        // just yields an empty formula range, so plain cells still import.
-        let formulas: Range<String> = wb
-            .worksheet_formula(&name)
-            .unwrap_or_else(|_| Range::empty());
-        let origin = range.start().unwrap_or((0, 0));
-        let mut rows = Vec::new();
-        for (r, row) in range.rows().enumerate() {
-            let mut out_row = Vec::new();
-            for (c, data) in row.iter().enumerate() {
-                // Absolute sheet coordinates so the (independently-bounded)
-                // formula range lines up with the value cell.
-                let abs = (origin.0 + r as u32, origin.1 + c as u32);
-                let formula = formulas
-                    .get_value(abs)
-                    .filter(|f| !f.is_empty())
-                    .map(|f| normalize_read_formula(f));
-                let mut cell = cell_from_data(data);
-                if let Some(f) = formula {
-                    cell = Some(match cell {
-                        Some(mut ic) => {
-                            ic.formula = Some(f);
-                            ic
-                        }
-                        None => ImportedCell {
-                            raw: String::new(),
-                            format: CellFormat::General,
-                            formula: Some(f),
-                        },
-                    });
-                }
-                out_row.push(cell);
+/// Materialise parsed tabs as tables, turning each cell into what Sheets
+/// stores: numbers in canonical form (`Date` when their style is in
+/// `date_styles`), text, `TRUE`/`FALSE` booleans, and formulas normalised to
+/// `=`-prefixed A1 form.
+pub(crate) fn tables_from_parsed(
+    sheets: Vec<ParsedSheet>,
+    date_styles: &BTreeSet<String>,
+) -> anyhow::Result<Vec<SheetTable>> {
+    sheets
+        .into_iter()
+        .map(|sheet| {
+            let mut placed: BTreeMap<(u32, u32), ImportedCell> = BTreeMap::new();
+            for (reference, input) in sheet.cells {
+                let Some((col, row)) = parse_ref(&reference) else {
+                    continue;
+                };
+                match imported_cell(input, date_styles) {
+                    Some(cell) => placed.insert((row, col), cell),
+                    None => placed.remove(&(row, col)),
+                };
             }
-            rows.push(out_row);
-        }
-        tables.push(SheetTable { name, rows });
-    }
-    Ok(tables)
+            let height = placed.keys().map(|(row, _)| *row).max().unwrap_or(0);
+            let mut widths = vec![0u32; height as usize];
+            for (row, col) in placed.keys() {
+                if let Some(width) = widths.get_mut(*row as usize - 1) {
+                    *width = (*width).max(*col);
+                }
+            }
+            let slots = widths
+                .iter()
+                .map(|w| *w as usize)
+                .fold(height as usize, usize::saturating_add);
+            if slots > MAX_MATERIALIZED_SLOTS {
+                anyhow::bail!(
+                    "tab {:?} spans {slots} cells, above the {MAX_MATERIALIZED_SLOTS} import limit",
+                    sheet.name
+                );
+            }
+            let mut rows: Vec<Vec<Option<ImportedCell>>> =
+                widths.iter().map(|w| vec![None; *w as usize]).collect();
+            for ((row, col), cell) in placed {
+                if let Some(slot) = rows
+                    .get_mut(row as usize - 1)
+                    .and_then(|cells| cells.get_mut(col as usize - 1))
+                {
+                    *slot = Some(cell);
+                }
+            }
+            Ok(SheetTable {
+                name: sheet.name,
+                rows,
+            })
+        })
+        .collect()
 }
 
-/// Normalize a formula string as reported by the reader into our A1 form
+/// One parsed cell as Sheets stores it, or `None` for a blank (a style-only
+/// cell carries nothing Sheets keeps).
+fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<ImportedCell> {
+    let formula = input
+        .formula
+        .as_deref()
+        .filter(|f| !f.is_empty())
+        .map(normalize_read_formula);
+    let value = match input.cell_type {
+        CellType::Number => match input.value.trim().parse::<f64>() {
+            Ok(n) => {
+                let is_date = input
+                    .style
+                    .as_ref()
+                    .is_some_and(|style| date_styles.contains(style));
+                let format = if is_date {
+                    CellFormat::Date(DateStyle::Iso)
+                } else {
+                    CellFormat::General
+                };
+                Some(ImportedCell::value(format_number_general(n), format))
+            }
+            Err(_) => (!input.value.is_empty())
+                .then(|| ImportedCell::value(input.value, CellFormat::Text)),
+        },
+        CellType::Text | CellType::Error => {
+            Some(ImportedCell::value(input.value, CellFormat::Text))
+        }
+        CellType::Bool => {
+            let truthy = input.value.eq_ignore_ascii_case("true") || input.value == "1";
+            Some(ImportedCell::value(
+                if truthy { "TRUE" } else { "FALSE" }.into(),
+                CellFormat::Boolean,
+            ))
+        }
+        CellType::Empty => None,
+    };
+    match (value, formula) {
+        (Some(mut cell), Some(formula)) => {
+            cell.formula = Some(formula);
+            Some(cell)
+        }
+        (None, Some(formula)) => Some(ImportedCell {
+            raw: String::new(),
+            format: CellFormat::General,
+            formula: Some(formula),
+        }),
+        (value, None) => value,
+    }
+}
+
+/// Normalize a formula string as stored in the file into our A1 form
 /// (`=SUM(A1:A3)`):
 ///   * XLSX `<f>` bodies arrive without the leading `=` and use A1 refs, so we
 ///     just prepend `=`.
@@ -218,103 +293,125 @@ fn strip_ods_bracket_refs(body: &str) -> String {
     out
 }
 
-/// Map a calamine cell to our import cell, inferring a sensible format.
-fn cell_from_data(data: &Data) -> Option<ImportedCell> {
-    match data {
-        Data::Empty => None,
-        Data::Int(i) => Some(ImportedCell::value(i.to_string(), CellFormat::General)),
-        Data::Float(f) => Some(ImportedCell::value(
-            crate::model::format_number_general(*f),
-            CellFormat::General,
-        )),
-        Data::String(s) => Some(ImportedCell::value(s.clone(), CellFormat::Text)),
-        Data::Bool(b) => Some(ImportedCell::value(
-            if *b { "TRUE".into() } else { "FALSE".into() },
-            CellFormat::Boolean,
-        )),
-        Data::DateTime(dt) => Some(ImportedCell::value(
-            // calamine's serial matches the Excel epoch we use.
-            crate::model::format_number_general(dt.as_f64()),
-            CellFormat::Date(crate::model::DateStyle::Iso),
-        )),
-        Data::DateTimeIso(s) | Data::DurationIso(s) => {
-            Some(ImportedCell::value(s.clone(), CellFormat::Text))
-        }
-        Data::Error(e) => Some(ImportedCell::value(format!("#{e:?}"), CellFormat::Text)),
+/// The value half of an exported cell: a finite number keeps its numeric
+/// type, anything else is text; a formula's empty cached result stays empty.
+fn cached_value(raw: &str) -> (String, CellType) {
+    if raw.is_empty() {
+        (String::new(), CellType::Empty)
+    } else if let Some(n) = finite_number(raw) {
+        (n.to_string(), CellType::Number)
+    } else {
+        (raw.to_string(), CellType::Text)
+    }
+}
+
+fn finite_number(raw: &str) -> Option<f64> {
+    raw.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// How an exported cell is written, shared by both package formats: the
+/// formula (in the target's own syntax, via `formula`), a number carrying
+/// `number_style` for its format, a boolean, or text. Formulas and numbers
+/// take the style; a `Text`-formatted number stays text.
+pub(crate) fn export_cell(
+    cell: &ImportedCell,
+    col: u32,
+    row: u32,
+    number_style: Option<String>,
+    formula: impl Fn(&str) -> String,
+) -> CellView {
+    let (value, cell_type, style, formula) = if let Some(f) = &cell.formula {
+        let (value, cell_type) = cached_value(&cell.raw);
+        (value, cell_type, number_style, Some(formula(f)))
+    } else if let Some(n) = finite_number(&cell.raw)
+        .filter(|_| number_style.is_some() || !matches!(cell.format, CellFormat::Text))
+    {
+        (n.to_string(), CellType::Number, number_style, None)
+    } else if matches!(cell.format, CellFormat::Boolean) {
+        let value = if cell.raw.eq_ignore_ascii_case("true") {
+            "true"
+        } else {
+            "false"
+        };
+        (value.to_string(), CellType::Bool, None, None)
+    } else {
+        (cell.raw.clone(), CellType::Text, None, None)
+    };
+    CellView {
+        reference: make_ref(col, row),
+        col,
+        row,
+        value,
+        cell_type,
+        formula,
+        style,
+    }
+}
+
+/// A snapshot of `tables` for qdoc's exporters, each cell written by
+/// [`export_cell`] with the style `style_for` picks for its format.
+pub(crate) fn snapshot_of(
+    tables: &[SheetTable],
+    mut style_for: impl FnMut(CellFormat) -> Option<String>,
+    formula: impl Fn(&str) -> String,
+) -> WorkbookSnapshot {
+    let sheets = tables
+        .iter()
+        .enumerate()
+        .map(|(index, table)| {
+            let mut cells = Vec::new();
+            for (r, row) in (1u32..).zip(&table.rows) {
+                for (c, cell) in (1u32..).zip(row) {
+                    if let Some(cell) = cell {
+                        cells.push(export_cell(cell, c, r, style_for(cell.format), &formula));
+                    }
+                }
+            }
+            SheetView {
+                id: index.to_string(),
+                name: table.name.clone(),
+                cells,
+            }
+        })
+        .collect();
+    WorkbookSnapshot {
+        schema: qdoc::sheet::schema::SHEET_SCHEMA_ID.to_string(),
+        schema_version: qdoc::sheet::schema::SHEET_SCHEMA_VERSION,
+        sheets,
+        properties: BTreeMap::new(),
     }
 }
 
 /// Write one or more tables to an `.xlsx` file. Formula cells write a live
 /// `<f>` (with the last computed value cached); other numbers are written as
-/// numbers (with a number-format string for currency/percent/date) so the
-/// file opens cleanly in Excel/Sheets.
+/// numbers (with a number-format code for currency/percent/date/time) so the
+/// file opens cleanly in Excel/Sheets. Tab names Excel would refuse are made
+/// valid and unique.
 ///
 /// # Errors
 ///
-/// Returns an error if a cell fails to write (e.g. an invalid formula) or
-/// the workbook cannot be saved to `path`.
+/// Returns an error if the package can't be assembled or `path` can't be
+/// written.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
-    let mut book = Workbook::new();
-    let mut used_names = std::collections::HashSet::new();
-    for table in tables {
-        let sheet = book.add_worksheet();
-        sheet.set_name(unique_sheet_name(&table.name, &mut used_names))?;
-        for (r, row) in table.rows.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                let Some(cell) = cell else { continue };
-                let (row_i, col_i) = (r as u32, c as u16);
-                write_cell(sheet, row_i, col_i, cell)?;
-            }
-        }
+    let mut codes: Vec<&'static str> = Vec::new();
+    let snap = snapshot_of(
+        tables,
+        |format| {
+            let code = excel_number_format(format)?;
+            let index = codes.iter().position(|c| *c == code).unwrap_or_else(|| {
+                codes.push(code);
+                codes.len() - 1
+            });
+            // Style 0 is the default; style `i + 1` applies `codes[i]`.
+            Some((index + 1).to_string())
+        },
+        |formula| formula.strip_prefix('=').unwrap_or(formula).to_string(),
+    );
+    let mut preserved = BTreeMap::new();
+    if !codes.is_empty() {
+        preserved.insert("xl/styles.xml".to_string(), number_format_styles(&codes));
     }
-    book.save(path)?;
-    Ok(())
-}
-
-fn write_cell(
-    sheet: &mut rust_xlsxwriter::Worksheet,
-    row: u32,
-    col: u16,
-    cell: &ImportedCell,
-) -> anyhow::Result<()> {
-    use rust_xlsxwriter::IntoExcelData;
-    // Formula cells write a live `<f>` element; the last computed value is
-    // cached so a non-recalculating viewer still shows a result. The number
-    // format (currency/percent/date) rides along when the cell has one.
-    if let Some(f) = &cell.formula {
-        let mut formula = Formula::new(f.as_str());
-        if !cell.raw.is_empty() {
-            formula = formula.set_result(cell.raw.clone());
-        }
-        if let Some(code) = excel_number_format(cell.format) {
-            let fmt = Format::new().set_num_format(code);
-            sheet.write_formula_with_format(row, col, formula, &fmt)?;
-        } else {
-            sheet.write_formula(row, col, formula)?;
-        }
-        return Ok(());
-    }
-    // Numeric formats write a typed number with an Excel number-format code.
-    if let Ok(n) = cell.raw.parse::<f64>() {
-        if let Some(code) = excel_number_format(cell.format) {
-            let fmt = Format::new().set_num_format(code);
-            sheet.write_with_format(row, col, n, &fmt)?;
-            return Ok(());
-        }
-        // Plain number.
-        if !matches!(cell.format, CellFormat::Text) {
-            n.write(sheet, row, col)?;
-            return Ok(());
-        }
-    }
-    // Booleans.
-    if matches!(cell.format, CellFormat::Boolean) {
-        let b = cell.raw.eq_ignore_ascii_case("true");
-        sheet.write_boolean(row, col, b)?;
-        return Ok(());
-    }
-    // Fallback: write the rendered string.
-    sheet.write_string(row, col, &cell.raw)?;
+    std::fs::write(path, XlsxCodec::export_snapshot(&snap, &preserved)?)?;
     Ok(())
 }
 
@@ -337,42 +434,6 @@ fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
         CellFormat::Time(_) => "hh:mm",
         _ => return None,
     })
-}
-
-/// Excel sheet names can't exceed 31 chars or contain `[]:*?/\`.
-fn sanitize_sheet_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| if "[]:*?/\\".contains(c) { '_' } else { c })
-        .collect();
-    let trimmed = if cleaned.is_empty() {
-        "Sheet".to_string()
-    } else {
-        cleaned
-    };
-    trimmed.chars().take(31).collect()
-}
-
-/// Return a valid, workbook-unique Excel tab name. Excel treats tab names as
-/// case-insensitive, and two user names can also collapse to the same value
-/// after forbidden characters are replaced or the 31-character limit is
-/// applied. Export must not fail—or drop a tab—because of that collision.
-fn unique_sheet_name(requested: &str, used: &mut std::collections::HashSet<String>) -> String {
-    let base = sanitize_sheet_name(requested);
-    if used.insert(base.to_lowercase()) {
-        return base;
-    }
-    let mut n = 2usize;
-    loop {
-        let suffix = format!(" ({n})");
-        let keep = 31usize.saturating_sub(suffix.chars().count());
-        let stem: String = base.chars().take(keep).collect();
-        let candidate = format!("{stem}{suffix}");
-        if used.insert(candidate.to_lowercase()) {
-            return candidate;
-        }
-        n = n.saturating_add(1);
-    }
 }
 
 /// Render a cell value through a format — used by callers building a
@@ -524,12 +585,5 @@ mod tests {
         assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
         // A cross-table qualifier is dropped down to the bare cell.
         assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
-    }
-
-    #[test]
-    fn sheet_name_sanitized() {
-        assert_eq!(sanitize_sheet_name("a/b:c"), "a_b_c");
-        assert_eq!(sanitize_sheet_name(""), "Sheet");
-        assert_eq!(sanitize_sheet_name(&"x".repeat(40)).len(), 31);
     }
 }

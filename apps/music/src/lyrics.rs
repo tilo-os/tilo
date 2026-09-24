@@ -183,7 +183,7 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("Tilo-Music (https://tilo)")
         .build()

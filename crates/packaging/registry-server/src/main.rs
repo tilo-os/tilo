@@ -1943,7 +1943,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let response = reqwest::get(format!("http://{bound}/entries"))
+        let response = tilo_net::http::client()
+            .build()
+            .unwrap()
+            .get(format!("http://{bound}/entries"))
+            .send()
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);

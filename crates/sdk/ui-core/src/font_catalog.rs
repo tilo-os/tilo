@@ -103,7 +103,7 @@ pub fn catalog_manifest_sha256() -> String {
     hex::encode(Sha256::digest(MANIFEST.as_bytes()))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
     FontCatalog::controlled_fixture(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
@@ -118,7 +118,7 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("checked-in canonical font fixture")
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("checked-in canonical renderer fixture")

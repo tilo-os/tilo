@@ -40,15 +40,16 @@ taffy.workspace = true
 
 # Live CalDAV sync (discovery, REPORT, and ETag-guarded PUT) is optional and
 # gated by `live`; the default build uses the offline path.
-reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
-roxmltree = "0.20"
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+roxmltree.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
 # The CalDAV transport runs on a background thread and is a no-op without a
 # configured account.
 default = ["live"]
-live = ["dep:reqwest"]
+live = ["dep:reqwest", "dep:tilo-net"]
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide

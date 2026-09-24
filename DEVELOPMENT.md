@@ -3,52 +3,55 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Dev VMs (tilo-vm)
+
+`tilo-vm` is how to run your changes in the Tilo OS image, and the dev story going
+forward: one host CLI for Linux, macOS and Windows that gives each person or agent
+a **slot** in a shared dev VM, meaning its own user, session and stack of layers over
+the VM's `/usr`. Swapping a component is one command and never needs a new VM or a
+reboot; every swap is a generation you can roll back. The VM runs under the host's
+native hypervisor, so you watch it in its UI: on Linux, libvirt's `qemu:///session`
+in virt-manager (File > Add Connection > QEMU/KVM user session) or GNOME Boxes; UTM
+on macOS; Hyper-V Manager on Windows.
+
+```sh
+cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+target/debug/tilo-vm doctor          # hypervisor, KVM, tokens, published disk, each with its fix
+target/debug/tilo-vm vm create dev   # checks everything, then downloads the published dev disk
+target/debug/tilo-vm vm start
+target/debug/tilo-vm slot create --headful
+target/debug/tilo-vm swap shell      # sync this worktree, build in the VM, restart the session
+target/debug/tilo-vm shot -o target/shot.png
+```
+
+Swaps build release binaries with the manifest's features plus `dev-overrides`
+(realistic speed, and the harness variables below still work); `--profile dev`
+compiles faster. Driving is the same `tilo-control` story as on the host, through
+`tilo-vm control`. The built-in guide (`tilo-vm guide`) covers concepts, swapping,
+driving, storage, platforms and troubleshooting; its source is
+`crates/dev/tilo-vm/guide/`.
+
+The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
+(`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
+does; `tilo-vm guide fedora-loop` maps its commands.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result; those runs are keyed
 to the exact event and commit and are not cancelled when a newer commit arrives.
 
-Once the required checks pass and the head is stable, the controller posts a PR
-comment explaining the next step. Keep iterating until ready, then the PR author
-comments `/merge <full-head-sha>` to request integration of that exact revision.
-A new push requires fresh checks and a fresh merge request. The controller also
-checks that the branch is up to date and the change is eligible for routine
-integration; a green check alone does not merge a PR.
+A PR merges once its required status checks pass for the current head and the
+branch is up to date with `main`. The required checks are
+`CI / affected packages / checks (pull_request)` and
+`CI / fast quality / quality (pull_request)`. Branch protection enforces both
+conditions; there is no merge controller, `/merge` comment or operator step. A new
+push requires fresh checks. When `main` moves, rebase the branch onto it and let
+the checks rerun. Fast-forward merges keep a stacked series of PRs up to date as
+each lower PR lands.
 
 Review is optional and informational for every change. Review requests,
-approvals and change requests never affect merge admission; exact-head CI and
-author intent are authoritative. Automatic review-agent launches are currently
-disabled, so a native request alone does not start an agent.
-
-CI policy, publication, signing and named security-boundary paths use the
-protected-path operator flow. Changes crossing into those paths or changing an
-existing file's executable mode may require additional CI or provenance checks,
-but never review. After checks pass, post the author's `/merge <full-head-sha>`
-intent. An authorized operator then runs this command from the `PodestaAI/infra`
-checkout:
-
-```sh
-python scripts/run-tilo-reviewed-merge.py PR FULL_HEAD_SHA --execute
-```
-
-It runs the deployed merge worker, which rechecks scope, current main, CI and
-author intent before integration. This command accepts only changes classified
-into the protected scope. Review state does not change a PR's scope or queue
-priority.
-Direct merges do not bypass that worker.
-The [deployed admission policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json)
-defines the protected paths and bounded dependency exceptions. The OpenH264
-source-order exception additionally requires its pinned provenance and native
-dependency check; it is not ordinary vendored-source admission. Symlinks,
-submodules and malformed changes are rejected rather than treated as routine.
-
-A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.sandbox.example/qos/qos/pulls/169)
-for [author PR 162](https://code.sandbox.example/qos/qos/pulls/162), tested the generated
-candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
-without changing the author's branch. This verifies one integration through the
-pilot; it does not establish general queue availability or sustained reliability.
-Continue using the controller's current eligibility instructions.
+approvals and change requests never affect whether a PR can merge.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends
@@ -152,9 +155,9 @@ the command and are recorded in its receipt.
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
-`os/dev/test-installer-cycle.sh`; for the disposable Fedora desktop development
-session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
-artifact-backed VM orchestration remain planned work.
+`os/dev/test-installer-cycle.sh`. To run a change in the Tilo OS image, use
+`tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
+development session use `dist/dev/fedora44-vm-iterate.sh`.
 
 For CI timing, use the repository run number from the Forgejo URL or `fgj actions
 run list`, not the Forgejo API's internal database ID:
@@ -874,10 +877,15 @@ reaches the host's server and every compilation misses.
 Not needed if the libraries are present natively — a nix/devenv shell removes both
 the routing and the sccache-namespace problem, and the shim with them.
 
-### Fedora 44 disposable-VM loop
+### Fedora 44 disposable-VM loop (legacy)
 
-For desktop development, build the selected debug executable in a Fedora 44
-toolbox and copy it to a disposable VM:
+For Tilo OS work, use `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); `tilo-vm guide
+fedora-loop` maps each command below to it. This loop remains the path for
+testing Tilo as a developer session on a stock Fedora 44 desktop, which dev VM
+slots do not cover yet.
+
+Build the selected debug executable in a Fedora 44 toolbox and copy it to a
+disposable VM:
 
 ```bash
 # One time.  This builds a dependency image and creates a persistent distrobox.
@@ -1144,7 +1152,8 @@ Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 file keeps pointing at the same path.
 
 `--features dev-session` adds the marker required by `/usr/libexec/tilo-session-dev`.
-Release builds omit this marker even with the feature enabled. The config file,
+Release builds omit this marker even with the feature enabled, unless they also
+enable `dev-overrides`. The config file,
 target binary and their parent directories must be owned by you or root and
 writable by nobody else. Failed checks abort startup without falling back to
 the installed compositor. `dist/session/tests/dev-session-refusals.sh` tests
@@ -1194,10 +1203,20 @@ $ printf 'not-the-password\n' | /usr/libexec/tilo-unlock-helper "$USER"; echo $?
 
 Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LOCK_TEST_PASSWORD`, `TILO_TEST_CONTROL`, `TILO_TEST_STATE_DUMP` and
-`TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
-`~/.config/environment.d/`, so an installed binary that honoured those would let
-anything able to write a file in your home decide what unlocks your screen. See
+`TILO_LAUNCHER_BIN`, and say so on stderr at startup when one is set. On a
+systemd desktop the session environment comes from `~/.config/environment.d/`,
+so an installed binary that honoured those would let anything able to write a
+file in your home decide what unlocks your screen. See
 `crates/session/shell/src/compositor/dev_env.rs`.
+
+Dev images need release-speed binaries that harnesses can still drive; build
+those with `cargo build --release -p shell --features dev-overrides` (what
+`tilo-vm swap` builds by default; `tilo-vm swap --profile dev` trades that
+speed for faster compiles). Such a
+binary honours the variables above and announces itself as a dev-overrides
+build at startup. It must never ship: `tools/policy/check_dev_overrides_contract.py`
+fails if a production `os/Containerfile*` enables `dev-overrides` or
+`dev-session`.
 
 
 ## Headless testing

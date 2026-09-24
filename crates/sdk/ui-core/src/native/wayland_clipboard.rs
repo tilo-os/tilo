@@ -1,6 +1,10 @@
 //! `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 //! Wayland connection — the native clipboard for a Wayland app; see
 //! [`crate::clipboard`] for why this, rather than `arboard`, serves Wayland.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the Wayland clipboard owns its event thread"
+)]
 
 use std::sync::Arc;
 
@@ -9,23 +13,23 @@ use crate::clipboard::{
 };
 
 #[cfg(target_os = "linux")]
-const CLIPBOARD_READ_BUDGET: std::time::Duration = std::time::Duration::from_millis(40);
+const CLIPBOARD_READ_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(40);
 #[cfg(target_os = "linux")]
-const CLIPBOARD_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+const CLIPBOARD_SHUTDOWN_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(250);
 
 #[cfg(target_os = "linux")]
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
-    budget: std::time::Duration,
+    budget: crate::time::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
 }
 
 #[cfg(target_os = "linux")]
-fn join_bounded(thread: std::thread::JoinHandle<()>, budget: std::time::Duration) -> bool {
-    let now = std::time::Instant::now();
+fn join_bounded(thread: std::thread::JoinHandle<()>, budget: crate::time::Duration) -> bool {
+    let now = crate::time::now();
     let deadline = now.checked_add(budget).unwrap_or(now);
-    while !thread.is_finished() && std::time::Instant::now() < deadline {
+    while !thread.is_finished() && crate::time::now() < deadline {
         std::thread::yield_now();
     }
     if thread.is_finished() {
@@ -184,13 +188,7 @@ fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if rgba.len() != expected_len {
         return None;
     }
-    let mut bytes = Vec::new();
-    let mut encoder = png::Encoder::new(&mut bytes, width_u32, height_u32);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().ok()?;
-    writer.write_image_data(rgba).ok()?;
-    drop(writer);
+    let bytes = crate::png::encode_rgba8(width_u32, height_u32, rgba).ok()?;
     (bytes.len() <= MAX_CLIPBOARD_IMAGE_BYTES).then_some(bytes)
 }
 
@@ -957,12 +955,9 @@ mod tests {
     fn rgba_image_is_encoded_as_lossless_png() {
         let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
         let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
-        let decoder = png::Decoder::new(std::io::Cursor::new(png));
-        let mut reader = decoder.read_info().expect("PNG header");
-        let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-        let info = reader.next_frame(&mut frame).expect("PNG frame");
-        assert_eq!((info.width, info.height), (2, 1));
-        assert_eq!(&frame[..info.buffer_size()], &rgba);
+        let decoded = crate::png::decode_rgba8(&png).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.rgba, rgba);
     }
 
     #[cfg(target_os = "linux")]
@@ -993,17 +988,17 @@ mod tests {
     fn bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback() {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(crate::time::Duration::from_millis(2));
             let _ = tx.send(Some("fresh".to_string()));
         });
         assert_eq!(
-            recv_bounded(&rx, std::time::Duration::from_millis(100)),
+            recv_bounded(&rx, crate::time::Duration::from_millis(100)),
             Some(Some("fresh".to_string()))
         );
 
         let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
         assert_eq!(
-            recv_bounded(&rx, std::time::Duration::from_millis(1)),
+            recv_bounded(&rx, crate::time::Duration::from_millis(1)),
             None,
             "a slow external owner must not make paste return an unrelated cached value"
         );
@@ -1012,12 +1007,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn shutdown_join_is_bounded_when_a_protocol_worker_is_stuck() {
-        let started = std::time::Instant::now();
+        let started = crate::time::now();
         let worker = std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(80));
+            std::thread::sleep(crate::time::Duration::from_millis(80));
         });
-        assert!(!join_bounded(worker, std::time::Duration::from_millis(2)));
-        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
+        assert!(started.elapsed() < crate::time::Duration::from_millis(50));
     }
 
     #[cfg(target_os = "linux")]
