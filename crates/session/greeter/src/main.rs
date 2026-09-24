@@ -75,7 +75,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
-    let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
+    let console = console_control::ConsoleServer::new();
+    let widget = GreeterApp::new()
+        .with_proxy_slot(proxy_slot.clone())
+        .with_console(console.clone());
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // On a personal machine with one unambiguous interactive account, the
@@ -92,9 +95,32 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // focusable at all.
     app.autofocus_on_structure_change = true;
     app.run_with_setup(move |proxy| {
+        serve_console(&console, proxy.clone());
         let _ = proxy_slot.set(proxy);
     });
     Ok(())
+}
+
+/// Start the console endpoints that exist here: the greeter user's private
+/// runtime socket, and the virtio port only a hypervisor can attach.
+fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
+    let proxy = std::sync::Mutex::new(proxy);
+    let waker: console_control::server::Waker = Arc::new(move || {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(UserEvent::External(
+                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+            ));
+        }
+    });
+    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
+    let failed = console.serve_all(&endpoints, &waker);
+    for endpoint in &endpoints {
+        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
+            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
+        } else {
+            tracing::info!(?endpoint, "greeter console listening");
+        }
+    }
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless
