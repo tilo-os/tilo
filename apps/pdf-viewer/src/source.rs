@@ -280,6 +280,8 @@ pub struct RasterBackend {
     text_cache: HashMap<(usize, usize), Arc<PageText>>,
     /// Rendered tiles of zoomed pages, per zoom level (see [`crate::tiles`]).
     tiles: crate::tiles::TileCache<TileKey>,
+    /// Per-source-page link areas, filled lazily on first request.
+    link_cache: HashMap<(usize, usize), Arc<Vec<PageLink>>>,
     /// Content hash and length of the opened bytes, which are kept in the
     /// content-addressed blob store.
     source_hash: String,
@@ -433,6 +435,7 @@ impl RasterBackend {
             cache_bytes: 0,
             text_cache: HashMap::new(),
             tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
+            link_cache: HashMap::new(),
             source_hash,
             source_len: byte_len,
         })
@@ -759,6 +762,35 @@ impl RasterBackend {
         let pt = Arc::new(self.extract_page_text(slot).unwrap_or_default());
         self.text_cache.insert(key, pt.clone());
         pt
+    }
+
+    /// The link areas on displayed page `display_idx`, cached per source
+    /// page. Rectangles and destination points are in the page's display
+    /// space (the text layer's space); the reader maps them into card space.
+    /// A page whose links cannot be read has none.
+    pub fn page_links(&mut self, display_idx: usize) -> Arc<Vec<PageLink>> {
+        let Some(slot) = self.slot(display_idx) else {
+            return Arc::default();
+        };
+        let key = (slot.source, slot.page);
+        if let Some(links) = self.link_cache.get(&key) {
+            return links.clone();
+        }
+        let links = Arc::new(
+            self.sources
+                .get(slot.source)
+                .and_then(|source| source.doc.links(slot.page).ok())
+                .map(|links| {
+                    links
+                        .into_iter()
+                        .take(MAX_PAGE_LINKS)
+                        .filter_map(PageLink::from_engine)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+        self.link_cache.insert(key, links.clone());
+        links
     }
 
     /// The engine's analysed text layer for a source page, as the reader's
@@ -1368,6 +1400,63 @@ pub struct TextRequest {
     pub page: usize,
 }
 
+/// A request for one page's link areas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinksRequest {
+    pub document_id: u64,
+    pub page: usize,
+}
+
+/// Where a link on a page leads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkTarget {
+    /// Page `page` (0-based) of the document the link's page comes from,
+    /// optionally at a point in that page's display space.
+    Page { page: usize, at: Option<(f64, f64)> },
+    /// An external URI.
+    Uri(String),
+    /// Another file, by the path the PDF names.
+    File(String),
+}
+
+/// One clickable link area on a page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageLink {
+    /// The link area, in the page's display space until the reader maps it
+    /// into card space.
+    pub rect: PtRect,
+    pub target: LinkTarget,
+}
+
+impl PageLink {
+    fn from_engine(link: tilo_pdf::Link) -> Option<Self> {
+        let r = link.rect;
+        let rect = PtRect::new(
+            f64::from(r.x0.min(r.x1)),
+            f64::from(r.y0.min(r.y1)),
+            f64::from((r.x1 - r.x0).abs()),
+            f64::from((r.y1 - r.y0).abs()),
+        );
+        if ![rect.x, rect.y, rect.w, rect.h]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return None;
+        }
+        let target = match link.destination {
+            tilo_pdf::Destination::Page { page, at } => LinkTarget::Page {
+                page,
+                at: at
+                    .filter(|p| p.x.is_finite() && p.y.is_finite())
+                    .map(|p| (f64::from(p.x), f64::from(p.y))),
+            },
+            tilo_pdf::Destination::Uri(uri) => LinkTarget::Uri(uri),
+            tilo_pdf::Destination::File(path) => LinkTarget::File(path),
+        };
+        Some(Self { rect, target })
+    }
+}
+
 /// Adopt a collaboratively-authored page plan on the owner thread.  The plan
 /// carries only durable identifiers/content hashes, never `PDFium` handles.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1432,6 +1521,7 @@ pub enum RasterCommand {
     /// One tile taken off a batch by the worker.
     Tile(TileRequest),
     Text(TextRequest),
+    Links(LinksRequest),
     Reconcile(ReconcileRequest),
     Save(SaveRequest),
     Import(ImportRequest),
@@ -1510,6 +1600,14 @@ pub enum RasterEvent {
         request: RenderRequest,
         error: String,
     },
+    LinksRead {
+        request: LinksRequest,
+        links: Arc<Vec<PageLink>>,
+    },
+    LinksFailed {
+        request: LinksRequest,
+        error: String,
+    },
     TextFailed {
         request: TextRequest,
         error: String,
@@ -1581,6 +1679,10 @@ const MAX_PENDING_RESULT_BYTES: usize = 32 * 1024 * 1024;
 /// layer would make search/selection lie, so extraction declines the whole
 /// layer once it crosses this honest transport/cache limit.
 const MAX_TEXT_LAYER_GLYPHS: usize = 100_000;
+/// Link areas read from one page. Real documents carry a handful; a page
+/// claiming thousands is hostile or degenerate, and the reader need not
+/// hit-test more.
+const MAX_PAGE_LINKS: usize = 2_000;
 
 struct WorkerQueue {
     state: Mutex<QueueState>,
@@ -1752,6 +1854,17 @@ impl RasterHandle {
     /// is occupied by distinct work.
     pub fn request_text(&self, request: TextRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Text(request))
+    }
+
+    /// Queue reading one page's link areas, coalescing duplicate pages. Link
+    /// reads share the bounded page-work queue with text extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker has stopped or its bounded page
+    /// queue is occupied by distinct work.
+    pub fn request_links(&self, request: LinksRequest) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::Links(request))
     }
 
     /// Queue the newest durable page plan.  Reorders/duplicates/deletes are
@@ -1978,6 +2091,20 @@ impl RasterHandle {
                     state.texts.push_back(QueuedCommand {
                         session_id: self.session.id,
                         command: RasterCommand::Text(request),
+                    });
+                }
+            }
+            RasterCommand::Links(request) => {
+                if !state.texts.iter().any(|queued| {
+                    queued.session_id == self.session.id
+                        && matches!(&queued.command, RasterCommand::Links(old) if *old == request)
+                }) {
+                    if state.texts.len() >= MAX_PENDING_PAGE_REQUESTS {
+                        return Err(RasterSubmitError::QueueFull);
+                    }
+                    state.texts.push_back(QueuedCommand {
+                        session_id: self.session.id,
+                        command: RasterCommand::Links(request),
                     });
                 }
             }
@@ -2372,6 +2499,19 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                     error: "the requested raster document is no longer active".to_string(),
                 },
             },
+            RasterCommand::Links(request) => match active
+                .get_mut(&session_id)
+                .and_then(|documents| documents.get_mut(&request.document_id))
+            {
+                Some(backend) => RasterEvent::LinksRead {
+                    request,
+                    links: backend.page_links(request.page),
+                },
+                _ => RasterEvent::LinksFailed {
+                    request,
+                    error: "the requested raster document is no longer active".to_string(),
+                },
+            },
             RasterCommand::Reconcile(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
@@ -2581,6 +2721,11 @@ fn same_page_result(left: &RasterEvent, right: &RasterEvent) -> bool {
             | RasterEvent::TileFailed { request: old, .. },
             RasterEvent::TileRendered { request, .. } | RasterEvent::TileFailed { request, .. },
         ) => old == request,
+        (
+            RasterEvent::LinksRead { request: old, .. }
+            | RasterEvent::LinksFailed { request: old, .. },
+            RasterEvent::LinksRead { request, .. } | RasterEvent::LinksFailed { request, .. },
+        ) => old.document_id == request.document_id && old.page == request.page,
         _ => false,
     }
 }
@@ -2606,6 +2751,14 @@ fn page_event_bytes(event: &RasterEvent) -> usize {
                 .len()
                 .saturating_mul(std::mem::size_of::<crate::text_layer::CharBox>()),
         ),
+        RasterEvent::LinksRead { links, .. } => links
+            .iter()
+            .map(|link| match &link.target {
+                LinkTarget::Uri(s) | LinkTarget::File(s) => s.len(),
+                LinkTarget::Page { .. } => 0,
+            })
+            .sum::<usize>()
+            .saturating_add(links.len().saturating_mul(std::mem::size_of::<PageLink>())),
         _ => 0,
     }
 }
@@ -3137,6 +3290,69 @@ mod tests {
                 if *target_width == RasterBackend::bucket_for(101)
         ));
         assert_eq!(state.texts.len(), 1);
+        drop(state);
+    }
+
+    #[test]
+    fn link_reads_share_the_page_queue_coalesce_and_are_cleared_by_a_plan_edit() {
+        let handle = test_handle(
+            Arc::new(WorkerQueue {
+                state: Mutex::new(QueueState::default()),
+                ready: Condvar::new(),
+            }),
+            1,
+        );
+        let request = LinksRequest {
+            document_id: 2,
+            page: 0,
+        };
+        handle.request_links(request).expect("queue links");
+        handle.request_links(request).expect("coalesce links");
+        handle
+            .request_text(TextRequest {
+                document_id: 2,
+                page: 0,
+            })
+            .expect("text for the same page is distinct work");
+        {
+            let state = handle.session.queue.state.lock().expect("queue lock");
+            assert_eq!(state.texts.len(), 2);
+            assert!(matches!(
+                &state.texts[0].command,
+                RasterCommand::Links(queued) if *queued == request
+            ));
+        }
+        // Results for one page coalesce; text and links for it do not.
+        let links = |n: usize| RasterEvent::LinksRead {
+            request,
+            links: Arc::new(
+                (0..n)
+                    .map(|_| PageLink {
+                        rect: PtRect::new(0.0, 0.0, 1.0, 1.0),
+                        target: LinkTarget::Page { page: 0, at: None },
+                    })
+                    .collect(),
+            ),
+        };
+        assert!(same_page_result(&links(1), &links(2)));
+        assert!(!same_page_result(
+            &links(1),
+            &RasterEvent::TextFailed {
+                request: TextRequest {
+                    document_id: 2,
+                    page: 0,
+                },
+                error: String::new(),
+            }
+        ));
+        handle
+            .reconcile_page_plan(ReconcileRequest {
+                document_id: 2,
+                plan: Vec::new(),
+            })
+            .expect("queue plan");
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert!(state.texts.is_empty(), "a plan edit drops stale link reads");
         drop(state);
     }
 

@@ -224,6 +224,39 @@ fn outline_and_links_resolve() {
 }
 
 #[test]
+fn internal_and_external_links_resolve_with_their_areas() {
+    let Some(engine) = engine() else { return };
+    let doc = engine.open_bytes(&fixture("links.pdf")).unwrap();
+    let size = doc.page_size(0).unwrap();
+    let links = doc.links(0).unwrap();
+    assert_eq!(links.len(), 2, "{links:?}");
+    let internal = links
+        .iter()
+        .find(|l| matches!(l.destination, Destination::Page { .. }))
+        .expect("an internal link");
+    let Destination::Page { page, at } = internal.destination else {
+        unreachable!()
+    };
+    assert_eq!(page, 2, "the appendix is on the third page");
+    // The heading sits part way down its page, in display space (y down).
+    let at = at.expect("the destination names a point");
+    assert!(at.y > 40.0 && at.y < size.height, "{at:?}");
+    let external = links
+        .iter()
+        .find(|l| l.destination == Destination::Uri("https://example.org/docs".into()))
+        .expect("an external link");
+    for link in [internal, external] {
+        let r = link.rect;
+        assert!(r.x0 >= 0.0 && r.x1 <= size.width && r.x0 < r.x1, "{r:?}");
+        assert!(r.y0 >= 0.0 && r.y1 <= size.height && r.y0 < r.y1, "{r:?}");
+        // First line of the page, in display space.
+        assert!(r.y1 < 60.0, "{r:?}");
+    }
+    assert!(internal.rect.x1 <= external.rect.x0, "reading order");
+    assert!(doc.links(1).unwrap().is_empty());
+}
+
+#[test]
 fn render_region_matches_the_full_render() {
     let Some(engine) = engine() else { return };
     let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
