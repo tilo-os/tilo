@@ -409,6 +409,7 @@ impl PickRequest {
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
+#[cfg(feature = "native")]
 pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())

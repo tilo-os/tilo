@@ -653,6 +653,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
 /// A fixed empty placeholder enables `SetValue` on password fields without
 /// disclosing their text, length, selection, or whether they contain anything.
 /// The shared semantic tree continues to carry no password value at all.
+#[cfg(feature = "native")]
 pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
     #[cfg(windows)]
     {

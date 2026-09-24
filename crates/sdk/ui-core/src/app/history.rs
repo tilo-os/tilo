@@ -329,6 +329,7 @@ impl App {
         self.layout.layout_dirty = true;
         true
     }
+    #[cfg(feature = "native")]
     pub(super) fn settle_history_presentation(&mut self) -> bool {
         self.refresh_document_routes();
         if crate::history_mode::embedded::has_review(self.root_widget.as_ref()) {

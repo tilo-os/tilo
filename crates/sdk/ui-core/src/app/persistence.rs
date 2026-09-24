@@ -31,6 +31,7 @@ impl App {
         self
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn with_legacy_persistence(
         mut self,
         policy: crate::launch::LegacyPersistencePolicy,
@@ -145,6 +146,7 @@ impl App {
     /// With records in play, the App's autosave writes the room index
     /// instead of the live document — sending the live doc to both would put
     /// a record's content in the room index.
+    #[cfg(feature = "native")]
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         match self.persistence.records.as_mut() {
             Some(set) => {
@@ -193,6 +195,7 @@ impl App {
 
     /// Called on event-loop teardown so a `kill` right after the last
     /// keystroke still finds it on disk.
+    #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
             self.close_components();

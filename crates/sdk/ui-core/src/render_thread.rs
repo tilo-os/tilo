@@ -131,6 +131,13 @@ pub enum FrameOutcome {
     SurfaceGone,
 }
 
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct RenderThreadHandle {
     pub render_tx: SyncSender<RenderRequest>,
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
@@ -140,6 +147,13 @@ pub struct RenderThreadHandle {
 }
 
 /// One atomic reservation preserves both buffers across an aborted redraw.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(crate) struct BufferPool<T> {
     receiver: Receiver<T>,
     prepared: Option<T>,
@@ -155,10 +169,12 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn redraw_deferred(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn prepare(&mut self) -> Result<bool, mpsc::TryRecvError> {
         if self.prepared.is_some() {
             return Ok(true);
@@ -177,6 +193,7 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Some(buffers) = self.prepared.take() {
             Ok(buffers)
@@ -185,6 +202,7 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
         if self.prepare()? {
             self.prepared.take().ok_or(mpsc::TryRecvError::Empty)
@@ -195,6 +213,7 @@ impl<T> BufferPool<T> {
 }
 
 /// Do not consume a forced probe or dirty work until both pooled buffers exist.
+#[cfg(feature = "native")]
 pub(crate) fn prepare_frame<T>(
     retry: &mut retry::RenderRetryState,
     buffers: &mut BufferPool<T>,
