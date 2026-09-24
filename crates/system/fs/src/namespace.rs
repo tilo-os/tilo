@@ -180,9 +180,23 @@ pub struct IndexedRecord {
 struct TreeIndex {
     placement: HashMap<String, (String, FileNameV1)>,
     children: HashMap<String, BTreeMap<FileNameV1, BTreeSet<String>>>,
+    /// The nodes carrying each stable record id, live or trashed. A node's
+    /// record id is written once, when the node is created or migrated.
+    records: HashMap<FileRecordId, BTreeSet<String>>,
 }
 
 impl TreeIndex {
+    fn bind_record(&mut self, id: &str, record_id: FileRecordId) {
+        self.records
+            .entry(record_id)
+            .or_default()
+            .insert(id.to_string());
+    }
+
+    fn nodes_of(&self, record_id: FileRecordId) -> impl Iterator<Item = &String> {
+        self.records.get(&record_id).into_iter().flatten()
+    }
+
     fn remove(&mut self, id: &str) {
         let Some((parent, name)) = self.placement.remove(id) else {
             return;
@@ -746,6 +760,11 @@ impl Namespace {
                 let name = read_name(&self.doc, &node, "name").unwrap_or_default();
                 tree.place(&id, parent, name);
             }
+            if let Some(record_id) = read_str(&self.doc, &node, RECORD_ID_KEY)
+                .and_then(|value| Uuid::parse_str(&value).ok())
+            {
+                tree.bind_record(&id, FileRecordId(record_id));
+            }
         }
         tree
     }
@@ -1024,6 +1043,7 @@ impl Namespace {
             }
             let record_id = self.deterministic_record_id(&id);
             let _ = self.doc.put(&node, RECORD_ID_KEY, record_id.0.to_string());
+            self.tree.bind_record(&id, record_id);
         }
         self.record_ids_complete = true;
     }
@@ -1882,10 +1902,10 @@ impl Namespace {
             let only = self.unique_live_node_for_record(record_id)?;
             return self.id_to_ino.get(&only).copied();
         }
-        self.live_node_ids()
-            .into_iter()
-            .find(|id| self.record_id_for_id(id) == Some(record_id))
-            .and_then(|id| self.id_to_ino.get(&id).copied())
+        self.tree
+            .nodes_of(record_id)
+            .find(|id| self.record_id_for_id(id) == Some(record_id) && self.reaches_root(id))
+            .and_then(|id| self.id_to_ino.get(id).copied())
     }
 
     /// Resolve one live stable record while lazily assigning its process-local
@@ -1901,24 +1921,16 @@ impl Namespace {
     }
 
     /// The one live node bound to `record_id`, `None` when there is none or
-    /// more than one. The stable-record index answers in O(depth) when it
-    /// names the node: it withholds every record it has seen bound twice,
-    /// and its answer is checked against the document. Only a record the
-    /// index does not name (not placed yet, or placed where the index could
-    /// not follow) costs a scan of the tree.
+    /// more than one. The structural index knows every node carrying the
+    /// id, so this costs O(nodes of the record × depth), not a scan of the
+    /// tree; each candidate is checked against the document.
     fn unique_live_node_for_record(&self, record_id: FileRecordId) -> Option<String> {
-        if let Some(indexed) = self.record_index.get(&record_id)
-            && self.record_id_for_id(&indexed.node_id) == Some(record_id)
-            && self.reaches_root(&indexed.node_id)
-        {
-            return Some(indexed.node_id.clone());
-        }
-        let mut matches = self
-            .live_node_ids()
-            .into_iter()
-            .filter(|id| self.record_id_for_id(id) == Some(record_id));
-        let only = matches.next()?;
-        if matches.next().is_some() {
+        let mut live = self
+            .tree
+            .nodes_of(record_id)
+            .filter(|id| self.record_id_for_id(id) == Some(record_id) && self.reaches_root(id));
+        let only = live.next()?.clone();
+        if live.next().is_some() {
             return None;
         }
         Some(only)
@@ -2199,6 +2211,7 @@ impl Namespace {
         let _ = self.doc.put(&obj, RECORD_ID_KEY, record_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
+        self.tree.bind_record(&id, record_id);
         Some(id)
     }
 
@@ -2246,6 +2259,7 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
+        self.tree.bind_record(&id, record_id);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
@@ -2289,6 +2303,7 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
+        self.tree.bind_record(&id, record_id);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
