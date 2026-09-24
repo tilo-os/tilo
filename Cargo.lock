@@ -12873,6 +12873,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -14442,6 +14443,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
@@ -14453,15 +14455,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-relay-client"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "ed25519-dalek 3.0.0",
+ "iroh",
+ "iroh-base",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "thiserror 2.0.18",
+ "tilo-relay-protocol",
+ "tilo-user-identity",
+ "tokio",
+]
+
+[[package]]
 name = "tilo-relay-protocol"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
  "blake3",
+ "ed25519-dalek 3.0.0",
  "hex",
  "iroh-base",
  "postcard",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",

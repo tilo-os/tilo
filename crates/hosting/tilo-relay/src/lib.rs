@@ -15,7 +15,7 @@
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
 //! connection speaks the `tilo-relay/1` ALPN and performs a small
-//! authenticated handshake ([`transport::hello`]):
+//! authenticated handshake ([`auth`]):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user
@@ -70,9 +70,6 @@
 
 pub mod antientropy;
 pub mod app_serving;
-pub mod auth;
-pub mod client;
-pub mod coedit;
 pub mod compute;
 pub mod compute_session;
 pub mod compute_transport;
@@ -81,12 +78,14 @@ pub mod daemon;
 pub mod metrics;
 pub mod peer;
 pub mod store;
-pub mod transport;
 pub mod workspace;
 
-// The records shared with relay clients live in `tilo-relay-protocol` so those
-// clients need not link the daemon; the daemon keeps addressing them here.
-pub use tilo_relay_protocol::{config, home_peer, mesh, policy, process_lease};
+// The records and wire messages shared with relay clients live in
+// `tilo-relay-protocol`, and the dialing side plus the frame codec in
+// `tilo-relay-client`, so clients need not link the daemon. The daemon keeps
+// addressing them here.
+pub use tilo_relay_client::{client, coedit, frame};
+pub use tilo_relay_protocol::{auth, config, home_peer, mesh, policy, process_lease, transport};
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use app_serving::{ActionHostPlane, AppServingPlane};
