@@ -14565,6 +14565,7 @@ dependencies = [
 name = "tilo-desktop-model"
 version = "0.1.0"
 dependencies = [
+ "automerge",
  "collab-types",
  "desktop-policy",
  "serde",
