@@ -34,13 +34,15 @@ containerfile="$repo/os/Containerfile"
 # explicit optional /usr/bin/browser entry it always carried. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
-# sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper. Sorting
+# sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
+# synced-worktree git defaults (/etc/gitconfig and its snippet) are part of the
+# payload. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=78714f2e24e46c8fc3334c7f14ae1364f3e6184c872d30db6a0ebac31d41b303
+expected_contract=0b34dabef1c4b45e4c408d69887e763c8df79157f21faced68b50299c07a1174
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -69,9 +71,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # AT-SPI validation adds two narrowly scoped COPY instructions.
 # Firewall-first NetworkManager ordering adds one explicit drop-in COPY.
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
-# Keep the current 139-instruction bound exact and reviewed.
-[ "$instructions" -le 139 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 139)" >&2
+# Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
+# that includes it.
+# Keep the current 141-instruction bound exact and reviewed.
+[ "$instructions" -le 141 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 141)" >&2
   exit 1
 }
 
