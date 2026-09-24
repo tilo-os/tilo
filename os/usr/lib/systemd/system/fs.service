@@ -1,8 +1,14 @@
 [Unit]
-Description=QuickFS Collaborative Filesystem (Iroh-backed FUSE3 mount)
+Description=QuickFS Collaborative Filesystem (native store volume or Iroh-backed FUSE3 mount)
 Documentation=https://github.com/nirios/quickdesktop
 After=local-fs.target network.target systemd-tmpfiles-setup.service
 Wants=network.target
+# The store volume (/var/lib/tilo/store) is mounted `nofail`, so local-fs.target
+# does not wait for it; wait here instead. tilo-store-volume.service prepares
+# it for the local person (creating an image-backed store on installs without
+# a store partition) and writes the data-plane arguments below.
+Wants=tilo-store-volume.service var-lib-tilo-store.mount
+After=tilo-store-volume.service var-lib-tilo-store.mount
 # Iroh reconnects as interfaces become usable, so waiting for
 # network-online.target only stalls offline boots and does not establish a
 # stronger readiness condition. Start concurrently with the greeter; the mount
@@ -64,15 +70,26 @@ Type=simple
 # enforcement point live so that a restriction added to
 # /var/lib/tilo/fs-capabilities.json actually bites, and so a mount joined
 # from a peer's ticket has somewhere to put a narrower policy.
+#
+# The data plane. With a store volume mounted, tilo-store-volume.service
+# writes `--data-plane=auto --store=/var/lib/tilo/store --native-owner=UID:GID`
+# to /run/tilo-store/fs.env on every boot: the daemon then serves the native
+# tree when the volume is dedicated and the kernel probes hold, and FUSE
+# otherwise, logging why. `--native-owner` is the local person, who owns every
+# file the native plane materialises. Without that file (no store, no local
+# person yet, or the preparation failed) the daemon serves FUSE.
+Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse
+EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
     --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
-    --acl /var/lib/tilo/fs-capabilities.json --principal person:local
+    --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
+    $TILO_FS_DATA_PLANE_ARGS
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
 # can't block shutdown.
 ExecStop=/usr/bin/fusermount3 -u -z /var/workspace
 # On a machine with a dedicated store volume at /var/lib/tilo/store
-# (`--store`, default) the daemon serves the Tier 1 data plane instead: the
+# (`--store`) the daemon serves the Tier 1 data plane instead: the
 # room's native tree is bind-mounted at /var/workspace and fanotify fills
 # placeholders on first access. Placeholders read as holes once the daemon's
 # fanotify group is gone, so the bind must never outlive the process. The

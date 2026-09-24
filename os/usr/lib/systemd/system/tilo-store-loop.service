@@ -1,0 +1,17 @@
+[Unit]
+Description=Tilo room store image
+Documentation=file:///usr/libexec/tilo-store-volume
+# Attaches the image of an image-backed store (an install without a store
+# partition). The store's fstab line requires this unit, so the mount waits
+# for the loop device and is unmounted before it is detached.
+DefaultDependencies=no
+ConditionPathExists=/var/lib/tilo/store.img
+RequiresMountsFor=/var/lib/tilo/store.img
+Conflicts=umount.target
+Before=umount.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-store-volume attach
+ExecStop=/usr/libexec/tilo-store-volume detach

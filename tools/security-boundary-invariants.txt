@@ -50,6 +50,7 @@ os/tests/rollback-initrd-hook.sh
 os/tests/tilo_root_discovery.sh
 os/tests/authenticode_envelope.sh
 os/tests/installer_guided_alongside.sh
+os/tests/store_volume.sh
 os/tests/installer_boot_menu.sh
 os/tests/staging_handoff_test.py
 os/tests/staging_reclaim_test.py
