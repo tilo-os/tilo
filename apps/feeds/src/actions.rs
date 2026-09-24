@@ -36,7 +36,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 use uuid::Uuid;
 
 use tilo_actions::{
@@ -68,11 +67,7 @@ pub fn article_resource_id(id: Id) -> String {
 }
 
 pub fn tag_resource_id(tag: &str) -> String {
-    let mut encoded = String::with_capacity(tag.len().saturating_mul(2));
-    for byte in tag.as_bytes() {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    format!("feeds.tag:{encoded}")
+    format!("feeds.tag:{}", hex::encode(tag))
 }
 
 /// Decode a canonical tag resource id without accepting aliases or an
@@ -83,24 +78,11 @@ pub fn tag_from_resource_id(id: &str) -> Option<String> {
     if encoded.is_empty() || encoded.len() > 384 || encoded.len() % 2 != 0 {
         return None;
     }
-    let mut bytes = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
-        let &[hi, lo] = pair else { return None };
-        let hi = hex_nibble(hi)?;
-        let lo = hex_nibble(lo)?;
-        bytes.push((hi << 4) | lo);
-    }
-    let decoded = String::from_utf8(bytes).ok()?;
+    // `hex` also accepts upper case; the round-trip check below still admits
+    // only the canonical lower-case id.
+    let decoded = String::from_utf8(hex::decode(encoded).ok()?).ok()?;
     let normalized = normalize_tags([decoded.as_str()]).into_iter().next()?;
     (tag_resource_id(&normalized) == id).then_some(normalized)
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    }
 }
 
 pub fn open_feed_address(id: Id) -> ActionAddress {

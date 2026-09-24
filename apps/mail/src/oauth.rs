@@ -586,11 +586,7 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        bytes.iter().fold(String::new(), |mut out, b| {
-            let _ = write!(out, "{b:02x}");
-            out
-        })
+        hex::encode(bytes)
     }
 
     #[test]

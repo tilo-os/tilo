@@ -32,11 +32,11 @@ fn manifest(name: &str) -> TestResult<Value> {
     operation(name, &["--manifest".into()])
 }
 fn request(m: &Value, name: &str) -> TestResult<Value> {
-    use std::fmt::Write;
-    let mut encoded = String::new();
-    for b in name.encode_utf16().flat_map(u16::to_le_bytes) {
-        write!(encoded, "{b:02x}")?;
-    }
+    let encoded = hex::encode(
+        name.encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<u8>>(),
+    );
     let facts = m.get("facts").and_then(Value::as_array).ok_or("facts")?;
     let entry = facts
         .iter()

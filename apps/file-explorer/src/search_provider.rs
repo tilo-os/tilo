@@ -51,14 +51,7 @@ fn path_identity_suffix(path: &std::path::Path) -> String {
     // 128 bits makes collisions infeasible for a local, bounded directory
     // while retaining a compact action address.
     let digest = digest.finalize();
-    digest
-        .iter()
-        .take(16)
-        .fold(String::with_capacity(32), |mut output, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(output, "{byte:02x}");
-            output
-        })
+    hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
 /// Stable, wire-safe identity for a currently presented directory.  The path

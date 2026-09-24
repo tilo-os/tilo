@@ -18,7 +18,6 @@
 //! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
@@ -136,11 +135,7 @@ pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
 /// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
 /// only machine identities use this representation.
 fn resource_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.bytes() {
-        let _ = write!(&mut encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(value)
 }
 
 pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {

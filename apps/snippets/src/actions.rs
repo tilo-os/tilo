@@ -19,7 +19,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write;
 use uuid::Uuid;
 
 use tilo_actions::{
@@ -53,14 +52,7 @@ pub fn tag_resource_id(tag: &str) -> String {
 
 /// Stable, punctuation-safe component for custom-painted semantic controls.
 pub fn stable_key(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .fold(String::new(), |mut encoded, byte| {
-            // Writing formatted integers to a String is infallible.
-            let _ = write!(encoded, "{byte:02x}");
-            encoded
-        })
+    hex::encode(value)
 }
 
 /// Canonical view action that reveals all snippets carrying `tag`.

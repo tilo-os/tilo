@@ -125,12 +125,7 @@ impl LocalIdentity {
 
 /// Lower-hex of the first 8 bytes.
 fn hex8(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(16);
-    for byte in b.iter().take(8) {
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
+    hex::encode(b.get(..8).unwrap_or(b))
 }
 
 /// A stable palette index (0..8) from arbitrary bytes.

@@ -320,12 +320,10 @@ fn peer_key(action: &str, device: &str) -> String {
 }
 
 fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in device {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    format!("device_mesh.personal_device.{action}.{encoded}.edit")
+    format!(
+        "device_mesh.personal_device.{action}.{}.edit",
+        hex::encode(device)
+    )
 }
 
 fn continuity_key(capability: Capability) -> String {
