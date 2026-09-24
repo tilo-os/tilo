@@ -1530,6 +1530,7 @@ impl GrantSubject {
     pub fn display(&self) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
+            SubjectKind::App => tilo_desktop_model::apps::app_label(&self.id).to_string(),
             _ => self.id.clone(),
         }
     }
@@ -1710,7 +1711,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                apps.push(tile_app_id(&tab.tile));
+                apps.extend(tilo_desktop_model::apps::canonical_app_id(&tab.tile));
             }
         }
     }
@@ -1726,21 +1727,6 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         id,
     }));
     out
-}
-
-/// The app id a tile belongs to, for subject discovery. `TileContent` has
-/// no variant without an app identity, so this never needs `Option`.
-fn tile_app_id(tile: &crate::shell::state::TileContent) -> String {
-    use crate::shell::state::TileContent;
-    match tile {
-        TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
-        TileContent::Foreign { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::LocalApp { app_id, .. } => app_id.clone(),
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            kind.as_str().to_string()
-        }
-    }
 }
 
 /// Build the capability `draft` currently names against `ws`, or `None`

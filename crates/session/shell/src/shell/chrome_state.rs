@@ -1482,31 +1482,22 @@ impl ChromeState {
         store.insert(&caller, &cap);
     }
 
-    /// Real Wayland app-id for `Foreign`, or the built-in
-    /// `AppKind::app_id` for a placeholder/stub.
+    /// The tab's canonical app id — see
+    /// [`tilo_desktop_model::apps::canonical_app_id`].
     fn tab_app_id(
         &self,
         strip_id: StripId,
         group_id: GroupId,
         tab_id: u64,
     ) -> Option<crate::shell::state::AppId> {
-        use crate::shell::state::TileContent;
         let tree = self.tree();
         let ws = tree.active_workspace()?;
         let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
-        let app_id = match &tab.tile {
-            TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
-            // A peer window carries an app id in the same namespace
-            // `AppKind::app_id` maps the others into.
-            TileContent::Foreign { app_id, .. }
-            | TileContent::PeerWindow { app_id, .. }
-            | TileContent::LocalApp { app_id, .. } => app_id.clone(),
-            TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-                kind.app_id()
-            }
-        };
+        // A shell-owned surface such as workspace activity belongs to no
+        // app, so there is nothing to key a grant to.
+        let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
         drop(tree);
         Some(app_id)
     }
