@@ -47,19 +47,8 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const APP_ID: &str = "so.tilo.sheets";
@@ -151,7 +140,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
 /// # Errors
 ///
@@ -163,72 +151,20 @@ fn render_shot_to_png(
     out: &std::path::Path,
     setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission_ctx = PermissionContext::permissive();
     // `Theme::with_text_scale` has already expanded every token size.  The
     // custom Sheets canvas passes those token sizes directly to the renderer,
     // so applying the multiplier a second time here would turn a requested
     // 2× accessibility size into 4× text and make the interactive chrome
     // unusable.  (Toolkit widgets hand the renderer their unscaled base
     // sizes, which is why their harness sets this separately.)
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme).with_unscaled_text();
+    frame.sync(&mut app);
     // Apply the scenario hook now that the document is seeded; fill/paste
     // scenarios dispatch actions against the document.
-    setup(&mut app, &mut state.doc);
-    let widget: &mut dyn Widget = &mut app;
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(widget, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            &mut text_renderer,
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission_ctx,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    setup(&mut app, &mut frame.state.doc);
+    frame.layout(&mut app)?;
+    let scene = frame.draw(&mut app);
+    frame.write_png(&scene, out);
     println!("sheets: wrote shot to {}", out.display());
     Ok(())
 }

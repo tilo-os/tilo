@@ -14,7 +14,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
 
 #[cfg(target_os = "linux")]
@@ -207,7 +207,7 @@ pub fn spawn_action_emitter(
     portal: NotificationPortalHandle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let Ok(context) = SignalContext::new(&connection, super::OBJECT_PATH) else {
+        let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
@@ -407,7 +407,7 @@ impl NotificationBackend {
     /// through [`NotificationPortalHandle::action_for`].
     #[zbus(signal)]
     pub async fn action_invoked(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         app_id: &str,
         id: &str,
         action: &str,

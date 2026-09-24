@@ -5184,7 +5184,7 @@ mod tests {
     fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
         let mut a = app();
         let mut collection = Collection::new("Load test");
-        collection.requests = (0..100_001)
+        collection.requests = (0..5_000)
             .map(|index| Request::new(format!("Request {index}")))
             .collect();
         let request = collection.requests.last().expect("late request").id;

@@ -415,7 +415,7 @@ fn verify_bytes(
     tests::event("eof", &component.filename, component.byte_size);
     check_cancel(cancel)?;
     require(
-        format!("{:x}", hash.finalize()) == component.sha256,
+        hex::encode(hash.finalize()) == component.sha256,
         "component digest mismatch",
     )
 }
@@ -934,11 +934,11 @@ pub(crate) mod tests {
             "installer_protocol":1,"source_image_bytes":65536,
             "components":[
                 {"role":"staging-esp","filename":"staging-esp.img","byte_size":4096,
-                 "sha256":format!("{:x}",Sha256::digest(vec![b'E';4096])),
+                 "sha256":hex::encode(Sha256::digest(vec![b'E';4096])),
                  "partition_type_guid":ESP_GUID,"filesystem_type":"vfat","filesystem_uuid":"1234-ABCD",
                  "minimum_partition_bytes":4096,"source_offset":17408},
                 {"role":"staging-root","filename":"staging-root.img","byte_size":8192,
-                 "sha256":format!("{:x}",Sha256::digest(vec![b'R';8192])),
+                 "sha256":hex::encode(Sha256::digest(vec![b'R';8192])),
                  "partition_type_guid":ROOT_GUID,"filesystem_type":"btrfs","filesystem_uuid":root,
                  "minimum_partition_bytes":8192,"source_offset":21504}],
             "boot_binding":{"efi_path":"/EFI/Linux/fixture.efi","uki_architecture":"x86_64",
@@ -1137,7 +1137,7 @@ pub(crate) mod tests {
         let mut manifest = fixture();
         manifest["components"][1]["byte_size"] = json!(payload.len());
         manifest["components"][1]["minimum_partition_bytes"] = json!(payload.len());
-        manifest["components"][1]["sha256"] = json!(format!("{:x}", Sha256::digest(&payload)));
+        manifest["components"][1]["sha256"] = json!(hex::encode(Sha256::digest(&payload)));
         manifest["source_image_bytes"] = json!(21504 + payload.len());
         let bundle = validate_internal_bundle(&bytes(&manifest)).unwrap();
         assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok());

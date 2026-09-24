@@ -208,18 +208,11 @@ fn directory_snapshot_unchanged_publish_stable_but_mutation_and_max_evict() {
             .is_empty()
     );
     assert_eq!(calls.get(), 2);
+    let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
+    let actor = app.collaboration.local_author.0.clone();
     assert!(
-        app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("declared:0", "inspect"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None
-        )
-        .is_err()
+        app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
+            .is_err()
     );
 }
 
@@ -593,22 +586,15 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
         .doc
         .put(ROOT, "changed-contract", true)
         .unwrap();
+    let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
+    let actor = app.collaboration.local_author.0.clone();
     let error = app
-        .invoke_resource_action(
-            &tilo_actions::ActionAddress::new("declared:0", "inspect"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
+        .invoke_resource_action(ResourceInvocation::new(&address, &actor))
         .unwrap_err();
     assert_eq!(error, tilo_actions::DoorError::ConfirmationRequired);
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "broker-transport"))]
 fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     let (mut app, calls) = declared_directory(1);
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
@@ -632,7 +618,7 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     (app, calls)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "broker-transport"))]
 #[test]
 fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     let (mut app, calls) = connected_declared_directory();
@@ -682,7 +668,7 @@ fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     assert_eq!(app.action_directory_revision(), revision);
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "broker-transport"))]
 #[test]
 fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input() {
     let (mut app, calls) = connected_declared_directory();

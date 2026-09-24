@@ -16,7 +16,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore as _};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng as _;
 
 const DISPLAY_ATTEMPTS: usize = 64;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -597,7 +598,7 @@ fn satellite_runtime_path(satellite: &Path, inherited: Option<&OsStr>) -> Result
 
 fn reserve_display(runtime: &Path) -> Result<(u16, File, PathBuf), String> {
     let mut random = [0_u8; 2];
-    OsRng.fill_bytes(&mut random);
+    UnwrapErr(SysRng).fill_bytes(&mut random);
     let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
     for offset in 0..DISPLAY_ATTEMPTS {
         let display = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
@@ -623,7 +624,7 @@ fn reserve_display(runtime: &Path) -> Result<(u16, File, PathBuf), String> {
 
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
     let mut cookie = [0_u8; 16];
-    OsRng.fill_bytes(&mut cookie);
+    UnwrapErr(SysRng).fill_bytes(&mut cookie);
     let mut contents = Vec::with_capacity(64);
     push_u16(&mut contents, u16::MAX); // FamilyWild
     push_field(&mut contents, &[]);

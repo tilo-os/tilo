@@ -1416,7 +1416,7 @@ mod tests {
     use crate::availability::{RecordAvailability, ReplicaObservation};
     use collab_types::{ContentHash, Ed25519PublicKey, FileActor};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
     fn hash(byte: u8) -> Hash {
@@ -1452,7 +1452,7 @@ mod tests {
         let mut record = RecordAvailability::new(id, RecordKind::File);
         record.current_version = Some(version);
         record.residency = Residency::Resident { bytes: 30 };
-        let device = SigningKey::generate(&mut OsRng);
+        let device = SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: Ed25519PublicKey(device.verifying_key().to_bytes()),
             device: Ed25519PublicKey(device.verifying_key().to_bytes()),

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::Signer;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use walkdir::WalkDir;
 
 use collab_types::Ed25519PublicKey;
@@ -46,7 +46,7 @@ pub enum SigningIdentity {
 impl SigningIdentity {
     /// Generate a fresh random Ed25519 identity, for tests + ad-hoc `tilo-app-package sign` signing.
     pub fn generate() -> Self {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         Self::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng))
     }
 
@@ -105,7 +105,7 @@ impl SigningIdentity {
                 if !ti.is_single_device() {
                     return Err(PackError::ThresholdSigningUnsupported);
                 }
-                let mut rng = OsRng;
+                let mut rng = UnwrapErr(SysRng);
                 let sig = ti
                     .sign_raw(msg, &mut rng)
                     .map_err(|e| PackError::ThresholdInternal(e.to_string()))?;

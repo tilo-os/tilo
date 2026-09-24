@@ -2,6 +2,7 @@
 //!
 //! Socket tripwires prove that construction and local effects perform no
 //! service I/O. They deliberately do not emulate a successful remote broker.
+#![cfg(unix)]
 
 use super::*;
 use std::cell::{Cell, RefCell};
@@ -164,17 +165,9 @@ fn assert_local_app_behavior() {
     let mut app = App::from_scoped_parts_local(scope, State::new(), Box::new(root));
     app.init_layout();
     let author = app.collaboration.local_author.0.clone();
+    let address = tilo_actions::ActionAddress::new("private-tab", "navigate");
     let result = app
-        .invoke_resource_action(
-            &tilo_actions::ActionAddress::new("private-tab", "navigate"),
-            None,
-            &author,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
+        .invoke_resource_action(ResourceInvocation::new(&address, &author))
         .unwrap();
     assert!(matches!(
         result,
@@ -182,7 +175,7 @@ fn assert_local_app_behavior() {
     ));
     assert_eq!(operations.get(), 1, "local Effect must actually execute");
     let wake = wake_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(crate::time::Duration::from_secs(1))
         .unwrap();
     app.needs_sync = false;
     assert!(
@@ -219,7 +212,7 @@ fn assert_local_app_behavior() {
     assert!(app.continuation.pending_view.is_none());
     assert!(!app.collaboration.manager.is_connected());
     assert!(app.collaboration.manager.primary_route().is_none());
-    assert!(app.floating_surface_client.is_none());
+    assert!(app.floating.client.is_none());
     assert!(app.presence.broadcast_scope.is_none());
     assert_ne!(author, "ambient-workspace-user");
     assert!(!app.presence_ctx.is_own_identity("ambient-workspace-user"));

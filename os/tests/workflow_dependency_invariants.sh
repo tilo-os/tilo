@@ -38,7 +38,9 @@ cosign_workflows=(
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
+  "$workflows/dev-disk.yml"
 )
+dev_disk_workflow="$workflows/dev-disk.yml"
 syft_workflow="$workflows/build-image.yml"
 release_signed_workflows=(
   "$workflows/build-builder-image.yml"
@@ -75,11 +77,9 @@ if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' 
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
    && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'git checkout --detach origin/main' "$rpm_snapshot_workflow" \
-   && grep -Fq 'git push --force-with-lease="refs/heads/$branch:$remote_tip"' "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/open-rpm-snapshot-pr.py' "$rpm_snapshot_workflow"; then
+   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
   printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
@@ -329,5 +329,19 @@ if grep -Fq 'ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org' "$cont
 else
   printf 'Go helper builds can bypass the verified module proxy or redownload unchanged modules\n' >&2
   fail=1
+fi
+
+# Dev images carry sshd, a toolchain and an unsealed /usr. Signing one with the
+# OS release authority would let a production machine accept it as an update,
+# so the dev workflow only verifies the base against keys/cosign.pub.
+if grep -Eq 'COSIGN_KEY_REF|AWS_SIGNING_ROLE_ARN|cosign (sign|attest)' "$dev_disk_workflow"; then
+  printf 'dev disk workflow can sign with the OS release authority\n' >&2
+  fail=1
+elif ! grep -Fq 'cosign verify --key keys/cosign.pub "$child"' "$dev_disk_workflow" \
+  || ! grep -Fq '"git+ssh://code.sandbox.example/qos/qos@" + $source' "$dev_disk_workflow"; then
+  printf 'dev disk workflow builds on a base it has not bound to the release key and source\n' >&2
+  fail=1
+else
+  printf 'ok    dev disks build only on a verified same-source base and are never release-signed\n'
 fi
 exit "$fail"

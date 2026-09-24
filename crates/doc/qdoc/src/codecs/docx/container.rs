@@ -43,6 +43,11 @@ impl DocxContainer {
         }
     }
 
+    /// Remove a part, if present.
+    pub fn remove(&mut self, name: &str) {
+        self.parts.retain(|(n, _)| n != name);
+    }
+
     /// Serialise the parts back into a package.
     ///
     /// # Errors

@@ -38,7 +38,8 @@ pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 pub const BUILTIN_HIGH_RISK: &[&str] = &["so.tilo.browser", "so.tilo.tube", "so.tilo.music"];
 
 /// Environment variable that overrides [`POLICY_PATH`] — for tests to
-/// point at a fixture; production reads the image's file.
+/// point at a fixture; production reads the image's file. Honoured only by
+/// developer builds (see [`crate::dev_env`]).
 pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 
 /// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
@@ -146,8 +147,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path =
-        std::env::var_os(POLICY_PATH_ENV).map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
+    let policy_path = crate::dev_env::dev_override(POLICY_PATH_ENV)
+        .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
         // No policy file: fall back to the compiled-in set rather than to
@@ -202,19 +203,16 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_policy_file_replaces_the_builtin_list() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("untrusted-parsers.conf");
         std::fs::write(&file, "so.tilo.notes\n").unwrap();
-        // SAFETY: single-threaded test body; the var is removed before return.
-        unsafe { std::env::set_var(POLICY_PATH_ENV, &file) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(POLICY_PATH_ENV, &file);
 
         let notes = for_package("so.tilo.notes");
         let browser = for_package("so.tilo.browser");
-
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+        drop(env);
 
         assert!(
             notes.shadow_stack,
@@ -228,18 +226,15 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn with_no_policy_file_the_builtin_set_still_applies() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist.conf");
-        // SAFETY: single-threaded test body; the var is removed before return.
-        unsafe { std::env::set_var(POLICY_PATH_ENV, &missing) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(POLICY_PATH_ENV, &missing);
 
         let browser = for_package("so.tilo.browser");
         let calculator = for_package("so.tilo.calculator");
-
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+        drop(env);
 
         assert!(browser.shadow_stack, "fallback list lost the browser");
         assert!(!calculator.is_active(), "a plain app must stay unhardened");

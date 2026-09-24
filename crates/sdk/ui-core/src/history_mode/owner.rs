@@ -136,10 +136,7 @@ impl HistoryOwner {
             return Err(HistoryRegistrationError::ForeignSource);
         }
         Ok(HistoryResource::new(
-            storage.map_or_else(
-                || format!("memory:{lifetime}"),
-                |path| path.to_string_lossy().into_owned(),
-            ),
+            storage.unwrap_or_else(|| format!("memory:{lifetime}")),
             if room.is_empty() {
                 format!("lifetime:{lifetime}")
             } else {

@@ -24,13 +24,12 @@
 use std::ffi::CString;
 use std::path::PathBuf;
 
-use landlock::{
-    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
-    RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
-};
+use landlock::RestrictionStatus;
+pub use sandbox_core::landlock::access_plan;
 
 use crate::landlock::{
-    FS_ABI, FsRule, LandlockBuildError, LandlockOutcome, TARGET_ABI, access_for_fd,
+    LandlockBuildError, LandlockOutcome, NetRestriction, RulesetSpec, TARGET_ABI,
+    outcome_from_status,
 };
 
 /// Hidden subcommand token. Dispatched by `main.rs` before clap.
@@ -164,76 +163,34 @@ impl ShimArgs {
     }
 }
 
-/// Map ro/rw to FS rules — pure, unit-testable.
-pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
-    let fs_abi = if abi >= ABI::V5 { FS_ABI } else { abi };
-    let read = AccessFs::from_read(fs_abi);
-    let all = AccessFs::from_all(fs_abi);
-    let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
-    for p in ro {
-        plan.push(FsRule {
-            path: p.clone(),
-            access: read,
-        });
-    }
-    for p in rw {
-        plan.push(FsRule {
-            path: p.clone(),
-            access: all,
-        });
-    }
-    plan
-}
-
-pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
-    match status {
-        RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
-        RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
-        RulesetStatus::NotEnforced => LandlockOutcome::NotEnforced,
-    }
+/// The Landlock ruleset a parsed shim invocation installs — pure, so the
+/// exact policy is unit-testable without restricting the test process.
+///
+/// Two mutually exclusive shapes of network restriction:
+/// `net_restricted` denies every TCP bind/connect (belt and braces over
+/// an already-empty namespace); `net_gate_port` denies every TCP
+/// bind/connect except that one port, so even a future change that
+/// accidentally gave this namespace a route still can't open a socket
+/// to anywhere but the gate.
+pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
+    let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
+    let net = match gate_port {
+        Some(port) => NetRestriction::ConnectOnly(port),
+        None if args.net_restricted => NetRestriction::DenyAll,
+        None => NetRestriction::Unrestricted,
+    };
+    RulesetSpec::application(access_plan(&args.ro, &args.rw, TARGET_ABI), net)
 }
 
 /// Build + `restrict_self()`. The one function that permanently locks
 /// the calling process — never call it from unit tests.
 fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuildError> {
-    let abi = TARGET_ABI;
-
-    let mut ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_all(FS_ABI))?;
-    // Two mutually exclusive shapes of network restriction:
-    // `net_restricted` denies every TCP bind/connect (belt and braces over
-    // an already-empty namespace); `net_gate_port` denies every TCP
-    // bind/connect except that one port, so even a future change that
-    // accidentally gave this namespace a route still can't open a socket
-    // to anywhere but the gate.
-    let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
-    if args.net_restricted || gate_port.is_some() {
-        ruleset = ruleset.handle_access(AccessNet::from_all(ABI::V4))?;
-    }
-
-    let mut created = ruleset.create()?;
-
-    if let Some(port) = gate_port {
-        created = created.add_rule(NetPort::new(port, AccessNet::ConnectTcp))?;
-    }
-
-    for rule in access_plan(&args.ro, &args.rw, abi) {
-        match PathFd::new(&rule.path) {
-            Ok(fd) => {
-                let access = access_for_fd(&fd, rule.access)?;
-                created = created.add_rule(PathBeneath::new(fd, access))?;
-            }
-            Err(e) => {
-                eprintln!(
-                    "tilo-sandbox-exec: skipping rule for {} (open failed: {e})",
-                    rule.path.display()
-                );
-            }
-        }
-    }
-
-    Ok(created.restrict_self()?)
+    sandbox_core::landlock::restrict_self(&ruleset_spec(args), |path, e| {
+        eprintln!(
+            "tilo-sandbox-exec: skipping rule for {} (open failed: {e})",
+            path.display()
+        );
+    })
 }
 
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
@@ -452,6 +409,8 @@ fn exec_real_command(command: &[String]) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::landlock::FS_ABI;
+    use landlock::CompatLevel;
 
     #[test]
     fn parses_minimal_command() {
@@ -551,6 +510,88 @@ mod tests {
         assert_eq!(plan[0].path, PathBuf::from("/usr"));
         assert_eq!(plan[1].path, PathBuf::from("/tmp/data"));
         assert_ne!(plan[0].access, plan[1].access); // rw has strictly more rights
+    }
+
+    /// The shim's rule list as raw access bits (see
+    /// `landlock::tests::pinned_ruleset_access_sets` for the bit names):
+    /// read-only paths get Execute|ReadFile|ReadDir, read-write paths get
+    /// every ABI-5 right, in argv order with read-only first.
+    #[test]
+    fn pinned_shim_rule_list() {
+        let plan = access_plan(
+            &[PathBuf::from("/usr"), PathBuf::from("/lib")],
+            &[PathBuf::from("/app"), PathBuf::from("/dev/dri")],
+            TARGET_ABI,
+        );
+        let pinned: Vec<(PathBuf, u64)> = plan
+            .iter()
+            .map(|rule| (rule.path.clone(), rule.access.bits()))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                (PathBuf::from("/usr"), 0b1101),
+                (PathBuf::from("/lib"), 0b1101),
+                (PathBuf::from("/app"), 0xffff),
+                (PathBuf::from("/dev/dri"), 0xffff),
+            ]
+        );
+    }
+
+    /// Each network shape of the shim argv, and the ruleset it installs.
+    #[test]
+    fn pinned_shim_rulesets() {
+        let base = ShimArgs::parse(&[
+            "--ro".into(),
+            "/usr".into(),
+            "--rw".into(),
+            "/app".into(),
+            "--".into(),
+            "/app/bin".into(),
+        ])
+        .expect("parse");
+        let rules = access_plan(&base.ro, &base.rw, TARGET_ABI);
+
+        let open = ruleset_spec(&base);
+        assert_eq!(open.compat, CompatLevel::HardRequirement);
+        assert_eq!(open.handled_fs.bits(), 0xffff);
+        assert!(open.handled_net.is_empty());
+        assert!(open.connect_ports.is_empty());
+        assert!(open.trim_file_rights);
+        assert_eq!(open.rules, rules);
+
+        let restricted = ruleset_spec(&ShimArgs {
+            net_restricted: true,
+            ..base.clone()
+        });
+        assert_eq!(restricted.handled_net.bits(), 0b11);
+        assert!(restricted.connect_ports.is_empty());
+        assert_eq!(restricted.rules, rules);
+
+        let gated = ruleset_spec(&ShimArgs {
+            net_gate: Some(PathBuf::from("/run/gate.sock")),
+            net_gate_port: Some(8118),
+            ..base.clone()
+        });
+        assert_eq!(gated.handled_net.bits(), 0b11);
+        assert_eq!(gated.connect_ports, vec![8118]);
+
+        // Restricted and gated together: still only the gate port.
+        let both = ruleset_spec(&ShimArgs {
+            net_restricted: true,
+            net_gate: Some(PathBuf::from("/run/gate.sock")),
+            net_gate_port: Some(8118),
+            ..base.clone()
+        });
+        assert_eq!(both, gated);
+
+        // A port without a gate socket opens nothing.
+        let portless = ruleset_spec(&ShimArgs {
+            net_gate_port: Some(8118),
+            ..base
+        });
+        assert!(portless.handled_net.is_empty());
+        assert!(portless.connect_ports.is_empty());
     }
 
     #[test]

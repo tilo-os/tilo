@@ -3793,9 +3793,8 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
     // writes the real `~/.config/tilo/userdict.txt`. (The in-memory add is
     // what the assertions below check; persistence is best-effort.)
     let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", &tmp);
 
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
@@ -6373,6 +6372,24 @@ fn temp_png(tag: &str) -> std::path::PathBuf {
     p
 }
 
+/// A recording host whose next single-file chooser answers `outcome`, current
+/// on this thread while the returned guard lives.
+fn host_answering(outcome: portal::PortalOutcome) -> (ui::host::HostScope, ui::host::HostRecorder) {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let scope = ui::host::enter(&services);
+    recorder.respond_to_pick(outcome);
+    (scope, recorder)
+}
+
+/// Titles of every chooser the recording host was asked to open, in order.
+fn pick_titles(recorder: &ui::host::HostRecorder) -> Vec<String> {
+    recorder
+        .pick_requests()
+        .iter()
+        .map(|r| r.title().to_string())
+        .collect()
+}
+
 fn image_block_count(wp: &WordProcessorWidget, state: &ui::State) -> usize {
     let c = wp.model().containers.clone().unwrap();
     qdoc::model::materialize(&state.doc, &c)
@@ -6410,11 +6427,10 @@ fn a_resolved_portal_pick_inserts_an_image() {
     let (mut state, mut wp) = bound();
     wp.model_mut().insert_str(&mut state.doc, "before");
     let path = temp_png("pick");
-    // Feed the exact per-frame drain path a chosen-file outcome for an image.
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        path.clone(),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::InsertImage);
+    // The Image button asks the host chooser, which answers with a file.
+    let (_host, recorder) = host_answering(portal::PortalOutcome::Opened(path.clone()));
+    wp.apply_tool(&mut state.doc, ToolAction::InsertImage);
+    assert_eq!(pick_titles(&recorder), ["Insert image"]);
     wp.sync(&mut state.doc, &state.root);
     let _ = std::fs::remove_file(&path);
     assert!(
@@ -6432,8 +6448,8 @@ fn a_resolved_portal_pick_inserts_an_image() {
 #[test]
 fn a_cancelled_portal_pick_inserts_nothing() {
     let (mut state, mut wp) = bound();
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Cancelled));
-    wp.portal_purpose = Some(PortalPurpose::InsertImage);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Cancelled);
+    wp.apply_tool(&mut state.doc, ToolAction::InsertImage);
     wp.sync(&mut state.doc, &state.root);
     assert!(
         wp.portal_rx.is_none(),
@@ -6485,10 +6501,8 @@ fn save_as_writes_a_real_docx_that_round_trips() {
     // Edit, then Save As to a NEW .docx through the real portal drain path.
     wp.model_mut().focus_body(&mut state.doc); // seat the caret on a real block
     wp.model_mut().insert_str(&mut state.doc, "EDITED ");
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        dest.clone(),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::SaveAs);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(dest.clone()));
+    wp.request_save_as();
     wp.sync(&mut state.doc, &state.root);
 
     // Save As adopted the chosen path/format and cleared the in-flight request.
@@ -6542,10 +6556,10 @@ fn file_ux_failed_save_as_keeps_the_original_destination() {
     std::fs::write(&original, "Original on disk").unwrap();
     wp.set_file(original.clone(), WpFormat::Markdown);
     wp.save_status = DocumentSaveStatus::Modified;
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(
         dir.join("missing-parent").join("new.docx"),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::SaveAs);
+    ));
+    wp.request_save_as();
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(wp.path, Some(original.clone()));
     assert_eq!(wp.format, Some(WpFormat::Markdown));
@@ -6563,10 +6577,8 @@ fn file_ux_failed_open_reports_an_error_without_changing_the_draft() {
     let (mut state, mut wp) = bound();
     wp.model_mut().insert_str(&mut state.doc, "My draft");
     let missing = std::env::temp_dir().join(format!("wp-missing-{}.docx", std::process::id()));
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        missing,
-    )));
-    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(missing));
+    wp.request_open_document();
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(
         first_block(&wp, &state).map(|b| b.text),
@@ -6606,10 +6618,8 @@ fn file_ux_open_does_not_replace_a_modified_draft_without_a_decision() {
     wp.save_status = DocumentSaveStatus::Modified;
     let picked = std::env::temp_dir().join(format!("wp-guard-open-{}.md", std::process::id()));
     std::fs::write(&picked, "Other file").unwrap();
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        picked.clone(),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(picked.clone()));
+    wp.request_open_document();
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(
         first_block(&wp, &state).map(|b| b.text),
@@ -6630,16 +6640,19 @@ fn file_ux_cancelled_or_failed_save_keeps_the_pending_open_and_draft() {
         wp.stage_replacement(PendingReplacement::Open(PathBuf::from(
             "never-open-this.md",
         )));
-        wp.portal_purpose = Some(PortalPurpose::SaveAs);
-        wp.portal_rx = Some(match failure {
-            0 => portal::inject_for_test(portal::PortalOutcome::Cancelled),
-            1 => portal::inject_for_test(portal::PortalOutcome::Failed("test failure".into())),
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        match failure {
+            0 => recorder.respond_to_pick(portal::PortalOutcome::Cancelled),
+            1 => recorder.respond_to_pick(portal::PortalOutcome::Failed("test failure".into())),
             _ => {
+                // A chooser whose worker hung up without answering.
                 let (sender, receiver) = std::sync::mpsc::channel();
                 drop(sender);
-                receiver
+                wp.portal_purpose = Some(PortalPurpose::SaveAs);
+                wp.portal_rx = Some(receiver);
             }
-        });
+        }
         wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
         wp.sync(&mut state.doc, &state.root);
         assert_eq!(
@@ -6698,11 +6711,9 @@ fn file_ux_save_then_open_writes_the_draft_before_replacing_it() {
         let invocation = tilo_actions::InvocationId::new();
         wp.resource_file_invocation = Some(invocation);
         wp.stage_replacement(PendingReplacement::Open(target.clone()));
-        wp.portal_purpose = Some(PortalPurpose::SaveAs);
-        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-            saved.clone(),
-        )));
+        let (_host, recorder) = host_answering(portal::PortalOutcome::Opened(saved.clone()));
         wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
+        assert_eq!(pick_titles(&recorder), ["Save as"]);
         wp.sync(&mut state.doc, &state.root);
         assert!(
             std::fs::read_to_string(&saved)
@@ -6796,10 +6807,8 @@ fn failed_save_as_preserves_source_identity_and_recovery_for_picker_and_action()
                 .is_err()
             );
         } else {
-            wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-                dir.clone(),
-            )));
-            wp.portal_purpose = Some(PortalPurpose::SaveAs);
+            let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(dir.clone()));
+            wp.request_save_as();
             wp.sync(&mut state.doc, &state.root);
         }
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
@@ -6830,10 +6839,8 @@ fn export_only_save_as_preserves_editable_path_and_recovery() {
     std::fs::write(&recovery, b"unsaved recovery").unwrap();
     for extension in ["pdf", "epub"] {
         let destination = dir.join(format!("export.{extension}"));
-        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-            destination.clone(),
-        )));
-        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(destination.clone()));
+        wp.request_save_as();
         wp.sync(&mut state.doc, &state.root);
         let bytes = std::fs::read(destination).unwrap();
         assert!(bytes.starts_with(if extension == "pdf" { b"%PDF" } else { b"PK" }));
@@ -6860,10 +6867,8 @@ fn open_pick_offers_destination_recovery_and_preserves_previous_recovery() {
     std::fs::write(&destination, b"saved destination").unwrap();
     let destination_recovery = wp.recovery.path_for(Some(&destination));
     std::fs::write(&destination_recovery, b"destination unsaved work").unwrap();
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        destination.clone(),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(destination.clone()));
+    wp.request_open_document();
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(wp.path.as_deref(), Some(destination.as_path()));
     assert!(wp.recovery.is_active());
@@ -7013,11 +7018,9 @@ fn open_pick_replaces_the_document_in_place() {
     wp.model_mut().insert_str(&mut state.doc, "stale content");
     assert!(wp.path.is_none(), "untitled before opening");
 
-    // Feed the exact per-frame drain path an Open outcome.
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
-        src.clone(),
-    )));
-    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    // Ctrl+O's request, answered by the host chooser with the file.
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Opened(src.clone()));
+    wp.request_open_document();
     wp.sync(&mut state.doc, &state.root);
 
     let body = body_text(&wp, &state).join("\n");
@@ -8119,8 +8122,8 @@ fn close_requirement_survives_cancelled_save_as_and_failed_canonical_save() {
     let pending_ops = state.doc.pending_ops();
     let invocation = tilo_actions::InvocationId::new();
     wp.resource_file_invocation = Some(invocation);
-    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Cancelled));
-    wp.portal_purpose = Some(PortalPurpose::SaveAs);
+    let (_host, _recorder) = host_answering(portal::PortalOutcome::Cancelled);
+    wp.request_save_as();
     wp.sync(&mut state.doc, &state.root);
     assert!(matches!(
         wp.poll_resource_operation(invocation, false, &state.doc, &state.root),

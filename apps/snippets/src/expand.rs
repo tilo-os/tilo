@@ -240,8 +240,8 @@ impl ExpandModal {
                     t,
                     input,
                     f64::from(theme.tokens.radii.md),
-                    1.5,
                     c.border_focus,
+                    1.5,
                 );
             }
             // The modal keeps its established label/box chrome; the shared
@@ -317,13 +317,13 @@ impl ExpandModal {
         );
         let preview = self.preview();
         let mut cy = card.y0 + 12.0;
-        for line in preview.lines() {
+        for spans in highlight::highlight_lines(&preview, self.language) {
             if cy > card.y1 - 18.0 {
                 break;
             }
             let mut sx = card.x0 + 14.0;
-            for span in highlight::highlight_line(line, self.language) {
-                let color = span.kind.color(theme);
+            for span in spans {
+                let color = highlight::token_color(span.kind, theme);
                 draw::mono(
                     scene,
                     tr,

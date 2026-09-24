@@ -74,7 +74,7 @@ fn op_label(class: OpClass) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use crate::time::SystemTime;
 
     use collab_types::ArtifactKind;
     use tilo_actions::{ActionContext, ActionFacet};

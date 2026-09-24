@@ -241,6 +241,14 @@ fn advance_frame(
                 }
             }
         }
+        Event::GeneralRef(r) => {
+            let resolved = crate::codecs::resolve_general_ref(r);
+            match fr.collecting {
+                Some(true) => fr.title.extend(resolved),
+                Some(false) => fr.desc.extend(resolved),
+                None => {}
+            }
+        }
         Event::End(e) => {
             fr.depth = fr.depth.saturating_sub(1);
             match e.name().as_ref() {
@@ -920,6 +928,16 @@ impl BodyState {
         }
         Ok(())
     }
+
+    /// An entity or character reference in paragraph text is the character it stands for.
+    fn handle_general_ref(&mut self, r: &quick_xml::events::BytesRef, doc: &mut DocMut) {
+        if let Some(b) = self.cur.as_ref()
+            && let Some(c) = crate::codecs::resolve_general_ref(r)
+        {
+            doc.splice_text(b, self.cur_len, 0, c.encode_utf8(&mut [0; 4]));
+            self.cur_len = self.cur_len.saturating_add(1);
+        }
+    }
 }
 
 pub(crate) fn parse_body(
@@ -1008,6 +1026,7 @@ pub(crate) fn parse_body(
             Event::Empty(e) => st.handle_empty(&e, doc, reg, s, pos_before, pos_after()),
             Event::End(e) => st.handle_end(&e),
             Event::Text(t) => st.handle_text(&t, doc)?,
+            Event::GeneralRef(r) => st.handle_general_ref(&r, doc),
             Event::Eof => break,
             _ => {}
         }
@@ -1471,6 +1490,27 @@ mod tests {
             Some(&AttrVal::Int(267)),
             "{:?}",
             img.attrs
+        );
+    }
+
+    #[test]
+    fn image_alt_text_keeps_entity_references() {
+        use super::super::container::OdtContainer;
+        let body = concat!(
+            r#"<text:p><draw:frame><draw:image xlink:href="Pictures/0.png"/>"#,
+            "<svg:title>R&amp;D &lt;chart&gt; &#x1F600;</svg:title></draw:frame></text:p>",
+        );
+        let mut c = OdtContainer::read(&minimal_odt_styled("", body)).unwrap();
+        c.set("Pictures/0.png", TINY_PNG.to_vec());
+        let mut d = Document::new();
+        OdtCodec
+            .import(&c.write().unwrap(), &mut d.as_mut())
+            .unwrap();
+        let snap = d.materialize();
+        let img = snap.blocks.iter().find(|b| b.kind == "image").unwrap();
+        assert_eq!(
+            img.attrs.get("alt"),
+            Some(&AttrVal::Str("R&D <chart> \u{1F600}".into()))
         );
     }
 

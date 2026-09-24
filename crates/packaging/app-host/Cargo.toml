@@ -20,6 +20,12 @@ path = "src/main.rs"
 name = "app_host"
 path = "src/lib.rs"
 
+[features]
+# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
+# release build. Debug builds always honour them; shipped images never enable
+# this.
+dev-overrides = []
+
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
@@ -43,7 +49,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 dirs.workspace = true
-parking_lot.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -59,10 +64,10 @@ sd-notify.workspace = true
 capnpc.workspace = true
 
 [dev-dependencies]
+getrandom.workspace = true
 tar.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
-rand.workspace = true
 
 [[test]]
 name = "it"

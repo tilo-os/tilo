@@ -1,18 +1,6 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
 impl App {
-    fn screen_reader_env_enabled() -> bool {
-        for key in ["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"] {
-            if let Ok(v) = std::env::var(key) {
-                let v = v.trim();
-                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     fn persisted_accessibility_bool(key: &str) -> bool {
         settings_store::load_section("accessibility")
             .get(key)
@@ -50,57 +38,6 @@ impl App {
         let mut reader = crate::screen_reader::ScreenReader::new();
         Self::configure_screen_reader(&mut reader);
         reader
-    }
-
-    /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
-    /// `"0"`/`"false"` (case-insensitive).
-    fn bool_env(keys: &[&str]) -> bool {
-        for key in keys {
-            if let Ok(v) = std::env::var(key) {
-                let v = v.trim();
-                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn high_contrast_env_enabled() -> bool {
-        Self::bool_env(&["TILO_A11Y_HIGH_CONTRAST", "TILO_HIGH_CONTRAST"])
-    }
-
-    fn reduce_motion_env_enabled() -> bool {
-        Self::bool_env(&["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"])
-    }
-
-    /// A bad value is ignored rather than crashing the app at startup.
-    fn text_scale_env() -> Option<f32> {
-        for key in ["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"] {
-            if let Ok(v) = std::env::var(key)
-                && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite()
-                && f > 0.0
-            {
-                return Some(f);
-            }
-        }
-        None
-    }
-
-    /// The shell mirrors the user's UI-scale preference into spawned
-    /// sandboxes via this var so an app comes up already scaled.
-    fn ui_scale_env() -> Option<f32> {
-        for key in ["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"] {
-            if let Ok(v) = std::env::var(key)
-                && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite()
-                && f > 0.0
-            {
-                return Some(f);
-            }
-        }
-        None
     }
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
@@ -414,6 +351,12 @@ impl App {
             None
         }
 
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
+            self.update_history_focus_order();
+            return;
+        }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
             return;
@@ -532,20 +475,21 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if let Some(&id) = self.focusable_order.get(idx) {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
-                    self.history.stable_metadata = Some(metadata);
+                    self.focus_history.stable_metadata = Some(metadata);
                 }
-                self.history.stable_focus_idx = Some(idx);
+                self.focus_history.stable_focus_idx = Some(idx);
             }
         } else {
             self.set_focused_node(None);
-            self.history.stable_focus_idx = None;
-            self.history.stable_metadata = None;
+            self.focus_history.stable_focus_idx = None;
+            self.focus_history.stable_metadata = None;
         }
         self.layout.layout_dirty = true;
         self.needs_sync = true;
@@ -554,6 +498,14 @@ impl App {
 
     /// Unique admitted node visits keep child reports and requests off shell history.
     fn service_history(&mut self) -> bool {
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return false;
+        }
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -562,6 +514,7 @@ impl App {
                 &self.layout.node_map,
                 &self.bindings,
                 &self.collaboration.local_author,
+                &self.permission_ctx,
             )
         };
         let mut visited = std::collections::HashSet::new();
@@ -587,6 +540,15 @@ impl App {
                         .history_request(&mut self.state.doc, request)
                         .ok()
                         .flatten()
+                } else if let Some(owner) = self.bindings.legacy_for(node) {
+                    crate::bound_dispatch::legacy_history_request(
+                        &owner,
+                        request,
+                        &self.permission_ctx,
+                        &self.collaboration.local_author,
+                    )
+                    .ok()
+                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => {
@@ -601,11 +563,39 @@ impl App {
                 };
                 changed |= entry.is_some();
             }
-            let status = if let Some(binding) = binding {
-                binding.undo_status(&mut self.state.doc).unwrap_or_default()
-            } else {
-                self.state
-                    .undo_status(Some(&self.collaboration.local_author))
+            // The former eager status read flushed open transactions whenever
+            // history existed. Preserve that boundary without deriving labels.
+            if binding.is_none()
+                && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+                && (self
+                    .state
+                    .can_undo_as(Some(&self.collaboration.local_author))
+                    || self
+                        .state
+                        .can_redo_as(Some(&self.collaboration.local_author)))
+            {
+                self.state.doc.get_heads();
+            }
+            // Bound histories intentionally keep completed-action labels warm
+            // across pending edits and dynamically mounted controls.
+            let bound_status = binding
+                .as_ref()
+                .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
+                .or_else(|| {
+                    self.bindings
+                        .legacy_status(node, &self.collaboration.local_author)
+                });
+            let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+            let mut status = || {
+                bound_status.clone().unwrap_or_else(|| {
+                    if embedded {
+                        self.state
+                            .undo_status_snapshot(Some(&self.collaboration.local_author))
+                    } else {
+                        self.state
+                            .undo_status(Some(&self.collaboration.local_author))
+                    }
+                })
             };
             // SAFETY: the same unique admitted node remains live and exclusive.
             let _ = unsafe {
@@ -613,7 +603,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| widget.set_undo_status(&status),
+                    |widget| widget.set_undo_status(&mut status),
                 )
             };
         }
@@ -622,6 +612,7 @@ impl App {
 
     /// Finalize the document boundary for a handled native event. Shared host
     /// controls only change presentation and must not close pending app typing.
+    #[cfg(feature = "native")]
     fn finalize_handled_native_event(
         &mut self,
         event: &WindowEvent,
@@ -636,6 +627,14 @@ impl App {
     }
 
     fn commit_action(&mut self) {
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return;
+        }
         if self.service_history() {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -645,15 +644,15 @@ impl App {
         // not the CRDT — `changed` lets those skip persisting/syncing.
         let context = self.root_widget.take_commit_context();
         let changed = self.state.commit_action_authored_with_context(
-            self.history.stable_focus_idx,
-            self.history.stable_metadata.clone(),
+            self.focus_history.stable_focus_idx,
+            self.focus_history.stable_metadata.clone(),
             Some(self.collaboration.local_author.clone()),
             context,
         );
-        self.history.stable_focus_idx = self
+        self.focus_history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.history.stable_metadata = self.focused_node.and_then(|id| {
+        self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -670,6 +669,7 @@ impl App {
     }
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+        self.suspend_history_focus(new_id);
         if new_id.is_some_and(|node| self.is_history_node(node)) {
             self.remember_history_content();
         }
@@ -701,6 +701,7 @@ impl App {
     /// The platform IME contract for the focused widget. A field opts in via
     /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally.
+    #[cfg(feature = "native")]
     fn ime_window_state(&self) -> Option<ImeWindowState> {
         let id = self.focused_node?;
         let purpose = self
@@ -734,6 +735,7 @@ impl App {
         })
     }
 
+    #[cfg(feature = "native")]
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -746,6 +748,7 @@ impl App {
 
     /// Only fires if focus did NOT move — a move is narrated separately by
     /// [`set_focused_node`].
+    #[cfg(feature = "native")]
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
         let Some((pre_id, pre_state)) = pre else {
             return;
@@ -772,6 +775,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -784,6 +788,7 @@ impl App {
 
     /// Typing is left to the widget's own echo so this never double-speaks
     /// an edit.
+    #[cfg(feature = "native")]
     fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
         let Some((pre_id, pre_caret, pre_text)) = pre else {
             return;
@@ -828,6 +833,7 @@ impl App {
 
     /// Announces changed [live regions](crate::a11y::AccessNode::live)
     /// without moving focus.
+    #[cfg(feature = "native")]
     fn scan_live_regions(&mut self) {
         fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
@@ -927,6 +933,7 @@ impl App {
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
+    #[cfg(feature = "native")]
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         modal_rect.is_none() || self.accessibility.focus_trap_active
     }
@@ -935,6 +942,7 @@ impl App {
     /// widget may explicitly claim it first (for indentation or completion),
     /// without broadening that exception to arbitrary widgets or escaping an
     /// active focus trap.
+    #[cfg(feature = "native")]
     fn focused_widget_wants_tab_input(&self) -> bool {
         self.focused_node.is_some_and(|node| {
             self.inspect_node(node, |widget| widget.wants_tab_input())
@@ -943,6 +951,7 @@ impl App {
     }
 
     /// Shared native Tab admission, preserving text-input and modal capture.
+    #[cfg(feature = "native")]
     fn handle_tab_navigation(
         &mut self,
         event: &WindowEvent,
@@ -958,30 +967,6 @@ impl App {
             return self.focus_tab(self.input.modifiers.state().shift_key());
         }
         false
-    }
-
-    /// Native Enter/Space fallback, after the focused widget has declined input.
-    fn activate_focused_control_key(&mut self, event: &WindowEvent) -> bool {
-        if !matches!(event, WindowEvent::KeyboardInput { event, .. }
-            if event.state == winit::event::ElementState::Pressed
-                && matches!(event.logical_key, winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space)))
-        {
-            return false;
-        }
-        let Some(fid) = self.focused_node else {
-            return false;
-        };
-        let did = self
-            .dispatch_node(fid, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
-            })
-            .unwrap_or(false);
-        if did {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
-        did
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -1017,6 +1002,21 @@ impl App {
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        if let Some(history) = &self.history {
+            let resources = if history.live_interactive() {
+                self.collect_declared_resources()
+            } else {
+                vec![]
+            };
+            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+                &self.history_presentation_roots(),
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                scale,
+                &resources,
+            );
+        }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
         self.with_native_presentation(|root, nodes, focused, _| {
@@ -1084,7 +1084,7 @@ impl App {
             let _ = self.open_action_palette_at(&address);
             return true;
         }
-        let actor = crate::collaboration::local_user_id().0;
+        let actor = self.collaboration.local_author.0.clone();
         if self
             .invoke_resource_action(ResourceInvocation::new(&address, &actor).argument(argument))
             .is_ok()
@@ -1095,32 +1095,41 @@ impl App {
         true
     }
 
-    /// Resolves both retained AccessKit nodes and synthetic semantic children
-    /// (virtual rows/cells) to their owning widget. The widget gets first
-    /// refusal; synthetic children additionally carry an opaque stable target
-    /// produced by that widget. If a retained widget declines, `Action::Focus`
-    /// moves keyboard focus and activation returns click coordinates.
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        use crate::accesskit_bridge::{A11yTarget, resolve_node_id_bound};
+        use crate::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
 
         self.refresh_control_action_availability();
+        // A retained AT id is operable only while the exact target is exported
+        // in the current presentation; hidden resources cannot bypass chrome.
+        if !self
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .any(|(id, _)| *id == target)
+        {
+            return None;
+        }
         if self.dispatch_resource_a11y_action(target, action) {
             return None;
         }
 
-        let resolved = self
-            .with_native_presentation(|root, nodes, _, _| {
-                resolve_node_id_bound(root, nodes, target)
-            })
-            .ok()
-            .flatten()?;
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        let resolved = if self.history.is_some() {
+            self.history_presentation_roots()
+                .into_iter()
+                .find_map(|root| exported.resolve(root, target))?
+        } else {
+            self.with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+                .ok()
+                .flatten()?
+        };
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
             A11yTarget::Root => return None,
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
@@ -1131,8 +1140,23 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target, true),
         };
+        let framework = crate::history_mode::embedded::owns_node(
+            self.root_widget.as_ref(),
+            taffy_id,
+            &self.layout.taffy,
+        ) || self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &self.framework_input,
+            framework || self.bindings.owns_document(taffy_id),
+        );
+        if framework {
+            self.suspend_history_focus(Some(taffy_id));
+        }
         let handled = self
-            .dispatch_node(taffy_id, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     widget.perform_semantic_action(target, action, doc, root)
                 } else if synthetic {
@@ -1143,7 +1167,12 @@ impl App {
             })
             .ok()?;
         if handled {
-            if matches!(action, Action::Focus) {
+            if matches!(action, Action::Focus)
+                || (matches!(action, Action::SetSelection { .. })
+                    && self
+                        .inspect_node(taffy_id, |widget| widget.is_focused())
+                        .unwrap_or(false))
+            {
                 self.set_focused_node(Some(taffy_id));
             }
             // `Widget::perform_action` is deliberately the same path as a
@@ -1155,6 +1184,11 @@ impl App {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout.layout_dirty = true;
+            if framework {
+                self.refresh_framework_history(
+                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
+                );
+            }
             return None;
         }
 
@@ -1218,6 +1252,10 @@ impl App {
         ];
         let mut handled_any = false;
         for event in events {
+            if self.history_controls_event(&event, 1.0) {
+                handled_any |= self.dispatch_framework_history_event(&event, 1.0);
+                continue;
+            }
             let mut handled = false;
             let mut focus_target = None;
             self.presentation_handle_event(&event, 1.0, &mut handled, &mut focus_target);
@@ -1358,7 +1396,18 @@ impl App {
                     return Ok(false);
                 };
                 if let Some(semantic_target) = semantic_target {
-                    let taffy_id = NodeId::from(taffy_raw);
+                    // Semantic owners use the same lifetime-scoped aliases as
+                    // native accessibility. Resolve only current admissions;
+                    // an expired alias must never fall back to a raw layout id.
+                    let exported = self.bindings.exported_nodes(&self.layout.node_map);
+                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
+                        .resolve(
+                            self.root_widget.as_ref(),
+                            accesskit::NodeId(taffy_raw.saturating_add(1)),
+                        )
+                    else {
+                        return Ok(false);
+                    };
                     let keyed_path = semantic_target
                         .strip_prefix("tilo.key-action:")
                         .and_then(|target| target.rsplit_once(':'))

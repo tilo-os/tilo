@@ -30,6 +30,8 @@ bounded-command = { path = "../../system/bounded-command" }
 # `SyncCodec` (`Request::write_to` / `Response::read_from` over
 # `std::io::{Read,Write}`) — no async runtime needed for a login box.
 greetd_ipc = { version = "0.10", features = ["sync-codec"] }
+console-control = { path = "../console-control" }
+serde_json.workspace = true
 
 [dev-dependencies]
 

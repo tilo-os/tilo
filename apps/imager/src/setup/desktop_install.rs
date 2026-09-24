@@ -38,7 +38,7 @@ pub(super) const REQUEST_LIMIT: usize = 16 * 1024;
 pub(super) const SESSION_ENTRY: &str = "/usr/share/wayland-sessions/tilo.desktop";
 
 pub(super) fn request_digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
@@ -317,7 +317,7 @@ mod transaction_core {
                 .write_all(chunk)
                 .map_err(|_| "Cannot write private package.")?;
         }
-        if count != release.byte_size || format!("{:x}", hash.finalize()) != release.sha256 {
+        if count != release.byte_size || hex::encode(hash.finalize()) != release.sha256 {
             return Err(
                 "Desktop package digest or size does not match the authenticated release.".into(),
             );
@@ -333,13 +333,25 @@ mod transaction_core {
     }
 
     fn verify_bytes(mut input: File, release: &DesktopRelease) -> Result<(), String> {
+        /// `sha2` hashers do not implement `io::Write`; stream into one here.
+        struct HashWriter<'a>(&'a mut Sha256);
+        impl std::io::Write for HashWriter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.update(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
         let mut hash = Sha256::new();
         let size = std::io::copy(
             &mut Read::by_ref(&mut input).take(release.byte_size + 1),
-            &mut hash,
+            &mut HashWriter(&mut hash),
         )
         .map_err(|_| "Cannot verify private package.")?;
-        if size != release.byte_size || format!("{:x}", hash.finalize()) != release.sha256 {
+        if size != release.byte_size || hex::encode(hash.finalize()) != release.sha256 {
             return Err("Private package failed final authentication.".into());
         }
         Ok(())
@@ -905,7 +917,7 @@ mod tests {
     use std::path::Path;
 
     fn release() -> DesktopRelease {
-        let digest = format!("{:x}", Sha256::digest(b"package"));
+        let digest = hex::encode(Sha256::digest(b"package"));
         DesktopRelease {
             id: "fedora-test".into(),
             version: "0.1.9-1.fc44".into(),

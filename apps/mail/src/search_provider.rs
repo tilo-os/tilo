@@ -335,14 +335,9 @@ impl SearchProvider for MailSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     use ui::search::SearchRegistry;
-
-    // A 100k retained-search corpus is deliberately expensive. Keep this
-    // adversarial proof serial so normal test runs do not allocate two copies
-    // of its gram index at once.
-    static LARGE_CATALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample() -> Mailbox {
         crate::sample::sample_mailbox()
@@ -481,36 +476,31 @@ mod tests {
     }
 
     #[test]
-    fn late_message_remains_exactly_reachable_in_a_100k_catalogue() {
-        let _guard = LARGE_CATALOG_TEST_LOCK.lock().unwrap();
-        let mut mailbox = Mailbox::default();
-        let template = sample().messages.values().next().unwrap().clone();
-        for index in 0..100_001_u128 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::from_u128(index + 1);
-            message.subject = if index == 100_000 {
-                "Late unique mailbox search target".into()
-            } else {
-                format!("Ordinary indexed mail {index}")
-            };
-            message.body.clear();
-            message.labels.clear();
-            message.attachments.clear();
-            mailbox.insert(message);
-        }
-        let provider = MailSearchProvider::new(&mailbox);
-        assert_eq!(
-            provider.materialized_resource_count(),
-            0,
-            "100k retained search rows hold compact MessageRow metadata, not prebuilt Resource/ActionSpec trees"
+    fn late_message_remains_exactly_reachable_in_a_large_catalogue() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut mailbox = Mailbox::default();
+                let template = sample().messages.values().next().unwrap().clone();
+                for row in corpus {
+                    let mut message = template.clone();
+                    message.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                    message.subject = row.text;
+                    message.body.clear();
+                    message.labels.clear();
+                    message.attachments.clear();
+                    mailbox.insert(message);
+                }
+                let provider = MailSearchProvider::new(&mailbox);
+                assert_eq!(
+                    provider.materialized_resource_count(),
+                    0,
+                    "retained search rows hold compact MessageRow metadata, not prebuilt Resource/ActionSpec trees"
+                );
+                provider
+            },
+            3_000,
         );
-        let page = provider.search_page("unique mailbox search target", None, 2, 2);
-        assert!(page.inspected <= 2, "search work remains bounded");
-        let hit = page
-            .results
-            .into_iter()
-            .find(|hit| hit.title == "Late unique mailbox search target")
-            .expect("the late exact hit remains discoverable");
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
         let address = hit.action_address().expect("canonical address");
         let resource = provider
             .resolve_action_resource(&address)

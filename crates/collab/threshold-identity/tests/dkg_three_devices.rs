@@ -24,8 +24,8 @@ use threshold_identity::{
     signing::SigningRound2Partial,
 };
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
 /// Set up three devices with a 2-of-3 DKG. Returns identities a, b, c.
 // `_a`/`_b`/`_c` names three independent DKG devices — the clearest

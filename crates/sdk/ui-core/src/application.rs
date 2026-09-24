@@ -63,6 +63,7 @@ pub struct HostContext {
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     closing: Rc<Cell<bool>>,
+    services: crate::host::HostServices,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -235,6 +236,7 @@ impl HostContext {
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
             closing: Rc::new(Cell::new(false)),
+            services: crate::host::current(),
         })
     }
     pub fn record(&self) -> &RecordCheckout {
@@ -251,6 +253,11 @@ impl HostContext {
     }
     pub fn wake_handle(&self) -> WakeHandle {
         self.wake_scope.handle()
+    }
+    /// The host services this component was prepared under — the ones
+    /// [`crate::host::current`] resolved when the host prepared it.
+    pub fn services(&self) -> &crate::host::HostServices {
+        &self.services
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors

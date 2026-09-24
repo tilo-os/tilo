@@ -409,9 +409,10 @@ pub mod window {
         // handle, so a pointer published under it is addressed to a scope
         // no other machine has. Same key the overlay reads peers by.
         if let Some(room) = tree
+            .desktop
             .workspaces
             .iter()
-            .find(|w| w.id == tree.active)
+            .find(|w| w.id == tree.desktop.active)
             .map(|w| w.room.to_string())
         {
             app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));

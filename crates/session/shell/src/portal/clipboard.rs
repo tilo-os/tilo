@@ -248,7 +248,7 @@ pub struct ClipboardBackend {
 /// method dispatcher. The task exits naturally when the connection closes.
 pub fn spawn_signal_emitter(connection: zbus::Connection, backend: ClipboardBackend) {
     tokio::spawn(async move {
-        let Ok(context) = zbus::object_server::SignalContext::new(&connection, super::OBJECT_PATH)
+        let Ok(context) = zbus::object_server::SignalEmitter::new(&connection, super::OBJECT_PATH)
         else {
             return;
         };
@@ -639,13 +639,13 @@ impl ClipboardBackend {
     }
     #[zbus(signal)]
     async fn selection_owner_changed(
-        ctxt: &zbus::object_server::SignalContext<'_>,
+        ctxt: &zbus::object_server::SignalEmitter<'_>,
         session: ObjectPath<'_>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn selection_transfer(
-        ctxt: &zbus::object_server::SignalContext<'_>,
+        ctxt: &zbus::object_server::SignalEmitter<'_>,
         session: ObjectPath<'_>,
         mime: String,
         serial: u32,

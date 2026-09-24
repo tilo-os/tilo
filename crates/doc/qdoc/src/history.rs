@@ -98,7 +98,7 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
             actor_hex: ch.actor_id().to_hex_string(),
             time_ms: ch.timestamp().saturating_mul(1000),
             change_hash: ch.hash().to_string(),
-            message: ch.message().cloned(),
+            message: ch.message().map(str::to_owned),
         })
         .collect()
 }
@@ -146,6 +146,37 @@ pub fn materialize_at(doc: &mut AutoCommit, version: usize) -> Result<DocSnapsho
     Ok(materialize(&rebuilt, &c))
 }
 
+/// The document as of each of `versions` (ascending positional indices), from
+/// one replay of the change log. Equivalent to calling [`materialize_at`] per
+/// version, without replaying the whole prefix again for every one of them.
+/// A version automerge rejects, and every later one, is `None`.
+pub fn materialize_series(doc: &mut AutoCommit, versions: &[usize]) -> Vec<Option<DocSnapshot>> {
+    let mut changes = doc.get_changes(&[]).into_iter();
+    let total = changes.len();
+    let mut rebuilt = AutoCommit::new();
+    let mut applied = 0usize;
+    let mut failed = false;
+    versions
+        .iter()
+        .map(|&version| {
+            let take = version.saturating_add(1).min(total);
+            if !failed && take > applied {
+                let batch: Vec<_> = changes
+                    .by_ref()
+                    .take(take.saturating_sub(applied))
+                    .collect();
+                failed = rebuilt.apply_changes(batch).is_err();
+                applied = take;
+            }
+            if failed {
+                return None;
+            }
+            let root = open(&rebuilt, &automerge::ROOT).ok()?;
+            Some(materialize(&rebuilt, &root))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Document;
@@ -172,7 +203,7 @@ mod tests {
         let patches = doc.diff(&heads, &after);
         assert!(matches!(patches.as_slice(), [automerge::Patch {
             action: automerge::PatchAction::PutMap { key, value, .. }, ..
-        }] if key == "body" && value.0.to_str() == Some("edited")));
+        }] if key == "body" && value.0.as_str() == Some("edited")));
     }
 
     #[test]
@@ -232,5 +263,34 @@ mod tests {
         let last = d.versions().len() - 1;
         let now = d.materialize_at(last).unwrap();
         assert_eq!(now.blocks[0].text, "hello world");
+    }
+
+    #[test]
+    fn one_replay_matches_materializing_each_version() {
+        let mut d = Document::new();
+        let a = d.insert_block(None, "paragraph");
+        d.splice_text(&a, 0, 0, "first");
+        d.splice_text(&a, 5, 0, " edit");
+        let b = d.insert_block(Some(&a), "paragraph");
+        d.splice_text(&b, 0, 0, "second");
+        let count = d.versions().len();
+        let every: Vec<usize> = (0..count).collect();
+        let series = super::materialize_series(&mut d.doc, &every);
+        assert_eq!(series.len(), count);
+        for (version, snapshot) in every.iter().zip(&series) {
+            assert_eq!(
+                snapshot.as_ref(),
+                Some(&d.materialize_at(*version).unwrap()),
+                "version {version}"
+            );
+        }
+        // A window that skips versions, and one past the end, still match.
+        let window = [1, count - 1, count + 3];
+        let series = super::materialize_series(&mut d.doc, &window);
+        assert_eq!(series[0].as_ref(), Some(&d.materialize_at(1).unwrap()));
+        assert_eq!(
+            series[2].as_ref(),
+            Some(&d.materialize_at(count - 1).unwrap())
+        );
     }
 }

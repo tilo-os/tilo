@@ -147,7 +147,7 @@ pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> 
 pub fn sheet_name(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<String> {
     let obj = sheet_obj(doc, c, id)?;
     match doc.get(&obj, SHEET_NAME) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -162,7 +162,7 @@ fn cells_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
 
 fn cell_str(doc: &AutoCommit, cell: &ObjId, key: &str) -> Option<String> {
     match doc.get(cell, key) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -234,7 +234,7 @@ pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, Stri
     if let Some(props) = props_obj(doc, c) {
         for k in doc.keys(&props) {
             if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.to_str()
+                && let Some(s) = v.as_str()
             {
                 out.insert(k, s.to_string());
             }
@@ -246,7 +246,7 @@ pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, Stri
 pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -635,7 +635,7 @@ fn seeded_sheet_id_gen(
 )]
 fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
     let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     };
     if current.as_deref() != Some(value) {
@@ -654,7 +654,7 @@ fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str)
 )]
 fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
     let current = match doc.get(obj, key) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     };
     if current.as_deref() == value {

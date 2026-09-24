@@ -4,6 +4,7 @@
 //! shell host supplies a policy-filtered model and applies the semantic action
 //! returned by [`CollaboratorsOverlay::hit_test`].
 
+use crate::shell::state::WorkspaceAuthority as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -1570,16 +1571,18 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
     // the mirror). Merge by stable participant id, preferring the room row's
     // richer activity fields, so nobody temporarily disappears from People.
     let mut roster = tree
+        .desktop
         .active_workspace()
         .map(|workspace| workspace.collaborators.clone())
         .unwrap_or_default();
-    for participant in &tree.collaborators {
+    for participant in &tree.desktop.collaborators {
         if !roster.iter().any(|row| row.id == participant.id) {
             roster.push(participant.clone());
         }
     }
     let colors = crate::shell::state::roster_colors_with_local_user(&roster, local_user);
     let agent_members = tree
+        .desktop
         .active_workspace()
         .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
     let rows: Vec<RosterRow> = roster
@@ -1636,7 +1639,8 @@ fn roster_initial(name: &str) -> char {
 }
 
 fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
-    tree.active_workspace()?
+    tree.desktop
+        .active_workspace()?
         .strips
         .iter()
         .flat_map(|strip| &strip.window_groups)
@@ -1650,6 +1654,7 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     /// HIG §9.5: the footer separator (derived against the Panel ground) and
     /// the activity row's edge (derived against its lift floor) must both
@@ -1747,8 +1752,8 @@ mod tests {
                 "Release Notes Agent",
             ));
         let mut tree = WorkspaceTree::default();
-        tree.active = workspace.id;
-        tree.workspaces.push(workspace);
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces.push(workspace);
 
         let rows = collaborator_roster_rows(&tree);
         assert_eq!(rows.len(), 1);

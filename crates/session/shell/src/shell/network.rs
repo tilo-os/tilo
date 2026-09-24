@@ -3,6 +3,7 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -10,9 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use rand_core::RngCore;
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -1161,6 +1163,9 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Local record ids behind the sealed wire names this device publishes
+    /// and accepts; path-bearing record ids never leave the device.
+    wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
@@ -1169,6 +1174,11 @@ pub struct ShellNetwork {
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    /// Remote-action requests from authenticated devices, answered by the
+    /// broker's drainer.
+    inbound_remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Local callers waiting for a remote-action answer from a device.
+    remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
     /// Authenticated legacy-surface control, frame, and input messages.
     /// Frames are coalesced per surface when the render loop falls behind,
     /// keeping network jitter from turning into unbounded compositor memory.
@@ -1521,9 +1531,12 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+            inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+            remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
@@ -1719,6 +1732,7 @@ impl ShellNetwork {
         replica
             .tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .filter(|workspace| workspace.room == room)
@@ -1749,6 +1763,7 @@ impl ShellNetwork {
         replica
             .tree
             .read()
+            .desktop
             .active_workspace()
             .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
     }
@@ -2050,14 +2065,16 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_documents)
     }
 
-    /// Publish one validated signed document mutation.
+    /// Publish one validated signed document mutation. A record id that
+    /// embeds a local path is replaced by its sealed, room-scoped wire name.
     pub fn publish_document(
         &self,
         app_id: String,
         cluster_id: String,
-        record_id: String,
+        record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        let record_id = self.register_local_record(&app_id, &cluster_id, record_id);
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -2066,6 +2083,30 @@ impl ShellNetwork {
             envelope: Box::new(envelope),
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Remember that a local app holds `record_id`, so peers' traffic for
+    /// its sealed wire name can be routed to it. Returns the wire name.
+    pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
+        match self.wire_records.lock() {
+            Ok(mut records) => records.register(cluster_id, app_id, record_id),
+            Err(_) => crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
+        }
+    }
+
+    /// The local record id an inbound wire record id names, if this device
+    /// holds that record.
+    fn local_record_for_wire(&self, app_id: &str, cluster_id: &str, wire: &str) -> Option<String> {
+        if crate::network::wire_record::embeds_local_path(wire) {
+            // A current peer never sends a path; refuse one that does rather
+            // than route by a leaked name.
+            tracing::warn!(app_id, "peer document names a local path; dropping");
+            return None;
+        }
+        self.wire_records
+            .lock()
+            .ok()?
+            .resolve(cluster_id, app_id, wire)
     }
 
     /// Queue a received signed document for the broker's drainer.
@@ -2135,6 +2176,70 @@ impl ShellNetwork {
     /// answered by the broker's drainer on each tick.
     pub fn inbound_scrollback_request_handle(&self) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
         Arc::clone(&self.inbound_scrollback_request)
+    }
+
+    /// Shared handle to the remote-action request buffer, answered by the
+    /// broker's drainer.
+    pub fn inbound_remote_actions_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>> {
+        Arc::clone(&self.inbound_remote_actions)
+    }
+
+    /// Send one remote-action message to exactly `target` on the workspace
+    /// topic. Returns whether it was handed to the transport.
+    pub fn send_remote_action(
+        &self,
+        workspace_topic: u64,
+        target: iroh::EndpointId,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> bool {
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::new(message).encode() else {
+            return false;
+        };
+        self.cmd_tx
+            .try_send(NetCmd::PublishRemoteAction {
+                ws: workspace_topic,
+                target,
+                msg: NeighbourMsg::RemoteAction { frame },
+            })
+            .is_ok()
+    }
+
+    /// Sort one authenticated remote-action frame: requests queue for the
+    /// broker with the caller the transport proved, answers wake the local
+    /// caller waiting on that device. An unauthenticated device reaches
+    /// neither, whatever the compatibility mode.
+    fn dispatch_remote_action(
+        &self,
+        workspace_topic: u64,
+        origin: &crate::shell::state::PeerOrigin,
+        peer: iroh::EndpointId,
+        frame: &[u8],
+    ) {
+        let Some(identity) = self.peer_identities.get(origin) else {
+            tracing::warn!(peer = %peer, "dropping remote action from an unauthenticated device");
+            return;
+        };
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::decode(frame) else {
+            tracing::warn!(peer = %peer, "dropping malformed remote action frame");
+            return;
+        };
+        if frame.message.is_request() {
+            if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
+                inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
+                    workspace_topic,
+                    from: peer,
+                    caller: tilo_actions::remote::Caller::authenticated(
+                        identity.user_pubkey,
+                        identity.device_pubkey,
+                    ),
+                    message: frame.message,
+                });
+            }
+        } else if !self.remote_action_replies.deliver(peer, &frame.message) {
+            tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
+        }
     }
 
     /// Shared handle to the cooperative-scrollback response buffer.
@@ -2547,7 +2652,7 @@ impl ShellNetwork {
             replica.tree.clone()
         };
         let tree = tree_handle.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == local) else {
+        let Some(ws) = tree.desktop.workspaces.iter().find(|w| w.id == local) else {
             drop(tree);
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
@@ -2674,6 +2779,7 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             let tree = replica.tree.read();
             let workspace = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)
@@ -2721,6 +2827,7 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             let tree = replica.tree.read();
             let workspace = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)
@@ -3125,7 +3232,7 @@ impl ShellNetwork {
         }
         let mut transfer_id = [0_u8; 16];
         while transfer_id == [0; 16] {
-            rand_core::OsRng.fill_bytes(&mut transfer_id);
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
         }
         let ws = personal_continuity_topic_id(&user_public_key);
         if !self.join_topic(ws) {
@@ -3355,7 +3462,7 @@ impl ShellNetwork {
 
         let mut request_id = [0; 16];
         while request_id == [0; 16] {
-            rand_core::OsRng.fill_bytes(&mut request_id);
+            UnwrapErr(SysRng).fill_bytes(&mut request_id);
         }
         let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
             request_id,
@@ -4822,6 +4929,14 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } => {
+                let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
+                else {
+                    tracing::debug!(
+                        app_id,
+                        "peer document for a record no local app holds; dropping"
+                    );
+                    return;
+                };
                 let role = if self.require_peer_identity {
                     self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
                 } else {
@@ -4860,6 +4975,9 @@ impl ShellNetwork {
                 // per-op indirection once it's off the wire.
                 ops.into_iter().map(|op| *op).collect(),
             ),
+            NeighbourMsg::RemoteAction { frame } => {
+                self.dispatch_remote_action(ws, &origin, peer, &frame);
+            }
             message @ (NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
@@ -5076,7 +5194,8 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }
             | NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::IdentityAnnouncement { .. }
-            | NeighbourMsg::IdentityAnnouncementV2 { .. } => None,
+            | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            | NeighbourMsg::RemoteAction { .. } => None,
         }
     }
 
@@ -5157,7 +5276,8 @@ impl ShellNetwork {
             )
             .id()
             .to_string();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
                 .is_some_and(|workspace| {
@@ -5377,6 +5497,7 @@ impl ShellNetwork {
         let local = crate::shell::state::local_user_id_for_room(&room);
         let (granted, owner) = {
             let Some(workspace) = tree
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.room == room)
@@ -5465,6 +5586,7 @@ impl ShellNetwork {
         drop(replica);
         let tree = tree_handle.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)?;
@@ -5696,9 +5818,12 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+        inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+        remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
@@ -5706,9 +5831,29 @@ pub(crate) fn shell_network_for_test(
     (net, cmd_rx)
 }
 
+impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
+    fn request(
+        &self,
+        workspace_topic: u64,
+        peer: iroh::EndpointId,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>, String>
+    {
+        let key = crate::shell::remote_action_link::ReplyKey::for_request(&message)
+            .ok_or_else(|| "only requests are sent to a remote action host".to_string())?;
+        let answer = self.remote_action_replies.register(peer, key);
+        if self.send_remote_action(workspace_topic, peer, message) {
+            Ok(answer)
+        } else {
+            Err("the remote action could not be handed to the network".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
@@ -6579,9 +6724,8 @@ mod tests {
             serde_json::to_vec(&vec![registration]).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
 
         assert!(net.refresh_home_peer_hosts());
         net.share_wifi_credential("Home", os_actions::WifiSecurity::Wpa2, "correct horse")
@@ -6634,14 +6778,6 @@ mod tests {
                 .is_err(),
             "removed devices must be excluded from the next envelope"
         );
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     fn fabric_snapshot(
@@ -7333,6 +7469,7 @@ mod tests {
 
         let mut source_tree = WorkspaceTree::bootstrap_default();
         let source_workspace = source_tree
+            .desktop
             .workspaces
             .first_mut()
             .expect("bootstrap workspace");
@@ -7491,7 +7628,8 @@ mod tests {
                 Some(&file_reference)
             );
             assert!(
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .any(|workspace| workspace.room == room)
             );
@@ -7797,6 +7935,7 @@ mod tests {
             .expect("replica")
             .tree
             .read()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.id);
         let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
@@ -7841,11 +7980,14 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         assert_eq!(
-            tree.active_workspace().map(|workspace| workspace.id),
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.id),
             active_before,
             "receiving a continuation must not move focus"
         );
         let adopted = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8039,17 +8181,24 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invite is redeemed, exercised and revoked end to end"
+    )]
     fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
         };
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
         let device = iroh::SecretKey::from_bytes(&[62; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Guest laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8057,17 +8206,15 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(17),
-            "Shared",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
         net.require_peer_identity = true;
         let _ = net
@@ -8118,6 +8265,7 @@ mod tests {
                 .expect("replica")
                 .tree
                 .read()
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
@@ -8192,6 +8340,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         let joined = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8221,6 +8370,7 @@ mod tests {
             .expect("host room changes apply");
         assert_eq!(
             guest
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
@@ -8293,6 +8443,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8339,6 +8490,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8375,6 +8527,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8394,7 +8547,7 @@ mod tests {
             reason: RevocationReason::Compromised,
             signature: [0; 64],
         };
-        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        sign_revocation_entry(&mut revoked, &user_root).expect("revocation");
         net.accept_identity_hello(
             room_topic_id(room),
             &origin,
@@ -8417,14 +8570,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let device = iroh::SecretKey::from_bytes(&[82; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Viewer laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8432,17 +8588,15 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(81),
-            "Read only",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(81), "Read only");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let (net, _commands) = shell_network_for_test(tree.shared(), 81);
         let _ = net
             .pending_identity_admissions
@@ -8474,6 +8628,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         let joined = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8504,14 +8659,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = iroh::SecretKey::from_bytes(&[92; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Inviting device".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8519,7 +8677,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut tree = WorkspaceTree::default();
@@ -8608,23 +8766,14 @@ mod tests {
             .expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let rooms = std::collections::BTreeSet::from([42]);
         let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         assert_eq!(first_boot, restarted, "registry is durable across restart");
         assert_eq!(first_boot.len(), 1);
         assert_eq!(first_boot[0].addr.id, service);
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8665,9 +8814,8 @@ mod tests {
             serde_json::to_vec(&registrations).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let hosts =
             registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
                 .expect("registry parses");
@@ -8677,13 +8825,6 @@ mod tests {
                 .iter()
                 .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8691,29 +8832,14 @@ mod tests {
     fn home_peer_registry_defaults_to_the_active_identity_root() {
         let temp = tempfile::tempdir().expect("temp");
         let identity_root = temp.path().join("user-data/tilo");
-        let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
-            std::env::remove_var("TILO_HOME_PEERS_PATH");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", &identity_root);
+        env.remove("TILO_HOME_PEERS_PATH");
         assert_eq!(
             home_peer_registry_path(),
             identity_root.join("home-peers.json"),
             "the shell must read the approval registry beside its own user key, never a system copy"
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_identity_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8730,9 +8856,8 @@ mod tests {
         assert!(tree.set_room(workspace, room));
         let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
         net.personal_continuity_user = Some(own_user);
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         std::fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!([{
@@ -8766,14 +8891,6 @@ mod tests {
         };
         assert_eq!(id, service);
         assert!(net.host_addrs.lock().unwrap().is_empty());
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     /// Two rooms this machine governs, and the network that holds
@@ -8792,11 +8909,11 @@ mod tests {
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
-            for ws in &mut t.workspaces {
+            for ws in &mut t.desktop.workspaces {
                 let me = crate::shell::state::local_user_id_for_room(&ws.room);
                 ws.set_owner(me);
             }
-            t.workspaces.iter().map(|w| w.room).collect()
+            t.desktop.workspaces.iter().map(|w| w.room).collect()
         };
         assert!(
             rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
@@ -8887,6 +9004,7 @@ mod tests {
 
         let workspace = tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8938,7 +9056,7 @@ mod tests {
             let mut tree = tree.write();
             tree.adopt_roomless_workspaces();
             let local_user = crate::shell::state::local_user_id();
-            for workspace in &mut tree.workspaces {
+            for workspace in &mut tree.desktop.workspaces {
                 workspace.set_owner(local_user.clone());
             }
         }
@@ -9057,8 +9175,20 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
+        app_document_event_for(cluster_id, "note-1", "note-1", from_peer_hash, peer, device)
+    }
+
+    /// As [`app_document_event`], for a local record id sent under
+    /// `wire_record_id`.
+    fn app_document_event_for(
+        cluster_id: &str,
+        record_id: &str,
+        wire_record_id: &str,
+        from_peer_hash: u64,
+        peer: iroh::PublicKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> NetEvent {
         let app_id = "so.tilo.notes";
-        let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
                 .encode()
@@ -9081,31 +9211,29 @@ mod tests {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
                 cluster_id: cluster_id.to_string(),
-                record_id: record_id.to_string(),
+                record_id: wire_record_id.to_string(),
                 envelope: Box::new(envelope),
             },
         }
     }
 
-    /// A peer's app document reaches local apps only for a room this
-    /// machine is in. Driven through the real receive path (`tick`),
-    /// not the helper directly, with a positive control so the two
-    /// refusals prove something rather than just "nothing arrives".
-    #[test]
-    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+    /// A shell whose room has admitted one certified peer device.
+    fn network_with_admitted_peer() -> (
+        ShellNetwork,
+        crate::shell::state::RoomId,
+        iroh::SecretKey,
+        ed25519_dalek::SigningKey,
+    ) {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == local)
             .expect("workspace")
             .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
-        let handle = tree.shared();
-        let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
-
-        // Documents are accepted only after the sender has proven an
-        // identity-to-device chain and received membership.
+        let (net, _cmd_rx) = shell_network_for_test(tree.shared(), 0xAAAAu64);
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
         let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
@@ -9148,6 +9276,129 @@ mod tests {
             .expect("queue identity proof");
         net.tick();
         net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
+        (net, our_room, device, device_signing)
+    }
+
+    /// The SDK guide promises a path-bearing record id never leaves the
+    /// device. Check the exact bytes the actor would put on gossip and the
+    /// host link, for a file record and a record derived from one.
+    #[test]
+    fn file_backed_records_never_put_a_path_on_the_wire() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        // Same routing as `publish_document_emits_a_publish_command`.
+        let room = "cluster-7".to_string();
+        let secret = "/home/alice/Secret Plans/merger-2026.odt";
+        for record_id in [
+            format!("file:{secret}"),
+            format!("derived:annotations@file:{secret}"),
+        ] {
+            let envelope = collab_types::SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(vec![7; 32])
+                    .encode()
+                    .expect("typed mutation"),
+                collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
+                collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            net.publish_document("so.tilo.writer".into(), room.clone(), &record_id, envelope);
+            let Ok(NetCmd::Publish { msg, .. }) = cmd_rx.try_recv() else {
+                panic!("publish_document must enqueue a publish");
+            };
+            let NeighbourMsg::AppDocument {
+                record_id: wire, ..
+            } = &msg
+            else {
+                panic!("expected AppDocument, got {msg:?}");
+            };
+            assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
+            let encoded = postcard::to_allocvec(&msg).expect("wire encoding");
+            for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
+                assert!(
+                    !encoded.windows(needle.len()).any(|window| window == needle),
+                    "{:?} leaked onto the wire for {record_id}",
+                    String::from_utf8_lossy(needle)
+                );
+            }
+        }
+    }
+
+    /// A peer holding the same file record in the same room still meets
+    /// this device on one route: its sealed name resolves to the local id
+    /// of the record a local app joined, and the envelope validates against
+    /// that id. A sealed name nobody here holds is refused.
+    #[test]
+    fn a_sealed_record_name_reaches_the_local_app_holding_that_record() {
+        let (net, room, device, device_signing) = network_with_admitted_peer();
+        let cluster = room.to_string();
+        let local = "file:/var/workspace/shared/report.odt";
+        let wire = crate::network::wire_record::wire_record_id(&cluster, "so.tilo.notes", local);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert!(
+            net.inbound_documents_handle().lock().unwrap().is_empty(),
+            "no local app holds the record yet, so its sealed name cannot be routed"
+        );
+
+        net.register_local_record("so.tilo.notes", &cluster, local);
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        let inbound = net.inbound_documents_handle();
+        let delivered = inbound.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].record_id, local,
+            "the local app sees its own record id"
+        );
+        drop(delivered);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                local,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert_eq!(
+            net.inbound_documents_handle().lock().unwrap().len(),
+            1,
+            "a peer that names a raw path is refused"
+        );
+    }
+
+    /// A peer's app document reaches local apps only for a room this
+    /// machine is in. Driven through the real receive path (`tick`),
+    /// not the helper directly, with a positive control so the two
+    /// refusals prove something rather than just "nothing arrives".
+    #[test]
+    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+        let (net, our_room, device, device_signing) = network_with_admitted_peer();
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
@@ -9201,7 +9452,7 @@ mod tests {
         use crate::network::invite::make_invite_token;
         use crate::shell::state::Workspace;
 
-        let host_ws = Workspace::test_default(
+        let host_ws = Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Design review".to_string(),
         );
@@ -9301,7 +9552,7 @@ mod tests {
         };
         sign_device_cert(&mut owner_cert, &owner_root).expect("owner certificate");
 
-        let host_workspace = crate::shell::state::Workspace::test_default(
+        let host_workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Alice shared",
         );
@@ -9360,7 +9611,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Joined room");
         let room = tree.room_of(local).expect("room");
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == local)
             .expect("workspace")
@@ -9522,7 +9774,7 @@ mod tests {
         net.publish_document(
             "notes".to_string(),
             "cluster-7".to_string(),
-            "uuid:9f".to_string(),
+            "uuid:9f",
             envelope.clone(),
         );
         let cmd = cmd_rx
@@ -9579,7 +9831,7 @@ mod tests {
     #[test]
     fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
-        let expected = room_topic_id(tree.read().active_workspace().unwrap().room);
+        let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room);
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), expected);
     }
@@ -9654,9 +9906,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn network_announcement_governs_and_republishes_files_projection() {
         let runtime = tempfile::tempdir().unwrap();
-        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group shared with launcher tests.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let mut state = WorkspaceTree::default();
         let workspace = state.append_empty_workspace("Identity workflow");
@@ -9734,14 +9985,6 @@ mod tests {
                 .humans
                 .is_empty()
         );
-
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous_runtime {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]
@@ -9769,5 +10012,197 @@ mod tests {
         );
         let other_root = ed25519_dalek::SigningKey::from_bytes(&[103; 32]);
         assert!(load_identity_revocations(&path, other_root.verifying_key().to_bytes()).is_err());
+    }
+
+    /// The shared room both peers hold: A's person owns it, B's person is a
+    /// member, and B runs a files app that publishes one action.
+    fn remote_action_room(
+        owner: &str,
+        member: &str,
+    ) -> (crate::shell::state::Workspace, crate::shell::state::RoomId) {
+        let mut workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(51),
+            "Shared room",
+        );
+        workspace.set_owner(owner.to_string());
+        let room = workspace.room;
+        workspace.grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::person(member.to_string()),
+            room.to_string(),
+            collab_types::Verb::Write,
+        ));
+        (workspace, room)
+    }
+
+    /// Carry the next remote-action frame `from` published to the peer it
+    /// names, as the direct transport would.
+    fn deliver_remote_action(
+        from: &iroh::SecretKey,
+        commands: &mut mpsc::Receiver<NetCmd>,
+        to: &ShellNetwork,
+        to_key: &iroh::SecretKey,
+    ) {
+        let (ws, target, msg) = std::iter::from_fn(|| commands.try_recv().ok())
+            .find_map(|command| match command {
+                NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                _ => None,
+            })
+            .expect("a remote-action frame was sent");
+        assert_eq!(target, to_key.public(), "addressed to exactly one device");
+        to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "two peers, their identities, the serving broker and both round trips form one scenario"
+    )]
+    #[test]
+    fn a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt() {
+        use crate::shell::collab_broker::CrdtRoute;
+        use crate::shell::collab_broker_capnp::{
+            PublishedAction, PublishedInput, PublishedSurface,
+        };
+        use crate::shell::remote_action_link::RemoteActionLink as _;
+        use tilo_actions::remote::{
+            InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+        };
+
+        let root_a = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+        let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+        let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+        let device_b = iroh::SecretKey::from_bytes(&[0xB2; 32]);
+        let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            root_a.verifying_key().to_bytes(),
+        );
+        let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            root_b.verifying_key().to_bytes(),
+        );
+        let (room_workspace, room) = remote_action_room(&person_a, &person_b);
+        let topic = room_topic_id(room);
+        let tree_for = || {
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(room_workspace.clone());
+            tree.shared()
+        };
+
+        let (mut net_a, mut commands_a) = shell_network_for_test(tree_for(), 0xA);
+        net_a.require_peer_identity = true;
+        let tree_b = tree_for();
+        let (mut net_b, mut commands_b) = shell_network_for_test(tree_b.clone(), 0xB);
+        net_b.require_peer_identity = true;
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
+        authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
+
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
+                tree_b,
+            );
+        broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+            peer_id: 9,
+            app_id: "so.tilo.files".into(),
+            route: CrdtRoute::app("so.tilo.files", room.to_string()),
+            actions: vec![PublishedAction {
+                resource: "files.entry:/tmp/report".into(),
+                action: "refresh".into(),
+                resource_kind: "files.entry".into(),
+                resource_label: "report".into(),
+                action_label: "Refresh".into(),
+                description: None,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: tilo_actions::ActionContract::default(),
+                input: PublishedInput::None,
+            }],
+            live: true,
+        }]);
+        let mut app_invocations = broker.capture_invocations_for_test(9);
+        let host_b = crate::shell::remote_actions::BrokerActionHost::new(broker);
+        let net_b = Arc::new(net_b);
+
+        let id = tilo_actions::InvocationId::new();
+        let request = RemoteActionMessage::Invoke(InvokeRequest {
+            invocation: id,
+            target: RemoteActionTarget {
+                provider: "9".into(),
+                address: tilo_actions::ActionAddress::new("files.entry:/tmp/report", "refresh"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+        });
+
+        let mut round_trip = |request: RemoteActionMessage| {
+            let answer = net_a
+                .request(topic, device_b.public(), request)
+                .expect("request sent");
+            deliver_remote_action(&device_a, &mut commands_a, &net_b, &device_b);
+            let inbound =
+                std::mem::take(&mut *net_b.inbound_remote_actions.lock().expect("inbound queue"));
+            assert_eq!(inbound.len(), 1, "B queued the authenticated request");
+            assert_eq!(
+                inbound[0].caller,
+                tilo_actions::remote::Caller::authenticated(
+                    root_a.verifying_key().to_bytes(),
+                    *device_a.public().as_bytes(),
+                ),
+                "the caller is the device the transport authenticated"
+            );
+            crate::shell::collab_broker::answer_remote_actions(&net_b, Some(&host_b), inbound);
+            deliver_remote_action(&device_b, &mut commands_b, &net_a, &device_a);
+            let mut answer = answer;
+            match answer.poll_ready() {
+                tilo_actions::remote::PendingPoll::Ready(answer) => answer,
+                _ => panic!("A received B's answer"),
+            }
+        };
+
+        let RemoteActionMessage::Receipt(receipt) = round_trip(request.clone()) else {
+            panic!("an invocation is answered with a receipt");
+        };
+        assert_eq!(receipt.invocation, id);
+        assert_eq!(receipt.status, ReceiptStatus::Accepted);
+        let delivered = app_invocations
+            .try_recv()
+            .expect("B's app received the invocation");
+        assert_eq!(delivered.resource, "files.entry:/tmp/report");
+        assert_eq!(
+            delivered.actor, person_a,
+            "attributed to the calling person"
+        );
+
+        let RemoteActionMessage::Receipt(retried) = round_trip(request) else {
+            panic!("a retry is answered with a receipt");
+        };
+        assert_eq!(retried, receipt, "a retry reports the original invocation");
+        assert!(
+            app_invocations.try_recv().is_err(),
+            "a retry never reaches the app twice"
+        );
+    }
+
+    #[test]
+    fn remote_actions_from_unauthenticated_devices_are_dropped() {
+        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xC);
+        let stranger = iroh::SecretKey::from_bytes(&[0xC2; 32]);
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
+        )
+        .encode()
+        .expect("frame");
+        // Even in the in-process compatibility mode, an action needs a proven
+        // caller.
+        assert!(!net.require_peer_identity);
+        net.dispatch_neighbour_msg(
+            DEFAULT_WS_TOPIC,
+            stranger.public(),
+            None,
+            NeighbourMsg::RemoteAction { frame },
+        );
+        assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
     }
 }

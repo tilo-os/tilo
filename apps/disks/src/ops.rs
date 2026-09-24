@@ -26,7 +26,6 @@
 //! (`DISKS_LIVE`), so hermetic builds/tests and `--shots` stay inert — they
 //! only ever build the plans.
 
-use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
@@ -43,15 +42,16 @@ pub enum Op {
     Eject,
 }
 
-pub const IFACE_FS: &str = "org.freedesktop.UDisks2.Filesystem";
-pub const IFACE_BLOCK: &str = "org.freedesktop.UDisks2.Block";
-pub const IFACE_DRIVE: &str = "org.freedesktop.UDisks2.Drive";
-pub const UDISKS_SERVICE: &str = "org.freedesktop.UDisks2";
+use block_devices::udisks::{
+    IFACE_BLOCK, IFACE_FILESYSTEM as IFACE_FS, object_path as udisks_object_path,
+};
 
 /// A fully-described udisks2 D-Bus method call. Kept as data so the object
 /// path / interface / method are asserted in tests without a live bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UdisksCall {
+    /// Kernel device leaf name (`sdc1`) the call addresses.
+    pub device: String,
     pub object_path: String,
     pub interface: &'static str,
     pub method: &'static str,
@@ -75,28 +75,11 @@ impl CommandSpec {
     }
 }
 
-/// Encode a kernel device leaf name (`sda1`, `nvme0n1p2`, `dm-0`) into the
-/// udisks2 `block_devices` object-path suffix. Every byte outside `[A-Za-z0-9]`
-/// becomes `_<hex>` — the `GDBus` object-path escaping udisks uses (so `dm-0`
-/// maps to `dm_2d0`).
-pub fn udisks_object_path(dev_leaf: &str) -> String {
-    let mut s = String::from("/org/freedesktop/UDisks2/block_devices/");
-    for b in dev_leaf.bytes() {
-        if b.is_ascii_alphanumeric() {
-            s.push(b as char);
-        } else {
-            // `write!` into the existing buffer rather than `format!` + a
-            // second allocation per escaped byte.
-            let _ = write!(s, "_{b:02x}");
-        }
-    }
-    s
-}
-
 // ---- D-Bus call plans --------------------------------------------------
 
 pub fn mount_call(dev_leaf: &str) -> UdisksCall {
     UdisksCall {
+        device: dev_leaf.to_string(),
         object_path: udisks_object_path(dev_leaf),
         interface: IFACE_FS,
         method: "Mount",
@@ -106,6 +89,7 @@ pub fn mount_call(dev_leaf: &str) -> UdisksCall {
 
 pub fn unmount_call(dev_leaf: &str) -> UdisksCall {
     UdisksCall {
+        device: dev_leaf.to_string(),
         object_path: udisks_object_path(dev_leaf),
         interface: IFACE_FS,
         method: "Unmount",
@@ -115,6 +99,7 @@ pub fn unmount_call(dev_leaf: &str) -> UdisksCall {
 
 pub fn format_call(dev_leaf: &str, fstype: &str) -> UdisksCall {
     UdisksCall {
+        device: dev_leaf.to_string(),
         object_path: udisks_object_path(dev_leaf),
         interface: IFACE_BLOCK,
         method: "Format",
@@ -197,35 +182,18 @@ pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
 /// Returns an error if the D-Bus call fails or the operation returns an error.
 #[cfg(feature = "live")]
 pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
-    use std::collections::HashMap;
-    use zbus::blocking::Connection;
-    use zbus::zvariant::Value;
-
-    let conn = Connection::system().map_err(|e| format!("system bus: {e}"))?;
-    let path = call.object_path.as_str();
-    // Empty a{sv} options → udisks picks sensible defaults (auto mountpoint,
-    // default mkfs options), while polkit handles authorisation.
-    let opts: HashMap<&str, Value> = HashMap::new();
-
-    let reply = if call.method == "Format" {
-        conn.call_method(
-            Some(UDISKS_SERVICE),
-            path,
-            Some(call.interface),
-            call.method,
-            &(call.fstype.as_str(), opts),
-        )
-    } else {
-        conn.call_method(
-            Some(UDISKS_SERVICE),
-            path,
-            Some(call.interface),
-            call.method,
-            &(opts,),
-        )
+    let udisks = block_devices::udisks::Udisks::system().map_err(|e| format!("system bus: {e}"))?;
+    let device = call.device.as_str();
+    // UDisks2 picks its defaults (auto mountpoint, default mkfs options),
+    // while polkit handles authorisation.
+    let reply = match call.method {
+        "Mount" => udisks.mount(device).map(drop),
+        "Unmount" => udisks.unmount(device),
+        "Format" => udisks.format(device, &call.fstype),
+        other => return Err(format!("udisks2 {other}: unsupported call")),
     };
     reply
-        .map(|_| format!("udisks2 {} ok", call.method))
+        .map(|()| format!("udisks2 {} ok", call.method))
         .map_err(|e| format!("udisks2 {}: {e}", call.method))
 }
 
@@ -318,27 +286,6 @@ pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn object_path_passes_through_plain_names() {
-        assert_eq!(
-            udisks_object_path("nvme0n1p2"),
-            "/org/freedesktop/UDisks2/block_devices/nvme0n1p2"
-        );
-        assert_eq!(
-            udisks_object_path("sda1"),
-            "/org/freedesktop/UDisks2/block_devices/sda1"
-        );
-    }
-
-    #[test]
-    fn object_path_escapes_non_alnum_bytes() {
-        // A dash is byte 0x2d → "_2d" (matches GDBus / udisks encoding).
-        assert_eq!(
-            udisks_object_path("dm-0"),
-            "/org/freedesktop/UDisks2/block_devices/dm_2d0"
-        );
-    }
 
     #[test]
     fn dbus_calls_target_the_right_interface_and_method() {
