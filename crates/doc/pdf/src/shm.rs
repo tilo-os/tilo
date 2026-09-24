@@ -1,5 +1,5 @@
-//! Sealed memory files: how document bytes, rendered pixels and exported
-//! PDFs cross the process boundary without copies through the socket.
+//! Memory files: how document bytes, rendered pixels and exported PDFs
+//! cross the process boundary without copies through the socket.
 //!
 //! The writer creates a memfd, fills it, drops every writable mapping and
 //! seals it against writes and resizing; the reader verifies the seals
@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
-use memmap2::{Mmap, MmapMut};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 
 const SEALS: libc::c_int =
     libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
@@ -92,8 +92,10 @@ pub fn map_sealed(fd: &OwnedFd, min_len: u64) -> io::Result<Mmap> {
         ));
     }
     // SAFETY: the file is sealed against writes and shrinking, so the
-    // mapping can neither change nor be truncated under us.
-    unsafe { Mmap::map(&file) }
+    // mapping can neither change nor be truncated under us. Populated up
+    // front: the caller reads every byte, and one batched fault is far
+    // cheaper than one per page.
+    unsafe { MmapOptions::new().populate().map(&file) }
 }
 
 /// Map a file (or memfd) read-only for the engine. The helper maps the
@@ -122,35 +124,8 @@ pub fn map_document(file: &File) -> io::Result<Mmap> {
 /// Mapping failures.
 pub fn map_writable(file: &File) -> io::Result<MmapMut> {
     // SAFETY: the memfd was created by this process and is not shared yet.
-    unsafe { MmapMut::map_mut(file) }
-}
-
-/// Pixels or bytes backed by a sealed shared mapping.
-pub struct SharedBytes {
-    map: Mmap,
-    len: usize,
-}
-
-impl SharedBytes {
-    /// Wrap a sealed mapping, exposing its first `len` bytes.
-    pub fn new(map: Mmap, len: usize) -> Self {
-        let len = len.min(map.len());
-        Self { map, len }
-    }
-}
-
-impl AsRef<[u8]> for SharedBytes {
-    fn as_ref(&self) -> &[u8] {
-        self.map.get(..self.len).unwrap_or_default()
-    }
-}
-
-impl std::fmt::Debug for SharedBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedBytes")
-            .field("len", &self.len)
-            .finish_non_exhaustive()
-    }
+    // Populated up front, since the renderer writes every byte.
+    unsafe { MmapOptions::new().populate().map_mut(file) }
 }
 
 #[cfg(test)]

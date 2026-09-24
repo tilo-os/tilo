@@ -4,8 +4,15 @@
 //! ([`FRAMING`]).
 //! File descriptors travel as separate one-byte `SCM_RIGHTS` messages
 //! ([`runtime_portal::fd_transport`]) at points the protocol fixes: after an
-//! `Open` request (the document), after a `Rendered` response (the sealed
-//! pixel memfd) and after an `Exported` response (the sealed PDF memfd).
+//! `Open` request (the document), after a `Render` request that attaches a
+//! new pixel buffer, and after an `Exported` response (the sealed PDF
+//! memfd).
+//!
+//! Pixel buffers are memfds the client owns and reuses: the helper maps each
+//! once and renders straight into it, so a page render moves no pixel through
+//! the socket and touches no fresh memory. Like a Wayland `wl_shm` buffer, a
+//! pixel buffer is writable by the helper; a compromised helper can alter
+//! pixels the client displays, never anything the client interprets.
 //! Frames are never read through a buffer, so a descriptor message is always
 //! the next thing on the stream when it is expected.
 
@@ -49,10 +56,19 @@ pub enum Request {
     Close {
         doc: u64,
     },
+    /// Render into pixel buffer `buffer`. When `attach` is set the buffer is
+    /// new to this helper and its descriptor follows the request.
     Render {
         doc: u64,
         page: u32,
         options: RenderOptions,
+        buffer: u64,
+        buffer_len: u64,
+        attach: bool,
+    },
+    /// Forget pixel buffer `buffer` (the client no longer reuses it).
+    ReleaseBuffer {
+        buffer: u64,
     },
     Text {
         doc: u64,
@@ -124,8 +140,8 @@ pub enum Response {
         version: u32,
     },
     Opened(DocumentInfo),
-    /// Followed by the sealed memfd holding `height` rows of `width` RGBA
-    /// pixels, tightly packed.
+    /// The request's pixel buffer now starts with `height` rows of `width`
+    /// RGBA pixels, tightly packed.
     Rendered {
         width: u32,
         height: u32,
