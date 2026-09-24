@@ -9,10 +9,11 @@
 //! in memory until the scope ends and are then written together, in one of two
 //! ways:
 //!
-//! - A document whose owner commits freely receives them as the ops of new
-//!   changes. Automerge integrates a change's ops on objects it has not seen as a
-//!   single run at the end of its op set, marks included.
-//! - A host-owned document keeps the host's transaction: each block goes in as
+//! - A document whose owner commits freely, or one being created, receives them
+//!   as the ops of new changes. Automerge integrates a change's ops
+//!   on objects it has not seen as a single run at the end of its op set, marks
+//!   included.
+//! - A host-owned document with history keeps the host's transaction: each block goes in as
 //!   one [`Transactable::batch_create_object`] call (one op-set splice for the
 //!   whole block tree), and marks follow as local operations once all text is in
 //!   place.
@@ -104,6 +105,8 @@ pub(super) struct Bulk {
     /// Blocks with a staged mark. Splicing into one of them first applies the marks, so a mark
     /// expands over later text exactly as it would have had it been applied at once.
     marked: HashSet<String>,
+    /// Flushes in the open scope may write as changes; decided when the outermost scope opens.
+    may_commit: bool,
 }
 
 impl DocMut<'_> {
@@ -116,21 +119,36 @@ impl DocMut<'_> {
     /// Reads that bypass `DocMut` (the free functions over `doc`) do not see staged blocks until
     /// the scope ends; use [`Self::block_text_len`] for the one read an importer needs.
     ///
-    /// When bulk writes may commit (an owned [`crate::Document`], see
-    /// [`super::IdGen::allow_commits`]), the scope ends by
-    /// committing and writing the staged blocks and their marks as new changes. A host-owned
-    /// document keeps the host's transaction boundary: blocks go in as batch objects and marks as
-    /// ordinary local operations.
+    /// When bulk writes may commit, the scope ends by committing and writing the staged blocks and
+    /// their marks as new changes. They may for an owned [`crate::Document`] (see
+    /// [`super::IdGen::allow_commits`]), and for a document being created: when the scope opens it
+    /// holds nothing but the schema, and the generator came from [`super::IdGen::new`] rather than
+    /// from the document (a host that just made a document to open a file into). Nothing can refer
+    /// to such a document's history yet: no peer has seen it, and an undo log bracketing actions
+    /// by heads spans every change up to its next boundary whether the import committed or not.
+    /// Code editing an existing document seeds its generator from it
+    /// ([`super::seeded_id_gen`]), so an action replayed on a new, empty document still writes
+    /// within its own transaction. A host's document written this way keeps its last block in the
+    /// host's open transaction, so the host's next commit still carries the import and brackets
+    /// all of it as one undoable action.
+    ///
+    /// Otherwise a host-owned document keeps the host's transaction boundary: blocks go in as
+    /// batch objects and marks as ordinary local operations.
     pub fn bulk<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         #[cfg(test)]
         if OP_BY_OP.with(std::cell::Cell::get) {
             return f(self);
+        }
+        if self.ids.bulk.depth == 0 {
+            self.ids.bulk.may_commit = self.ids.commits_allowed
+                || (self.ids.unseeded && super::holds_only_schema(self.doc));
         }
         self.ids.bulk.depth = self.ids.bulk.depth.saturating_add(1);
         let out = f(self);
         self.ids.bulk.depth = self.ids.bulk.depth.saturating_sub(1);
         if self.ids.bulk.depth == 0 {
             self.flush_bulk();
+            self.ids.bulk.may_commit = false;
         }
         out
     }
@@ -307,18 +325,44 @@ impl DocMut<'_> {
         if bulk.blocks.is_empty() && bulk.marks.is_empty() {
             return;
         }
-        let blocks: Vec<StagedBlock> = std::mem::take(&mut bulk.blocks)
+        let mut blocks: Vec<StagedBlock> = std::mem::take(&mut bulk.blocks)
             .into_iter()
             .flatten()
             .collect();
-        bulk.by_id.clear();
-        let marks = std::mem::take(&mut bulk.marks);
-        bulk.marked.clear();
-        if self.ids.commits_allowed && write_as_changes(self.doc, &blocks, &marks) {
-            #[cfg(test)]
-            CHANGE_WRITES.with(|c| c.set(c.get().saturating_add(1)));
+        bulk.by_id = HashMap::new();
+        let mut marks = std::mem::take(&mut bulk.marks);
+        bulk.marked = HashSet::new();
+        if !(bulk.may_commit || self.ids.commits_allowed) {
+            write_as_ops(self.doc, blocks, marks);
             return;
         }
+        // A host still owns a commit boundary after the import, and decides from its transaction
+        // whether the action it brackets changed anything (an undo log records nothing for an empty
+        // commit). So the last block stays in the host's transaction, as local ops, and the host
+        // commits it; everything before it goes in as changes.
+        let tail = if self.ids.commits_allowed {
+            None
+        } else {
+            blocks.pop()
+        };
+        let tail_marks: Vec<StagedMark> = match &tail {
+            Some(t) => {
+                let (on_tail, rest) = marks
+                    .into_iter()
+                    .partition(|m| (&m.container, &m.block) == (&t.container, &t.id));
+                marks = rest;
+                on_tail
+            }
+            None => Vec::new(),
+        };
+        if !blocks.is_empty() && write_as_changes(self.doc, &blocks, &marks) {
+            #[cfg(test)]
+            CHANGE_WRITES.with(|c| c.set(c.get().saturating_add(1)));
+            write_as_ops(self.doc, tail.into_iter().collect(), tail_marks);
+            return;
+        }
+        blocks.extend(tail);
+        marks.extend(tail_marks);
         write_as_ops(self.doc, blocks, marks);
     }
 }
@@ -537,9 +581,27 @@ impl ChangeWriter {
 )]
 fn apply_sealed(doc: &mut AutoCommit, writer: &mut ChangeWriter) {
     if let Some(change) = writer.seal() {
-        doc.apply_changes([change])
-            .expect("a change continuing this document's history applies");
+        apply_change(doc, change).expect("a change continuing this document's history applies");
     }
+}
+
+/// Apply one change, dropping the patch events automerge records for it when nothing will read
+/// them.
+///
+/// Automerge 0.8 logs a patch event for every op a change integrates, into the document's patch
+/// log, whether or not that log is active; an `AutoCommit` only drains an active one (armed by
+/// `update_diff_cursor`). Left alone, an imported document keeps an event per character, roughly
+/// ten times the memory of the document itself, for as long as it lives. Without a diff cursor the
+/// log is inactive and its events are dead, so it is replaced by an empty one.
+pub(crate) fn apply_change(
+    doc: &mut AutoCommit,
+    change: automerge::Change,
+) -> Result<(), automerge::AutomergeError> {
+    let applied = doc.apply_changes([change]);
+    if doc.diff_cursor().is_empty() {
+        doc.reset_diff_cursor();
+    }
+    applied
 }
 
 /// Commit, then write every staged block — with its text and the marks on it — as the ops of new
@@ -621,7 +683,7 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         })
         .collect();
     if let Some(change) = writer.seal()
-        && doc.apply_changes([change]).is_err()
+        && apply_change(doc, change).is_err()
     {
         return false;
     }
