@@ -50,14 +50,27 @@ struct SystemPackage {
     manifest_text: String,
 }
 
+/// The system store root. `TILO_APPS_SYSTEM_DIR` re-points it in developer
+/// builds only (see [`crate::dev_env`]).
 fn system_data_dir() -> PathBuf {
-    std::env::var_os("TILO_APPS_SYSTEM_DIR")
-        .map_or_else(|| PathBuf::from(SYSTEM_DATA_DIR), PathBuf::from)
+    path_or_default(
+        crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV),
+        SYSTEM_DATA_DIR,
+    )
 }
 
+/// The system payload root. `TILO_APPS_SYSTEM_PAYLOAD_DIR` re-points it in
+/// developer builds only.
 fn system_payload_dir() -> PathBuf {
-    std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR")
-        .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
+    path_or_default(
+        crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_PAYLOAD_DIR_ENV),
+        SYSTEM_PAYLOAD_DIR,
+    )
+}
+
+/// The override the build's gate let through, else the image default.
+fn path_or_default(allowed_override: Option<std::ffi::OsString>, default: &str) -> PathBuf {
+    allowed_override.map_or_else(|| PathBuf::from(default), PathBuf::from)
 }
 
 fn is_within(root: &Path, path: &Path) -> bool {
@@ -247,10 +260,12 @@ fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
     crate::store::dir_size(&entry.payload_root).unwrap_or(0)
 }
 
+/// The launcher that builds every app's sandbox. `TILO_LAUNCHER_BIN`
+/// re-points it in developer builds only.
 fn launcher_bin() -> std::path::PathBuf {
-    std::env::var_os("TILO_LAUNCHER_BIN").map_or_else(
-        || std::path::PathBuf::from("/usr/bin/tilo-launcher"),
-        std::path::PathBuf::from,
+    path_or_default(
+        crate::dev_env::dev_override(crate::dev_env::LAUNCHER_BIN_ENV),
+        "/usr/bin/tilo-launcher",
     )
 }
 
@@ -773,6 +788,31 @@ impl app_host::Server for AppHostServer {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_release_build_keeps_the_image_store_and_launcher() {
+        use crate::dev_env::{
+            APPS_SYSTEM_DIR_ENV, APPS_SYSTEM_PAYLOAD_DIR_ENV, LAUNCHER_BIN_ENV, dev_override_from,
+        };
+        for (name, default) in [
+            (APPS_SYSTEM_DIR_ENV, SYSTEM_DATA_DIR),
+            (APPS_SYSTEM_PAYLOAD_DIR_ENV, SYSTEM_PAYLOAD_DIR),
+            (LAUNCHER_BIN_ENV, "/usr/bin/tilo-launcher"),
+        ] {
+            let gated = dev_override_from(false, name, Some("/tmp/attacker".into()));
+            assert_eq!(
+                path_or_default(gated, default),
+                PathBuf::from(default),
+                "{name}"
+            );
+            let honoured = dev_override_from(true, name, Some("/dev/overlay".into()));
+            assert_eq!(
+                path_or_default(honoured, default),
+                PathBuf::from("/dev/overlay"),
+                "{name}"
+            );
+        }
+    }
 
     fn system_manifest(id: &str) -> String {
         format!(

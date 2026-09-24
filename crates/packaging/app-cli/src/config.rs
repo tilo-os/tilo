@@ -44,17 +44,28 @@ pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://apps.tilo.so";
 /// Pinned Tilo-main owner identity. Installed images can rotate the public trust
 /// input without rebuilding app packages. A missing/placeholder value disables
 /// the default registry rather than substituting a developer key or TOFU.
+///
+/// `TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH` names another key file in a
+/// developer build only (see [`crate::dev_env`]).
 pub fn official_owner_pubkey() -> Option<String> {
-    let path = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH").map_or_else(
-        || PathBuf::from("/usr/share/tilo/trust/tilo-main-registry-owner.pub"),
-        PathBuf::from,
-    );
+    let path = official_owner_key_path_from(crate::dev_env::dev_override(
+        crate::dev_env::OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+    ));
     let value = fs::read_to_string(path).ok()?;
     let value = value.trim().to_ascii_lowercase();
     (value.len() == 64
         && value != placeholder_owner_pubkey()
         && hex::decode(&value).is_ok_and(|bytes| bytes.len() == 32))
     .then_some(value)
+}
+
+/// The image's pinned official registry owner key.
+pub const OFFICIAL_OWNER_KEY_PATH: &str = "/usr/share/tilo/trust/tilo-main-registry-owner.pub";
+
+/// Where the official owner key is read from, given the override the
+/// build's gate let through.
+fn official_owner_key_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
+    allowed_override.map_or_else(|| PathBuf::from(OFFICIAL_OWNER_KEY_PATH), PathBuf::from)
 }
 
 /// The placeholder owner pubkey a seeded file carries — 64 zeros, so
@@ -302,6 +313,29 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
+
+    #[test]
+    fn a_release_build_reads_the_images_official_owner_key() {
+        use crate::dev_env::{OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, dev_override_from};
+        let gated = dev_override_from(
+            false,
+            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+            Some("/tmp/attacker-owner.pub".into()),
+        );
+        assert_eq!(
+            official_owner_key_path_from(gated),
+            PathBuf::from(OFFICIAL_OWNER_KEY_PATH)
+        );
+        let honoured = dev_override_from(
+            true,
+            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+            Some("/dev/owner.pub".into()),
+        );
+        assert_eq!(
+            official_owner_key_path_from(honoured),
+            PathBuf::from("/dev/owner.pub")
+        );
+    }
 
     /// Serialises the env-var-touching tests in this module — cargo's
     /// parallel runner otherwise races on `TILO_STORE_CONFIG_DIR`.
