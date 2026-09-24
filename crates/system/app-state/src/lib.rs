@@ -1434,15 +1434,27 @@ mod tests {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
     use tempfile::TempDir;
 
-    /// Point `standalone_state_dir` at a scratch tree. Tests that use this
-    /// are `#[serial]` because it mutates process-global environment.
-    fn scratch_home() -> TempDir {
-        let tmp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
+    /// A scratch data home that `standalone_state_dir` resolves to while it
+    /// lives. The environment is restored before the tree is deleted.
+    struct ScratchHome {
+        _env: tilo_test_env::ScopedEnv,
+        dir: TempDir,
+    }
+
+    impl ScratchHome {
+        fn path(&self) -> &Path {
+            self.dir.path()
         }
-        tmp
+    }
+
+    /// Point `standalone_state_dir` at a scratch tree, for the tests whose
+    /// subject is the environment-resolving constructors.
+    fn scratch_home() -> ScratchHome {
+        let dir = TempDir::new().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", dir.path())
+            .remove("TILO_PACKAGE_ID");
+        ScratchHome { _env: env, dir }
     }
 
     #[test]
@@ -1762,11 +1774,11 @@ mod tests {
     #[serial_test::serial]
     fn open_reads_the_launcher_package_id() {
         let tmp = scratch_home();
-        unsafe { std::env::set_var("TILO_PACKAGE_ID", "so.tilo.monitor") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
         let store = DocStore::open().unwrap();
         assert_eq!(store.package_id(), "so.tilo.monitor");
         assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
-        unsafe { std::env::remove_var("TILO_PACKAGE_ID") };
     }
 
     #[test]
@@ -2442,20 +2454,17 @@ mod tests {
     /// A state directory that genuinely cannot be created must still surface as
     /// an error — idempotent create must not paper over a real filesystem failure.
     #[test]
-    #[serial_test::serial]
     fn an_uncreatable_state_dir_is_still_an_error() {
         // A file where a parent directory needs to be fails ENOTDIR for any
         // uid — unlike a read-only directory, which root would sail past.
         let tmp = TempDir::new().unwrap();
         let blocker = tmp.path().join("blocker");
         fs::write(&blocker, b"not a directory").unwrap();
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", blocker.join("sub"));
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
-        let result = DocStore::open_for("so.tilo.blocked");
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        let result = DocStore::shared(
+            Rc::new(FsStore::new(blocker.join("sub"))),
+            StorageKey::package("so.tilo.blocked"),
+        );
 
         match result {
             Err(StoreError::Io { .. }) => {}
