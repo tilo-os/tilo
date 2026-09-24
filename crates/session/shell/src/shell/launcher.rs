@@ -1272,7 +1272,7 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 fn launcher_bin_candidates() -> Vec<PathBuf> {
     let current_exe = std::env::current_exe().ok();
     launcher_bin_candidates_from(
-        cfg!(debug_assertions),
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os("TILO_LAUNCHER_BIN"),
         current_exe.as_deref(),
     )

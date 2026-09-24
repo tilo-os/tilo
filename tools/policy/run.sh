@@ -35,6 +35,11 @@ run 'Application text-stack contract' python3 tools/policy/check_app_text_contra
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
+run 'OS component manifest' python3 tools/policy/check_component_manifest.py
+run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
+run 'Dev-override features stay out of production images' \
+  python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 
