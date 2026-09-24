@@ -44,31 +44,6 @@ class SelectorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_native_dependency_selection_tracks_declared_build_and_observer_inputs(self):
-        (self.root / "Cargo.toml").write_text(
-            '[patch.crates-io]\nopenh264-sys2 = { path = "vendor/openh264-sys2" }\n')
-        # No vendor payload or fixture exists: declaration still selects the job,
-        # whose production command must fail rather than convert absence to skip.
-        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
-                     "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
-                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
-            with self.subTest(path=path):
-                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
-                self.assertTrue(plan["native_dependencies_required"])
-        self.assertFalse(ci_select.native_dependencies_required(self.root, ["apps/calculator/src/actions.rs"]))
-        self.assertFalse(ci_select.native_dependencies_required(self.root, ["DEVELOPMENT.md"]))
-        self.assertTrue(ci_select.native_dependencies_required(self.root, [], force_full=True))
-
-    def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
-        for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
-                        [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
-                         "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
-            with self.subTest(changes=changes):
-                self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
-                self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
-        # Removing the declaration together with native files cannot hide the check.
-        self.assertTrue(ci_select.native_dependencies_required(self.root, ["vendor/openh264-sys2/build.rs"]))
-
     def test_hermetic_suites_follow_changed_paths_and_run_all_when_asked(self):
         manifest = ci_select.path_suites.parse(
             '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n'
@@ -104,14 +79,6 @@ class SelectorTests(unittest.TestCase):
                                            allow_security_skip=True)
                 self.assertFalse(plan["rust_required"])
                 self.assertFalse(plan["security_required"])
-
-    def test_unreadable_native_declaration_fails_selection(self):
-        (self.root / "Cargo.toml").write_text("[malformed")
-        with self.assertRaises(ValueError):
-            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
-        (self.root / "Cargo.toml").unlink()
-        with self.assertRaises(FileNotFoundError):
-            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
 
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
@@ -888,7 +855,7 @@ json = { package = "serde_json", version = "1" }
 lto = "thin"
 
 [patch.crates-io]
-openh264-sys2 = { path = "vendor/openh264-sys2" }
+vendored-sys = { path = "vendor/vendored-sys" }
 """
 
 
@@ -908,7 +875,7 @@ class ManifestAttributionTests(unittest.TestCase):
             ("serde", "1.0.0"): [],
             ("itoa", "1.0.0"): [],
             ("serde_json", "1.0.0"): ["itoa", "serde"],
-            ("openh264-sys2", "0.9.6"): ["cc"],
+            ("vendored-sys", "0.9.6"): ["cc"],
             ("cc", "1.2.0"): [],
         }
         self.local = {
@@ -959,7 +926,6 @@ class ManifestAttributionTests(unittest.TestCase):
         self.assertFalse(plan["full"])
         self.assertEqual(set(plan["selected"]), {"durable"} | ci_select.ALWAYS_PACKAGES)
         self.assertEqual(set(plan["tested"]), {"durable"} | ci_select.ALWAYS_PACKAGES)
-        self.assertFalse(plan["native_dependencies_required"])
 
     def test_leaf_dependency_bump_selects_its_consumers_and_their_dependants(self) -> None:
         after = self.lock(external={**{k: v for k, v in self.external.items() if k[0] != "itoa"},
@@ -967,7 +933,6 @@ class ManifestAttributionTests(unittest.TestCase):
         resolved = {"Cargo.lock": ci_select.resolve_lockfile(self.lock(), after, self.metadata)}
         # itoa is used directly by middle and through serde_json by leaf.
         self.assertEqual(resolved["Cargo.lock"].seeds, {"middle", "leaf"})
-        self.assertFalse(resolved["Cargo.lock"].native)
         plan = self.plan(["Cargo.lock"], resolved)
         self.assertFalse(plan["full"])
         self.assertEqual(set(plan["selected"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
@@ -1009,11 +974,9 @@ class ManifestAttributionTests(unittest.TestCase):
         resolved = ci_select.resolve_root_manifest(
             ROOT_MANIFEST.encode(), manifest.encode(), self.metadata, self.root)
         self.assertEqual(resolved.seeds, {"middle"})
-        self.assertFalse(resolved.native)
         plan = self.plan(["Cargo.toml"], {"Cargo.toml": resolved})
         self.assertFalse(plan["full"])
         self.assertEqual(set(plan["selected"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
-        self.assertFalse(plan["native_dependencies_required"])
 
     def test_workspace_dependency_change_selects_members_that_use_it(self) -> None:
         for old, new, expected in [
@@ -1036,7 +999,7 @@ class ManifestAttributionTests(unittest.TestCase):
             ('pedantic = "deny"', 'pedantic = "warn"'),
             ('lto = "thin"', 'lto = "fat"'),
             ('edition = "2024"', 'edition = "2024"\nrust-version = "1.90"'),
-            ('openh264-sys2 = { path = "vendor/openh264-sys2" }', ''),
+            ('vendored-sys = { path = "vendor/vendored-sys" }', ''),
             ('resolver = "3"', 'resolver = "2"'),
             ('members = [', 'exclude = ["fuzz"]\nmembers = ['),
             ('"collab-types"]', '"collab-types", "crates/*"]'),
@@ -1053,7 +1016,6 @@ class ManifestAttributionTests(unittest.TestCase):
                 plan = self.plan(["Cargo.toml"], {})
                 self.assertTrue(plan["full"])
                 self.assertEqual(plan["selected_count"], plan["workspace_count"])
-                self.assertTrue(plan["native_dependencies_required"])
         self.assertIsNone(ci_select.resolve_root_manifest(
             None, ROOT_MANIFEST.encode(), self.metadata, self.root))
 
@@ -1079,20 +1041,13 @@ class ManifestAttributionTests(unittest.TestCase):
         self.assertTrue(plan["full"])
         self.assertIn("repository-wide", plan["reason"])
 
-    def test_lockfile_change_reaching_native_crate_requires_native_contract(self) -> None:
+    def test_lockfile_change_reaching_no_workspace_crate_selects_only_contract_suites(self) -> None:
         after = self.lock(external={**{k: v for k, v in self.external.items() if k[0] != "cc"},
                                     ("cc", "1.2.1"): []})
         resolved = ci_select.resolve_lockfile(self.lock(), after, self.metadata)
-        self.assertTrue(resolved.native)
         self.assertEqual(resolved.seeds, set())
         plan = self.plan(["Cargo.lock"], {"Cargo.lock": resolved})
         self.assertFalse(plan["full"])
-        self.assertTrue(plan["native_dependencies_required"])
-        unrelated = ci_select.resolve_lockfile(
-            self.lock(), self.lock(external={**self.external, ("unused", "1.0.0"): []}),
-            self.metadata)
-        self.assertFalse(unrelated.native)
-        self.assertFalse(self.plan(["Cargo.lock"], {"Cargo.lock": unrelated})["native_dependencies_required"])
 
     def test_attribution_never_hides_other_global_inputs_or_explicit_full(self) -> None:
         after = self.lock(external={**self.external, ("unused", "1.0.0"): []})
@@ -1102,12 +1057,10 @@ class ManifestAttributionTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 plan = self.plan(changes, resolved)
                 self.assertTrue(plan["full"])
-                self.assertTrue(plan["native_dependencies_required"])
         full = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2,
                                    force_full=True, resolved_inputs=resolved)
         self.assertTrue(full["full"])
         self.assertEqual(full["qualification"], "full-native")
-        self.assertTrue(full["native_dependencies_required"])
         # A resolution for a path that did not change is ignored.
         self.assertEqual(self.plan(["leaf/src/lib.rs"], resolved)["tested"],
                          sorted({"leaf"} | ci_select.ALWAYS_PACKAGES))
