@@ -7,7 +7,7 @@
 //!
 //! A [`Page`] is a list of [`Block`]s in PDF points (1pt = 1px at 100% zoom).
 //! For a loaded PDF the blocks are empty placeholders whose pixels come from
-//! pdfium; [`sample_document`] is the bundled demonstration used by the
+//! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
 use uuid::Uuid;
@@ -93,7 +93,7 @@ impl Document {
     }
 
     /// An empty document with `count` blank pages of the given size, used for
-    /// the raster backend where page pixels come from pdfium rather than the
+    /// the raster backend where page pixels come from the PDF engine rather than the
     /// text model.
     pub fn blank_pages(title: &str, author: &str, count: usize, page_w: f64, page_h: f64) -> Self {
         let count = count.max(1);
