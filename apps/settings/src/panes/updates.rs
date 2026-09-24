@@ -2283,13 +2283,8 @@ mod tests {
         assert_eq!(pane.status().staged_version, None);
         // Press Check.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        for _ in 0..1000 {
-            pane.sync(&mut doc, &root);
-            if pane.prefs().last_checked != "Never" {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        pane.sync(&mut doc, &root);
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(
             pane.prefs().last_checked,
             "CHECKED-NOW",
@@ -2303,47 +2298,62 @@ mod tests {
         assert!(pane.take_structure_dirty(), "check refreshes the view");
     }
 
+    /// Drive the host's polling until `pending` clears. The bound is a hang
+    /// guard for a worker that never reports, not a performance budget.
+    fn settle(
+        pane: &mut UpdatesPane,
+        doc: &mut AutoCommit,
+        pending: impl Fn(&UpdatesPane) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + GATE_TIMEOUT;
+        loop {
+            pane.sync(doc, &automerge::ROOT);
+            if !pending(pane) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background worker never reported"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn blocking_update_check_returns_promptly_and_stamps_only_on_completion() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(80), false));
-        let mut pane = pane_with_control(control);
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_checks();
+        let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        let started = std::time::Instant::now();
+        // The check is held until released below: were `sync` to wait for
+        // it, this call would only return once the gate timed out.
         pane.sync(&mut doc, &root);
-        assert!(started.elapsed() < Duration::from_millis(40));
+        assert!(pane.check_pending, "the check runs off the UI thread");
         assert_eq!(pane.prefs().last_checked, "Never");
-        for _ in 0..1000 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
+        assert!(
+            !control.gate_timed_out(),
+            "sync blocked on the update check"
+        );
         assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
         assert!(pane.notice().is_none());
     }
 
     #[test]
     fn failed_async_update_check_does_not_stamp_last_checked() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(20), true));
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None).failing_check());
         let mut pane = pane_with_control(control);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(pane.prefs().last_checked, "Never");
         assert!(
             pane.notice()
@@ -2353,9 +2363,9 @@ mod tests {
 
     #[test]
     fn blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure() {
-        let control = Arc::new(
-            FakeControl::new(None, None).blocking_refresh(Duration::from_millis(20), false),
-        );
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_refreshes();
         let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -2365,17 +2375,14 @@ mod tests {
             FIRMWARE_REFRESH_KEY,
             automerge::ScalarValue::Boolean(true),
         );
-        let started = std::time::Instant::now();
         pane.sync(&mut doc, &root);
-        assert!(started.elapsed() < Duration::from_millis(40));
         assert!(pane.firmware_refresh_pending);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.firmware_refresh_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+        assert!(
+            !control.gate_timed_out(),
+            "sync blocked on the firmware refresh"
+        );
         assert_eq!(pane.firmware_updates, Ok(Vec::new()));
 
         control.set_refresh_fails(true);
@@ -2385,13 +2392,9 @@ mod tests {
             automerge::ScalarValue::Boolean(true),
         );
         pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.firmware_refresh_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        assert!(pane.firmware_refresh_pending);
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
         assert!(pane.firmware_updates.is_err());
         assert!(pane.notice().is_some_and(|message| {
             message.contains("Firmware metadata could not be refreshed")
@@ -2400,23 +2403,26 @@ mod tests {
 
     #[test]
     fn duplicate_update_checks_are_cleared_while_one_is_pending() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(40), false));
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_checks();
         let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
+        assert!(pane.check_pending);
+        // A second press while the first check is provably still running.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        assert_eq!(
+            read_bool(&doc, &root, CHECK_KEY),
+            Some(false),
+            "the duplicate press is cleared"
+        );
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(*control.check_calls.lock().unwrap(), 1);
     }
 
@@ -2446,12 +2452,17 @@ mod tests {
         target: Mutex<Option<String>>,
         set_fails: bool,
         rollback_fails: bool,
-        check_delay: Duration,
+        check_gate: Mutex<Option<mpsc::Receiver<()>>>,
         check_fails: bool,
-        refresh_delay: Duration,
+        refresh_gate: Mutex<Option<mpsc::Receiver<()>>>,
         refresh_fails: Mutex<bool>,
         check_calls: Mutex<u32>,
+        gate_timed_out: std::sync::atomic::AtomicBool,
     }
+
+    /// How long a gated fake waits for its release before giving up and
+    /// recording that the caller held the UI thread.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
     impl FakeControl {
         fn new(timer: Option<bool>, target: Option<&str>) -> Self {
@@ -2462,11 +2473,12 @@ mod tests {
                 target: Mutex::new(target.map(str::to_string)),
                 set_fails: false,
                 rollback_fails: false,
-                check_delay: Duration::ZERO,
+                check_gate: Mutex::new(None),
                 check_fails: false,
-                refresh_delay: Duration::ZERO,
+                refresh_gate: Mutex::new(None),
                 refresh_fails: Mutex::new(false),
                 check_calls: Mutex::new(0),
+                gate_timed_out: std::sync::atomic::AtomicBool::new(false),
             }
         }
         fn failing_set(mut self) -> Self {
@@ -2477,15 +2489,33 @@ mod tests {
             self.rollback_fails = true;
             self
         }
-        fn blocking_check(mut self, delay: Duration, fails: bool) -> Self {
-            self.check_delay = delay;
-            self.check_fails = fails;
+        fn failing_check(mut self) -> Self {
+            self.check_fails = true;
             self
         }
-        fn blocking_refresh(mut self, delay: Duration, fails: bool) -> Self {
-            self.refresh_delay = delay;
-            *self.refresh_fails.get_mut().unwrap() = fails;
-            self
+        /// Hold every update check until the returned sender releases it.
+        fn gate_checks(&self) -> mpsc::Sender<()> {
+            let (release, gate) = mpsc::channel();
+            *self.check_gate.lock().unwrap() = Some(gate);
+            release
+        }
+        /// Hold every firmware refresh until the returned sender releases it.
+        fn gate_refreshes(&self) -> mpsc::Sender<()> {
+            let (release, gate) = mpsc::channel();
+            *self.refresh_gate.lock().unwrap() = Some(gate);
+            release
+        }
+        fn wait_at(&self, gate: &Mutex<Option<mpsc::Receiver<()>>>) {
+            if let Some(gate) = gate.lock().unwrap().as_ref()
+                && gate.recv_timeout(GATE_TIMEOUT).is_err()
+            {
+                self.gate_timed_out
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn gate_timed_out(&self) -> bool {
+            self.gate_timed_out
+                .load(std::sync::atomic::Ordering::SeqCst)
         }
         fn set_refresh_fails(&self, fails: bool) {
             *self.refresh_fails.lock().unwrap() = fails;
@@ -2518,7 +2548,7 @@ mod tests {
 
         fn check_now(&self) -> Result<(), String> {
             *self.check_calls.lock().unwrap() += 1;
-            std::thread::sleep(self.check_delay);
+            self.wait_at(&self.check_gate);
             if self.check_fails {
                 Err("update check failed".into())
             } else {
@@ -2535,7 +2565,7 @@ mod tests {
             ),
             String,
         > {
-            std::thread::sleep(self.refresh_delay);
+            self.wait_at(&self.refresh_gate);
             if *self.refresh_fails.lock().unwrap() {
                 Err("firmware refresh failed".into())
             } else {
