@@ -1,29 +1,30 @@
-//! The session's action broker, offered to authenticated remote callers.
+//! The session's action broker as an [`ActionHost`].
 //!
-//! [`BrokerActionHost`] adapts [`AppActionBroker`] — the same broker that
-//! serves the palette, the control socket and local agents — to
-//! [`ActionHost`]. It adds no second execution path: a remote invocation is
-//! admitted, permission-checked and dispatched exactly like a local one,
-//! attributed to the caller's user root. What it adds is the remote
-//! contract: actions outside the caller's workspaces are absent from the
-//! catalogue, and invocation ids are idempotent across retries.
-
-use std::sync::Mutex;
+//! [`BrokerActionHost`] is the one door through which anything other than
+//! the publishing application reaches a published action: a peer on the
+//! shell network, an app or agent on this machine over the collaboration
+//! socket, the MCP bridge, the palette. Each supplies a [`Caller`] its own
+//! transport authenticated; the broker admits, permission-checks and
+//! dispatches the invocation exactly as it always has, and the shared
+//! invocation ledger makes a retried [`InvocationId`] idempotent whichever
+//! way it arrives.
+//!
+//! [`InvocationId`]: tilo_actions::InvocationId
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, Catalogue, CatalogueEntry, InvocationLedger,
-    InvocationReceipt, InvocationState, InvokeRequest, ReceiptStatus,
+    ActionHost, ActionHostError, Caller, Catalogue, InvocationReceipt, InvocationState,
+    InvokeRequest,
 };
-use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
 
 /// [`ActionHost`] over the live application broker.
+#[derive(Clone)]
 pub struct BrokerActionHost {
     broker: AppActionBroker,
-    /// Remote invocation id to the broker's own job id.
-    ledger: Mutex<InvocationLedger<u64>>,
+    /// The application connection the caller itself is, when it is one; it
+    /// is what [`tilo_actions::remote::OWN_PROVIDER`] names.
+    own_peer: Option<u64>,
 }
 
 impl BrokerActionHost {
@@ -31,95 +32,23 @@ impl BrokerActionHost {
     pub fn new(broker: AppActionBroker) -> Self {
         Self {
             broker,
-            ledger: Mutex::new(InvocationLedger::default()),
+            own_peer: None,
         }
     }
 
-    /// Surfaces offered to `caller`, with actions its authority excludes
-    /// already removed.
-    fn offered(&self, caller: &Caller) -> Vec<PublishedSurface> {
-        self.broker.surfaces_offered_to_member(&person(caller))
-    }
-
-    fn job(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<u64> {
-        self.ledger
-            .lock()
-            .ok()
-            .and_then(|ledger| ledger.get(caller, id).copied())
-    }
-}
-
-/// The person the broker's workspace policy knows `caller` as.
-fn person(caller: &Caller) -> String {
-    crate::shell::collab_broker_capnp::principal_id_for_root(*caller.user_public_key())
-}
-
-fn descriptor(action: &PublishedAction) -> ActionDescriptor {
-    ActionDescriptor {
-        address: ActionAddress::new(&action.resource, &action.action),
-        resource_kind: action.resource_kind.clone(),
-        resource_label: action.resource_label.clone(),
-        action_label: action.action_label.clone(),
-        description: action.description.clone(),
-        // The host runs the action wherever its app lives; the published
-        // surface carries no locus of its own.
-        locus: ExecutionLocus::default(),
-        kind: action.operation_kind,
-        contract: action.contract.clone(),
-        input: match &action.input {
-            PublishedInput::None => InputSpec::None,
-            PublishedInput::Text {
-                prompt,
-                placeholder,
-                wants_content,
-            } => InputSpec::Text {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: if *wants_content {
-                    Collects::Content
-                } else {
-                    Collects::Words
-                },
-            },
-        },
-        params: action.params.clone(),
-    }
-}
-
-/// Map a broker refusal onto the remote vocabulary. The broker words its
-/// refusals for people; only the distinctions a remote caller can act on
-/// are recovered, everything else stays a plain refusal.
-fn refusal(reason: String) -> ActionHostError {
-    if reason.starts_with("action_confirmation_required") {
-        ActionHostError::ConfirmationRequired
-    } else if reason.contains("not allowed") {
-        ActionHostError::NotPermitted
-    } else if reason.contains("no longer publishes") {
-        ActionHostError::UnknownAction
-    } else {
-        ActionHostError::Refused { reason }
+    /// The host as seen from application connection `peer_id`.
+    #[must_use]
+    pub fn for_connection(broker: AppActionBroker, peer_id: u64) -> Self {
+        Self {
+            broker,
+            own_peer: Some(peer_id),
+        }
     }
 }
 
 impl ActionHost for BrokerActionHost {
     fn catalogue(&self, caller: &Caller) -> Result<Catalogue, ActionHostError> {
-        let revision = self.broker.surfaces_generation().to_string();
-        let entries = self
-            .offered(caller)
-            .into_iter()
-            .flat_map(|surface| {
-                let provider = surface.peer_id.to_string();
-                surface
-                    .actions
-                    .into_iter()
-                    .map(move |action| CatalogueEntry {
-                        provider: provider.clone(),
-                        app_id: surface.app_id.clone(),
-                        descriptor: descriptor(&action),
-                    })
-            })
-            .collect();
-        Ok(Catalogue { revision, entries })
+        Ok(self.broker.state().action_catalogue_for(caller))
     }
 
     fn invoke(
@@ -127,57 +56,13 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
-        let person = person(caller);
-        let mut ledger = self
-            .ledger
-            .lock()
-            .map_err(|_| ActionHostError::Unavailable {
-                reason: "the invocation ledger is unavailable".into(),
-            })?;
-        let (job, _) = ledger.admit(caller, &request, || {
-            let peer_id = request
-                .target
-                .provider
-                .parse::<u64>()
-                .map_err(|_| ActionHostError::UnknownAction)?;
-            let address = &request.target.address;
-            let offered = self.offered(caller).into_iter().any(|surface| {
-                surface.peer_id == peer_id
-                    && surface.actions.iter().any(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })
-            });
-            if !offered {
-                return Err(ActionHostError::UnknownAction);
-            }
-            self.broker
-                .start_with_context(
-                    peer_id,
-                    &address.resource,
-                    &address.action,
-                    request.argument.to_slot().as_deref(),
-                    &person,
-                    request.context.clone(),
-                )
-                .map(|job| job.id)
-                .map_err(refusal)
-        })?;
-        let job = *job;
-        drop(ledger);
-        Ok(self.broker.status(job).map_or(
-            InvocationReceipt {
-                invocation: request.invocation,
-                status: ReceiptStatus::Accepted,
-            },
-            |update| InvocationState::new(request.invocation, update).receipt(),
-        ))
+        self.broker
+            .state()
+            .action_invoke(caller, self.own_peer, &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        let job = self.job(caller, id)?;
-        self.broker
-            .status(job)
-            .map(|update| InvocationState::new(*id, update))
+        self.broker.state().action_observe(caller, id)
     }
 
     fn cancel(
@@ -185,12 +70,7 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        let job = self
-            .job(caller, id)
-            .ok_or(ActionHostError::UnknownInvocation)?;
-        self.broker
-            .cancel(job, &person(caller))
-            .map_err(|reason| ActionHostError::NotCancellable { reason })
+        self.broker.state().action_cancel(caller, id)
     }
 }
 
@@ -198,7 +78,10 @@ impl ActionHost for BrokerActionHost {
 mod tests {
     use super::*;
     use crate::shell::collab_broker::CrdtRoute;
+    use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+    use tilo_actions::ActionAddress;
+    use tilo_actions::remote::ReceiptStatus;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
     const OWNER_ROOT: [u8; 32] = [0xA1; 32];
@@ -233,7 +116,7 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
     ) {
         let mut workspace = Workspace::test_default(WorkspaceId(41), "Remote room");
-        workspace.set_owner(person(&owner()));
+        workspace.set_owner("a1".repeat(32));
         let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -251,6 +134,14 @@ mod tests {
                     tilo_actions::ActionContract {
                         execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                         result: tilo_actions::ResultSpec::Job,
+                        ..tilo_actions::ActionContract::default()
+                    },
+                ),
+                action(
+                    "erase",
+                    tilo_actions::ActionContract {
+                        risk: tilo_actions::RiskLevel::Destructive,
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..tilo_actions::ActionContract::default()
                     },
                 ),
@@ -277,6 +168,7 @@ mod tests {
             },
             argument: InvokeArgument::None,
             context: None,
+            confirmation: None,
         }
     }
 
@@ -287,16 +179,68 @@ mod tests {
         let offered: Vec<_> = catalogue
             .entries
             .iter()
-            .map(|entry| entry.descriptor.address.action.as_str())
+            .map(|entry| {
+                (
+                    entry.provider.split(':').next().unwrap_or_default(),
+                    entry.descriptor.address.action.as_str(),
+                )
+            })
             .collect();
-        assert_eq!(offered, ["refresh", "rename"]);
-        assert_eq!(catalogue.entries[0].provider, "7");
+        assert_eq!(
+            offered,
+            [
+                ("7", "refresh"),
+                ("7", "erase"),
+                ("7", "rename"),
+                ("workspace", "profile.save"),
+                ("workspace", "profile.assign"),
+            ],
+            "a remote device is not offered launching apps on this desktop"
+        );
         assert!(
             host.catalogue(&stranger())
                 .expect("stranger catalogue")
                 .entries
                 .is_empty(),
             "a caller outside the workspace is offered nothing"
+        );
+    }
+
+    #[test]
+    fn confirmation_is_evidence_the_contract_checks() {
+        let (host, mut invocations) = host();
+        let mut erase = refresh(tilo_actions::InvocationId::new());
+        erase.target.address = ActionAddress::new("files.entry:/tmp/report", "erase");
+        assert_eq!(
+            host.invoke(&owner(), erase.clone()),
+            Err(ActionHostError::ConfirmationRequired)
+        );
+        erase.confirmation = Some(tilo_actions::remote::Confirmation::Phrase("erase".into()));
+        assert_eq!(
+            host.invoke(&owner(), erase.clone()),
+            Err(ActionHostError::ConfirmationRequired),
+            "the wrong kind of evidence is not accepted"
+        );
+        assert!(invocations.try_recv().is_err());
+        erase.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
+        host.invoke(&owner(), erase).expect("confirmed");
+        assert!(invocations.try_recv().is_ok(), "dispatched once confirmed");
+    }
+
+    #[test]
+    fn a_room_confined_caller_sees_only_its_room() {
+        let (host, _) = host();
+        let elsewhere = Caller::local_person("a1".repeat(32)).in_room("not-this-room");
+        assert!(
+            host.catalogue(&elsewhere)
+                .expect("catalogue")
+                .entries
+                .is_empty(),
+            "a connection admitted to another room reaches nothing here"
+        );
+        assert_eq!(
+            host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new())),
+            Err(ActionHostError::UnknownAction)
         );
     }
 

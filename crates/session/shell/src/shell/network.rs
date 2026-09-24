@@ -9981,6 +9981,7 @@ mod tests {
             },
             argument: InvokeArgument::None,
             context: None,
+            confirmation: None,
         });
 
         let mut round_trip = |request: RemoteActionMessage| {
