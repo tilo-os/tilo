@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::ops::Range;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -63,6 +63,13 @@ pub struct HydratorConfig {
     /// Concurrent fills. A reader of one file never waits for a fill of
     /// another as long as a worker is free.
     pub workers: usize,
+    /// Largest read-ahead window. A reader that continues where its last
+    /// fill ended gets the next window fetched in the background; the
+    /// window doubles on every sequential fill up to this size and resets
+    /// on a seek. `0` disables read-ahead.
+    pub readahead_max: u64,
+    /// Background read-ahead fills in flight at once.
+    pub readahead_workers: usize,
 }
 
 impl Default for HydratorConfig {
@@ -70,6 +77,8 @@ impl Default for HydratorConfig {
         Self {
             granule: 256 * 1024,
             workers: 8,
+            readahead_max: 64 * 1024 * 1024,
+            readahead_workers: 4,
         }
     }
 }
@@ -83,6 +92,10 @@ pub struct HydrationStats {
     pub failures: AtomicU64,
     /// Events that asked for ranges already resident (or unknown files).
     pub passthrough: AtomicU64,
+    /// Bytes fetched ahead of a sequential reader.
+    pub readahead_bytes: AtomicU64,
+    /// Accesses denied because the file is gated against writers.
+    pub gated_denials: AtomicU64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -97,16 +110,49 @@ struct FileState {
     size: u64,
     missing: RangeSet,
     inflight: RangeSet,
+    /// End of the last foreground fill, to recognise sequential readers.
+    seq_end: u64,
+    /// Current read-ahead window; `0` until a reader proves sequential.
+    window: u64,
+    /// Furthest offset read-ahead was already scheduled up to.
+    ahead_end: u64,
+}
+
+impl FileState {
+    fn new(content: [u8; 32], size: u64, missing: RangeSet) -> Self {
+        Self {
+            content,
+            size,
+            missing,
+            inflight: RangeSet::new(),
+            seq_end: 0,
+            window: 0,
+            ahead_end: 0,
+        }
+    }
+}
+
+struct ReadAhead {
+    key: (u64, u64),
+    fd: OwnedFd,
+    range: Range<u64>,
 }
 
 struct Shared {
     group: Group,
     fetcher: Arc<dyn Fetcher>,
     files: Mutex<HashMap<(u64, u64), FileState>>,
+    /// Files whose writers are refused, with the errno they get.
+    gates: Mutex<HashMap<(u64, u64), i32>>,
+    /// Descriptors this process holds for events and read-ahead. They are
+    /// open read-write on the files they name and must not make this
+    /// process look like a writer.
+    own_fds: Mutex<std::collections::HashSet<i32>>,
     changed: Condvar,
     stop: AtomicBool,
     cfg: HydratorConfig,
     stats: HydrationStats,
+    readahead: Mutex<Option<mpsc::Sender<ReadAhead>>>,
 }
 
 /// Serves pre-content events for the placeholders it created or adopted.
@@ -198,16 +244,87 @@ fn write_all_at(fd: BorrowedFd<'_>, mut data: &[u8], mut offset: u64) -> io::Res
 }
 
 impl Shared {
+    fn gated(&self, key: (u64, u64)) -> Option<i32> {
+        self.gates.lock().ok()?.get(&key).copied()
+    }
+
+    fn own_fd(&self, fd: i32, held: bool) {
+        if let Ok(mut fds) = self.own_fds.lock() {
+            if held {
+                fds.insert(fd);
+            } else {
+                fds.remove(&fd);
+            }
+        }
+    }
+
+    /// Whether process `pid` holds `key` open for writing.
+    ///
+    /// Pre-content events do not say whether the access is a read or a
+    /// write, and the event's descriptor is the listener's own. The
+    /// accessing process's descriptor table does say it: a writer is a
+    /// process with the file open `O_WRONLY` or `O_RDWR`.
+    fn process_writes(&self, pid: i32, key: (u64, u64)) -> bool {
+        let own = u32::try_from(pid).is_ok_and(|p| p == std::process::id());
+        let skip = if own {
+            self.own_fds.lock().map(|g| g.clone()).unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let fds = Path::new("/proc").join(pid.to_string()).join("fd");
+        let Ok(entries) = fs::read_dir(&fds) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let fd_num = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<i32>().ok());
+            if fd_num.is_some_and(|n| skip.contains(&n)) {
+                continue;
+            }
+            let Ok(meta) = fs::metadata(entry.path()) else {
+                continue;
+            };
+            if (meta.dev(), meta.ino()) != key {
+                continue;
+            }
+            let info = Path::new("/proc")
+                .join(pid.to_string())
+                .join("fdinfo")
+                .join(entry.file_name());
+            let Ok(text) = fs::read_to_string(info) else {
+                continue;
+            };
+            let flags = text
+                .lines()
+                .find_map(|l| l.strip_prefix("flags:"))
+                .and_then(|v| u32::from_str_radix(v.trim(), 8).ok())
+                .unwrap_or(0);
+            let mode = flags & u32::try_from(libc::O_ACCMODE).unwrap_or(3);
+            if mode != u32::try_from(libc::O_RDONLY).unwrap_or(0) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Handles one pre-content event and returns the response to send.
-    fn serve(&self, fd: BorrowedFd<'_>, range: Option<(u64, u64)>) -> u32 {
+    fn serve(&self, fd: BorrowedFd<'_>, range: Option<(u64, u64)>, pid: i32) -> u32 {
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
         };
-        let want = {
-            let Ok(files) = self.files.lock() else {
+        if let Some(errno) = self.gated(key)
+            && self.process_writes(pid, key)
+        {
+            self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
+            return fan::deny_errno(errno);
+        }
+        let (want, ahead) = {
+            let Ok(mut files) = self.files.lock() else {
                 return fan::FAN_ALLOW;
             };
-            let Some(st) = files.get(&key) else {
+            let Some(st) = files.get_mut(&key) else {
                 self.stats.passthrough.fetch_add(1, Ordering::Relaxed);
                 return fan::FAN_ALLOW;
             };
@@ -216,13 +333,33 @@ impl Shared {
                 // No range (e.g. an open-time event): the whole file.
                 _ => 0..st.size,
             };
-            align_range(
+            let want = align_range(
                 raw.start.min(st.size)..raw.end.min(st.size),
                 self.cfg.granule,
                 st.size,
-            )
+            );
+            let ahead = plan_readahead(&self.cfg, st, &want);
+            (want, ahead)
         };
-        if self.fill(key, fd, &want).is_ok() {
+        if let Some(range) = ahead
+            && let Ok(dup) = fd.try_clone_to_owned()
+            && let Ok(tx) = self.readahead.lock()
+            && let Some(tx) = tx.as_ref()
+        {
+            self.own_fd(dup.as_raw_fd(), true);
+            let raw = dup.as_raw_fd();
+            if tx
+                .send(ReadAhead {
+                    key,
+                    fd: dup,
+                    range,
+                })
+                .is_err()
+            {
+                self.own_fd(raw, false);
+            }
+        }
+        if self.fill(key, fd, &want, true).is_ok() {
             fan::FAN_ALLOW
         } else {
             self.stats.failures.fetch_add(1, Ordering::Relaxed);
@@ -230,12 +367,22 @@ impl Shared {
         }
     }
 
-    fn fill(&self, key: (u64, u64), fd: BorrowedFd<'_>, want: &Range<u64>) -> io::Result<()> {
+    /// Fetches and writes the missing parts of `want`. With `block`, ranges
+    /// another worker is filling are waited for; without it they are left
+    /// to that worker.
+    fn fill(
+        &self,
+        key: (u64, u64),
+        fd: BorrowedFd<'_>,
+        want: &Range<u64>,
+        block: bool,
+    ) -> io::Result<u64> {
         let poisoned = || io::Error::other("hydrator state poisoned");
         let mut files = self.files.lock().map_err(|_| poisoned())?;
+        let mut filled = 0u64;
         loop {
             let Some(st) = files.get_mut(&key) else {
-                return Ok(());
+                return Ok(filled);
             };
             let missing = st.missing.intersect(want);
             if missing.is_empty() {
@@ -249,6 +396,9 @@ impl Shared {
                     free.remove(busy);
                 }
                 claim.extend(free.iter().cloned());
+            }
+            if claim.is_empty() && !block {
+                return Ok(filled);
             }
             if claim.is_empty() {
                 // Another worker is filling what we need; wait for it.
@@ -286,6 +436,7 @@ impl Shared {
                     Ok(()) => {
                         self.stats.fills.fetch_add(1, Ordering::Relaxed);
                         self.stats.bytes_filled.fetch_add(len, Ordering::Relaxed);
+                        filled = filled.saturating_add(len);
                         done.push(c.clone());
                     }
                     Err(e) => {
@@ -313,13 +464,95 @@ impl Shared {
         if resident {
             files.remove(&key);
             drop(files);
-            let _ = self
-                .group
-                .mark_fd(fan::FAN_MARK_REMOVE, fan::FAN_PRE_ACCESS, fd);
+            if self.gated(key).is_none() {
+                let _ = self
+                    .group
+                    .mark_fd(fan::FAN_MARK_REMOVE, fan::FAN_PRE_ACCESS, fd);
+            }
             let _ = sys::fremove_xattr(fd, RESIDENCY_XATTR);
         }
-        Ok(())
+        Ok(filled)
     }
+}
+
+/// Starts the background fillers that fetch ahead of sequential readers.
+fn spawn_readahead(shared: &Arc<Shared>, workers: usize, threads: &mut Vec<JoinHandle<()>>) {
+    if workers == 0 {
+        return;
+    }
+    let (tx, rx) = mpsc::channel::<ReadAhead>();
+    if let Ok(mut slot) = shared.readahead.lock() {
+        *slot = Some(tx);
+    }
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..workers {
+        let shared = Arc::clone(shared);
+        let rx = Arc::clone(&rx);
+        threads.push(std::thread::spawn(move || {
+            loop {
+                let job = match rx.lock() {
+                    Ok(g) => g.recv_timeout(Duration::from_millis(50)),
+                    Err(_) => return,
+                };
+                let job = match job {
+                    Ok(job) => job,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if shared.stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                };
+                // A failed read-ahead costs nothing: the reader's own event
+                // fetches the range again.
+                if let Ok(n) = shared.fill(job.key, job.fd.as_fd(), &job.range, false) {
+                    shared.stats.readahead_bytes.fetch_add(n, Ordering::Relaxed);
+                }
+                shared.own_fd(job.fd.as_raw_fd(), false);
+            }
+        }));
+    }
+}
+
+/// Decides what to fetch ahead of a reader whose fill is `want`.
+fn plan_readahead(
+    cfg: &HydratorConfig,
+    st: &mut FileState,
+    want: &Range<u64>,
+) -> Option<Range<u64>> {
+    if cfg.readahead_max == 0 || want.is_empty() {
+        return None;
+    }
+    let sequential = st.seq_end > 0 && want.start <= st.seq_end && want.end >= st.seq_end;
+    if sequential {
+        let floor = cfg.granule.saturating_mul(4);
+        st.window = st
+            .window
+            .saturating_mul(2)
+            .max(floor)
+            .min(cfg.readahead_max);
+    } else {
+        st.window = 0;
+        st.ahead_end = 0;
+    }
+    st.seq_end = want.end;
+    if st.window == 0 {
+        return None;
+    }
+    // Top up only once the reader has used half of what is ahead of it, so
+    // read-ahead is fetched in large pieces rather than one granule per
+    // foreground event.
+    if st.ahead_end > want.end && st.ahead_end.saturating_sub(want.end) >= st.window / 2 {
+        return None;
+    }
+    let start = want.end.max(st.ahead_end);
+    let end = want.end.saturating_add(st.window).min(st.size);
+    if start >= end {
+        return None;
+    }
+    st.ahead_end = end;
+    Some(start..end)
 }
 
 impl Hydrator {
@@ -331,18 +564,28 @@ impl Hydrator {
             event_flags,
         )?;
         let workers = cfg.workers.max(1);
+        let readahead_workers = if cfg.readahead_max == 0 {
+            0
+        } else {
+            cfg.readahead_workers.max(1)
+        };
         let shared = Arc::new(Shared {
             group,
             fetcher,
             files: Mutex::new(HashMap::new()),
+            gates: Mutex::new(HashMap::new()),
+            own_fds: Mutex::new(std::collections::HashSet::new()),
             changed: Condvar::new(),
             stop: AtomicBool::new(false),
             cfg,
             stats: HydrationStats::default(),
+            readahead: Mutex::new(None),
         });
         let (tx, rx) = mpsc::channel::<fan::Event>();
         let rx = Arc::new(Mutex::new(rx));
-        let mut threads = Vec::with_capacity(workers.saturating_add(1));
+        let mut threads =
+            Vec::with_capacity(workers.saturating_add(readahead_workers).saturating_add(1));
+        spawn_readahead(&shared, readahead_workers, &mut threads);
         for _ in 0..workers {
             let shared = Arc::clone(&shared);
             let rx = Arc::clone(&rx);
@@ -358,12 +601,13 @@ impl Hydrator {
                     let response = if ev.mask & fan::FAN_PRE_ACCESS == 0 {
                         fan::FAN_ALLOW
                     } else {
-                        shared.serve(fd.as_fd(), ev.range())
+                        shared.serve(fd.as_fd(), ev.range(), ev.pid)
                     };
                     if shared.group.respond(fd.as_raw_fd(), response).is_err() {
                         // Kernels without FAN_DENY_ERRNO accept only plain deny.
                         let _ = shared.group.respond(fd.as_raw_fd(), fan::FAN_DENY);
                     }
+                    shared.own_fd(fd.as_raw_fd(), false);
                 }
             }));
         }
@@ -374,6 +618,9 @@ impl Hydrator {
                 match reader.group.read(&mut buf, Some(Duration::from_millis(50))) {
                     Ok(events) => {
                         for ev in events {
+                            if let Some(fd) = ev.fd.as_ref() {
+                                reader.own_fd(fd.as_raw_fd(), true);
+                            }
                             if tx.send(ev).is_err() {
                                 return;
                             }
@@ -414,6 +661,17 @@ impl Hydrator {
     /// and only then renamed into place, so no reader can ever see it
     /// without its mark.
     pub fn create_placeholder(&self, path: &Path, spec: &PlaceholderSpec) -> io::Result<()> {
+        self.place(path, spec, false)
+    }
+
+    /// Atomically replaces whatever is at `path` with a placeholder for a
+    /// new version. A process that has the old file open keeps reading the
+    /// old inode, as with any rename over an open file.
+    pub fn replace_with_placeholder(&self, path: &Path, spec: &PlaceholderSpec) -> io::Result<()> {
+        self.place(path, spec, true)
+    }
+
+    fn place(&self, path: &Path, spec: &PlaceholderSpec, replace: bool) -> io::Result<()> {
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         let name = path
             .file_name()
@@ -431,12 +689,7 @@ impl Hydrator {
             .open(&staging)?;
         let result = (|| {
             file.set_len(spec.size)?;
-            let st = FileState {
-                content: spec.content,
-                size: spec.size,
-                missing: RangeSet::full(spec.size),
-                inflight: RangeSet::new(),
-            };
+            let st = FileState::new(spec.content, spec.size, RangeSet::full(spec.size));
             sys::fset_xattr(&file, RESIDENCY_XATTR, &encode_residency(&st))?;
             if let Some((uid, gid)) = spec.owner {
                 std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
@@ -454,7 +707,11 @@ impl Hydrator {
                 },
             )?;
             self.register(&file, st)?;
-            sys::rename_noreplace(&staging, path)
+            if replace {
+                fs::rename(&staging, path)
+            } else {
+                sys::rename_noreplace(&staging, path)
+            }
         })();
         if result.is_err() {
             let _ = fs::remove_file(&staging);
@@ -475,15 +732,7 @@ impl Hydrator {
         let (content, size, mut missing) = decode_residency(&raw)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad residency xattr"))?;
         missing.truncate(file.metadata()?.len().min(size));
-        self.register(
-            &file,
-            FileState {
-                content,
-                size,
-                missing,
-                inflight: RangeSet::new(),
-            },
-        )?;
+        self.register(&file, FileState::new(content, size, missing))?;
         Ok(true)
     }
 
@@ -493,15 +742,59 @@ impl Hydrator {
     pub fn evict(&self, path: &Path, content: [u8; 32]) -> io::Result<()> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let size = file.metadata()?.len();
-        let st = FileState {
-            content,
-            size,
-            missing: RangeSet::full(size),
-            inflight: RangeSet::new(),
-        };
+        let st = FileState::new(content, size, RangeSet::full(size));
         sys::fset_xattr(&file, RESIDENCY_XATTR, &encode_residency(&st))?;
         self.register(&file, st)?;
         sys::punch_hole(&file, 0, size)
+    }
+
+    /// Refuses writers of the file at `path` with `errno` (for example
+    /// `EBUSY` while another device holds its write lease). Readers keep
+    /// reading; a process that has the file open for writing gets `errno`
+    /// from the access that needs the bytes, `mmap` included.
+    pub fn gate_writes(&self, path: &Path, errno: i32) -> io::Result<()> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        let key = key_of(file.as_fd())?;
+        self.shared
+            .gates
+            .lock()
+            .map_err(|_| io::Error::other("hydrator state poisoned"))?
+            .insert(key, errno);
+        self.shared.group.mark_fd(
+            fan::FAN_MARK_ADD | fan::FAN_MARK_INODE,
+            fan::FAN_PRE_ACCESS,
+            file.as_fd(),
+        )
+    }
+
+    /// Lets writers of `path` through again.
+    pub fn ungate_writes(&self, path: &Path) -> io::Result<()> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        let key = key_of(file.as_fd())?;
+        self.shared
+            .gates
+            .lock()
+            .map_err(|_| io::Error::other("hydrator state poisoned"))?
+            .remove(&key);
+        let placeholder = self
+            .shared
+            .files
+            .lock()
+            .map_err(|_| io::Error::other("hydrator state poisoned"))?
+            .contains_key(&key);
+        if !placeholder {
+            let _ =
+                self.shared
+                    .group
+                    .mark_fd(fan::FAN_MARK_REMOVE, fan::FAN_PRE_ACCESS, file.as_fd());
+        }
+        Ok(())
     }
 
     pub fn residency(&self, path: &Path) -> io::Result<Residency> {
@@ -525,6 +818,9 @@ impl Hydrator {
     /// answered by the kernel once the group is closed.
     pub fn stop(mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        if let Ok(mut tx) = self.shared.readahead.lock() {
+            tx.take();
+        }
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -551,12 +847,7 @@ mod tests {
         let mut missing = RangeSet::full(1000);
         missing.remove(0..100);
         missing.remove(500..600);
-        let st = FileState {
-            content: [0xAB; 32],
-            size: 1000,
-            missing: missing.clone(),
-            inflight: RangeSet::new(),
-        };
+        let st = FileState::new([0xAB; 32], 1000, missing.clone());
         let (content, size, back) = decode_residency(&encode_residency(&st)).unwrap();
         assert_eq!(content, [0xAB; 32]);
         assert_eq!(size, 1000);
@@ -568,5 +859,56 @@ mod tests {
         assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
         assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
         assert_eq!(align_range(5000..9000, 4096, 6000), 4096..6000);
+    }
+}
+
+#[cfg(test)]
+mod readahead_tests {
+    use super::*;
+
+    #[test]
+    fn readahead_window_doubles_for_sequential_fills_and_resets_on_a_seek() {
+        let cfg = HydratorConfig {
+            granule: 1024,
+            readahead_max: 64 * 1024,
+            ..HydratorConfig::default()
+        };
+        let mut st = FileState::new([0; 32], 1 << 20, RangeSet::full(1 << 20));
+        // First fill: nothing is known about the reader yet.
+        assert_eq!(plan_readahead(&cfg, &mut st, &(0..1024)), None);
+        // Continues where it ended: fetch a window ahead.
+        assert_eq!(
+            plan_readahead(&cfg, &mut st, &(1024..2048)),
+            Some(2048..6144)
+        );
+        // Continues again: the window doubles, nothing is scheduled twice.
+        assert_eq!(
+            plan_readahead(&cfg, &mut st, &(2048..3072)),
+            Some(6144..11264)
+        );
+        // A seek resets it.
+        assert_eq!(plan_readahead(&cfg, &mut st, &(500_000..501_024)), None);
+        // The window is capped.
+        let mut last = None;
+        let mut at = 501_024;
+        for _ in 0..10 {
+            // A read inside what is already ahead schedules nothing; keep the
+            // last window that was scheduled.
+            if let Some(scheduled) = plan_readahead(&cfg, &mut st, &(at..at + 1024)) {
+                last = Some(scheduled);
+            }
+            at += 1024;
+        }
+        let r = last.expect("a sequential reader schedules read-ahead");
+        assert!(
+            r.end.saturating_sub(at) <= 64 * 1024,
+            "window capped: {r:?}"
+        );
+        // Disabled.
+        let off = HydratorConfig {
+            readahead_max: 0,
+            ..cfg
+        };
+        assert_eq!(plan_readahead(&off, &mut st, &(at..at + 1024)), None);
     }
 }
