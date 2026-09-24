@@ -97,7 +97,7 @@ impl Plan {
     pub fn digest(&self) -> String {
         use sha2::{Digest, Sha256};
         let bytes = serde_json::to_vec(self).expect("plan serializes");
-        format!("{:x}", Sha256::digest(bytes))
+        hex::encode(Sha256::digest(bytes))
     }
 }
 

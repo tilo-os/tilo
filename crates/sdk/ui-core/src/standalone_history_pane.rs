@@ -312,7 +312,7 @@ mod tests {
             author: HistoryAuthor::new("Alice", 120.0, "alice"),
             op_class: collab_types::OpClass::Splice,
             artifact_kind: collab_types::ArtifactKind::Note,
-            timestamp: std::time::SystemTime::UNIX_EPOCH,
+            timestamp: crate::time::SystemTime::UNIX_EPOCH,
             summary: format!("Change {id}"),
             text_delta: Some((1, 0)),
             diff_payload: None,
@@ -435,7 +435,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("before")
         );
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("last")
         );
         // Omitting the interior change contaminates the before frontier with
@@ -457,7 +457,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("middle")
         );
     }

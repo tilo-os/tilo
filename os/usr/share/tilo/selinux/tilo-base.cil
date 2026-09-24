@@ -52,6 +52,15 @@
   (system_u object_r tilo_session_unit_file_t ((s0) (s0))))
 (allow xdm_t tilo_session_unit_file_t (service (start stop status)))
 
+; The console channel of a VM (crates/session/console-control): the greeter
+; and the live installer run in xdm_t and answer the tilo-control action
+; protocol on the virtio-serial port named org.tilo.console.0. That port only
+; exists when a hypervisor attaches it (real hardware has no virtio-serial
+; bus). 70-tilo-console.rules gives exactly that port to the greetd user;
+; every other virtio port stays root-only by owner and mode, so this MAC
+; grant does not widen who can open them.
+(allow xdm_t virtio_device_t (chr_file (open read write getattr ioctl lock)))
+
 ; ENFORCING HARDENING PATH (do after a VM run captures AVCs):
 ; -----------------------------------------------------------
 ; 1. boot, exercise fs (mount /var/workspace, read/write, peer sync),

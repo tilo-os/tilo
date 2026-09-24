@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "select")
                 .unwrap()
-                .and_then(|(v, _)| v.to_bool()),
+                .and_then(|(v, _)| v.as_bool()),
             Some(true)
         );
     }
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "select")
                 .unwrap()
-                .and_then(|(value, _)| value.to_bool()),
+                .and_then(|(value, _)| value.as_bool()),
             Some(true)
         );
     }

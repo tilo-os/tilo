@@ -9,7 +9,6 @@
 //! seed uses [`sample_response`] instead.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::time::Instant;
 
 use base64::Engine;
@@ -43,8 +42,8 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
         .map(|p| {
             format!(
                 "{}={}",
-                url_encode(&sub(&p.key)),
-                url_encode(&sub(&p.value))
+                ui::uri::encode_component(&sub(&p.key)),
+                ui::uri::encode_component(&sub(&p.value))
             )
         })
         .collect();
@@ -111,8 +110,8 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
                 .map(|f| {
                     format!(
                         "{}={}",
-                        url_encode(&sub(&f.key)),
-                        url_encode(&sub(&f.value))
+                        ui::uri::encode_component(&sub(&f.key)),
+                        ui::uri::encode_component(&sub(&f.value))
                     )
                 })
                 .collect();
@@ -128,28 +127,10 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
     }
 }
 
-/// Minimal percent-encoding for query/form values. Encodes everything
-/// outside the unreserved set so keys/values with spaces or `&` round-trip.
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 /// Perform the request and collect the response. Blocking — the caller
 /// runs it on a worker thread so the UI stays responsive.
 pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-api-tester/0.1")
         .build()
         .map_err(|e| e.to_string())?;

@@ -659,14 +659,7 @@ fn home_channel_avatars_render_the_fetched_photo() {
         for _ in 0..(w * h) {
             rgba.extend_from_slice(&[20, 200, 60, 255]);
         }
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().unwrap().write_image_data(&rgba).unwrap();
-        }
-        out
+        ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
     let avatar_url = "http://test.local/avatar.png";
@@ -725,14 +718,7 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
         for _ in 0..(w * h) {
             rgba.extend_from_slice(&[200, 60, 20, 255]);
         }
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().unwrap().write_image_data(&rgba).unwrap();
-        }
-        out
+        ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
     let avatar_url = "http://test.local/creator.png";

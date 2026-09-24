@@ -31,7 +31,7 @@ pub(crate) fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, St
     let body = doc
         .get(ROOT, "body")
         .map_err(|e| e.to_string())?
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .and_then(|(value, _)| value.as_str().map(str::to_owned))
         .unwrap_or_default();
     Ok(Box::new(NotebookPreview {
         body,

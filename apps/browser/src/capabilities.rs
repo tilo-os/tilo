@@ -48,33 +48,21 @@ impl Default for DownloadStore {
     }
 }
 
-fn open_download(path: &std::path::Path, reveal: bool) -> Result<(), String> {
+/// Ask the host to open a finished download, or reveal its folder. The host
+/// answers on the returned channel; the UI thread never waits for it.
+fn open_download(
+    path: &std::path::Path,
+    reveal: bool,
+) -> Result<ui::portal::LaunchChannel, String> {
     if !path.is_absolute() || !path.is_file() {
         return Err("The downloaded file is no longer available.".into());
     }
-    let mut command = if cfg!(target_os = "macos") {
-        std::process::Command::new("/usr/bin/open")
+    let request = if reveal {
+        ui::portal::LaunchRequest::reveal(path)
     } else {
-        std::process::Command::new("xdg-open")
+        ui::portal::LaunchRequest::open(path)
     };
-    if cfg!(target_os = "macos") {
-        if reveal {
-            command.arg("-R");
-        }
-        command.arg("--").arg(path);
-    } else {
-        command.arg(if reveal {
-            path.parent().unwrap_or(path)
-        } else {
-            path
-        });
-    }
-    let status = command.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Could not open the download. Try revealing its folder.".into())
-    }
+    Ok(request.thread_name("browser-open-download").send())
 }
 
 #[derive(Default)]
@@ -380,16 +368,24 @@ impl Capabilities {
                     let notice = self.notice.writer();
                     row = row.push(Box::new(
                         Button::new(&format!("browser.download.{name}.{id}"), label, None)
-                            .on_effect(move || {
-                                let path = path.clone();
-                                let notice = notice.clone();
-                                let _ = std::thread::Builder::new()
-                                    .name("browser-open-download".into())
-                                    .spawn(move || {
-                                        notice.set(
-                                            open_download(&path, reveal).err().unwrap_or_default(),
-                                        );
-                                    });
+                            .on_effect(move || match open_download(&path, reveal) {
+                                Err(message) => notice.set(message),
+                                Ok(channel) => {
+                                    let notice = notice.clone();
+                                    let _ = std::thread::Builder::new()
+                                        .name("browser-open-download-result".into())
+                                        .spawn(move || {
+                                            notice.set(match channel.recv() {
+                                                Ok(ui::portal::LaunchOutcome::Opened) => {
+                                                    String::new()
+                                                }
+                                                Ok(ui::portal::LaunchOutcome::Failed(_))
+                                                | Err(_) => "Could not open the download. \
+                                                             Try revealing its folder."
+                                                    .into(),
+                                            });
+                                        });
+                                }
                             }),
                     ));
                 }
@@ -497,6 +493,32 @@ mod tests {
             });
         }
         assert_eq!(second.downloads.borrow().records.len(), 100);
+    }
+
+    #[test]
+    fn open_and_reveal_go_to_the_host_for_an_existing_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("download.txt");
+        std::fs::write(&path, b"done").unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_launch(ui::portal::LaunchOutcome::Failed("no handler".into()));
+        let opened = open_download(&path, false).unwrap();
+        assert_eq!(
+            opened.recv(),
+            Ok(ui::portal::LaunchOutcome::Failed("no handler".into()))
+        );
+        let revealed = open_download(&path, true).unwrap();
+        assert_eq!(revealed.recv(), Ok(ui::portal::LaunchOutcome::Opened));
+        let requests = recorder.launch_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[0].is_reveal() && requests[1].is_reveal());
+        assert_eq!(requests[0].path(), path.as_path());
+        assert!(
+            open_download(&dir.path().join("missing.txt"), false).is_err(),
+            "a vanished download never reaches the host"
+        );
+        assert_eq!(recorder.launch_requests().len(), 2);
     }
 
     #[test]

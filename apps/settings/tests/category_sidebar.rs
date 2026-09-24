@@ -16,7 +16,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsApp;
 use settings::categories::Category;
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
@@ -24,7 +23,8 @@ use ui::widget::Widget;
 
 #[test]
 fn sidebar_has_one_entry_per_category() {
-    let mut app = SettingsApp::new();
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app();
     let theme = ui::Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

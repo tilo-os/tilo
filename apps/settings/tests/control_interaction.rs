@@ -19,8 +19,9 @@
 )]
 
 use std::collections::HashMap;
+use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ReadDoc, Value};
+use automerge::{AutoCommit, ReadDoc};
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
@@ -185,16 +186,6 @@ fn navigate(
     lay_out(app)
 }
 
-fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
-    match doc.get(&automerge::ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// The narrow content screen's back-arrow button, clicked through the
 /// production event path, navigates back to the standalone list screen (the
 /// only way back — there is no overlay or floating sidebar).
@@ -202,8 +193,11 @@ fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
 fn clicking_back_button_returns_to_list() {
     const NW: f32 = 440.0;
     const NH: f32 = 820.0;
+    let config = crate::support::ScratchConfig::new();
     // Start drilled into a category's content screen (narrow layout).
-    let mut app = SettingsApp::with_selected(Category::Network)
+    let mut app = config
+        .app()
+        .with_category(Category::Network)
         .with_width_hint(NW)
         .with_narrow_content_shot();
     let mut doc = AutoCommit::new();
@@ -237,14 +231,22 @@ fn clicking_back_button_returns_to_list() {
 /// remote scalar may turn the collaborative document into a radio command.
 #[test]
 fn network_wifi_toggle_drives_state() {
-    let mut app = SettingsApp::new();
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app();
     let mut doc = AutoCommit::new();
     let _ = navigate(&mut app, &mut doc, Category::Network);
     let root = automerge::ROOT;
     let heads = doc.get_heads();
     app.sync(&mut doc, &root);
     assert_eq!(doc.get_heads(), heads);
-    assert!(read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY).is_none());
+    assert!(
+        read_bool(
+            &doc,
+            &automerge::ROOT,
+            settings::panes::network::WIFI_ENABLED_KEY
+        )
+        .is_none()
+    );
 }
 
 /// Every category is reachable by a real click and renders a non-empty
@@ -253,8 +255,9 @@ fn network_wifi_toggle_drives_state() {
 /// confirm the primary CRDT key each interactive pane seeds is present.)
 #[test]
 fn all_panels_navigate_and_seed_their_controls() {
+    let config = crate::support::ScratchConfig::new();
     for &target in Category::ALL {
-        let mut app = SettingsApp::new();
+        let mut app = config.app();
         let mut doc = AutoCommit::new();
         let _ = navigate(&mut app, &mut doc, target);
         // The pane rebuilt by navigate's final layout seeds on its next

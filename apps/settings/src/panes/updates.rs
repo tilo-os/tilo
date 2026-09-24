@@ -37,8 +37,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::WakeHandle;
@@ -1690,7 +1691,7 @@ impl UpdatesPane {
 
     /// Check for updates → re-query the system + stamp the time + persist.
     fn handle_check(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, CHECK_KEY) {
+        if !read_bool(state, root, CHECK_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
@@ -1734,7 +1735,7 @@ impl UpdatesPane {
     }
 
     fn handle_firmware_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, FIRMWARE_REFRESH_KEY) {
+        if !read_bool(state, root, FIRMWARE_REFRESH_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(
@@ -1776,7 +1777,7 @@ impl UpdatesPane {
     }
 
     fn handle_firmware_install(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, FIRMWARE_INSTALL_KEY) {
+        if !read_bool(state, root, FIRMWARE_INSTALL_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(
@@ -1820,7 +1821,7 @@ impl UpdatesPane {
 
     /// Restart & update → reboot into the staged image (dedup).
     fn handle_restart(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, RESTART_KEY) {
+        if !read_bool(state, root, RESTART_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
@@ -1848,7 +1849,7 @@ impl UpdatesPane {
     /// machine agrees, so the stored value never claims a state the timer
     /// isn't actually in.
     fn handle_auto_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(b) = read_bool_opt(state, root, AUTO_KEY) else {
+        let Some(b) = read_bool(state, root, AUTO_KEY) else {
             return;
         };
         let operation = crate::actions::UpdateOperation::SetAutomatic { enabled: b };
@@ -1904,7 +1905,7 @@ impl UpdatesPane {
         let Some(current) = self.schedule.clone() else {
             return;
         };
-        let Some(requested) = read_str(state, root, SCHEDULE_KEY) else {
+        let Some(requested) = read_str_or_text(state, root, SCHEDULE_KEY) else {
             return;
         };
         let operation = crate::actions::UpdateOperation::SetSchedule {
@@ -1943,7 +1944,7 @@ impl UpdatesPane {
         let Some(current) = self.allow_metered else {
             return;
         };
-        let Some(requested) = read_bool_opt(state, root, METERED_KEY) else {
+        let Some(requested) = read_bool(state, root, METERED_KEY) else {
             return;
         };
         if requested == current {
@@ -1978,7 +1979,7 @@ impl UpdatesPane {
 
     /// Roll back, in two steps. The first only opens the explanation.
     fn handle_rollback(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, ROLLBACK_KEY) {
+        if read_bool(state, root, ROLLBACK_KEY).unwrap_or(false) {
             let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
             self.rollback_armed = true;
             self.notice = None;
@@ -1988,7 +1989,7 @@ impl UpdatesPane {
             );
             self.structure_dirty = true;
         }
-        if read_bool(state, root, ROLLBACK_CONFIRM_KEY) {
+        if read_bool(state, root, ROLLBACK_CONFIRM_KEY).unwrap_or(false) {
             let _ = state.put(
                 root,
                 ROLLBACK_CONFIRM_KEY,
@@ -2210,32 +2211,6 @@ impl Widget for UpdatesPane {
     }
 }
 
-/// Read a bool at `key`, treating absent/non-bool as `false`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    read_bool_opt(state, root, key).unwrap_or(false)
-}
-
-fn read_bool_opt(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2298,7 +2273,7 @@ mod tests {
     /// last-checked time — proving the button acts, not no-ops.
     #[test]
     fn check_requeries_and_stamps_last_checked() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_check");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let reb = Arc::new(RecordingRebooter::default());
         let mut pane = pane_with(None, reb);
         let mut doc = AutoCommit::new();
@@ -2308,13 +2283,8 @@ mod tests {
         assert_eq!(pane.status().staged_version, None);
         // Press Check.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        for _ in 0..1000 {
-            pane.sync(&mut doc, &root);
-            if pane.prefs().last_checked != "Never" {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        pane.sync(&mut doc, &root);
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(
             pane.prefs().last_checked,
             "CHECKED-NOW",
@@ -2328,47 +2298,62 @@ mod tests {
         assert!(pane.take_structure_dirty(), "check refreshes the view");
     }
 
+    /// Drive the host's polling until `pending` clears. The bound is a hang
+    /// guard for a worker that never reports, not a performance budget.
+    fn settle(
+        pane: &mut UpdatesPane,
+        doc: &mut AutoCommit,
+        pending: impl Fn(&UpdatesPane) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + GATE_TIMEOUT;
+        loop {
+            pane.sync(doc, &automerge::ROOT);
+            if !pending(pane) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background worker never reported"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn blocking_update_check_returns_promptly_and_stamps_only_on_completion() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(80), false));
-        let mut pane = pane_with_control(control);
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_checks();
+        let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        let started = std::time::Instant::now();
+        // The check is held until released below: were `sync` to wait for
+        // it, this call would only return once the gate timed out.
         pane.sync(&mut doc, &root);
-        assert!(started.elapsed() < Duration::from_millis(40));
+        assert!(pane.check_pending, "the check runs off the UI thread");
         assert_eq!(pane.prefs().last_checked, "Never");
-        for _ in 0..1000 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
+        assert!(
+            !control.gate_timed_out(),
+            "sync blocked on the update check"
+        );
         assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
         assert!(pane.notice().is_none());
     }
 
     #[test]
     fn failed_async_update_check_does_not_stamp_last_checked() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(20), true));
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None).failing_check());
         let mut pane = pane_with_control(control);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(pane.prefs().last_checked, "Never");
         assert!(
             pane.notice()
@@ -2378,9 +2363,9 @@ mod tests {
 
     #[test]
     fn blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure() {
-        let control = Arc::new(
-            FakeControl::new(None, None).blocking_refresh(Duration::from_millis(20), false),
-        );
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_refreshes();
         let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -2390,17 +2375,14 @@ mod tests {
             FIRMWARE_REFRESH_KEY,
             automerge::ScalarValue::Boolean(true),
         );
-        let started = std::time::Instant::now();
         pane.sync(&mut doc, &root);
-        assert!(started.elapsed() < Duration::from_millis(40));
         assert!(pane.firmware_refresh_pending);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.firmware_refresh_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+        assert!(
+            !control.gate_timed_out(),
+            "sync blocked on the firmware refresh"
+        );
         assert_eq!(pane.firmware_updates, Ok(Vec::new()));
 
         control.set_refresh_fails(true);
@@ -2410,13 +2392,9 @@ mod tests {
             automerge::ScalarValue::Boolean(true),
         );
         pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.firmware_refresh_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        assert!(pane.firmware_refresh_pending);
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
         assert!(pane.firmware_updates.is_err());
         assert!(pane.notice().is_some_and(|message| {
             message.contains("Firmware metadata could not be refreshed")
@@ -2425,23 +2403,26 @@ mod tests {
 
     #[test]
     fn duplicate_update_checks_are_cleared_while_one_is_pending() {
-        let control =
-            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(40), false));
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None, None));
+        let release = control.gate_checks();
         let mut pane = pane_with_control(Arc::clone(&control));
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
+        assert!(pane.check_pending);
+        // A second press while the first check is provably still running.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
-        for _ in 0..100 {
-            pane.sync(&mut doc, &root);
-            if !pane.check_pending {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        assert_eq!(
+            read_bool(&doc, &root, CHECK_KEY),
+            Some(false),
+            "the duplicate press is cleared"
+        );
+        release.send(()).unwrap();
+        settle(&mut pane, &mut doc, |pane| pane.check_pending);
         assert_eq!(*control.check_calls.lock().unwrap(), 1);
     }
 
@@ -2471,12 +2452,17 @@ mod tests {
         target: Mutex<Option<String>>,
         set_fails: bool,
         rollback_fails: bool,
-        check_delay: Duration,
+        check_gate: Mutex<Option<mpsc::Receiver<()>>>,
         check_fails: bool,
-        refresh_delay: Duration,
+        refresh_gate: Mutex<Option<mpsc::Receiver<()>>>,
         refresh_fails: Mutex<bool>,
         check_calls: Mutex<u32>,
+        gate_timed_out: std::sync::atomic::AtomicBool,
     }
+
+    /// How long a gated fake waits for its release before giving up and
+    /// recording that the caller held the UI thread.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
     impl FakeControl {
         fn new(timer: Option<bool>, target: Option<&str>) -> Self {
@@ -2487,11 +2473,12 @@ mod tests {
                 target: Mutex::new(target.map(str::to_string)),
                 set_fails: false,
                 rollback_fails: false,
-                check_delay: Duration::ZERO,
+                check_gate: Mutex::new(None),
                 check_fails: false,
-                refresh_delay: Duration::ZERO,
+                refresh_gate: Mutex::new(None),
                 refresh_fails: Mutex::new(false),
                 check_calls: Mutex::new(0),
+                gate_timed_out: std::sync::atomic::AtomicBool::new(false),
             }
         }
         fn failing_set(mut self) -> Self {
@@ -2502,15 +2489,33 @@ mod tests {
             self.rollback_fails = true;
             self
         }
-        fn blocking_check(mut self, delay: Duration, fails: bool) -> Self {
-            self.check_delay = delay;
-            self.check_fails = fails;
+        fn failing_check(mut self) -> Self {
+            self.check_fails = true;
             self
         }
-        fn blocking_refresh(mut self, delay: Duration, fails: bool) -> Self {
-            self.refresh_delay = delay;
-            *self.refresh_fails.get_mut().unwrap() = fails;
-            self
+        /// Hold every update check until the returned sender releases it.
+        fn gate_checks(&self) -> mpsc::Sender<()> {
+            let (release, gate) = mpsc::channel();
+            *self.check_gate.lock().unwrap() = Some(gate);
+            release
+        }
+        /// Hold every firmware refresh until the returned sender releases it.
+        fn gate_refreshes(&self) -> mpsc::Sender<()> {
+            let (release, gate) = mpsc::channel();
+            *self.refresh_gate.lock().unwrap() = Some(gate);
+            release
+        }
+        fn wait_at(&self, gate: &Mutex<Option<mpsc::Receiver<()>>>) {
+            if let Some(gate) = gate.lock().unwrap().as_ref()
+                && gate.recv_timeout(GATE_TIMEOUT).is_err()
+            {
+                self.gate_timed_out
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn gate_timed_out(&self) -> bool {
+            self.gate_timed_out
+                .load(std::sync::atomic::Ordering::SeqCst)
         }
         fn set_refresh_fails(&self, fails: bool) {
             *self.refresh_fails.lock().unwrap() = fails;
@@ -2543,7 +2548,7 @@ mod tests {
 
         fn check_now(&self) -> Result<(), String> {
             *self.check_calls.lock().unwrap() += 1;
-            std::thread::sleep(self.check_delay);
+            self.wait_at(&self.check_gate);
             if self.check_fails {
                 Err("update check failed".into())
             } else {
@@ -2560,7 +2565,7 @@ mod tests {
             ),
             String,
         > {
-            std::thread::sleep(self.refresh_delay);
+            self.wait_at(&self.refresh_gate);
             if *self.refresh_fails.lock().unwrap() {
                 Err("firmware refresh failed".into())
             } else {
@@ -2587,7 +2592,7 @@ mod tests {
 
     #[test]
     fn replicated_update_latches_never_call_system_controls() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates-replay-safety");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("Tilo previous")));
         let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
         let commands = ui::LocalState::new(None);
@@ -2614,7 +2619,7 @@ mod tests {
     /// disagree.
     #[test]
     fn the_switch_opens_showing_what_the_timer_actually_is() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_reads");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         // A preferences file that says "off" and a timer that is on.
         let control = Arc::new(FakeControl::new(Some(true), None));
         let pane = UpdatesPane::with_parts_and_control(
@@ -2645,7 +2650,7 @@ mod tests {
     /// Turning the switch off turns the timer off.
     #[test]
     fn turning_automatic_updates_off_disables_the_timer() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_off");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), None));
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2677,7 +2682,7 @@ mod tests {
     /// failing silently.
     #[test]
     fn a_refused_switch_snaps_back_and_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_refused");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2693,7 +2698,7 @@ mod tests {
             "the timer must be untouched when the change was refused"
         );
         assert_eq!(
-            read_bool_opt(&doc, &root, AUTO_KEY),
+            read_bool(&doc, &root, AUTO_KEY),
             Some(true),
             "the switch itself must snap back, or it shows a state the machine \
              is not in"
@@ -2711,7 +2716,7 @@ mod tests {
     /// for a timer that could not be read is the same class of lie.
     #[test]
     fn an_unreadable_timer_is_not_rendered_as_off() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_unknown");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
         assert_eq!(pane.timer_enabled(), None);
         // And the stub used by the older constructor answers the same way, so
@@ -2725,7 +2730,7 @@ mod tests {
     /// rollback does not undo.
     #[test]
     fn rolling_back_needs_a_confirmation_and_then_acts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2772,7 +2777,7 @@ mod tests {
     /// A failed rollback says so where the person is looking.
     #[test]
     fn a_failed_rollback_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback_fail");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
         let mut pane = pane_with_control(control);
         let mut doc = AutoCommit::new();
@@ -2795,7 +2800,7 @@ mod tests {
     /// — assert on what the pane renders, not on a comment.
     #[test]
     fn the_help_text_does_not_promise_what_is_not_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_help_text");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
         let help = pane.help_lines().join("\n");
         assert!(
@@ -2820,7 +2825,7 @@ mod tests {
     /// button that would fail.
     #[test]
     fn no_previous_image_is_stated_rather_than_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_no_rollback");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
         let shown = pane.rollback_card_lines().join("\n");
         assert!(

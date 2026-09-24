@@ -26,11 +26,12 @@ cli = { path = "../cli" }
 # the app can link successfully but fail at runtime with undefined symbols.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
 # Heavy document engines belong in the versioned runtime rather than each tapp.
-typst = "0.14"
-typst-render = "0.14"
-typst-pdf = "0.14"
-typst-assets = { version = "0.14", features = ["fonts"] }
-tiny-skia = "0.11"
+typst = "0.15"
+typst-render = "0.15"
+typst-pdf = "0.15"
+typst-layout = "0.15"
+typst-assets = { version = "0.15", features = ["fonts"] }
+tiny-skia = "0.12"
 comemo = "0.5"
 # Versioned live-service engines shared by shipped apps and loaded only for
 # their feature-gated paths.
@@ -65,7 +66,7 @@ chrono-tz = "0.10.4"
 vte = "0.15.0"
 pdfium-render = "0.8.37"
 thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
-roxmltree = "0.20"
+roxmltree.workspace = true
 xattr = "1.6.1"
 mime_guess = "2.0.5"
 app-cli = { path = "../../packaging/app-cli" }

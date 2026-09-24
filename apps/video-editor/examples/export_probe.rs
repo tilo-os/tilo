@@ -28,6 +28,12 @@ fn main() {
 }
 
 #[cfg(feature = "gst")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the probe is single-threaded until begin_export runs: probing the clip only \
+              parses its container header, so nothing reads the environment concurrently \
+              when the output path is set"
+)]
 fn main() {
     use video_editor::export::{ExportSettings, ExportStatus, begin_export};
     use video_editor::model::{MediaItem, MediaKind, Project, Track, TrackKind};
@@ -71,7 +77,7 @@ fn main() {
     let cid = p.add_clip(tid, mid, 0.0).unwrap();
     p.clip_mut(cid).unwrap().out_point = 2.0_f64.min(probed.duration.max(0.5));
 
-    // Safety: single-threaded, before the export reads it.
+    // SAFETY: no other thread exists yet; the export reads this variable.
     unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
     let settings = ExportSettings::default();
     match begin_export(&p, &settings) {

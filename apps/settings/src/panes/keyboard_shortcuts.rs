@@ -4,10 +4,11 @@
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::widgets::{card, rows, setting_row};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
+use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
 use ui::widget::{ShortcutRecorder, Toggle, Widget};
 use vello::Scene;
@@ -243,27 +244,6 @@ impl ShortcutPane {
         ])
     }
 
-    fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-            _ => None,
-        }
-    }
-
-    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                automerge::ScalarValue::Boolean(value) => Some(*value),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
         self.actions.dispatch_with_context(
             state,
@@ -296,8 +276,8 @@ impl Widget for ShortcutPane {
             let _ = state.put(root, draft_key(VIM_MODE), self.desktop_controls.vim_mode);
             self.needs_seed = false;
         }
-        let vim = Self::read_bool(state, root, VIM_MODE).unwrap_or(self.last_vim_mode);
-        let vim_draft = Self::read_bool(state, root, &draft_key(VIM_MODE)).unwrap_or(vim);
+        let vim = read_bool(state, root, VIM_MODE).unwrap_or(self.last_vim_mode);
+        let vim_draft = read_bool(state, root, draft_key(VIM_MODE)).unwrap_or(vim);
         if vim != self.last_vim_mode {
             let _ = state.put(root, draft_key(VIM_MODE), vim);
             let previous = self.last_vim_mode;
@@ -319,12 +299,12 @@ impl Widget for ShortcutPane {
             }
         }
         for (action, key, _, _) in entries() {
-            let Some(value) = Self::read_text(state, root, key) else {
+            let Some(value) = read_str_or_text(state, root, key) else {
                 continue;
             };
             if self.last_text.get(&action) == Some(&value) {
                 let draft =
-                    Self::read_text(state, root, &draft_key(key)).unwrap_or_else(|| value.clone());
+                    read_str_or_text(state, root, draft_key(key)).unwrap_or_else(|| value.clone());
                 if draft == value {
                     continue;
                 }
@@ -485,7 +465,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            ShortcutPane::read_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
+            read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
             Some("Super+k")
         );
     }
@@ -504,21 +484,21 @@ mod tests {
     }
     #[test]
     fn conflicting_edit_is_rolled_back() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_conflict");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = ShortcutPane::default();
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            ShortcutPane::read_text(&doc, &automerge::ROOT, LOCK).as_deref(),
+            read_str_or_text(&doc, &automerge::ROOT, LOCK).as_deref(),
             Some("Super+l")
         );
     }
 
     #[test]
     fn vim_mode_toggle_persists_to_the_shell_contract() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_vim_mode");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = ShortcutPane::default();
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);

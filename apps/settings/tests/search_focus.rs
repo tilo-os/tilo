@@ -72,18 +72,22 @@ struct Harness {
     app_node: NodeId,
     focused: Option<NodeId>,
     focus_order: Vec<NodeId>,
+    /// Dropped after the app whose account stores it holds.
+    _config: crate::support::ScratchConfig,
 }
 
 impl Harness {
     fn new() -> Self {
+        let config = crate::support::ScratchConfig::new();
         let mut h = Harness {
-            app: SettingsApp::new(),
+            app: config.app(),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             app_node: NodeId::new(0),
             focused: None,
             focus_order: Vec::new(),
+            _config: config,
         };
         h.layout();
         h

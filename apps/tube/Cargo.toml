@@ -14,6 +14,7 @@ name = "tube"
 path = "src/main.rs"
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -37,7 +38,8 @@ anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "query"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 blake3.workspace = true
@@ -66,8 +68,8 @@ dirs.workspace = true
 # Encoding-level assertions for the video-surface test; version matches `vello`.
 vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
-png.workspace = true
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [features]
 thin = ["dep:runtime-dylib"]

@@ -4,10 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use format_provider_wit::CodecError;
-use parking_lot::RwLock;
 use wasmtime::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
@@ -40,6 +39,20 @@ impl Router {
         &self.engine
     }
 
+    // A panic while the map was held leaves a complete provider set behind:
+    // writers swap in a fully built map, never a partial one.
+    fn providers_read(&self) -> RwLockReadGuard<'_, HashMap<String, ActiveProvider>> {
+        self.providers
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn providers_write(&self) -> RwLockWriteGuard<'_, HashMap<String, ActiveProvider>> {
+        self.providers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Replace the current provider set with `reg` — loads new components,
     /// drops removed ones, reuses unchanged ones (matched by package + wasm
     /// path). Used both on initial startup and on every inotify hot-reload.
@@ -49,7 +62,7 @@ impl Router {
     /// Returns an error if loading a component from its WASM path fails.
     pub fn apply_registry(&self, reg: &Registry) -> anyhow::Result<()> {
         let mut next: HashMap<String, ActiveProvider> = HashMap::new();
-        let current = self.providers.read().clone();
+        let current = self.providers_read().clone();
         for entry in &reg.providers {
             if let Some(existing) = current.get(&entry.package)
                 && existing.entry.wasm == entry.wasm
@@ -75,7 +88,7 @@ impl Router {
                 },
             );
         }
-        *self.providers.write() = next;
+        *self.providers_write() = next;
         Ok(())
     }
 
@@ -83,13 +96,13 @@ impl Router {
     pub fn list(&self) -> Vec<String> {
         // Collect while the guard is live, then drop it before sorting the
         // (now independent) owned `Vec` — the lock isn't needed past this.
-        let mut v: Vec<String> = self.providers.read().keys().cloned().collect();
+        let mut v: Vec<String> = self.providers_read().keys().cloned().collect();
         v.sort();
         v
     }
 
     pub fn get(&self, id: &str) -> Option<ActiveProvider> {
-        self.providers.read().get(id).cloned()
+        self.providers_read().get(id).cloned()
     }
 
     /// Find the highest-tier provider that claims a MIME — used by `detect`
@@ -100,8 +113,7 @@ impl Router {
         // sorting the (now independent) owned candidates — the lock isn't
         // needed past this.
         let mut candidates: Vec<ActiveProvider> = self
-            .providers
-            .read()
+            .providers_read()
             .values()
             .filter(|p| p.entry.mime == mime)
             .cloned()
@@ -135,7 +147,7 @@ impl Router {
                 p.entry.package,
             );
         }
-        let providers = self.providers.read().clone();
+        let providers = self.providers_read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
         keys.sort();
         let mut best: Option<(format_provider_wit::Detected, String, f32)> = None;

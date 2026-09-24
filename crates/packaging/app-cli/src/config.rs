@@ -134,7 +134,7 @@ pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::config_dir().map(|d| d.join("tilo-store"))
+    xdg_paths::AppDirs::new("tilo-store").config()
 }
 
 /// Cache dir (`$XDG_CACHE_HOME/tilo-store`). Downloaded `.tapp`s are
@@ -143,7 +143,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CACHE_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::cache_dir().map(|d| d.join("tilo-store"))
+    xdg_paths::AppDirs::new("tilo-store").cache()
 }
 
 /// The path `registries.toml` lives at, when a config dir resolves.
@@ -311,7 +311,6 @@ pub fn set_registry_enabled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
     #[test]
@@ -337,50 +336,19 @@ mod tests {
         );
     }
 
-    /// Serialises the env-var-touching tests in this module — cargo's
-    /// parallel runner otherwise races on `TILO_STORE_CONFIG_DIR`.
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    struct Guard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        prev: Option<std::ffi::OsString>,
-        prev_official: Option<std::ffi::OsString>,
-    }
-    impl Drop for Guard<'_> {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("TILO_STORE_CONFIG_DIR") },
-            }
-            match &self.prev_official {
-                Some(v) => unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
-                None => unsafe { std::env::remove_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
-            }
-        }
-    }
-
-    fn scoped_dir(td: &TempDir) -> Guard<'static> {
-        let lock = env_lock();
-        let prev = std::env::var_os("TILO_STORE_CONFIG_DIR");
-        let prev_official = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
+    /// Points the store config directory and the official owner key at `td`
+    /// for as long as the returned scope lives.
+    fn scoped_dir(td: &TempDir) -> tilo_test_env::ScopedEnv {
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(
             &trust,
             "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
         )
         .unwrap();
-        unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", td.path()) };
-        unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
-        Guard {
-            _lock: lock,
-            prev,
-            prev_official,
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_STORE_CONFIG_DIR", td.path())
+            .set("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust);
+        env
     }
 
     #[test]

@@ -3887,36 +3887,16 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
         .with_context(|| format!("creating {description} directory {}", parent.display()))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating temporary {description} in {}", parent.display()))?;
-    let existing_permissions = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
+    // Keep a regenerated file's existing permissions; new files are 0644.
     #[cfg(unix)]
-    let permissions = existing_permissions.or_else(|| Some(std::fs::Permissions::from_mode(0o644)));
+    let written = {
+        let mode = std::fs::metadata(path)
+            .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+        atomic_file::write_with_mode(path, source, mode)
+    };
     #[cfg(not(unix))]
-    let permissions = existing_permissions;
-    if let Some(permissions) = permissions {
-        temporary
-            .as_file()
-            .set_permissions(permissions)
-            .with_context(|| format!("setting {description} permissions for {}", path.display()))?;
-    }
-    temporary
-        .write_all(source)
-        .with_context(|| format!("writing temporary {description} for {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("syncing temporary {description} for {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("publishing {description} {}", path.display()))?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("syncing {description} directory {}", parent.display()))?;
-    Ok(())
+    let written = atomic_file::write(path, source);
+    written.with_context(|| format!("publishing {description} {}", path.display()))
 }
 
 impl CargoPlan {
@@ -4714,7 +4694,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
     let cargo_path = app_dir.join("Cargo.toml");
     let cargo_source = std::fs::read_to_string(&cargo_path)
         .with_context(|| format!("reading {}", cargo_path.display()))?;
-    let cargo: toml::Value = cargo_source
+    let cargo: toml::Table = cargo_source
         .parse()
         .with_context(|| format!("parsing {}", cargo_path.display()))?;
     let cargo_package = cargo
@@ -5149,7 +5129,7 @@ fn dev_binary_name(manifest: &Path) -> Result<String> {
     let source = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
     let value = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest.display()))?;
     let package = value
         .get("package")
@@ -5167,7 +5147,7 @@ fn cargo_package_name(manifest: &Path) -> Result<String> {
     let source = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
     let value = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest.display()))?;
     value
         .get("package")
@@ -5205,7 +5185,7 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
     let source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let manifest = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let Some(path) = manifest
         .get("dependencies")
@@ -5559,7 +5539,7 @@ fn check_cargo_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option
             return None;
         }
     };
-    let manifest = match source.parse::<toml::Value>() {
+    let manifest = match source.parse::<toml::Table>() {
         Ok(manifest) => manifest,
         Err(error) => {
             checks.push(DoctorCheck {
@@ -5631,7 +5611,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
     Some(manifest.package.id)
 }
 
-fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<DoctorCheck>) {
+fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<DoctorCheck>) {
     let direct_dependency = manifest
         .get("dependencies")
         .and_then(|table| table.get("ui"))
@@ -5640,7 +5620,7 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<
         .get("target")
         .and_then(toml::Value::as_table)
         .into_iter()
-        .flat_map(toml::map::Map::values)
+        .flat_map(toml::Table::values)
         .filter_map(|target| target.get("dependencies").and_then(|table| table.get("ui")));
     let evaluate = |ui: &toml::Value| {
         let package = ui.get("package").and_then(toml::Value::as_str);
@@ -5654,7 +5634,7 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<
                 let resolved = app_dir.join(path);
                 let sdk_manifest = std::fs::read_to_string(resolved.join("Cargo.toml"))
                     .ok()
-                    .and_then(|source| source.parse::<toml::Value>().ok());
+                    .and_then(|source| source.parse::<toml::Table>().ok());
                 let is_sdk = sdk_manifest.as_ref().is_some_and(|manifest| {
                     manifest
                         .get("package")

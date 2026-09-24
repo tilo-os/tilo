@@ -15,6 +15,18 @@ autoexamples = false
 ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
+default = ["native", "broker-transport"]
+# The native desktop runner and host services: the winit event loop with its
+# AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
+# warmup, and the `ui::native` backends. Without it the crate is the portable
+# toolkit — widgets, state, layout, rendering and the headless host — and a
+# host supplies its own `ui::host::HostServices`.
+native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboard", "dep:smithay-client-toolkit"]
+# The collaboration manager's built-in transport: the qOS collab broker's
+# Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
+# manager is driven only through `CollaborationManager::with_transport`, and
+# `CollaborationManager::new` starts disabled.
+broker-transport = ["runtime-collab/client", "dep:capnp", "dep:capnp-rpc"]
 test-support = []
 presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
@@ -42,19 +54,20 @@ gpu-video = ["dmabuf-import"]
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
-# copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
-mpris = ["dep:zbus", "zbus/tokio"]
+# `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
+# backend; the server lives on its own thread with a private runtime.
+mpris = ["native", "dep:zbus"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
-notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
+portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_guess"]
+notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }
@@ -74,23 +87,29 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
-# runtime-collab is the qOS collab broker Cap'n Proto SDK.
-# `CollaborationManager` delegates to it via a shovel thread.
-runtime-collab = { path = "../../runtime/runtime-collab" }
-capnp.workspace = true
-capnp-rpc.workspace = true
+# runtime-collab is the qOS collab broker Cap'n Proto SDK. Its vocabulary
+# types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
+# them is only needed by the `broker-transport` feature.
+runtime-collab = { path = "../../runtime/runtime-collab", default-features = false }
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 app-state = { path = "../../system/app-state" }
+durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
-syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
+# Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
+# tokenizer over two-face's extended syntax set, the packed set Typst already
+# links for raw blocks, so the runtime carries those bytes once.
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 rustls.workspace = true
 chacha20poly1305.workspace = true
-cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "peniko", "swash", "std"] }
+cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.40.0"
@@ -106,18 +125,21 @@ vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+# `ui::time` clock types. On targets with a native clock it re-exports
+# `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
+web-time = "1"
 dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
-unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
-# ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
-# be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
-icu_segmenter = "1.5"
+# ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
+# word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
+# Myanmar, CJK).
+icu_segmenter = "2.3"
 # TeX/Liang hyphenation patterns with language-specific minima. The same
 # implementation is already used by the workspace's Typst document engine;
 # making it direct lets UI paragraphs opt in without runtime dictionary I/O.
@@ -126,7 +148,6 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
-png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 chrono = { workspace = true, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
@@ -139,18 +160,15 @@ openh264.workspace = true
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
 media = { path = "../../media/core" }
-# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
-# Wayland uses `wl_data_device`; X11 uses the selection protocol —
-# `arboard` wraps both. The "wayland-data-control" feature lets us
-# talk to the data-control compositor extension when available
-# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
-# otherwise.
-arboard = { workspace = true, features = ["image-data"] }
+# Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
+# through `smithay-clipboard` below; `arboard`'s Wayland path needs the
+# data-control manager protocol Tilo withholds from sandboxed apps.
+arboard = { workspace = true, features = ["image-data"], optional = true }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open = { workspace = true, features = ["shellexecute-on-windows"] }
+open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -168,10 +186,13 @@ qdoc = { path = "../../doc/qdoc" }
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { path = "../../collab/actions" }
+# Window-group widths and drop targets are the desktop model's own types.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned
 # to the same major as `tilo-collab-types`.
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
@@ -208,20 +229,19 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
 serde_bytes.workspace = true
 thiserror.workspace = true
-# The identity-flow screens need a `CryptoRng + RngCore` compatible with
-# `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
-# directly (rather than reaching through `rand`) keeps the requirement
-# visible at the manifest level.
-rand_core = { workspace = true, features = ["getrandom"] }
+# The identity-flow screens hand a `rand_core` `CryptoRng` to
+# threshold-identity and ed25519-dalek; OS randomness comes from getrandom.
+rand_core.workspace = true
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
-# adapter bridges our exported tree into the event loop and, via its default
+# adapter bridges our exported tree into the event loop and, via its
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
 # (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
-# winit 0.30.x — the same pin as the `winit` dep above. See
+# winit 0.30.x — the same pin as the `winit` dep above. The `tokio` feature
+# keeps its D-Bus executor on the workspace's single async runtime. See
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = "0.34.0"
+accesskit_winit = { version = "0.34.0", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -232,17 +252,19 @@ tts = { path = "../../system/tts" }
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
 # Windows/macOS targets. The only call sites are already Linux-gated in
 # `clipboard.rs`, so keep the backend out of host bundles on other platforms.
-smithay-clipboard = "0.7"
+smithay-clipboard = { version = "0.7", optional = true }
 # The image source uses the regular focus-gated wl_data_device protocol. The
 # text-only smithay-clipboard facade cannot advertise binary MIME payloads,
 # while data-control would bypass Tilo's focus/privilege boundary.
-smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
+smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
-zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
-ashpd = { workspace = true, optional = true }
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
+ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
+# Drives the location portal's update stream (`native::location`).
+futures-util = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
@@ -266,10 +288,10 @@ vello_encoding.workspace = true
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.
 tempfile.workspace = true
-# `record::tests` point `XDG_DATA_HOME` at a scratch tree to exercise
-# per-record persistence, which is process-global — those tests run
-# serially so they cannot see each other's data root.
-serial_test.workspace = true
+# Tests whose interface is the process environment (launcher variables such
+# as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
+# prior value and serialises every such test in the process.
+tilo-test-env = { path = "../../dev/test-env" }
 # The `collaboration` shim tests stand up a fake capnp broker on one end
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
@@ -314,6 +336,8 @@ required-features = ["webview-wpe"]
 [[test]]
 name = "it"
 path = "tests/it.rs"
+# The shared harness stands up in-process Cap'n Proto brokers.
+required-features = ["broker-transport"]
 
 [[test]]
 name = "hosted-platform"

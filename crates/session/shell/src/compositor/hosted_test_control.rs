@@ -24,7 +24,7 @@
 //! Gated by `feature = "hosted-test-control"` in the parent crate.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::thread;
 
@@ -68,10 +68,9 @@ pub fn spawn(socket_path: PathBuf, proxy: EventLoopProxy<UserEvent>) {
     let spawned = thread::Builder::new()
         .name("tilo-hosted-test-control".to_string())
         .spawn(move || {
-            // Scrub a stale socket from a previous run. Same logic as
-            // `native::bind_test_control_socket`.
-            let _ = std::fs::remove_file(&socket_path);
-            let listener = match UnixListener::bind(&socket_path) {
+            // Replaces a stale socket; only this user can ever connect. Same
+            // as `native::bind_test_control_socket`.
+            let listener = match crate::shell::test_control_socket::bind_private(&socket_path) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!(

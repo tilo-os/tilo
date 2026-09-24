@@ -244,10 +244,8 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_media_env)]
     fn resolve_reports_projected_or_local_via_the_seam() {
-        // Safety: single-threaded test mutation of process env.
-        unsafe {
-            std::env::remove_var("TILO_VE_MEDIA_DIR");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VE_MEDIA_DIR");
         // 1. A path that cannot exist on this host resolves as Projected —
         //    the reference is valid, the bytes simply are not hydrated.
         let src = resolve("media/definitely-not-here-42.mov");
@@ -261,16 +259,12 @@ mod tests {
         let name = format!("tilo-ve-seam-{}.bin", std::process::id());
         let f = dir.join(&name);
         std::fs::write(&f, b"x").unwrap();
-        unsafe {
-            std::env::set_var("TILO_VE_MEDIA_DIR", &dir);
-        }
+        env.set("TILO_VE_MEDIA_DIR", &dir);
         let local = resolve(&name);
         assert_eq!(local.hydration, Hydration::Local);
         assert!(local.is_decodable());
         assert_eq!(local.abs_path, f);
-        unsafe {
-            std::env::remove_var("TILO_VE_MEDIA_DIR");
-        }
+        env.remove("TILO_VE_MEDIA_DIR");
         std::fs::remove_file(&f).ok();
     }
 
@@ -279,8 +273,8 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_media_env)]
     fn a_relative_path_resolves_beside_the_project_and_then_in_the_working_directory() {
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VE_MEDIA_DIR");
         let root = std::env::temp_dir().join(format!("tilo-ve-anchor-{}", std::process::id()));
         let nested = root.join("footage");
         std::fs::create_dir_all(&nested).expect("make the fixture tree");
@@ -340,8 +334,8 @@ mod tests {
     #[test]
     fn engine_source_splits_workspace_from_local() {
         let root = std::env::temp_dir().join(format!("tilo-ve-eng-{}", std::process::id()));
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOT", &root);
         let ws = engine_source(&root.join("media/a.mp4"));
         assert!(
             matches!(ws, ::media::Source::Workspace(_)),
@@ -352,14 +346,13 @@ mod tests {
             matches!(local, ::media::Source::LocalFile(_)),
             "outside the mount → LocalFile"
         );
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]
     fn stored_path_is_relative_under_mount_absolute_otherwise() {
         let root = std::env::temp_dir().join(format!("tilo-ve-store-{}", std::process::id()));
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOT", &root);
         assert_eq!(
             stored_path_for_import(&root.join("media/Clip.mp4")),
             "media/Clip.mp4"
@@ -368,6 +361,5 @@ mod tests {
             stored_path_for_import(Path::new("/home/u/Holiday.mov")),
             "/home/u/Holiday.mov"
         );
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 }

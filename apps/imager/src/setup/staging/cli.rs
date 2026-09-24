@@ -209,7 +209,7 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         action,
         release: ReleaseRef {
             release_id: facts.release_id.clone(),
-            manifest_sha256: format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&manifest)),
+            manifest_sha256: hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&manifest)),
             architecture: facts.architecture,
         },
         manifest_path,

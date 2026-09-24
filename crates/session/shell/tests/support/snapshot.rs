@@ -140,49 +140,12 @@ struct DecodedPng {
 }
 
 fn decode_png(path: &Path) -> DecodedPng {
-    let file =
-        fs::File::open(path).unwrap_or_else(|e| panic!("snapshot: open {}: {e}", path.display()));
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .unwrap_or_else(|e| panic!("snapshot: png header {}: {e}", path.display()));
-    // `output_buffer_size()` returns `Option<usize>` in png 0.18; unwrap
-    // with a clear panic if the header is malformed enough to deny a
-    // size hint (extremely unlikely for a PNG we just produced).
-    let buf_size = reader
-        .output_buffer_size()
-        .expect("snapshot: png output_buffer_size returned None");
-    let mut buf = vec![0u8; buf_size];
-    let info = reader
-        .next_frame(&mut buf)
+    let decoded = ui::png::read_rgba8(path)
         .unwrap_or_else(|e| panic!("snapshot: png decode {}: {e}", path.display()));
-    buf.truncate(info.buffer_size());
-
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => {
-            // Expand RGB → RGBA so the diff routine below only has to
-            // handle one layout. Opaque alpha.
-            let mut out = Vec::with_capacity(
-                info.width.saturating_mul(info.height).saturating_mul(4) as usize,
-            );
-            for px in buf.chunks_exact(3) {
-                out.extend_from_slice(px);
-                out.push(0xFF);
-            }
-            out
-        }
-        other => panic!(
-            "snapshot: unsupported color type {:?} in {}",
-            other,
-            path.display()
-        ),
-    };
-
     DecodedPng {
-        width: info.width,
-        height: info.height,
-        rgba,
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
     }
 }
 
@@ -263,13 +226,7 @@ mod tests {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        let file = fs::File::create(path).unwrap();
-        let mut w = std::io::BufWriter::new(file);
-        let mut encoder = png::Encoder::new(&mut w, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(rgba).unwrap();
+        ui::png::write_rgba8(path, width, height, rgba).unwrap();
     }
 
     #[test]

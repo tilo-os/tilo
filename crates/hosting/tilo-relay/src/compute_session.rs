@@ -203,7 +203,7 @@ async fn authenticate_server(
         ));
     }
     let mut nonce = [0; 32];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
     let acknowledgement = auth::build_hello_ack(
         protocol.own_cert.clone(),
         &protocol.own_signing_key,
@@ -486,7 +486,7 @@ impl ComputeClient {
             .await
             .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
         let mut nonce = [0; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
         let own_device = own_cert.device_public_key;
         let hello = Hello {
             cert: own_cert,

@@ -329,7 +329,7 @@ mod tests {
     }
 
     fn sha(b: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(b))
+        hex::encode(Sha256::digest(b))
     }
 
     fn linux_platform() -> FakePlatform {

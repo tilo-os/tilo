@@ -25,6 +25,8 @@
 #     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
+#   * TILO_IMAGE_ONLY=1 builds the container and stops: the base a dev image is
+#     derived from (os/dev/build-dev-image.sh, tilo-vm vm upgrade --from local).
 #   * The image is SEALED: it carries a Unified Kernel Image whose signed command
 #     line includes the hardening kargs and `tilo.generation=<N>`, which
 #     systemd-stub measures into PCR 11. Two consequences for this script:
@@ -36,6 +38,7 @@
 #         the UKI sealing it, and installs again. Only the UKI stage rebuilds — the
 #         rootfs digest is unchanged, which is why two passes converge.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+warn_slow_podman_storage
 
 # Fail loudly: a broken container build must NOT silently fall through to imaging
 # a stale container (which previously produced a misleadingly "successful" qcow2
@@ -44,7 +47,7 @@ set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) die "unknown arg: $a (host cargo build is gone; binaries compile in-image)" ;;
   esac
 done
@@ -100,6 +103,33 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
       --build-arg "TILO_PUBLIC_TRUST_MANIFEST_SHA256=$TILO_PUBLIC_TRUST_MANIFEST_SHA256")
     ;;
   *) die "TILO_PUBLIC_TRUST_MODE must be production or development" ;;
+esac
+
+# The kernel is replaceable for local work: TILO_KERNEL_TRUST=unsigned accepts any
+# KERNEL_RPMS_REF (a CI-built kernel by digest, or a local
+# `podman build -f os/kernel/Containerfile -t localhost/tilo-kernel:dev`) and skips
+# only its signature and provenance checks. Never in CI, never for the published
+# production image; the resulting image is labelled so it cannot pass for signed.
+# TILO_RPMS_TRUST=unsigned does the same for the frozen RPM snapshot: a local
+# `os/dev/build-local-rpms.sh` snapshot lets a package-set change be built before
+# CI has published and signed its snapshot. The snapshot must still match the
+# Containerfiles' package set; only its signature, provenance and two-architecture
+# index are not checked.
+for _tilo_input_trust in "${TILO_KERNEL_TRUST:=signed}" "${TILO_RPMS_TRUST:=signed}"; do
+  if [ "$_tilo_input_trust" = unsigned ]; then
+    [ -z "${GITHUB_ACTIONS:-}${FORGEJO_ACTIONS:-}${CI:-}" ] \
+      || die "unsigned kernel or RPM inputs are for local builds; CI publishes only signed ones"
+    case "${TILO_TARGET_IMGREF:-}" in
+      code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@*)
+        die "unsigned kernel or RPM inputs cannot target the production image $TILO_TARGET_IMGREF" ;;
+    esac
+  fi
+done
+case "$TILO_RPMS_TRUST" in signed|unsigned) ;; *) die "TILO_RPMS_TRUST must be signed or unsigned" ;; esac
+case "${TILO_KERNEL_TRUST:=signed}" in
+  signed) ;;
+  unsigned) ;;
+  *) die "TILO_KERNEL_TRUST must be signed or unsigned" ;;
 esac
 
 # Hardware profiles affect the sealed rootfs and UKI. Generic builds remain the
@@ -213,67 +243,75 @@ fi
 # about an image that already exists.
 if [ "$TILO_SKIP_BUILD" != "1" ]; then
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = production ]; then
-[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
-  || die "RPMS_REF must pin code.sandbox.example/qos/rpms by sha256 digest"
-command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
-_tilo_rpms_digest="${RPMS_REF##*@}"
-_tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
-_tilo_native_package_set_sha256="$("$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch "$(uname -m)" | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
-_tilo_rpms_provenance="$(cosign verify-attestation \
-  --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$RPMS_REF")" \
-  || die "frozen RPM provenance verification failed"
-cosign verify --key "$TILO_REPO/keys/cosign.pub" "$RPMS_REF" >/dev/null \
-  || die "frozen RPM signature verification failed"
-printf '%s' "$_tilo_rpms_provenance" | jq -e \
-  --arg digest "$_tilo_rpms_digest" --arg base "$BASE_REF" \
-  --arg package_set_sha256 "$_tilo_package_set_sha256" \
-  --arg native_package_set_sha256 "$_tilo_native_package_set_sha256" \
-  --arg native_arch "$_tilo_registry_arch" '
-    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-    | any(
-        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
-          or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
-        and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
-        and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
-        and .buildDefinition.externalParameters.packageSetSha256ByArchitecture[$native_arch] == $native_package_set_sha256
-        and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-        and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-      )
-  ' >/dev/null || die "frozen RPM provenance does not bind its package set, digest, base, and architectures"
-command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect signed build inputs"
-_tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
-  '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')" \
-  || die "could not inspect the frozen RPM index"
-[ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
-  || die "frozen RPM index does not contain exactly amd64 and arm64"
-[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
-  || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
-command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
-cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
-  || die "Tilo kernel signature verification failed"
-_tilo_kernel_digest="${KERNEL_RPMS_REF##*@}"
-_tilo_kernel_provenance="$(cosign verify-attestation \
-  --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$KERNEL_RPMS_REF")" \
-  || die "Tilo kernel provenance verification failed"
-printf '%s' "$_tilo_kernel_provenance" | jq -e \
-  --arg digest "$_tilo_kernel_digest" --arg architecture "$(uname -m)" \
-  --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
-    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-    | any(
-        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
-          or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
-        and .buildDefinition.externalParameters.architecture == $architecture
-        and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-        and any(.buildDefinition.resolvedDependencies[]?;
-          .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
-        and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-        and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
-      )
-  ' >/dev/null || die "Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs"
-_tilo_kernel_arch="$(skopeo inspect "docker://$KERNEL_RPMS_REF" | jq -er .Architecture)" \
-  || die "could not inspect the signed Tilo kernel architecture"
-[ "$_tilo_kernel_arch" = "$_tilo_registry_arch" ] \
-  || die "signed Tilo kernel architecture is $_tilo_kernel_arch, expected $_tilo_registry_arch"
+if [ "$TILO_RPMS_TRUST" = unsigned ]; then
+  warn "TILO_RPMS_TRUST=unsigned: not verifying the signature or provenance of the RPM snapshot $RPMS_REF"
+else
+  [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
+    || die "RPMS_REF must pin code.sandbox.example/qos/rpms by sha256 digest"
+  command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
+  _tilo_rpms_digest="${RPMS_REF##*@}"
+  _tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+  _tilo_native_package_set_sha256="$("$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch "$(uname -m)" | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+  _tilo_rpms_provenance="$(cosign verify-attestation \
+    --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$RPMS_REF")" \
+    || die "frozen RPM provenance verification failed"
+  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$RPMS_REF" >/dev/null \
+    || die "frozen RPM signature verification failed"
+  printf '%s' "$_tilo_rpms_provenance" | jq -e \
+    --arg digest "$_tilo_rpms_digest" --arg base "$BASE_REF" \
+    --arg package_set_sha256 "$_tilo_package_set_sha256" \
+    --arg native_package_set_sha256 "$_tilo_native_package_set_sha256" \
+    --arg native_arch "$_tilo_registry_arch" '
+      [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+      | any(
+          ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+            or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
+          and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+          and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+          and .buildDefinition.externalParameters.packageSetSha256ByArchitecture[$native_arch] == $native_package_set_sha256
+          and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+          and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+        )
+    ' >/dev/null || die "frozen RPM provenance does not bind its package set, digest, base, and architectures"
+  command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect signed build inputs"
+  _tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
+    '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')" \
+    || die "could not inspect the frozen RPM index"
+  [ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
+    || die "frozen RPM index does not contain exactly amd64 and arm64"
+fi
+if [ "$TILO_KERNEL_TRUST" = unsigned ]; then
+  warn "TILO_KERNEL_TRUST=unsigned: not verifying the kernel signature or provenance of $KERNEL_RPMS_REF"
+else
+  [[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+    || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
+  command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
+  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
+    || die "Tilo kernel signature verification failed"
+  _tilo_kernel_digest="${KERNEL_RPMS_REF##*@}"
+  _tilo_kernel_provenance="$(cosign verify-attestation \
+    --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$KERNEL_RPMS_REF")" \
+    || die "Tilo kernel provenance verification failed"
+  printf '%s' "$_tilo_kernel_provenance" | jq -e \
+    --arg digest "$_tilo_kernel_digest" --arg architecture "$(uname -m)" \
+    --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
+      [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+      | any(
+          ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
+            or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
+          and .buildDefinition.externalParameters.architecture == $architecture
+          and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+          and any(.buildDefinition.resolvedDependencies[]?;
+            .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
+          and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+          and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
+        )
+    ' >/dev/null || die "Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs"
+  _tilo_kernel_arch="$(skopeo inspect "docker://$KERNEL_RPMS_REF" | jq -er .Architecture)" \
+    || die "could not inspect the signed Tilo kernel architecture"
+  [ "$_tilo_kernel_arch" = "$_tilo_registry_arch" ] \
+    || die "signed Tilo kernel architecture is $_tilo_kernel_arch, expected $_tilo_registry_arch"
+fi
 fi # Production provenance; development inputs have independent pinned receipts.
 bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
   || die "the frozen RPM snapshot does not match the current Containerfiles"
@@ -428,6 +466,8 @@ build_image() {
     "${_tilo_wpe_args[@]}" \
     "${_tilo_native_builder_args[@]}" \
     "${_tilo_trust_args[@]}" \
+    --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
+    --label "org.tilo.rpms.trust=$TILO_RPMS_TRUST" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
@@ -539,6 +579,15 @@ else
   fi
 fi
 
+# TILO_IMAGE_ONLY=1 stops at the container. Its UKI still seals the placeholder
+# composefs digest, so it is no install source; it is the base
+# os/dev/build-dev-image.sh derives the dev image from, which unseals it anyway.
+if [ "${TILO_IMAGE_ONLY:-0}" = 1 ]; then
+  [ "$TILO_SKIP_BUILD" != 1 ] || die "TILO_IMAGE_ONLY=1 with TILO_SKIP_BUILD=1 does nothing"
+  msg "DONE: $TILO_IMAGE (TILO_IMAGE_ONLY=1: container only, no disk and no closed seal)"
+  exit 0
+fi
+
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
   msg "Development container staged: $TILO_IMAGE. Disk/VM preparation remains incomplete until the isolated signed registry and disk/VM path are prepared."
   exit 0
@@ -553,6 +602,11 @@ INSTALL_LOG="$OUTDIR/.install.log"
 disk_args=(--user "$TILO_ACCOUNT")
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
+fi
+# Whole-disk virtual size (disk-image.sh --size). The qcow2 stays sparse, so a
+# dev VM disk with room for builds and slot layers costs nothing until written.
+if [ -n "${TILO_DISK_SIZE:-}" ]; then
+  disk_args+=(--size "$TILO_DISK_SIZE")
 fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`

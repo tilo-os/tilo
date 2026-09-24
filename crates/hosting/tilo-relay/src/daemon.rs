@@ -200,11 +200,31 @@ impl Relay {
     /// [`RelayError::Store`] if the persistent iroh secret or any
     /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
+    pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+        Self::start_with_app_serving(cfg, identity, None).await
+    }
+
+    /// [`Relay::start`], with an optional plane that answers remote-action
+    /// frames addressed to this host.
+    ///
+    /// The relay links no apps; a process that hosts them passes a plane
+    /// here. Supplying one makes `app_serving` available, still subject to
+    /// the configuration requesting it and the certificate authorising it.
+    /// When the effective services leave `app_serving` off, the plane is
+    /// dropped and such frames are refused as undeliverable.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Relay::start`].
     #[allow(
         clippy::too_many_lines,
         reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
     )]
-    pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+    pub async fn start_with_app_serving(
+        mut cfg: RelayConfig,
+        identity: RelayIdentity,
+        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    ) -> Result<Self, RelayError> {
         import_home_peer_bindings(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
@@ -215,15 +235,18 @@ impl Relay {
         // A certificate authorises a service, but it cannot make a service
         // exist. The composite process starts relay + filesystem planes; live
         // workspace control uses relay's non-retained presence plane, while
-        // app and compute claims remain unavailable here.
+        // compute and app serving exist only when their workers are present:
+        // app serving needs a plane supplied by an embedding process.
         let compute_requested = cfg.services.compute
             && matches!(cfg.device_role, crate::mesh::DeviceRole::AlwaysOnServer);
         let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
         available_services.compute = compute_requested;
+        available_services.app_serving = app_serving.is_some();
         cfg.services = cfg
             .services
             .authorized_by(&identity.device_cert.capabilities)
             .limited_to(&available_services);
+        let app_serving = app_serving.filter(|_| cfg.services.app_serving);
         let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
@@ -256,6 +279,7 @@ impl Relay {
                     state_root: cfg.state_root.clone(),
                 }
             }),
+            app_serving,
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -1145,6 +1169,7 @@ struct RelayProtocol {
     own_sk: ed25519_dalek::SigningKey,
     metrics: Arc<Metrics>,
     autobind: Option<WorkspaceAutobind>,
+    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
 }
 
 #[derive(Clone)]
@@ -1209,7 +1234,7 @@ impl ProtocolHandler for ManagementProtocol {
         )
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
         let ack = auth::build_hello_ack(
             self.own_cert.clone(),
             &self.own_sk,
@@ -1364,8 +1389,8 @@ impl ProtocolHandler for DiscoveryProtocol {
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
         {
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut nonce);
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut nonce);
         }
         let ack = auth::build_hello_ack(
             self.own_cert.clone(),
@@ -1535,8 +1560,8 @@ async fn handle_conn(
     // 2. Reply with HelloAck.
     let mut server_nonce = [0u8; 32];
     {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut server_nonce);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut server_nonce);
     }
     let ack = auth::build_hello_ack(
         ctx.own_cert.clone(),
@@ -1575,6 +1600,8 @@ async fn handle_conn(
             trust_policy: ctx.trust_policy,
             own_user_public_key: ctx.own_user_pk,
             metrics: ctx.metrics,
+            own_device_public_key: ctx.own_cert.device_public_key,
+            app_serving: ctx.app_serving,
         },
     )
     .await;
@@ -1675,7 +1702,10 @@ fn spawn_peer_relay_dial(
 /// into the local workspace runtime via the SAME `fanout_delta`
 /// device peers use — that's the reuse: no separate federation
 /// delivery path.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a federation dial carries the target, its ranking, and this relay's full signing identity and shared state"
+)]
 fn spawn_peer_relay_dial_at(
     addr: EndpointAddr,
     label: String,
@@ -1705,7 +1735,10 @@ fn spawn_peer_relay_dial_at(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the reconnect loop owns the same target, ranking, identity and shared state as the dial that spawned it"
+)]
 async fn peer_relay_dial_loop(
     addr: EndpointAddr,
     label: String,

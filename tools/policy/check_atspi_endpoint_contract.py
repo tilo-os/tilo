@@ -46,12 +46,27 @@ def audit(root: Path = ROOT) -> list[str]:
             )
 
     cargo = (root / "crates/sdk/ui-core/Cargo.toml").read_text(encoding="utf-8")
-    if 'accesskit_winit = "0.34.0"' not in cargo:
+    adapter = re.search(
+        r'^accesskit_winit\s*=\s*(?:"0\.34\.0"|\{\s*version\s*=\s*"0\.34\.0"[^}\n]*\})',
+        cargo,
+        re.MULTILINE,
+    )
+    if adapter is None:
         errors.append("crates/sdk/ui-core/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
+    elif re.search(r"\boptional\s*=\s*true\b", adapter.group(0)):
+        # The adapter may sit behind the native-runner feature, but every
+        # default build of `ui` must still carry it.
+        features = tomllib.loads(cargo).get("features", {})
+        if not any(
+            "dep:accesskit_winit" in features.get(feature, [])
+            for feature in features.get("default", [])
+        ):
+            errors.append("crates/sdk/ui-core/Cargo.toml: AccessKit winit adapter is not enabled by default")
 
     app_paths = [
         root / "crates/sdk/ui-core/src/app.rs",
         root / "crates/sdk/ui-core/src/app/host.rs",
+        root / "crates/sdk/ui-core/src/app/native_runner.rs",
     ]
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()

@@ -13,6 +13,7 @@
 //! ([`OpClass::Govern`]) are non-revertible — an owner counters a
 //! governance act with another one rather than rewinding it.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -1518,7 +1519,7 @@ impl RoomActivityPane {
     /// without reading or overwriting this device's persisted history state.
     #[cfg(feature = "hosted-test-control")]
     pub fn prepare_away_recap_for_shots(&mut self, tree: &mut WorkspaceTree) {
-        let workspace = tree.active.raw();
+        let workspace = tree.desktop.active.raw();
         let departed_at_secs = self
             .now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -1832,6 +1833,7 @@ impl RoomActivityPane {
         tree.commit_room_change();
 
         let name = tree
+            .desktop
             .active_workspace()
             .map(|w| w.name.clone())
             .unwrap_or_default();
@@ -1839,10 +1841,12 @@ impl RoomActivityPane {
             self.room_name = name;
         }
         self.task_room = tree
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
         self.tasks = tree
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.tasks.clone())
             .unwrap_or_default();
@@ -1863,7 +1867,7 @@ impl RoomActivityPane {
         }
 
         let heads = tree.doc.get_heads();
-        let active = tree.active.raw();
+        let active = tree.desktop.active.raw();
         if heads == self.last_heads && !self.timeline.entries().is_empty() {
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
@@ -1908,6 +1912,7 @@ impl RoomActivityPane {
         // host's Automerge key; otherwise every collaborative work session
         // misleadingly appears to have been done by the same machine.
         let receipt_actors = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.effect_receipts.iter())
@@ -1940,7 +1945,7 @@ impl RoomActivityPane {
             .filter(|facet| facet.key == "tilo.invocation")
             .map(|facet| facet.value.clone())
             .collect::<HashSet<_>>();
-        for workspace in &tree.workspaces {
+        for workspace in &tree.desktop.workspaces {
             for receipt in &workspace.effect_receipts {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;
@@ -2069,9 +2074,10 @@ impl RoomActivityPane {
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
     fn apply_scope(&mut self, tree: &WorkspaceTree) {
-        let active = tree.active.raw();
+        let active = tree.desktop.active.raw();
         self.last_active = Some(active);
         let names: std::collections::HashMap<u64, String> = tree
+            .desktop
             .workspaces
             .iter()
             .map(|w| (w.id.raw(), w.name.clone()))
@@ -2147,7 +2153,7 @@ impl RoomActivityPane {
             snapshot.resync_cache_from_doc();
 
             let mut workspaces = Vec::new();
-            for workspace in &snapshot.workspaces {
+            for workspace in &snapshot.desktop.workspaces {
                 if self.scope == RoomScope::ThisRoom && workspace.id.raw() != active_workspace {
                     continue;
                 }
@@ -2227,11 +2233,15 @@ impl RoomActivityPane {
             .set_authors(self.source.authors().clone());
         let query = match self.scope {
             RoomScope::ThisRoom => tree
+                .desktop
                 .active_workspace()
                 .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room))
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
-                tree.workspaces.iter().map(|workspace| workspace.room),
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.room),
             ),
         };
         let changed = if let Some(local) = local {
@@ -2254,20 +2264,21 @@ impl RoomActivityPane {
         if changed {
             self.feed_coverage = self.history_index.coverage().clone();
             self.projected_origins.clear();
-            let record_workspaces: HashMap<String, Vec<String>> =
-                tree.workspaces
-                    .iter()
-                    .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.room_records_held.get(&workspace.room) {
-                            for id in records.keys() {
-                                labels
-                                    .entry(id.clone())
-                                    .or_default()
-                                    .push(workspace.name.clone());
-                            }
+            let record_workspaces: HashMap<String, Vec<String>> = tree
+                .desktop
+                .workspaces
+                .iter()
+                .fold(HashMap::new(), |mut labels, workspace| {
+                    if let Some(records) = tree.desktop.room_records_held.get(&workspace.room) {
+                        for id in records.keys() {
+                            labels
+                                .entry(id.clone())
+                                .or_default()
+                                .push(workspace.name.clone());
                         }
-                        labels
-                    });
+                    }
+                    labels
+                });
             let rows: Vec<HistoryEntry> = self
                 .history_index
                 .entries()
@@ -2302,7 +2313,7 @@ impl RoomActivityPane {
         }
         self.refresh_agent_runs(tree, records, local);
 
-        let workspace = tree.active.raw();
+        let workspace = tree.desktop.active.raw();
         let passive_frontier = self
             .seen_frontiers
             .get(&workspace)
@@ -2378,10 +2389,12 @@ impl RoomActivityPane {
 
         let rooms: HashSet<_> = match self.scope {
             RoomScope::ThisRoom => tree
+                .desktop
                 .active_workspace()
                 .map(|workspace| [workspace.room].into_iter().collect())
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => tree
+                .desktop
                 .workspaces
                 .iter()
                 .map(|workspace| workspace.room)
@@ -2389,7 +2402,7 @@ impl RoomActivityPane {
         };
         let record_ids: BTreeSet<RecordId> = rooms
             .into_iter()
-            .filter_map(|room| tree.room_records_held.get(&room))
+            .filter_map(|room| tree.desktop.room_records_held.get(&room))
             .flat_map(|held| held.keys())
             .filter_map(|id| RecordId::parse(id))
             .collect();
@@ -4640,6 +4653,7 @@ impl RoomActivityPane {
         self.task_draft.clear();
         self.task_route = WorkspaceTaskRoute::Manual;
         self.task_agent = tree
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.agent_members().into_iter().next())
             .map(|(agent, _)| agent);
@@ -4670,7 +4684,7 @@ impl RoomActivityPane {
     }
 
     fn create_task_from_draft(&mut self, tree: &mut WorkspaceTree) -> RoomActivityOutcome {
-        let workspace = tree.active;
+        let workspace = tree.desktop.active;
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
             .then(|| self.task_agent.clone())
             .flatten();
@@ -4768,7 +4782,7 @@ impl RoomActivityPane {
             let Some(agent) = task.assigned_agent.as_deref() else {
                 return handled_outcome();
             };
-            let Some(workspace) = tree.active_workspace().cloned() else {
+            let Some(workspace) = tree.desktop.active_workspace().cloned() else {
                 return handled_outcome();
             };
             let key = (workspace.room.to_string(), agent.to_string());
@@ -4801,8 +4815,12 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
         };
-        let changed =
-            tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
+        let changed = tree.set_workspace_task_status(
+            tree.desktop.active,
+            &task_id,
+            status,
+            &self.local_user(),
+        );
         if changed {
             self.refresh(tree);
         }
@@ -7971,7 +7989,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.active;
+        let ws_id = tree.desktop.active;
 
         let granted = tree
             .grant_in_workspace(
@@ -7996,7 +8014,7 @@ mod tests {
         .expect("the owner may grant in their own room");
         assert!(tree.revoke_in_workspace(ws_id, &user, &granted));
 
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Design review".to_string();
         }
         tree.seed_doc_from_cache();
@@ -8025,7 +8043,7 @@ mod tests {
         let invocation = tilo_actions::InvocationId::new();
         assert!(
             tree.append_workspace_effect_receipt(
-                tree.active,
+                tree.desktop.active,
                 invocation,
                 "ada",
                 tilo_actions::ActionContext::for_resource(
@@ -8066,7 +8084,7 @@ mod tests {
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room;
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.qdoc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -8121,7 +8139,8 @@ mod tests {
             .expect("task receipt");
             qdoc::history::commit_stamped_at(doc, 23);
         });
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(record.to_string(), checkout.kind.to_string());
@@ -8288,8 +8307,9 @@ mod tests {
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let records = RecordStore::in_memory();
-        let home = tree.active;
+        let home = tree.desktop.active;
         let elsewhere = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.id != home)
@@ -8304,11 +8324,12 @@ mod tests {
         pane.refresh_records(&mut tree, &records);
 
         pane.observe_workspace(elsewhere.raw());
-        tree.active = elsewhere;
+        tree.desktop.active = elsewhere;
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         if changed {
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == home)
                 .expect("home workspace")
@@ -8316,7 +8337,7 @@ mod tests {
             tree.seed_doc_from_cache();
         }
 
-        tree.active = home;
+        tree.desktop.active = home;
         pane.set_now_for_test(departed_at + elapsed);
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
@@ -8356,6 +8377,7 @@ mod tests {
 
         assert!(outcome.task_changed);
         let task = tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8493,6 +8515,7 @@ mod tests {
             )
             .expect("automated task is created");
         let tasks = &tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8551,6 +8574,7 @@ mod tests {
 
         assert!(!outcome.task_changed);
         let task = tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8763,7 +8787,7 @@ mod tests {
             "this room's own grant is present: {scoped:?}"
         );
 
-        let all_tree = { tree.workspaces.clone() };
+        let all_tree = { tree.desktop.workspaces.clone() };
         let _ = all_tree;
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
         let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
@@ -8896,7 +8920,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.active;
+        let ws_id = tree.desktop.active;
 
         let week_ago = SystemTime::now() - Duration::from_secs(604_800);
         let week_ago_secs = i64::try_from(
@@ -9049,6 +9073,7 @@ mod tests {
         let mut pane = pane_over(&mut tree);
 
         let before_name = tree
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws_id)
@@ -9058,7 +9083,7 @@ mod tests {
         let versions_before = pane.entries().len();
 
         // Rename again, so there is something to revert back across.
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Renamed by mistake".to_string();
         }
         tree.seed_doc_from_cache();
@@ -9073,7 +9098,8 @@ mod tests {
         );
 
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.as_str()),
@@ -9219,7 +9245,8 @@ mod tests {
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_room();
-        tree.collaborators
+        tree.desktop
+            .collaborators
             .push(crate::shell::state::Collaborator::new(
                 "ghost",
                 "Never Edited",
@@ -9588,14 +9615,15 @@ mod tests {
         let boundary = pane.entries()[renamed_at].id;
 
         // Move on: rename again, so the document is no longer in that state.
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Something else".to_string();
         }
         tree.seed_doc_from_cache();
         pane.invalidate();
         pane.refresh(&mut tree);
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.clone()),
@@ -9607,7 +9635,8 @@ mod tests {
             "the restore wrote something"
         );
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.clone()),
@@ -10554,7 +10583,7 @@ mod tests {
         ] {
             assert!(
                 tree.append_workspace_effect_receipt(
-                    tree.active,
+                    tree.desktop.active,
                     tilo_actions::InvocationId::new(),
                     "ada",
                     tilo_actions::ActionContext::for_resource(

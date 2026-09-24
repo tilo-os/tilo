@@ -28,7 +28,7 @@
 //!
 //! - [`store`] — `BlobStore` trait + `MemoryBlobStore` /
 //!   `DiskBlobStore` / `CountingStore` impls.
-//! - [`cache`] — LRU page cache that wraps a store.
+//! - [`cache`] — bounded page cache that wraps a store.
 //! - [`fs`] — `fuser::Filesystem` impl.
 //! - [`mount`] — mount / unmount lifecycle handles.
 

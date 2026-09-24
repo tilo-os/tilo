@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _control import call, require_ok  # noqa: E402
+from _control import call, require_ok, runtime_socket_path  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 BINARY = REPO / "target" / "debug" / "shell"
@@ -41,7 +41,7 @@ OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/newer-state").resolve()
 # NOT inside OUT. AF_UNIX paths cap at ~108 bytes and the compositor refuses a
 # longer one with "path must be shorter than SUN_LEN" — while carrying on
 # running, so the failure looks like a compositor that never came up.
-SOCK = os.environ.get("TILO_NEWER_STATE_SOCK", "/tmp/tilo-newer-state.sock")
+SOCK = os.environ.get("TILO_NEWER_STATE_SOCK") or runtime_socket_path("newer-state.sock")
 
 failures = []
 

@@ -248,8 +248,8 @@ impl PermissionContext {
 /// Seconds since the Unix epoch, or `None` if the clock is before the
 /// epoch (which would make every expiry comparison meaningless).
 fn unix_now() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::wall()
+        .duration_since(crate::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
 }

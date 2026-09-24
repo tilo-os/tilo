@@ -73,7 +73,6 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
-    let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().cmd {
         Cmd::List { json } => list(json),
         Cmd::Search { query } => search(&query),

@@ -6,7 +6,6 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -242,7 +241,7 @@ pub fn mint_file_invite(
 pub fn mint_bearer_file_invite(
     mut spec: FileInviteSpec,
     issuer: &ed25519_dalek::SigningKey,
-    rng: &mut (impl RngCore + rand::CryptoRng),
+    rng: &mut impl rand::CryptoRng,
 ) -> Result<BearerFileInvite, FileInviteError> {
     let mut secret = [0u8; 32];
     rng.fill_bytes(&mut secret);
@@ -316,7 +315,7 @@ pub enum FileInviteError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn spec(subject: FileInviteSubject) -> FileInviteSpec {
         FileInviteSpec {
@@ -331,7 +330,7 @@ mod tests {
 
     #[test]
     fn named_invite_is_record_scoped_signed_and_expires() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
         let recipient = ed25519_dalek::SigningKey::generate(&mut rng);
         let token = mint_file_invite(
@@ -357,7 +356,7 @@ mod tests {
 
     #[test]
     fn bearer_secret_is_required_and_never_stored_in_the_token() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
         let invite = mint_bearer_file_invite(
             spec(FileInviteSubject::Bearer {
@@ -381,7 +380,7 @@ mod tests {
 
     #[test]
     fn limited_link_refuses_offline_verification() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
         let mut limited = spec(FileInviteSubject::Bearer {
             secret_hash: [0; 32],
@@ -396,7 +395,7 @@ mod tests {
 
     #[test]
     fn copied_link_round_trips_and_authenticates_before_redemption() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
         let mut limited = spec(FileInviteSubject::Bearer {
             secret_hash: [0; 32],

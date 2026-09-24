@@ -23,30 +23,21 @@ const APP_ID: &str = "so.tilo.video-editor";
 /// the variable pointing at a deleted temp directory for whatever runs next.
 struct DataHome {
     dir: std::path::PathBuf,
-    previous: Option<std::ffi::OsString>,
+    _env: tilo_test_env::ScopedEnv,
 }
 
 impl DataHome {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("tilo-ve-headless-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create the private data home");
-        let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: every test that touches this variable is serialised on the
-        // `video_editor_persist` key, so nothing else reads it in between.
-        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
-        Self { dir, previous }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", &dir);
+        Self { dir, _env: env }
     }
 }
 
 impl Drop for DataHome {
     fn drop(&mut self) {
-        // SAFETY: as in `new`.
-        unsafe {
-            match self.previous.take() {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
         std::fs::remove_dir_all(&self.dir).ok();
     }
 }

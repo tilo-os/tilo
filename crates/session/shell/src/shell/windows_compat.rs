@@ -41,6 +41,7 @@ impl CapabilityAuthority for WorkspaceCapabilityAuthority {
     ) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         self.tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == workspace_id)

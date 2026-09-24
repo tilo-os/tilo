@@ -1,8 +1,5 @@
 use super::*;
-use std::sync::{Mutex, OnceLock};
 use ui::widget::Continuable as _;
-
-static PROFILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn app_with_doc() -> (MusicApp, AutoCommit) {
     let mut app = MusicApp::new();
@@ -77,10 +74,6 @@ fn test_instances_keep_cache_mutations_in_separate_owned_directories() {
 
 #[test]
 fn shot_constructor_never_reads_tilo_music_profile() {
-    let _lock = PROFILE_ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap();
     let path = std::env::temp_dir().join(format!(
         "tilo-music-shot-profile-{}-{}.json",
         std::process::id(),
@@ -95,18 +88,10 @@ fn shot_constructor_never_reads_tilo_music_profile() {
         .insert("sentinel-track".into(), CacheState::Cached);
     crate::storage::save_device_profile_to(&path, &profile).unwrap();
 
-    let old = std::env::var_os("TILO_MUSIC_PROFILE");
-    // SAFETY: this test serializes its own environment mutation and restores
-    // the prior value before returning.
-    unsafe { std::env::set_var("TILO_MUSIC_PROFILE", &path) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_MUSIC_PROFILE", &path);
     let app = MusicApp::new_for_shot();
-    if let Some(value) = old {
-        // SAFETY: restore the exact process environment value we replaced.
-        unsafe { std::env::set_var("TILO_MUSIC_PROFILE", value) };
-    } else {
-        // SAFETY: remove only the temporary test override above.
-        unsafe { std::env::remove_var("TILO_MUSIC_PROFILE") };
-    }
+    drop(env);
     let _ = std::fs::remove_file(path);
 
     assert!(app.pb.current.is_none());

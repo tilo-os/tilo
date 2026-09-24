@@ -36,14 +36,29 @@ pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
 
 fn catalog_from_path(path: &Path) -> Result<Vec<CatalogEntry>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut reader = Reader::from_reader(BufReader::new(file));
-    reader.config_mut().trim_text(true);
-    parse_catalog(&mut reader)
+    parse_catalog(&mut Reader::from_reader(BufReader::new(file)))
+}
+
+/// The character an entity or character reference stands for. quick-xml reports
+/// `&amp;`/`&#x2019;` as events of their own rather than inside the text around
+/// them. An undeclared name has no character (the catalogue declares no DTD
+/// entities) and is dropped, keeping the text on either side.
+fn resolve_reference(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+    if let Ok(Some(c)) = reference.resolve_char_ref() {
+        return Some(c);
+    }
+    let name = reference.decode().ok()?;
+    quick_xml::escape::resolve_predefined_entity(&name)?
+        .chars()
+        .next()
 }
 
 fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<CatalogEntry>, String> {
+    // Trimming each text event would also eat the spaces next to a reference
+    // ("A &amp; B" is three events); the collected value is trimmed instead.
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
-    let mut tag = Vec::<u8>::new();
+    let mut text = String::new();
     let mut in_layout = false;
     let mut in_variant = false;
     let mut layout_name = String::new();
@@ -56,8 +71,8 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(start)) => {
-                tag = start.name().as_ref().to_vec();
-                match tag.as_slice() {
+                text.clear();
+                match start.name().as_ref() {
                     b"layout" => {
                         in_layout = true;
                         layout_name.clear();
@@ -72,17 +87,22 @@ fn parse_catalog<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Vec<Cata
                     _ => {}
                 }
             }
-            Ok(Event::Text(text)) if in_layout => {
-                let value = text.decode().map_err(|e| e.to_string())?.into_owned();
-                match (in_variant, tag.as_slice()) {
-                    (true, b"name") => variant_name = value,
-                    (true, b"description") => variant_description = value,
-                    (false, b"name") => layout_name = value,
-                    (false, b"description") => layout_description = value,
-                    _ => {}
-                }
+            Ok(Event::Text(chunk)) if in_layout => {
+                text.push_str(&chunk.xml10_content().map_err(|e| e.to_string())?);
+            }
+            Ok(Event::GeneralRef(reference)) if in_layout => {
+                text.extend(resolve_reference(&reference));
             }
             Ok(Event::End(end)) => match end.name().as_ref() {
+                b"name" | b"description" if in_layout => {
+                    let value = text.trim().to_string();
+                    match (in_variant, end.name().as_ref()) {
+                        (true, b"name") => variant_name = value,
+                        (true, _) => variant_description = value,
+                        (false, b"name") => layout_name = value,
+                        (false, _) => layout_description = value,
+                    }
+                }
                 b"variant" if in_variant => {
                     if !variant_name.is_empty() {
                         variants.push((variant_name.clone(), variant_description.clone()));
@@ -178,9 +198,7 @@ mod tests {
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak</description>
           </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
-        let mut reader = Reader::from_reader(&xml[..]);
-        reader.config_mut().trim_text(true);
-        let entries = parse_catalog(&mut reader).unwrap();
+        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
         assert_eq!(
             entries,
             [
@@ -191,6 +209,29 @@ mod tests {
                 CatalogEntry {
                     id: "us:dvorak".into(),
                     label: "English (US) — Dvorak".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn entity_and_character_references_stay_in_descriptions() {
+        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
+            <name>us</name><description>English (US) &amp; &lt;intl&gt; &#x1F600;</description>
+          </configItem><variantList><variant><configItem>
+            <name>dvorak</name><description>Dvorak &amp;&#32;more</description>
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
+        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
+        assert_eq!(
+            entries,
+            [
+                CatalogEntry {
+                    id: "us".into(),
+                    label: "English (US) & <intl> \u{1F600}".into(),
+                },
+                CatalogEntry {
+                    id: "us:dvorak".into(),
+                    label: "English (US) & <intl> \u{1F600} — Dvorak & more".into(),
                 },
             ]
         );

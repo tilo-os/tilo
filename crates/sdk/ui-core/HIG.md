@@ -351,7 +351,7 @@ number:
   `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
   values in one expression instead of four `length(..)` fields.
 
-`tests/f1_spacing_token_audit.rs` ratchets module-level pixel constants and
+`tests/spacing_token_audit.rs` ratchets module-level pixel constants and
 literal `length(N)` values in widget, chrome, shell and app production code:
 a file may never carry more than its baseline records, and one that sheds a
 literal lowers its line in the same commit. It shares its file walk,

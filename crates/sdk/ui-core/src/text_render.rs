@@ -5,7 +5,6 @@ use cosmic_text::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
@@ -27,13 +26,21 @@ thread_local! {
     pub(crate) static FONT_SYSTEM_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// This crate's unit tests get the checked-in controlled catalog instead of
+/// the host's fonts, so their shaping and pixels never depend on which fonts
+/// the machine running them has installed.
+#[cfg(test)]
+pub fn configured_font_system() -> FontSystem {
+    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+    crate::font_catalog::fixture_font_system()
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
 /// other characters not covered by the selected primary face.
+#[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    #[cfg(test)]
-    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]
     if let Some(font_system) =
         crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())
@@ -420,6 +427,9 @@ impl Hyphenation {
         hasher.finish()
     }
 }
+
+/// The ellipsis [`TextRenderer::elide_to_width`] and its variants append.
+pub const ELLIPSIS: char = '\u{2026}';
 
 /// The complete typographic style for a plain text run.
 ///
@@ -1689,9 +1699,11 @@ impl TextRenderer {
     }
 
     /// Truncate `text` to fit within `max_width` on a single line, appending
-    /// an ellipsis when anything was dropped; returns just the ellipsis when
-    /// even that doesn't fit. Measures with [`TextWeight::Regular`]; pair
-    /// with [`Self::elide_to_width_weighted`] when the draw weight differs.
+    /// [`ELLIPSIS`] when anything was dropped; returns just the ellipsis when
+    /// not even one character fits before it, and an empty string for empty
+    /// text or a non-positive width. Measures with [`TextWeight::Regular`];
+    /// pair with [`Self::elide_to_width_weighted`] or
+    /// [`Self::elide_to_width_style`] when the draw style differs.
     pub fn elide_to_width(&mut self, text: &str, size: f32, max_width: f32) -> String {
         self.elide_to_width_weighted(text, size, max_width, TextWeight::Regular)
     }
@@ -1705,39 +1717,57 @@ impl TextRenderer {
         max_width: f32,
         weight: TextWeight,
     ) -> String {
-        const ELLIPSIS: char = '\u{2026}';
+        self.elide_to_width_style(text, max_width, &TextStyle::new(size).with_weight(weight))
+    }
+
+    /// [`Self::elide_to_width`] measured with a full [`TextStyle`] — the
+    /// family (monospace), italic and weight the text will be drawn with.
+    ///
+    /// Cuts only between grapheme clusters, so a combining mark, an emoji
+    /// sequence or a flag is never split, and drops whitespace before the
+    /// ellipsis so it never reads as `" …"`. The kept prefix is the longest
+    /// whose *shaped* width including the ellipsis fits, found by binary
+    /// search, so a long label costs a handful of measures rather than one
+    /// per character.
+    pub fn elide_to_width_style(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        style: &TextStyle,
+    ) -> String {
         if text.is_empty() || max_width <= 0.0 {
             return String::new();
         }
-        let (full_w, _) = self.measure_weighted(text, size, None, weight);
-        if full_w <= max_width {
+        if self.measure_style(text, None, style).0 <= max_width {
             return text.to_string();
         }
-        // A single glyph reads better than an empty slot when even the
-        // ellipsis doesn't fit.
-        let (ell_w, _) = self.measure_weighted("\u{2026}", size, None, weight);
-        if ell_w > max_width {
-            return ELLIPSIS.to_string();
-        }
-        let budget = max_width - ell_w;
-        // Linear in char count — fine for the short labels this targets.
-        let mut best = String::new();
-        let mut candidate = String::new();
-        for ch in text.chars() {
-            candidate.push(ch);
-            let (w, _) = self.measure_weighted(&candidate, size, None, weight);
-            if w <= budget {
-                best.push(ch);
+        // Byte offsets where a cut may fall: the start of every grapheme
+        // cluster after the first. Cutting at index `i` keeps `text[..cuts[i]]`.
+        let cuts: Vec<usize> = crate::text_break::grapheme_indices(text)
+            .map(|(start, _)| start)
+            .filter(|&start| start > 0)
+            .collect();
+        let candidate = |end: usize| {
+            let mut kept = text.get(..end).unwrap_or_default().trim_end().to_string();
+            kept.push(ELLIPSIS);
+            kept
+        };
+        // Invariant: every cut below `lo` fits, every cut at or past `hi`
+        // does not.
+        let (mut lo, mut hi) = (0usize, cuts.len());
+        while lo < hi {
+            let mid = lo.midpoint(hi);
+            let end = cuts.get(mid).copied().unwrap_or_default();
+            if self.measure_style(&candidate(end), None, style).0 <= max_width {
+                lo = mid.saturating_add(1);
             } else {
-                break;
+                hi = mid;
             }
         }
-        // Drop a trailing space so the ellipsis doesn't read as " …".
-        while best.ends_with(' ') {
-            best.pop();
+        match lo.checked_sub(1).and_then(|i| cuts.get(i)) {
+            Some(&end) => candidate(end),
+            None => ELLIPSIS.to_string(),
         }
-        best.push(ELLIPSIS);
-        best
     }
 
     /// Word-wraps `text` to `max_width` and clamps to at most `max_lines`
@@ -2153,7 +2183,7 @@ impl TextRenderer {
         }
         self.shape_misses = self.shape_misses.saturating_add(1);
 
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let buffer = self.shape_buffer(text, max_width, style);
         let runs = self.flatten_glyph_runs(&buffer, style);
         self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());
@@ -2958,6 +2988,65 @@ mod tests {
             out_w <= budget + 0.5,
             "elided string ({out_w}) must fit the budget ({budget})",
         );
+    }
+
+    #[test]
+    fn elide_never_splits_a_grapheme_and_drops_space_before_the_ellipsis() {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        // "e" + combining acute, repeated: a char-wise cut could strand the
+        // accent from its base letter.
+        let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
+        for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
+            let out = tr.elide_to_width(s, 14.0, budget);
+            let kept = out.trim_end_matches(ELLIPSIS);
+            assert!(s.starts_with(kept), "{out:?} is not a prefix of the text");
+            let rest = s.get(kept.len()..).unwrap_or_default();
+            assert!(
+                !rest.starts_with('\u{301}'),
+                "{out:?} strands a combining mark"
+            );
+            assert!(!kept.ends_with(' '), "space before the ellipsis in {out:?}");
+            if out != ELLIPSIS.to_string() {
+                assert!(
+                    tr.measure(&out, 14.0, None).0 <= budget,
+                    "{out:?} overflows {budget}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn elide_keeps_the_longest_prefix_that_fits() {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let s = "the quick brown fox jumps over the lazy dog";
+        let (full_w, _) = tr.measure(s, 14.0, None);
+        let budget = full_w / 2.0;
+        let out = tr.elide_to_width(s, 14.0, budget);
+        let kept = out.trim_end_matches(ELLIPSIS);
+        // One more character (plus the ellipsis) must no longer fit.
+        let rest = s.get(kept.len()..).unwrap_or_default();
+        let next_end = kept.len() + rest.chars().next().map_or(0, char::len_utf8);
+        let longer = format!(
+            "{}{ELLIPSIS}",
+            s.get(..next_end).unwrap_or_default().trim_end()
+        );
+        if longer != out {
+            assert!(
+                tr.measure(&longer, 14.0, None).0 > budget,
+                "{longer:?} would still fit"
+            );
+        }
+    }
+
+    #[test]
+    fn elide_measures_in_the_given_style() {
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
+        let mono = TextStyle::new(13.0).with_family(FontChoice::Monospace);
+        let budget = tr.measure_style(s, None, &mono).0 / 2.0;
+        let out = tr.elide_to_width_style(s, budget, &mono);
+        assert!(out.ends_with(ELLIPSIS));
+        assert!(tr.measure_style(&out, None, &mono).0 <= budget);
     }
 
     /// A zero/empty budget yields empty output; so does empty input.

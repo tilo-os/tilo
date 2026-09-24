@@ -11,7 +11,7 @@
 //!   GALLIUM_DRIVER=radeonsi AMD_DEBUG=nodcc,notiling \
 //!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_dmabuf_probe
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_ui::webview::wpe::WpeEngine;
 use tilo_ui::webview::wpe::import::import_dmabuf;
@@ -49,9 +49,9 @@ pub fn run(_args: &[String]) {
     engine.send(WebViewCommand::Navigate("https://example.org".to_string()));
 
     // Poll for an importable dmabuf frame.
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = tilo_ui::time::now() + Duration::from_secs(25);
     let (texture, w, h) = loop {
-        if Instant::now() > deadline {
+        if tilo_ui::time::now() > deadline {
             eprintln!("[probe] FAIL: no importable dmabuf frame within 25s");
             std::process::exit(1);
         }
