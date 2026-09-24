@@ -45,7 +45,7 @@ use super::project::{self, Projector};
 use super::state::{LocalStat, Materialized, NativeState, NodeUpdate, StoredLease};
 use crate::fs::QuickFS;
 use crate::hydration::Hydrator;
-use crate::namespace::PosixAttrs;
+use crate::namespace::{ChangesetMark, PosixAttrs};
 use crate::sync::SyncHandle;
 
 /// How often the record plane is re-projected without a change signal.
@@ -55,6 +55,11 @@ const LEASE_TICK: Duration = Duration::from_secs(1);
 const WAITING_RETRY: Duration = Duration::from_millis(100);
 /// Delay before a failed publication is tried again.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
+/// A long publication rewrites its open changeset mark this often.
+const MARK_REFRESH: Duration = Duration::from_secs(2);
+/// An open changeset mark unchanged for this long belongs to a device
+/// that stopped mid-publication; its changes are applied as they are.
+const MARK_STALE: Duration = Duration::from_secs(30);
 
 /// Everything the plane needs to know about its workspace.
 #[derive(Clone, Debug)]
@@ -236,6 +241,10 @@ struct Engine {
     waiting_for: Option<PathBuf>,
     /// Log every journal entry and published operation.
     trace: bool,
+    /// The changeset mark this device is publishing under.
+    mark: Option<(ChangesetMark, Instant)>,
+    /// Other devices' marks as last seen, and since when unchanged.
+    marks_seen: HashMap<[u8; 32], (ChangesetMark, Instant)>,
 }
 
 impl NativePlane {
@@ -383,6 +392,8 @@ impl Engine {
             waiting: false,
             waiting_for: None,
             trace: std::env::var_os("TILO_FS_NATIVE_TRACE").is_some(),
+            mark: None,
+            marks_seen: HashMap::new(),
         })
     }
 
@@ -574,12 +585,15 @@ impl Engine {
                 }
             }
         }
+        self.open_changeset(&cs);
+        let published = self.publish(&cs, &snapshot);
+        self.close_changeset();
         let Published {
             nodes: node_changes,
             mats: mat_updates,
             bytes,
             moves,
-        } = self.publish(&cs, &snapshot);
+        } = published;
 
         if let Some(old) = &previous_snapshot {
             self.detect_in_place(&cs, &in_place, old, &snapshot);
@@ -643,6 +657,7 @@ impl Engine {
             self.forget_materialized(&path, &mut out.mats);
         }
         for op in &cs.ops {
+            self.refresh_changeset();
             match op {
                 ChangeOp::Upsert { path, node } => {
                     self.publish_upsert(path, node, snapshot, &mut out);
@@ -671,6 +686,85 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// Opens this device's changeset mark before the epoch's first
+    /// operation, naming the span of version times it publishes.
+    fn open_changeset(&mut self, cs: &Changeset) {
+        if cs.ops.is_empty() {
+            return;
+        }
+        let times = cs.ops.iter().filter_map(|op| match op {
+            ChangeOp::Upsert { node, .. } | ChangeOp::Move { node, .. }
+                if node.kind != NodeKind::Dir =>
+            {
+                u64::try_from(node.mtime_ns.div_euclid(1_000_000)).ok()
+            }
+            _ => None,
+        });
+        let (first_ms, last_ms) = times.fold((u64::MAX, 0), |(lo, hi), t| (lo.min(t), hi.max(t)));
+        let mark = ChangesetMark {
+            epoch: cs.epoch,
+            open: true,
+            first_ms: first_ms.min(last_ms),
+            last_ms,
+            at_ms: QuickFS::record_clock_ms(),
+        };
+        self.fs.put_changeset_mark(self.cfg.device, &mark);
+        self.mark = Some((mark, Instant::now()));
+    }
+
+    fn refresh_changeset(&mut self) {
+        let Some((mark, at)) = self.mark.as_mut() else {
+            return;
+        };
+        if at.elapsed() < MARK_REFRESH {
+            return;
+        }
+        mark.at_ms = QuickFS::record_clock_ms();
+        *at = Instant::now();
+        let mark = *mark;
+        self.fs.put_changeset_mark(self.cfg.device, &mark);
+    }
+
+    fn close_changeset(&mut self) {
+        if let Some((mark, _)) = self.mark.take() {
+            self.fs.put_changeset_mark(
+                self.cfg.device,
+                &ChangesetMark {
+                    open: false,
+                    at_ms: QuickFS::record_clock_ms(),
+                    ..mark
+                },
+            );
+        }
+    }
+
+    /// Other devices' changesets: whether one is still being published
+    /// (and not abandoned), and the version-time span of each.
+    fn changesets(&mut self) -> (Option<[u8; 32]>, Vec<(u64, u64)>) {
+        let now = Instant::now();
+        let mut open = None;
+        let mut spans = Vec::new();
+        for (device, mark) in self.fs.changeset_marks() {
+            if device == self.cfg.device {
+                continue;
+            }
+            let since = match self.marks_seen.get(&device) {
+                Some((seen, since)) if *seen == mark => *since,
+                _ => {
+                    self.marks_seen.insert(device, (mark, now));
+                    now
+                }
+            };
+            if mark.open && now.duration_since(since) < MARK_STALE {
+                open = Some(device);
+            }
+            if mark.first_ms <= mark.last_ms {
+                spans.push((mark.first_ms, mark.last_ms));
+            }
+        }
+        (open, spans)
     }
 
     /// Publishes a rename as a move of the record, so the file keeps its
@@ -898,8 +992,21 @@ impl Engine {
 
     /// Materialises the record plane's current state.
     fn project(&mut self) {
+        let (open, spans) = self.changesets();
+        if let Some(device) = open {
+            // Part of another device's changeset may be here already; all
+            // of it is once its mark closes.
+            if self.trace && !self.waiting {
+                eprintln!(
+                    "  projection waits for device {}'s changeset",
+                    hex::encode(&device[..8])
+                );
+            }
+            self.waiting = true;
+            return;
+        }
         let tree = self.fs.tree_snapshot();
-        let out = self.projector.project(&tree, &self.materialized);
+        let out = self.projector.project(&tree, &self.materialized, &spans);
         for (from, to) in &out.moved {
             for old in self.capture.paths_below(from) {
                 self.node_dirty.insert(old);
