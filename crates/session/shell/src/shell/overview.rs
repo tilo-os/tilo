@@ -442,8 +442,11 @@ mod room_tests {
     fn tree_with(workspaces: Vec<Workspace>) -> WorkspaceTree {
         let active = workspaces.first().map(|w| w.id).unwrap_or_default();
         WorkspaceTree {
-            workspaces,
-            active,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces,
+                active,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }
     }

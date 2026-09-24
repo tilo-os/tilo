@@ -30,11 +30,14 @@ fn overview_view_click_activates_workspace() {
     let b_id = b.id;
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![a, b],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![a, b],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = tree.workspaces[0].id;
@@ -177,11 +180,14 @@ fn topbar_leftnav_navigates_workspaces() {
     let ws_c = Workspace::new(WorkspaceId::new(), "C");
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws_a, ws_b, ws_c],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws_a, ws_b, ws_c],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = tree.workspaces[1].id;
@@ -214,11 +220,14 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
     let collab_4 = Collaborator::new("u4", "Di");
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![collab_1, collab_2, collab_3, collab_4],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![collab_1, collab_2, collab_3, collab_4],
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = tree.workspaces[0].id;
@@ -239,10 +248,13 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     let mut workspace = Workspace::new(WorkspaceId::new(), "A");
     workspace.collaborators = vec![collab_1, collab_2];
     let mut tree = WorkspaceTree {
-        workspaces: vec![workspace],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![workspace],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = tree.workspaces[0].id;
@@ -262,11 +274,14 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     use shell::shell::topbar_chrome::TopBarChrome;
     use ui::text_render::TextWeight;
     let tree = WorkspaceTree {
-        workspaces: vec![mk_workspace(0, "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![mk_workspace(0, "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let chrome = TopBarChrome::from_tree(&tree);
@@ -324,11 +339,14 @@ fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
 fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     use shell::shell::topbar_chrome::TopBarChrome;
     let tree = WorkspaceTree {
-        workspaces: vec![mk_workspace(0, "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![mk_workspace(0, "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let chrome = TopBarChrome::from_tree(&tree);

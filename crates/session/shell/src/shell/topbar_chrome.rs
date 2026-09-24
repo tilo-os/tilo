@@ -5013,11 +5013,14 @@ mod tests {
 
     fn sample_chrome() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5026,8 +5029,11 @@ mod tests {
 
     fn floating_clock() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5342,11 +5348,14 @@ mod tests {
     #[test]
     fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5476,11 +5485,14 @@ mod tests {
         let second = Workspace::new(WorkspaceId::new(), "B");
         let active = first.id;
         WorkspaceTree {
-            workspaces: vec![first, second],
-            active,
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![first, second],
+                active,
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -5692,11 +5704,14 @@ mod tests {
     #[test]
     fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5798,11 +5813,14 @@ mod tests {
     #[test]
     fn new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5840,11 +5858,14 @@ mod tests {
     #[test]
     fn clicking_a_person_opens_people_not_history() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5867,11 +5888,14 @@ mod tests {
     #[test]
     fn live_share_is_persistent_visible_named_and_accessible() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5905,8 +5929,11 @@ mod tests {
     #[test]
     fn disclosure_attributes_each_surface_to_its_actual_viewer() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -5949,8 +5976,11 @@ mod tests {
     #[test]
     fn agent_viewer_is_never_described_as_a_person() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -6138,11 +6168,14 @@ mod tests {
     #[test]
     fn avatar_stack_has_breathing_room_to_tray_pill() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -6201,11 +6234,14 @@ mod tests {
     #[test]
     fn empty_roster_restores_the_clickable_invite_affordance() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -6266,11 +6302,14 @@ mod tests {
     #[test]
     fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
@@ -6335,11 +6374,14 @@ mod tests {
     #[test]
     fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
         let empty = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut empty = empty;
