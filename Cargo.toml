@@ -184,6 +184,7 @@ members = [
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/os-actions",
     "crates/system/power",
