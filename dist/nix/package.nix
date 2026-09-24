@@ -24,6 +24,7 @@
 , harfbuzz
 , fuse3
 , gst_all_1
+, python3
 }:
 
 rustPlatform.buildRustPackage rec {
@@ -63,6 +64,8 @@ rustPlatform.buildRustPackage rec {
     libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
+    # tilo-flight-recorder: fixup rewrites its /usr/bin/python3 shebang.
+    python3
   ];
   # Bindgen executes on the build machine even when the package's host
   # platform is ARM, so it must load the build-platform libclang.
