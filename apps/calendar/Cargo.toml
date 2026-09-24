@@ -52,6 +52,7 @@ default = ["live"]
 live = ["dep:reqwest", "dep:tilo-net"]
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the handful of tests that set the process-wide
 # `TILO_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
