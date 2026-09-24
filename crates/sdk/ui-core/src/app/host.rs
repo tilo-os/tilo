@@ -3908,10 +3908,10 @@ mod pointer_broadcast_tests {
     /// The scope is what sends `Arrived`, so opt-in would mean an app that
     /// forgets to set it never receives state written before it opened.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
-        // SAFETY: serialised against the sibling env test below.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_WORKSPACE_ID", room) };
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
@@ -3926,7 +3926,7 @@ mod pointer_broadcast_tests {
 
     /// The nil cluster addresses nobody, so no room means nothing published.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn an_app_with_no_workspace_publishes_nothing() {
         // SAFETY: see above.
         unsafe {

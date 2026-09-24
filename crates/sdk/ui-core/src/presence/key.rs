@@ -238,10 +238,10 @@ mod view_key_tests {
     /// another. It's also what makes a collaborator's cursor follow them from
     /// the editor into the file manager: neither app names itself.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn the_presence_scope_is_the_room_the_documents_go_to() {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
-        // SAFETY: serialised against the other env-reading tests here.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("TILO_WORKSPACE_ID", room);
             std::env::remove_var("QUICK_CLUSTER_ID");
@@ -262,7 +262,7 @@ mod view_key_tests {
 
     /// The nil uuid addresses nobody, so no workspace means no scope.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn no_workspace_means_no_scope() {
         // SAFETY: see above.
         unsafe {
@@ -277,7 +277,7 @@ mod view_key_tests {
     /// when the variable it meant to forward was itself unset. Taking it
     /// literally would put every such app in one room.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn empty_workspace_id_is_treated_as_unset() {
         // SAFETY: see above.
         unsafe {

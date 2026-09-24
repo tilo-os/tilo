@@ -1715,7 +1715,7 @@ mod tests {
         parse_args_extended(&raw, &[], &[], &[], &[], 1).unwrap()
     }
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn headless_dispatch_uses_configured_migration_loader() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("dump.json");
@@ -1731,7 +1731,7 @@ mod tests {
         assert_eq!(state["migration_marker"], "configured-loader");
     }
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn prepared_file_state_and_original_room_index_reach_real_headless_dispatch() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1782,7 +1782,7 @@ mod tests {
         assert_eq!(state["file_marker"], "replacement-file-content");
     }
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn native_constructor_consumes_the_same_fallible_preparer() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1839,7 +1839,7 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn headless_custom_namespace_and_disabled_writer_fail_without_default_fallback() {
         let fixture = LaunchFixtureEnv::new();
         for open in [
@@ -1864,7 +1864,7 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn failed_file_preparer_stops_real_dispatch_before_output_or_fallback() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("must-not-exist.json");
