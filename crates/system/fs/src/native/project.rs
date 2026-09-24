@@ -38,7 +38,34 @@ use fs_native::hydrate::{Hydrator as Placeholders, PlaceholderSpec, STAGING_PREF
 use super::state::{LocalStat, Materialized};
 use crate::fs::native_ops::TreeEntry;
 use crate::hydration::Hydrator;
-use crate::namespace::PosixAttrs;
+use crate::namespace::{PosixAttrs, VersionFence};
+
+/// What the projector needs to fence lease-class files.
+pub struct Fencing<'a> {
+    /// This device.
+    pub me: [u8; 32],
+    /// Who held a record's lease in an epoch.
+    pub holder_of: &'a dyn Fn([u8; 16], u64) -> Option<[u8; 32]>,
+    pub now_ms: u64,
+}
+
+/// Whether the current version of a lease-class file may replace what is
+/// materialised (`storage.md` §11.2, fencing). A version tagged with a
+/// tenancy is accepted only from the device that held that epoch, and
+/// never from an epoch older than the one already materialised; a version
+/// written without a lease is accepted only while nobody holds one. A file
+/// without a lease record is not lease-class and always accepted.
+pub fn fence_accepts(e: &TreeEntry, materialized: Option<VersionFence>, now_ms: u64) -> bool {
+    let Some(lease) = e.lease else {
+        return true;
+    };
+    match e.fence {
+        Some(f) => {
+            e.fence_holder == Some(f.holder) && materialized.is_none_or(|m| f.epoch >= m.epoch)
+        }
+        None => !lease.is_live(now_ms),
+    }
+}
 
 /// Largest symbolic link target (`PATH_MAX`).
 const MAX_LINK_TARGET: u64 = 4096;
@@ -144,6 +171,14 @@ pub struct Projection {
     pub removed: Vec<PathBuf>,
     /// Local renames that followed a record's move (old path, new path).
     pub moved: Vec<(PathBuf, PathBuf)>,
+    /// Versions refused by lease fencing; the local file stays.
+    pub fenced: Vec<PathBuf>,
+    /// Fenced files this device holds the lease of: it publishes its own
+    /// content again, so the holder's version is the head.
+    pub reassert: Vec<PathBuf>,
+    /// Conflict copies this device made of its own fenced versions before
+    /// taking the holder's; the next epoch publishes them.
+    pub conflicts: Vec<PathBuf>,
     /// Paths left alone because they changed locally since the daemon wrote
     /// them.
     pub skipped_dirty: Vec<PathBuf>,
@@ -171,10 +206,11 @@ pub struct Projector {
     pub parallel_chunks: usize,
     owner: Option<(u32, u32)>,
     seq: AtomicU64,
-    /// Files whose writers are refused (another device holds the lease).
-    /// A new version of one is gated before it is renamed into place, so
-    /// there is no instant at which a writer could get through.
-    write_denied: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+    /// Write gates of lease-class files. A new version of a gated file is
+    /// gated before it is renamed into place (a placeholder right after it
+    /// is created, while it is still a hole), so no writer gets through
+    /// ungated.
+    write_gates: Arc<super::lease::WriteGates>,
     last_unavailable: std::sync::Mutex<Option<String>>,
     /// The version the last pass stopped at, and since when.
     held: std::sync::Mutex<Option<(PathBuf, u64, std::time::Instant)>>,
@@ -193,7 +229,7 @@ impl Projector {
         content: Arc<Hydrator>,
         runtime: tokio::runtime::Handle,
         owner: Option<(u32, u32)>,
-        write_denied: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+        write_gates: Arc<super::lease::WriteGates>,
     ) -> Self {
         Self {
             live,
@@ -205,7 +241,7 @@ impl Projector {
             parallel_chunks: super::fetch::DEFAULT_PARALLEL_CHUNKS,
             owner,
             seq: AtomicU64::new(0),
-            write_denied,
+            write_gates,
             last_unavailable: std::sync::Mutex::new(None),
             held: std::sync::Mutex::new(None),
         }
@@ -227,6 +263,7 @@ impl Projector {
         tree: &[TreeEntry],
         materialized: &HashMap<PathBuf, Materialized>,
         changesets: &[(u64, u64)],
+        fencing: &Fencing<'_>,
     ) -> Projection {
         let mut out = Projection::default();
         let desired: HashSet<PathBuf> = tree.iter().map(|e| rel_path(&e.path)).collect();
@@ -259,7 +296,7 @@ impl Projector {
                 stopped_at = Some((rel, e.mtime_ms));
                 break;
             }
-            match self.prepare_file(&rel, e, materialized, &mut out) {
+            match self.prepare_file(&rel, e, materialized, fencing, &mut out) {
                 Ok(Prepared::Done) => {}
                 Ok(Prepared::Pending(p)) => pending.push(p),
                 Ok(Prepared::Unavailable) => {
@@ -524,10 +561,13 @@ impl Projector {
             }
             match &install {
                 Install::Staged(staging) => {
-                    let denied = self.write_denied.lock().is_ok_and(|d| d.contains(&abs));
-                    if denied && !record.symlink {
-                        self.placeholders
-                            .gate(staging, fs_native::hydrate::WriteGate::Deny(libc::EBUSY))?;
+                    if !record.symlink {
+                        self.write_gates.gate_new_version(
+                            &self.placeholders,
+                            staging,
+                            &abs,
+                            &rel,
+                        )?;
                     }
                     if record.symlink && fs::symlink_metadata(&abs).is_ok_and(|m| m.is_dir()) {
                         return Err(io::Error::from_raw_os_error(libc::EISDIR));
@@ -536,10 +576,12 @@ impl Projector {
                 }
                 Install::Placeholder { spec, replace } => {
                     if *replace {
-                        self.placeholders.replace_with_placeholder(&abs, spec)
+                        self.placeholders.replace_with_placeholder(&abs, spec)?;
                     } else {
-                        self.placeholders.create_placeholder(&abs, spec)
+                        self.placeholders.create_placeholder(&abs, spec)?;
                     }
+                    self.write_gates
+                        .gate_new_version(&self.placeholders, &abs, &abs, &rel)
                 }
                 Install::Chmod(mode) => {
                     fs::set_permissions(&abs, fs::Permissions::from_mode(*mode))
@@ -574,11 +616,40 @@ impl Projector {
         }
     }
 
+    /// Keeps a copy of this device's own fenced version of `rel` next to
+    /// it, named after the tenancy it lost, before the holder's version
+    /// replaces it.
+    fn save_conflict(&self, rel: &Path, fence: VersionFence) -> io::Result<PathBuf> {
+        let name = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let copy = rel.with_file_name(format!(
+            "{name}.sync-conflict-{}-e{}",
+            hex::encode(&fence.holder[..4]),
+            fence.epoch
+        ));
+        let src = self.live.join(rel);
+        let dst = self.live.join(&copy);
+        let staging = self.staging_path()?;
+        let result = (|| {
+            fs::copy(&src, &staging)?;
+            self.chown(&staging)?;
+            fs::rename(&staging, &dst)
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&staging);
+            return Err(error);
+        }
+        Ok(copy)
+    }
+
     fn prepare_file(
         &self,
         rel: &Path,
         e: &TreeEntry,
         materialized: &HashMap<PathBuf, Materialized>,
+        fencing: &Fencing<'_>,
         out: &mut Projection,
     ) -> io::Result<Prepared> {
         let hash = e.hash.map(|h| *h.as_bytes());
@@ -619,6 +690,50 @@ impl Projector {
         }
         let abs = self.live.join(rel);
         let local = LocalStat::of(&abs);
+        if e.lease.is_some() {
+            if !fence_accepts(e, previous.and_then(|m| m.fence), fencing.now_ms) {
+                // Never applied and never dropped: the version stays in the
+                // record's history, the local file stays as it is.
+                out.fenced.push(rel.to_path_buf());
+                if e.lease.is_some_and(|l| l.holder == fencing.me) {
+                    out.reassert.push(rel.to_path_buf());
+                }
+                if let Some(m) = previous {
+                    out.updates.push((
+                        rel.to_path_buf(),
+                        Some(Materialized {
+                            hash,
+                            size: e.size,
+                            ..m.clone()
+                        }),
+                    ));
+                }
+                return Ok(Prepared::Done);
+            }
+            // This device's own version lost its tenancy: keep it beside
+            // the holder's.
+            if let Some(m) = previous
+                && m.own
+                && let Some(f) = m.fence
+                && f.holder == fencing.me
+                && m.record
+                    .is_some_and(|r| (fencing.holder_of)(r, f.epoch) != Some(fencing.me))
+                && m.local.is_some()
+                && m.local == local
+            {
+                match self.save_conflict(rel, f) {
+                    Ok(copy) => out.conflicts.push(copy),
+                    Err(error) => {
+                        out.errors.push(format!(
+                            "{}: keeping a conflict copy: {error}",
+                            rel.display()
+                        ));
+                        out.skipped_dirty.push(rel.to_path_buf());
+                        return Ok(Prepared::Done);
+                    }
+                }
+            }
+        }
         let dirty = match (local, previous) {
             (None, _) => false,
             (Some(now), Some(m)) => m.local != Some(now),
@@ -649,6 +764,8 @@ impl Projector {
                 record: record_key(e),
                 mode: Some(e.posix.mode),
                 symlink: e.posix.symlink,
+                fence: e.fence,
+                own: false,
             },
         }))
     }
