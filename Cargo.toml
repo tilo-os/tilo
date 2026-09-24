@@ -117,6 +117,7 @@ members = [
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-vm",
@@ -134,6 +135,7 @@ members = [
 
     # Hosting
     "crates/hosting/tilo-relay",
+    "crates/hosting/tilo-relay-protocol",
 
     # Media
     "crates/media/core",
@@ -202,6 +204,7 @@ members = [
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
     "crates/system/tilo-crypto",
+    "crates/system/tilo-dav",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-net",
     "crates/system/tilo-rollback",
@@ -211,6 +214,7 @@ members = [
     "crates/system/xdg-paths",
 
     # Text
+    "crates/text/pim-lines",
     "crates/text/spellcheck",
 
     # Windows
@@ -309,6 +313,7 @@ cosmic-text = { version = "0.19.0", default-features = false }
 tokio = "1.52.3"
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
 futures = { version = "0.3", default-features = false }
 futures-lite = "2"
 futures-util = "0.3"
