@@ -190,8 +190,10 @@ pub struct AppearanceIntent {
 impl Theme {
     fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
         // Derived here, the single funnel every constructor passes through,
-        // so the terminal tracks the OS theme instead of a hard-coded one.
+        // so the terminal and every syntax-highlighting surface track the OS
+        // theme instead of a hard-coded one.
         tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
+        tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
         let c = &tokens.colors;
         Self {
             name: name.into(),
