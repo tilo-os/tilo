@@ -1,4 +1,4 @@
-//! Tilo format-router daemon: provider registry, sandboxed component runner,
+//! Tilo format-router daemon: provider registry, sandboxed provider runner,
 //! Cap'n Proto service, and registry hot reload.
 
 #![cfg_attr(
@@ -37,7 +37,7 @@ pub mod watch;
 
 pub use registry::{ProviderEntry, Registry};
 pub use router::{ActiveProvider, Router};
-pub use runner::{LoadedComponent, MAX_MEMORY_BYTES, MAX_WALLCLOCK};
+pub use runner::{DEFAULT_FUEL, Limits, LoadedProvider, MAX_MEMORY_BYTES};
 
 use std::path::PathBuf;
 
