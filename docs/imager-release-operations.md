@@ -12,6 +12,15 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
+Manual installer-only rehearsals do not need those release labels: dispatch
+`release-imager.yml` with `installer_only=true` and `full_native=true`. The
+workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64`
+large-disk lanes for erase, prepared-alongside, and guided-alongside cycles. Their isolated
+job containers use QEMU's slower TCG accelerator and capturable software
+framebuffer because host KVM/DRI devices are intentionally not exposed. Tagged
+releases still require hardware KVM/DRI and the dedicated six-platform fleet
+above; installer-only rehearsals skip host packaging and every publication job.
+
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.
@@ -292,23 +301,21 @@ a Forgejo secret:
   in the server that delivered it.
 - Windows: keep the EV/OV Authenticode certificate in Azure Trusted Signing or
   another PKCS#11/KMS service. Federate Forgejo OIDC into that service and
-  install a small signer wrapper on the ephemeral runner image. Set repository
-  variable `IMAGER_WINDOWS_SIGNER` to its absolute path. The packaging script
-  passes it one artifact path at a time and then runs `signtool verify`; the
-  wrapper exchanges the OIDC token, signs by key reference and timestamps the
-  file without exporting a PFX.
+  install a small signer wrapper on the ephemeral runner image. The
+  `IMAGER_WINDOWS_CREDENTIAL_BROKER` validates the job identity and returns that
+  trusted wrapper path for the lease. The packaging script passes it one
+  artifact path at a time and then runs `signtool verify`; the wrapper signs by
+  key reference and timestamps the file without exporting a PFX.
 - macOS: the Developer ID certificate itself is long-lived. Keep it in a
   signing service or secrets manager and release a short lease to the
   ephemeral macOS runner. Prefer an App Store Connect API key for notarization;
   scope it to the Tilo team and retrieve it through the same OIDC lease.
 
-For initial bring-up only, set `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP=1`; the
-workflow then accepts the protected `IMAGER_*` secrets documented in the
-packaging README. Without that explicit switch, a release tag fails closed when
-the broker is absent. Remove the switch and every bootstrap secret after one
-broker-backed release succeeds. `IMAGER_WINDOWS_SIGNER` is a separate supported
-steady-state path for a preinstalled Windows wrapper which performs its own
-OIDC exchange; it is not a path to a PFX.
+There is no static signing or publication bootstrap. A release tag fails closed
+when any required OIDC broker is absent or rejects the job. Initial bring-up
+uses the unsigned, non-publishing `full_native` workflow dispatch until all
+broker-backed release paths are ready; private signing keys, PFX/P12 archives,
+Apple app passwords, and publication tokens must not be stored in Forgejo.
 
 ## Bring-up checklist
 
@@ -324,7 +331,7 @@ Before creating a release tag, verify all of the following:
   tooling in the table above; Linux hosts can use rootful Podman for live-media
   assembly, and Windows/macOS hosts have access to their native GUI session for
   the packaged smoke launch;
-- all six broker-path variables plus the direct PCR signer path above are
+- all seven broker-path variables plus the direct PCR signer path above are
   protected; the Linux full fingerprint is independently set in protected variable
   `IMAGER_LINUX_SIGNING_FINGERPRINT`; `IMAGER_WINDOWS_PUBLISHER` pins the full
   Authenticode certificate subject; `IMAGER_MAC_TEAM_ID` and
@@ -381,7 +388,6 @@ administrators):
 | `IMAGER_MAC_CERT_SHA256` | uppercase 64-hex SHA-256 fingerprint of the expected Developer ID leaf certificate |
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
-| `IMAGER_WINDOWS_SIGNER` | optional alternative to the Windows broker; absolute OIDC-aware wrapper path |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.podesta.ai`. Give its service account read-only access to the published
@@ -395,14 +401,14 @@ The source job's `github.token` is deliberately never used for binary
 publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
 OIDC identity for the short-lived, target-only token described above.
 
-Do not configure any of the following in steady state:
+Delete and do not configure these retired legacy secrets and variables; the
+release and monitor workflows do not read them:
 `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP`, `IMAGER_LINUX_SIGNING_KEY_B64`,
 `IMAGER_LINUX_SIGNING_KEY_ID`, `IMAGER_WINDOWS_CERT_PFX_B64`,
 `IMAGER_WINDOWS_CERT_PASSWORD`, `IMAGER_MAC_CERT_P12_B64`,
 `IMAGER_MAC_CERT_PASSWORD`, `IMAGER_MAC_SIGNING_IDENTITY`, `IMAGER_APPLE_ID`,
 `IMAGER_APPLE_TEAM_ID`, `IMAGER_APPLE_APP_PASSWORD`, `HOMEBREW_TAP_TOKEN`,
-`WINGET_GITHUB_TOKEN`, or `SITE_RELEASE_TOKEN`. They exist solely to unblock a
-time-bounded first bootstrap and should be deleted immediately afterward.
+`WINGET_GITHUB_TOKEN`, `SITE_RELEASE_TOKEN`, or `IMAGER_WINDOWS_SIGNER`.
 
 ## WPE buildroot snapshot credentials
 
@@ -480,8 +486,8 @@ buildroots accept only the broker-returned non-exportable signer.
 
 `publish-homebrew-tap.sh` updates the pre-created `tilo-os/homebrew-tilo`, renders
 the formula and cask from release digests, audits them, and pushes `main`. Configure
-the broker's `homebrew` exchange as described above. `HOMEBREW_TAP_TOKEN` is
-accepted only when the explicit static-bootstrap switch is enabled.
+the broker's `homebrew` exchange as described above. The workflow accepts no
+repository token fallback.
 
 WinGet's public consumer path is the Microsoft community index. A self-hosted
 source is a separate HTTPS REST service that every user must add as
@@ -490,8 +496,7 @@ the release bot's GitHub fork when needed and opens the one-version PR expected
 by `microsoft/winget-pkgs`. Configure:
 
 - the broker's `winget` exchange with the dedicated bot's expiring GitHub App
-  user token described above. `WINGET_GITHUB_TOKEN` is a
-  static-bootstrap-only fallback;
+  user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
 The `Monitor / WinGet acceptance` workflow runs every six hours and can also be
