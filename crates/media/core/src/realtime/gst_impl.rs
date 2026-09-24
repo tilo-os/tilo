@@ -36,6 +36,13 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// configured for one-in-one-out operation; a frame that takes longer than
 /// this is treated as lost rather than blocking the caller's frame loop.
 const FRAME_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a running decoder waits for one unit's picture. A unit that
+/// yields none (its reference was lost on the network, it only refreshes
+/// state) must not stall the receiver's frame loop: measured decode times are
+/// 3-25 ms per frame at 720p-1080p, so a picture that has not arrived within
+/// several frame intervals (with headroom for a loaded machine) is returned
+/// with the next call instead.
+const DECODE_WAIT: Duration = Duration::from_millis(150);
 
 enum Event {
     Sample(gst::Sample),
@@ -1154,6 +1161,9 @@ pub struct RealtimeDecoder {
     /// The decoder element, whose output caps carry the stream's colour
     /// before any conversion to RGB.
     decoder_element: Option<gst::Element>,
+    /// The colour the sender announced out of band; see
+    /// [`Self::set_stream_color`]. Shared with the decoder's pad probe.
+    stream_color: std::sync::Arc<Mutex<Option<StreamColor>>>,
     /// Nothing is decodable until a keyframe arrives, after start and after
     /// every fall-through to another element.
     awaiting_keyframe: bool,
@@ -1187,6 +1197,7 @@ impl RealtimeDecoder {
             candidates,
             running: None,
             decoder_element: None,
+            stream_color: std::sync::Arc::new(Mutex::new(None)),
             awaiting_keyframe: true,
             first_output_seen: false,
             tried: Vec::new(),
@@ -1199,6 +1210,18 @@ impl RealtimeDecoder {
     /// Set the size the sender announced; see [`DecoderConfig::display_size`].
     pub fn set_display_size(&mut self, size: Option<(u32, u32)>) {
         self.config.display_size = size;
+    }
+
+    /// The colour the sender announced for the stream, when its transport
+    /// carries one. It replaces what the decoder reports, both for the
+    /// conversion to RGB and in [`DecodedPicture::color`]: measured,
+    /// `GStreamer`'s VA-API encoders write no colour description, so a
+    /// decoder falls back to a size-based guess (BT.601 below HD) that
+    /// shifts colours, and a PQ stream decodes as SDR.
+    pub fn set_stream_color(&mut self, color: Option<StreamColor>) {
+        if let Ok(mut slot) = self.stream_color.lock() {
+            *slot = color;
+        }
     }
 
     /// The element currently decoding.
@@ -1248,6 +1271,27 @@ impl RealtimeDecoder {
         let decoder = make(spec.element)?;
         tune_decoder(&decoder);
         let decoder_handle = decoder.clone();
+        // Rewrite the decoder's output colorimetry to the announced one, so
+        // the conversion downstream uses the sender's colour.
+        if let Some(pad) = decoder.static_pad("src") {
+            let hint = std::sync::Arc::clone(&self.stream_color);
+            pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                let announced = hint.lock().ok().and_then(|slot| *slot);
+                let (Some(color), Some(gst::PadProbeData::Event(event))) =
+                    (announced, info.data.as_ref())
+                else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                if let gst::EventView::Caps(caps_event) = event.view() {
+                    // The event shares its caps; `make_mut` copies them.
+                    let mut caps = caps_event.caps_owned();
+                    caps.make_mut()
+                        .set("colorimetry", stream_color_to_gst(color).to_string());
+                    info.data = Some(gst::PadProbeData::Event(gst::event::Caps::new(&caps)));
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
         let appsink = gst_app::AppSink::builder()
             .sync(false)
             .max_buffers(0)
@@ -1358,7 +1402,7 @@ impl RealtimeDecoder {
             b.set_flags(gst::BufferFlags::DELTA_UNIT);
         }
         let timeout = if self.first_output_seen {
-            FRAME_TIMEOUT
+            DECODE_WAIT
         } else {
             STARTUP_TIMEOUT
         };
@@ -1381,14 +1425,16 @@ impl RealtimeDecoder {
     fn picture_from_sample(&self, sample: &gst::Sample) -> Option<DecodedPicture> {
         // The colour of the decoded samples, read where the decoder hands
         // them over (the appsink's caps describe the converted RGB).
-        let color = self
-            .decoder_element
-            .as_ref()
-            .and_then(|d| d.static_pad("src"))
-            .and_then(|p| p.current_caps())
-            .and_then(|c| gst_video::VideoInfo::from_caps(&c).ok())
-            .map(|info| stream_color_from_info(&info))
-            .unwrap_or_default();
+        let announced = self.stream_color.lock().ok().and_then(|slot| *slot);
+        let color = announced.unwrap_or_else(|| {
+            self.decoder_element
+                .as_ref()
+                .and_then(|d| d.static_pad("src"))
+                .and_then(|p| p.current_caps())
+                .and_then(|c| gst_video::VideoInfo::from_caps(&c).ok())
+                .map(|info| stream_color_from_info(&info))
+                .unwrap_or_default()
+        });
         // The appsink caps already pin the memory and format each output
         // asks for, so the sample is read as whatever it arrived as.
         let mut frame = crate::gst_frames::frame_from_sample(sample, FrameAcceptance::Native)?;

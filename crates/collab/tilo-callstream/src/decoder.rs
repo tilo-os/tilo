@@ -6,7 +6,7 @@
 //! compositor's HDR receive path asks the media stack for P010 planes
 //! instead; a call tile doesn't need them.
 
-use media::realtime::{DecodeOutput, DecoderConfig, RealtimeDecoder, StreamCodec};
+use media::realtime::{DecodeOutput, DecoderConfig, RealtimeDecoder, StreamCodec, StreamColor};
 
 /// Largest decoded width accepted from a remote stream.
 pub const MAX_DECODED_WIDTH: usize = 4096;
@@ -115,7 +115,15 @@ impl VideoDecoder {
                 ..DecoderConfig::new(self.codec)
             };
             match RealtimeDecoder::new(config) {
-                Ok(d) => self.inner = Some(d),
+                Ok(mut d) => {
+                    // Every call encoder writes `EncoderConfig`'s default
+                    // colour. Say so rather than leave it to the decoder:
+                    // not every encoder signals it and not every decoder
+                    // reads it, and a guess shifts every colour of an SD
+                    // stream.
+                    d.set_stream_color(Some(StreamColor::BT709));
+                    self.inner = Some(d);
+                }
                 Err(e) => {
                     tracing::warn!(codec = self.codec.wire_label(), "no video decoder: {e}");
                     self.failed = true;

@@ -737,6 +737,8 @@ mod unavailable {
 
         pub fn set_display_size(&mut self, _size: Option<(u32, u32)>) {}
 
+        pub fn set_stream_color(&mut self, _color: Option<super::StreamColor>) {}
+
         /// # Errors
         ///
         /// Always [`RealtimeError::NotCompiled`].
