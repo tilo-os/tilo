@@ -64,11 +64,24 @@ impl PeerPublisher {
         sink: Arc<dyn PeerPublishSink>,
         owner: Arc<dyn qos_peer_state::owner_commit::OwnerCommitService>,
     ) -> Arc<Self> {
+        Self::with_optional_owner_commit(Some(sink), owner)
+    }
+    /// Keep a real local durable owner even when no network sink is installed.
+    pub fn with_optional_owner_commit(
+        sink: Option<Arc<dyn PeerPublishSink>>,
+        owner: Arc<dyn qos_peer_state::owner_commit::OwnerCommitService>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            sink: Some(sink),
+            sink,
             owner_commit: Some(owner),
             warned_no_network: AtomicBool::new(false),
         })
+    }
+    /// Consult the actual installed owner; wiring a network sink grants nothing.
+    pub fn requires_owner_for(&self, room: &str) -> bool {
+        self.owner_commit
+            .as_ref()
+            .is_some_and(|owner| owner.requires_room(room))
     }
     pub fn owner_commit_health(&self) -> Result<(), String> {
         self.owner_commit

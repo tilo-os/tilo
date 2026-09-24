@@ -127,7 +127,7 @@ impl CapnpBrokerState {
             Rejected("desktop commands require certified durable caller evidence".into())
         })?;
         let current = self
-            .verify_network_action_caller(evidence)
+            .verify_network_action_caller_with_policy_time(evidence, staged.policy_time.as_ref())
             .map_err(Rejected)?;
         let key = staged
             .journal_key

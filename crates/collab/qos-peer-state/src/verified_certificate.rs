@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tilo_user_identity::{DeviceCert, DeviceCertError, verify_device_cert_at};
+use tilo_user_identity::{DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at};
 
 /// Immutable signature-verified public certificate. This is not an authorization
 /// result: expiry, revocation and governed membership remain live checks.
@@ -8,15 +8,45 @@ pub(crate) struct VerifiedCertificate(Arc<DeviceCert>);
 
 impl VerifiedCertificate {
     pub fn new(certificate: DeviceCert, now_ns: u64) -> Result<Self, String> {
+        Self::new_typed(certificate, now_ns).map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn new_typed(certificate: DeviceCert, now_ns: u64) -> Result<Self, DeviceCertError> {
         #[cfg(test)]
         crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(count.get() + 1));
-        verify_device_cert_at(&certificate, now_ns).map_err(|error| error.to_string())?;
+        verify_device_cert_at(&certificate, now_ns)?;
+        Ok(Self(Arc::new(certificate)))
+    }
+
+    pub fn historical(certificate: DeviceCert) -> Result<Self, String> {
+        Self::historical_typed(certificate).map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn historical_typed(certificate: DeviceCert) -> Result<Self, DeviceCertError> {
+        #[cfg(test)]
+        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(count.get() + 1));
+        verify_device_cert(&certificate)?;
         Ok(Self(Arc::new(certificate)))
     }
 
     pub fn current(&self, now_ns: u64) -> Result<&DeviceCert, String> {
+        self.current_typed(now_ns)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The same live validity checks without allocating an error diagnostic.
+    pub fn current_typed(&self, now_ns: u64) -> Result<&DeviceCert, DeviceCertError> {
+        if self
+            .expires_at_ns
+            .is_some_and(|expires_at_ns| expires_at_ns <= self.issued_at_ns)
+        {
+            return Err(DeviceCertError::InvalidValidity);
+        }
+        if now_ns < self.issued_at_ns {
+            return Err(DeviceCertError::NotYetValid);
+        }
         if self.is_expired_at(now_ns) {
-            return Err(DeviceCertError::Expired.to_string());
+            return Err(DeviceCertError::Expired);
         }
         Ok(self)
     }
@@ -78,6 +108,23 @@ mod tests {
             0
         );
         assert!(VerifiedCertificate::new(certificate(), 10).is_err());
+    }
+
+    #[test]
+    fn typed_current_certificate_checks_time_without_allocating_diagnostics() {
+        let verified = VerifiedCertificate::new(certificate(), 9).unwrap();
+        let allowance = automerge::resource_limits::NativeAllowance::new(4096).unwrap();
+        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
+            assert_eq!(verified.current_typed(9).unwrap(), verified.as_ref());
+            assert!(matches!(
+                verified.current_typed(10),
+                Err(DeviceCertError::Expired)
+            ));
+            assert!(matches!(
+                verified.current_typed(0),
+                Err(DeviceCertError::NotYetValid)
+            ));
+        });
     }
 
     #[test]

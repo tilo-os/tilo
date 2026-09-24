@@ -246,7 +246,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let (_, empty_rx) = mpsc::unbounded_channel();
         let rx = Rc::new(AsyncMutex::new(std::mem::replace(&mut fixture.invocation_rx, empty_rx)));
-        let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { rx: rx.clone() });
+        let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { host_guard: None, rx: rx.clone() });
         let delivery = stream.read_request().send().promise.await.unwrap();
         let wire_id = delivery.get().unwrap().get_id();
         assert_eq!(delivery.get().unwrap().get_invocation_uuid().unwrap(), request.invocation.0.as_bytes());

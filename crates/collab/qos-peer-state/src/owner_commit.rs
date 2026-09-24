@@ -1,5 +1,14 @@
 //! Host-local durable handoff. This is not a neighbour message or a wire capability.
 //! A receipt binds the exact signed mutation/receipt basis, never queue admission.
+mod policy_basis;
+pub use policy_basis::PrivatePolicyBasis;
+mod agent;
+pub use agent::*;
+mod agent_runtime;
+pub use agent_runtime::*;
+#[cfg(test)]
+mod agent_runtime_tests;
+
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 
@@ -30,12 +39,18 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: crate::desktop_command::BoundCommand,
     },
+    /// Appended host-local variant; existing postcard discriminants remain fixed.
+    Agent { change: Box<AgentChange> },
+    /// Private executor v2; only the typed live-evidence owner can authorize it.
+    AgentRuntime { change: Box<AgentRuntimeChange> },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
     Document { app: String, record: String },
     EffectReceipt { invocation: uuid::Uuid },
     DesktopCommand { invocation: uuid::Uuid },
+    Agent { mutation: String },
+    AgentRuntime { mutation: String },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
@@ -61,6 +76,24 @@ impl OwnerCommitRequest {
             return Err("owner commit requires the exact canonical room UUID".into());
         }
         let (target, bytes) = match &self.operation {
+            CommitOperation::AgentRuntime { change } => {
+                change.validate()?;
+                (
+                    CommitTarget::AgentRuntime {
+                        mutation: change.mutation.clone(),
+                    },
+                    change.business_bytes()?,
+                )
+            }
+            CommitOperation::Agent { change } => {
+                change.validate()?;
+                (
+                    CommitTarget::Agent {
+                        mutation: change.ids.mutation.clone(),
+                    },
+                    change.business_bytes()?,
+                )
+            }
             CommitOperation::DesktopCommand {
                 invocation,
                 caller,
@@ -114,7 +147,14 @@ impl OwnerCommitRequest {
                 )
             }
         };
-        let encoded = postcard::to_allocvec(self).map_err(|e| e.to_string())?;
+        let encoded = if matches!(
+            self.operation,
+            CommitOperation::Agent { .. } | CommitOperation::AgentRuntime { .. }
+        ) {
+            postcard::to_allocvec(&(&self.room, &target, &bytes)).map_err(|e| e.to_string())?
+        } else {
+            postcard::to_allocvec(self).map_err(|e| e.to_string())?
+        };
         Ok(CommitBinding {
             room: self.room.clone(),
             target,
@@ -145,8 +185,25 @@ impl OwnerCommitReceipt {
 /// Implemented by the single durable session owner, not by a remote caller.
 /// Failure may follow an application effect and therefore means uncertainty.
 pub trait OwnerCommitService: Send + Sync {
+    /// Whether this room must cross this installed owner's durable boundary.
+    /// Scoped native owners retain this requirement while incomplete or fenced.
+    fn requires_room(&self, _room: &str) -> bool {
+        true
+    }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     fn health(&self) -> Result<(), String>;
+    /// Caller proof stays host-local. Existing owners reject agent work by default.
+    fn commit_agent(
+        &self,
+        _request: OwnerCommitRequest,
+        _caller: VerifiedAgentCaller,
+    ) -> AgentCommitFuture {
+        Box::pin(async {
+            Err(AgentCommitError::Rejected(
+                "typed agent owner service unavailable".into(),
+            ))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +214,48 @@ mod tests {
         document_artifact_id_for_version, document_attestation_id_for_version,
     };
     use std::time::SystemTime;
+
+    #[test]
+    fn legacy_owner_postcard_literals_remain_unchanged() {
+        let invocation = uuid::Uuid::from_bytes([7; 16]);
+        let encoded = |value: &CommitTarget| postcard::to_allocvec(value).unwrap();
+        assert_eq!(
+            encoded(&CommitTarget::Document {
+                app: "a".into(),
+                record: "r".into()
+            }),
+            b"\x00\x01a\x01r"
+        );
+        assert_eq!(
+            encoded(&CommitTarget::EffectReceipt { invocation }),
+            [vec![1, 16], vec![7; 16]].concat()
+        );
+        assert_eq!(
+            encoded(&CommitTarget::DesktopCommand { invocation }),
+            [vec![2, 16], vec![7; 16]].concat()
+        );
+        let request = OwnerCommitRequest {
+            room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            operation: CommitOperation::EffectReceipt {
+                invocation,
+                redacted: vec![5, 6],
+            },
+        };
+        let literal = [
+            b"\x24aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\x01\x10".to_vec(),
+            vec![7; 16],
+            vec![2, 5, 6],
+        ]
+        .concat();
+        assert_eq!(postcard::to_allocvec(&request).unwrap(), literal);
+        assert_eq!(
+            request.binding().unwrap().request_digest,
+            *blake3::Hasher::new_derive_key("qOS owner commit request v1")
+                .update(&literal)
+                .finalize()
+                .as_bytes()
+        );
+    }
 
     #[test]
     fn document_binding_accepts_one_exact_legacy_wire_namespace() {

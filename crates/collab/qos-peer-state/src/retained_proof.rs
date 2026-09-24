@@ -54,6 +54,25 @@ impl RetentionAuthority {
     pub fn governor(&self) -> &DeviceCert {
         &self.governor
     }
+
+    /// Derive the locally pinned retention authority from an existing governed
+    /// room document without creating or replacing room state.
+    pub fn from_governance(document: &AutoCommit, governor: DeviceCert) -> Result<Self, String> {
+        let room = document
+            .get(ROOT, "room")
+            .map_err(|error| error.to_string())?
+            .and_then(|(value, _)| value.to_str().map(ToOwned::to_owned))
+            .ok_or("governed room id is missing")?;
+        let authority = Self::new(&room, governor)?;
+        if crate::room::governance_of(Some(document)).0.as_deref()
+            != Some(&hex::encode(authority.governor.user_public_key))
+        {
+            return Err("retention governor is not the governed room owner".into());
+        }
+        identities(&authority, None, document)
+            .map_err(|_| "retention governor is absent or revoked in governance".to_string())?;
+        Ok(authority)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +361,12 @@ pub fn verify_room(
         _ => return Err(ProofError::Unknown),
     }
     let before = prior.map(|prior| &prior.doc);
+    crate::room::media::validate_transition(
+        before,
+        &doc,
+        crate::room::media::TransitionMode::Admission,
+    )
+    .map_err(|_| ProofError::Unknown)?;
     let pinned = hex::encode(source);
     identities(authority, before, &doc)?;
     let receipts = effect_receipts(&doc)?;
@@ -464,6 +489,10 @@ pub fn verify_snapshot(
         return Err(ProofError::Unknown);
     };
     let doc = document(&bytes)?;
+    if let Some(policy) = crate::room::media::parse(&room.doc).map_err(|_| ProofError::Unknown)? {
+        crate::room::media::validate_bound_chat_change(&policy, &app, &record, &doc)
+            .map_err(|_| ProofError::Unknown)?;
+    }
     let key = crate::coverage::route_key(&app, &record);
     let coverage = crate::coverage::entries(&room.doc)
         .map_err(|_| ProofError::Unknown)?

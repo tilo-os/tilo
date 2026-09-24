@@ -1,5 +1,6 @@
 //! Governor-authenticated replay floors for exact retained checkpoints.
 //! Carried in the existing room CRDT; this does not change neighbour v1 bytes.
+pub(crate) mod read;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

@@ -7,6 +7,8 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+launcher = { path = "../../packaging/launcher" }
+qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }

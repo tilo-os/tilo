@@ -24,16 +24,66 @@ pub trait WorkspacePolicy {
     fn revoke_capability(&mut self, id: &str) -> bool;
     fn set_owner(&mut self, user: impl Into<UserId>);
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
+    fn decide_at(&self, actor: &Actor, resource: &ResourceRef, verb: Verb, now: u64)
+    -> CapDecision;
     fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
     fn may_administer(&self, user: &UserId) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
+    fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole>;
     fn actor_for_person(&self, user: &UserId) -> Actor;
+    fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor;
     fn actor_for_app(&self, app_id: &str) -> Actor;
     fn actor_for_agent(&self, agent_id: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
     fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
+    fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole>;
     fn agent_members(&self) -> Vec<(String, CapRole)>;
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
+}
+
+#[cfg(test)]
+mod retained_clock_tests {
+    use super::*;
+    #[test]
+    fn retained_policy_clock_samples_membership_and_grant_at_same_time() {
+        let mut workspace = crate::test_support::Workspace::test_default(
+            crate::test_support::WorkspaceId(2),
+            "Timed room",
+        );
+        let user = "member".to_string();
+        workspace.grant_capability(
+            CapOverride::membership(
+                Subject::person(&user),
+                workspace.room.to_string(),
+                Verb::Read,
+            )
+            .with_expiry(100),
+        );
+        workspace.grant_capability(
+            CapOverride::grant(
+                Subject::person(&user),
+                Scope::App("app".into()),
+                Verb::Write,
+            )
+            .with_expiry(100),
+        );
+        let before = workspace.actor_for_person_at(&user, 50);
+        assert_eq!(workspace.role_of_at(&user, 50), Some(CapRole::Viewer));
+        assert_eq!(
+            workspace.decide_at(&before, &ResourceRef::App("app".into()), Verb::Write, 50),
+            CapDecision::Allow
+        );
+        assert_eq!(workspace.role_of_at(&user, 101), None);
+        assert_ne!(
+            workspace.decide_at(
+                &workspace.actor_for_person_at(&user, 101),
+                &ResourceRef::App("app".into()),
+                Verb::Write,
+                101
+            ),
+            CapDecision::Allow
+        );
+    }
 }
 impl WorkspacePolicy for Workspace {
     fn grant_capability(&mut self, mut cap: CapOverride) -> String {
@@ -90,7 +140,16 @@ impl WorkspacePolicy for Workspace {
         );
     }
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
+        self.decide_at(actor, resource, verb, now_unix())
+    }
+    fn decide_at(
+        &self,
+        actor: &Actor,
+        resource: &ResourceRef,
+        verb: Verb,
+        now: u64,
+    ) -> CapDecision {
+        decide_capability(actor, resource, verb, &self.capabilities, Some(now))
     }
     fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
         self.decide(actor, resource, verb) == CapDecision::Allow
@@ -106,10 +165,16 @@ impl WorkspacePolicy for Workspace {
         )
     }
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        qos_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now_unix())
+        self.role_of_at(user, now_unix())
+    }
+    fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole> {
+        qos_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now)
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
+        self.actor_for_person_at(user, now_unix())
+    }
+    fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor {
+        Actor::person(self.role_of_at(user, now), user.clone()).in_room(self.room.to_string())
     }
     fn actor_for_app(&self, app_id: &str) -> Actor {
         Actor::app(app_id).in_room(self.room.to_string())
@@ -144,7 +209,10 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
     fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let now = Some(now_unix());
+        self.role_of_agent_at(agent, now_unix())
+    }
+    fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole> {
+        let now = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
         for c in &self.capabilities {

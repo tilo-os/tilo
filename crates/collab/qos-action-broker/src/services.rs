@@ -2,6 +2,11 @@
 use qos_desktop::{RoomId, Workspace, WorkspaceTaskStatus, WorkspaceTree};
 use std::sync::Arc;
 
+pub use crate::collab_broker_capnp::{
+    DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
+};
+
 /// Reads a fresh immutable projection from the host's committed authority.
 /// Mutations go back to that host; this interface owns no replica or persistence.
 pub trait WorkspaceAuthority: Send + Sync {
@@ -140,6 +145,12 @@ pub trait RealtimeServices: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct HostServices {
+    pub certified_agent_reads: Option<Arc<dyn crate::agent_reads::CertifiedAgentReads>>,
+    pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
+    pub native_media: Option<Arc<dyn NativeMediaServices>>,
+    pub enrolled_agents: Option<Arc<dyn crate::enrolled_dispatch::EnrolledAgentOwner>>,
+    /// Durable parent-step path for enrolled task actions with a step identity.
+    pub enrolled_steps: Option<Arc<dyn crate::enrolled_dispatch::EnrolledStepService>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
@@ -147,4 +158,5 @@ pub struct HostServices {
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
+    pub collaboration_admin: Option<Arc<dyn crate::collaboration_admin::CollaborationAdmin>>,
 }

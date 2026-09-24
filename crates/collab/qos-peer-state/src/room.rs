@@ -1,4 +1,9 @@
 //! Native room-policy leaves shared by the shell and certified browser peer.
+pub(crate) mod delivery_policy;
+pub mod media;
+pub(crate) mod policy;
+pub(crate) mod private_policy;
+pub(crate) mod read;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::Role;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
@@ -9,11 +14,12 @@ pub type RoomGovernance = (
     BTreeMap<String, String>,
     BTreeMap<String, Vec<u8>>,
     Option<Vec<u8>>,
+    BTreeMap<String, Vec<Vec<u8>>>,
+    media::MediaGovernanceValue,
 );
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     let Some(doc) = doc else {
         return (
             None,
@@ -21,57 +27,76 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
             std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
             None,
+            std::collections::BTreeMap::new(),
+            media::MediaGovernanceValue::Absent,
         );
     };
-    let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    let mut caps = std::collections::BTreeMap::new();
-    if let Some((_, caps_id)) = doc.get(&ROOT, "capabilities").ok().flatten() {
-        let keys: Vec<String> = doc.keys(&caps_id).collect();
-        for key in keys {
-            if let Some((Value::Scalar(s), _)) = doc.get(&caps_id, &key).ok().flatten()
-                && let ScalarValue::Bytes(blob) = s.as_ref()
-            {
-                caps.insert(key, blob.clone());
+    let mut owner = None;
+    let mut caps = BTreeMap::new();
+    let mut peers = BTreeMap::new();
+    let mut identities = BTreeMap::new();
+    // The legacy public output is unqualified owned data. The same borrowed
+    // traversal serves bounded destinations that pay for each output copy.
+    let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
+        match entry {
+            read::GovernanceEntry::Owner(value) => owner = Some(value.to_owned()),
+            read::GovernanceEntry::Capability { key, bytes } => {
+                caps.insert(key.to_owned(), bytes.to_vec());
+            }
+            read::GovernanceEntry::Peer { key, name } => {
+                peers.insert(key.to_owned(), name.to_owned());
+            }
+            read::GovernanceEntry::Identity { key, bytes } => {
+                identities.insert(key.to_owned(), bytes.to_vec());
             }
         }
-    }
-    // Peer names fold in beside the capability list, the same kind
-    // of claim — left out, it'd be the one governance key a guest
-    // could write, and an impostor's first target.
-    let mut peers = std::collections::BTreeMap::new();
-    if let Some((_, peers_id)) = doc.get(&ROOT, "peers").ok().flatten() {
-        let keys: Vec<String> = doc.keys(&peers_id).collect();
-        for key in keys {
-            if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
-                && let ScalarValue::Str(v) = s.as_ref()
-            {
-                peers.insert(key, v.to_string());
-            }
-        }
-    }
-    let mut identities = std::collections::BTreeMap::new();
-    if let Some((_, object)) = doc.get(&ROOT, "peer_identities_v1").ok().flatten() {
-        for key in doc.keys(&object) {
-            if let Some((Value::Scalar(value), _)) = doc.get(&object, &key).ok().flatten()
-                && let ScalarValue::Bytes(bytes) = value.as_ref()
-            {
-                identities.insert(key, bytes.clone());
-            }
-        }
-    }
+        Ok::<(), std::convert::Infallible>(())
+    });
+    // LegacyRead has no resource refusals and the visitor is infallible.
+    debug_assert!(result.is_ok());
+    let invitation_receipts = invitation_receipts(doc).unwrap_or_default();
     (
         owner,
         caps,
         peers,
         identities,
         crate::coverage::governed_bytes(doc),
+        invitation_receipts,
+        media::governed_value(Some(doc)),
     )
+}
+
+pub(crate) fn invitation_receipts(
+    doc: &AutoCommit,
+) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
+    let ledgers = doc
+        .get_all(ROOT, "invitation_receipts_v1")
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|(value, object)| match value {
+            Value::Object(automerge::ObjType::Map) => Ok(object),
+            _ => Err("governed invitation receipt ledger is not a map".to_string()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut receipts: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+    for object in ledgers {
+        for key in doc.keys(&object) {
+            let values = doc
+                .get_all(&object, &key)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|(value, _)| match value {
+                    Value::Scalar(value) => match value.as_ref() {
+                        ScalarValue::Bytes(bytes) => Ok(bytes.clone()),
+                        _ => Err("governed invitation receipt is not bytes".to_string()),
+                    },
+                    _ => Err("governed invitation receipt is not bytes".to_string()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            receipts.entry(key).or_default().extend(values);
+        }
+    }
+    Ok(receipts)
 }
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
@@ -108,17 +133,30 @@ pub fn extract_governed_fields(
     (name, owner, caps)
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
-pub fn candidate(
-    before: Option<&AutoCommit>,
-    changes: &[Vec<u8>],
-) -> Result<AutoCommit, automerge::AutomergeError> {
-    let parsed = changes
-        .iter()
-        .map(|bytes| automerge::Change::try_from(bytes.as_slice()))
-        .collect::<Result<Vec<_>, _>>()?;
+/// Changes with absent dependencies remain queued, as with `apply_changes`.
+pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
+    use automerge::resource_limits::{NativeAllowance, NativeDependencyPolicy};
+    // Each entry is one complete change chunk; their concatenation is ordinary
+    // storage, admitted with the same checked path as document mutations.
+    let mut storage = Vec::new();
+    for bytes in changes {
+        automerge::Change::try_from(bytes.as_slice()).map_err(|e| e.to_string())?;
+        storage.extend_from_slice(bytes);
+    }
     let mut candidate = before.cloned().unwrap_or_else(AutoCommit::new);
     candidate.reset_diff_cursor();
-    candidate.apply_changes(parsed)?;
+    if storage.is_empty() {
+        return Ok(candidate);
+    }
+    let allowance = NativeAllowance::new(64 * 1024 * 1024).map_err(|e| e.to_string())?;
+    candidate
+        .apply_incoming_checked(
+            &storage,
+            &crate::document::incoming_document_limits(),
+            &allowance,
+            NativeDependencyPolicy::RetainOrphans,
+        )
+        .map_err(|e| e.to_string())?;
     Ok(candidate)
 }
 pub fn declared_room_mismatches(candidate: &AutoCommit, room: uuid::Uuid) -> bool {
@@ -151,7 +189,12 @@ pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) 
     let mut best: Option<Verb> = None;
     let mut blocked = false;
     for cap in caps {
-        if !matches!(&cap.subject,Subject::Principal(Principal::Person(person)) if person==user)
+        let matches_person = match &cap.subject {
+            Subject::Principal(Principal::Person(person)) => person == user,
+            Subject::User(key) => hex::encode(key.as_bytes()) == user,
+            _ => false,
+        };
+        if !matches_person
             || !cap.is_live_at(Some(now))
             || !matches!(cap.scope, Scope::Room(_) | Scope::Workspace)
         {

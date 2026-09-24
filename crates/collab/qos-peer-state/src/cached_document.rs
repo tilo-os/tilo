@@ -42,15 +42,8 @@ impl CachedDocument {
     /// Cache document data only. Membership, expiry, certificate and revocation
     /// decisions must still be evaluated against the caller's current inputs.
     pub(crate) fn policy(&self) -> &PolicyData {
-        self.policy.get_or_init(|| {
-            let (_, owner, caps) = crate::room::extract_governed_fields(&self.doc);
-            let identities = crate::room::governance_of(Some(&self.doc)).3;
-            PolicyData {
-                owner,
-                caps,
-                identities,
-            }
-        })
+        self.policy
+            .get_or_init(|| crate::room::policy::legacy(&self.doc))
     }
     pub(crate) fn saved(&self) -> Vec<u8> {
         self.serialized
