@@ -222,10 +222,13 @@ mod tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }));
         let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(handle);

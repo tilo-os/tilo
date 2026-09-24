@@ -467,12 +467,12 @@ fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
         .collect();
     tree.active_group
         .retain(|strip_id, group_id| valid_active_groups.contains(&(*strip_id, *group_id)));
-    for workspace in &tree.workspaces {
+    for workspace in &tree.desktop.workspaces {
         for strip in &workspace.strips {
-            if !tree.active_group.contains_key(&strip.id)
+            if !tree.desktop.active_group.contains_key(&strip.id)
                 && let Some(group) = strip.window_groups.first()
             {
-                tree.active_group.insert(strip.id, group.id);
+                tree.desktop.active_group.insert(strip.id, group.id);
             }
         }
     }
@@ -657,8 +657,8 @@ mod tests {
 
         let mut non_contiguous = escaped_demo_fixture();
         non_contiguous.workspaces[2].strips[0].id = crate::shell::state::StripId(99_999);
-        non_contiguous.active_strip.insert(
-            non_contiguous.workspaces[2].id,
+        non_contiguous.desktop.active_strip.insert(
+            non_contiguous.desktop.workspaces[2].id,
             crate::shell::state::StripId(99_999),
         );
         assert_demo_near_miss_is_preserved(&non_contiguous, "non-demo id allocation");

@@ -390,9 +390,10 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 
     // Attribute Ada to tab_a, Ben to tab_b, Cae to no tab at all.
     let ws_mut = tree
+        .desktop
         .workspaces
         .iter_mut()
-        .find(|w| w.id == tree.active)
+        .find(|w| w.id == tree.desktop.active)
         .expect("active ws mut");
     ws_mut.collaborators = vec![
         Collaborator::with_active_tab("a", "Ada", tab_a),
@@ -431,9 +432,10 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
 
     let mut tree = WorkspaceTree::bootstrap_default();
     let ws_mut = tree
+        .desktop
         .workspaces
         .iter_mut()
-        .find(|w| w.id == tree.active)
+        .find(|w| w.id == tree.desktop.active)
         .expect("active ws mut");
     // Ada has an override, Ben does not; Cae is on the tree-level roster, and
     // her override must be seeded too.

@@ -1675,11 +1675,14 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     ];
     let ws_id = ws.id;
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = ws_id;

@@ -1043,7 +1043,9 @@ mod tests {
         group.tabs.truncate(1);
         group.active_tab = group.tabs[0].id;
         let group_id = group.id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, group_id);
         (strip_id, group_id)
     }
@@ -1334,7 +1336,9 @@ mod tests {
                 g.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
             )
         };
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, group_id);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
@@ -1415,7 +1419,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.workspaces[0].strips[0].id;
         let opener = tree.workspaces[0].strips[0].window_groups[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, opener);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
         let tabs_before = tree.workspaces[0].strips[0].window_groups[0].tabs.len();
@@ -1453,7 +1459,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.workspaces[0].strips[0].id;
         let focused = tree.workspaces[0].strips[0].window_groups[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, focused);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 

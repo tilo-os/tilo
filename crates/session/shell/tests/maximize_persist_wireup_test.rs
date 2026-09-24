@@ -135,11 +135,14 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
     active_group.insert(strip_id, group_id);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 

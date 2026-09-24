@@ -83,11 +83,14 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
     active_group.insert(s1_id, b0);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 
