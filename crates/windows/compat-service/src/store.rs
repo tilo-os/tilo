@@ -398,7 +398,7 @@ impl CapsuleStore {
             digest.update(chunk);
             destination.write_all(chunk)?;
         }
-        let actual = hex_lower(digest.finalize());
+        let actual = hex::encode(digest.finalize());
         if actual != expected_sha256 {
             let _ = unlink_at(&installers, &temporary);
             return Err(CapsuleError::InstallerChanged);
@@ -875,42 +875,18 @@ fn identity_digest(capsule_id: &str, program_id: &str) -> String {
     digest.update(capsule_id.as_bytes());
     digest.update([0]);
     digest.update(program_id.as_bytes());
-    hex_lower(digest.finalize().iter().take(16).copied())
-}
-
-fn hex_lower(bytes: impl IntoIterator<Item = u8>) -> String {
-    let mut output = String::new();
-    for byte in bytes {
-        output.push(hex_digit(byte >> 4));
-        output.push(hex_digit(byte & 0x0f));
-    }
-    output
-}
-
-fn hex_digit(value: u8) -> char {
-    match value {
-        0 => '0',
-        1 => '1',
-        2 => '2',
-        3 => '3',
-        4 => '4',
-        5 => '5',
-        6 => '6',
-        7 => '7',
-        8 => '8',
-        9 => '9',
-        10 => 'a',
-        11 => 'b',
-        12 => 'c',
-        13 => 'd',
-        14 => 'e',
-        _ => 'f',
-    }
+    // The identity is the first 16 digest bytes, i.e. 32 hex digits.
+    let mut identity = hex::encode(digest.finalize());
+    identity.truncate(32);
+    identity
 }
 
 fn program_id_from_relative(relative: &Path) -> String {
     let digest = Sha256::digest(relative.as_os_str().as_encoded_bytes());
-    format!("app-{}", hex_lower(digest.iter().take(12).copied()))
+    // The first 12 digest bytes, i.e. 24 hex digits.
+    let mut suffix = hex::encode(digest);
+    suffix.truncate(24);
+    format!("app-{suffix}")
 }
 
 fn executable_display_name(stem: &str) -> String {

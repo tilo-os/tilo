@@ -455,21 +455,8 @@ fn add_months(y: i64, m: u32, d: u32, add: i64) -> f64 {
     let nm = u32::try_from(total.rem_euclid(12))
         .unwrap_or(0)
         .saturating_add(1);
-    let dd = d.min(days_in_month(ny, nm));
+    let dd = d.min(ui::date::days_in_month(ny, nm));
     date_to_serial(ny, nm, dd)
-}
-
-fn days_in_month(y: i64, m: u32) -> u32 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        2 => {
-            let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-            if leap { 29 } else { 28 }
-        }
-        // April, June, September, November — and any month index out of
-        // range, which the callers never produce.
-        _ => 30,
-    }
 }
 
 // --- name / text helpers ----------------------------------------------------

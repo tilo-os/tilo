@@ -4,8 +4,10 @@
 //! `.docx`, `.odt`, `.ods`, `.xlsx` and `.odp` are zip archives of XML 1.0
 //! documents; every codec here reads them through the one `quick-xml` the
 //! workspace pins, pulling text via [`BytesText::xml10_content`], which
-//! unescapes entities *and* applies XML 1.0 end-of-line normalisation (`\r\n`
-//! and lone `\r` become `\n`) — required by the XML 1.0 spec. Neither OOXML nor
+//! applies XML 1.0 end-of-line normalisation (`\r\n` and lone `\r` become
+//! `\n`) — required by the XML 1.0 spec. Entity and character references are
+//! not part of a text event: every reader that collects text also handles
+//! `Event::GeneralRef` through [`resolve_general_ref`]. Neither OOXML nor
 //! ODF carries line breaks as literal CR/LF (those are `<w:br/>` and
 //! `<text:line-break/>` elements), so a raw CR in text content is whitespace
 //! and folding it is correct. Use `xml11_content` only if a format ever
@@ -20,6 +22,7 @@ pub mod rtf;
 pub mod safety;
 pub mod sheet_common;
 pub mod xlsx;
+pub mod xml_escape;
 
 pub use docx::DocxCodec;
 pub use html::HtmlCodec;
@@ -27,7 +30,7 @@ pub use markdown::MarkdownCodec;
 pub use ods::OdsCodec;
 pub use odt::OdtCodec;
 pub use rtf::RtfCodec;
-pub use sheet_common::SheetProvider;
+pub use sheet_common::{ParsedSheet, ParsedWorkbook, SheetProvider};
 pub use xlsx::XlsxCodec;
 
 use crate::format::{ProviderTier, Registry};
@@ -35,13 +38,37 @@ use crate::format::{ProviderTier, Registry};
 /// Decode the UTF-8 attribute values required by OOXML and ODF and resolve XML
 /// entities. Keeping this here avoids tying leaf parsers to `quick-xml`'s
 /// optional legacy-encoding feature, which is unified across the workspace.
-pub(crate) fn unescape_attr(
-    attribute: &quick_xml::events::attributes::Attribute<'_>,
-) -> Option<String> {
+pub fn unescape_attr(attribute: &quick_xml::events::attributes::Attribute<'_>) -> Option<String> {
     let raw = std::str::from_utf8(attribute.value.as_ref()).ok()?;
     quick_xml::escape::unescape(raw)
         .ok()
         .map(std::borrow::Cow::into_owned)
+}
+
+/// The character an entity or character reference in text content stands for.
+/// `quick-xml` reports `&amp;`, `&#62;` and friends as their own
+/// [`Event::GeneralRef`](quick_xml::events::Event::GeneralRef) rather than
+/// folding them into the surrounding text, so a reader that wants the text has
+/// to put them back. Only the five predefined entities and numeric references
+/// exist in these formats (a DTD, the only way to declare more, is refused).
+///
+/// Anything else — an undeclared name like `&bogus;`, or a character reference
+/// to no character such as `&#0;` — makes the part not well-formed, and there
+/// is no character to recover: it yields `None`, so readers drop the reference
+/// and keep the text on either side. Readers that copy XML through verbatim
+/// (unmodeled metadata) copy the reference as written instead.
+pub fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+    if let Ok(Some(c)) = reference.resolve_char_ref() {
+        return Some(c);
+    }
+    match reference.decode().ok()?.as_ref() {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => None,
+    }
 }
 
 /// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive) — separate
@@ -64,11 +91,11 @@ pub fn builtin_registry() -> Registry {
     r.register("markdown", ProviderTier::Builtin, Box::new(MarkdownCodec));
     r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
     r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
-    // RTF is import-only via this codec (`export` returns Unsupported; writing lives
-    // in the editor's `qdoc-rtf` crate) — registering it still makes `.rtf` openable.
+    // RTF is import-only via this codec (`export` returns Unsupported; writing is
+    // `export_rtf`, over a snapshot) — registering it still makes `.rtf` openable.
     r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
-    // HTML is import-only via this codec (`export` returns Unsupported; writing lives
-    // in `qdoc-html`, which `qdoc` can't depend on without a cycle) — this makes `.html`/`.htm` openable.
+    // HTML is import-only via this codec (`export` returns Unsupported; writing is
+    // `export_html`, over a snapshot) — this makes `.html`/`.htm` openable.
     r.register("html", ProviderTier::Builtin, Box::new(HtmlCodec));
     r.register("htm", ProviderTier::Builtin, Box::new(HtmlCodec));
     r

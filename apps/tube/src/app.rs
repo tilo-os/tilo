@@ -2156,7 +2156,7 @@ impl TubeApp {
                         .get(&likes, video.id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .map(|video| video.id.clone())
@@ -2174,7 +2174,7 @@ impl TubeApp {
                         .get(&likes, comment_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .map(|liked| (comment_id, liked))
                 })
                 .collect();
@@ -2197,7 +2197,7 @@ impl TubeApp {
                         .get(&subscriptions, channel_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
@@ -2217,7 +2217,7 @@ impl TubeApp {
                         .get(&queue, video_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
@@ -2249,7 +2249,7 @@ impl TubeApp {
                     .get(&settings, key)
                     .ok()
                     .flatten()
-                    .and_then(|(value, _)| value.to_bool())
+                    .and_then(|(value, _)| value.as_bool())
                     && *slot != enabled
                 {
                     *slot = enabled;
@@ -2260,7 +2260,7 @@ impl TubeApp {
                 .get(&settings, "preferred_quality")
                 .ok()
                 .flatten()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
                 && QUALITIES.contains(&quality.as_str())
                 && self.model.settings.preferred_quality != quality
             {
@@ -2275,7 +2275,7 @@ impl TubeApp {
                         .get(&categories, category.api_key())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned))
                         .and_then(|value| match value.as_str() {
                             "skip" => Some(crate::model::SkipMode::Skip),
                             "show" => Some(crate::model::SkipMode::Show),
@@ -2339,7 +2339,7 @@ impl TubeApp {
                             values
                                 .into_iter()
                                 .filter_map(|(value, _)| {
-                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
                                 })
                                 .max()
                         })
@@ -2362,7 +2362,7 @@ impl TubeApp {
                         let record = newest_history_record(
                             values
                                 .into_iter()
-                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                                .filter_map(|(value, _)| value.as_str().map(str::to_owned))
                                 .filter_map(|value| {
                                     serde_json::from_str::<HistoryEntryRecord>(&value).ok()
                                 }),
@@ -2412,7 +2412,7 @@ impl TubeApp {
                             values
                                 .into_iter()
                                 .filter_map(|(value, _)| {
-                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
                                 })
                                 .max()
                         })
@@ -2435,7 +2435,7 @@ impl TubeApp {
                             .get_all(&entries, video_id.as_str())
                             .ok()?
                             .into_iter()
-                            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                            .filter_map(|(value, _)| value.as_str().map(str::to_owned))
                             .filter_map(|value| {
                                 serde_json::from_str::<HistoryEntryRecord>(&value).ok()
                             });

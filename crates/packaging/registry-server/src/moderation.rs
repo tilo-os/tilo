@@ -991,7 +991,7 @@ mod tests {
     use crate::allowlist::PublisherRow;
     use crate::storage::{PromotionJournal, StagedPromotion};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use registry_types::{RegistryVersion, sign_change_request, sign_entry};
 
     fn setup() -> (tempfile::TempDir, ModerationService) {
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn version_history_is_monotonic_per_target() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut current = entry(&key, 42);
         current.versions[0].version = "0.1.42+gnew".into();
 
@@ -1096,8 +1096,8 @@ mod tests {
     #[test]
     fn pending_replacement_requires_append_only_history_and_same_owner() {
         let (_dir, service) = setup();
-        let first = SigningKey::generate(&mut OsRng);
-        let other = SigningKey::generate(&mut OsRng);
+        let first = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let other = SigningKey::generate(&mut UnwrapErr(SysRng));
         let first_pending = service
             .submit(change(&first, EntryAction::Add, 10), 100)
             .unwrap();
@@ -1127,7 +1127,7 @@ mod tests {
     #[test]
     fn both_architectures_are_preserved_when_a_stale_submission_arrives() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut aggregate = entry(&key, 10);
         let mut arm = aggregate.versions[0].clone();
         let target = &mut arm.target;
@@ -1148,7 +1148,7 @@ mod tests {
     #[test]
     fn retrying_the_same_submission_is_idempotent() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let request = change(&key, EntryAction::Add, 10);
         let first = service.submit(request.clone(), 100).unwrap();
         let retry = service.submit(request, 999).unwrap();
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn approval_rechecks_allowlist_and_is_replay_safe_after_public_write() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let pending = service
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
@@ -1185,7 +1185,7 @@ mod tests {
     #[test]
     fn delete_is_queued_and_rejection_can_drain_a_revoked_request() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut public = entry(&key, 10);
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();
@@ -1208,7 +1208,7 @@ mod tests {
     #[test]
     fn approved_delete_removes_the_public_entry() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut public = entry(&key, 10);
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();
@@ -1231,7 +1231,7 @@ mod tests {
     #[test]
     fn approval_refuses_a_submission_replaced_after_review() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let reviewed = service
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
@@ -1255,7 +1255,7 @@ mod tests {
     #[test]
     fn batch_preflight_prevents_partial_approval_when_any_slot_changed() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let first = service
             .submit(change_for(&key, "so.tilo.a", 10), 100)
             .unwrap();
@@ -1277,7 +1277,7 @@ mod tests {
     #[test]
     fn batch_retry_recovers_an_approval_completed_before_a_crash() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let first = service
             .submit(change_for(&key, "so.tilo.a", 10), 100)
             .unwrap();
@@ -1300,7 +1300,7 @@ mod tests {
     #[test]
     fn promotion_recovery_preserves_a_newer_submission_for_the_same_slot() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let selected = service
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn promotion_cleanup_keeps_a_concurrent_successor_reachable() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let selected = service
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
@@ -1471,7 +1471,7 @@ mod tests {
     #[test]
     fn restore_requires_current_allowlist() {
         let (_dir, service) = setup();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut public = entry(&key, 10);
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();

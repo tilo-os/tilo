@@ -32,7 +32,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
-rand.workspace = true
+getrandom.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

@@ -414,7 +414,7 @@ fn media_preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String>
     let digest = doc
         .get(ROOT, "media")
         .map_err(|e| e.to_string())?
-        .and_then(|(v, _)| v.to_str().map(str::to_owned))
+        .and_then(|(v, _)| v.as_str().map(str::to_owned))
         .unwrap_or_default();
     let description = input
         .assets
@@ -442,9 +442,9 @@ fn media_preview_uses_only_digest_recorded_in_immutable_selected_snapshot() {
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, sync::Arc};
     let historical: Arc<[u8]> = Arc::from(b"historical photograph".as_slice());
-    let digest = format!("{:x}", Sha256::digest(&historical));
+    let digest = hex::encode(Sha256::digest(&historical));
     let current: Arc<[u8]> = Arc::from(b"current photograph".as_slice());
-    let current_digest = format!("{:x}", Sha256::digest(&current));
+    let current_digest = hex::encode(Sha256::digest(&current));
     let provider = std::rc::Rc::new(DeferredMedia::default());
     let mut state = State::new();
     state.doc.put(ROOT, "media", digest.clone()).unwrap();
@@ -495,7 +495,7 @@ fn media_preview_uses_only_digest_recorded_in_immutable_selected_snapshot() {
     use automerge::ReadDoc;
     let snapshot = automerge::AutoCommit::load(request.snapshot.bytes()).unwrap();
     assert_eq!(
-        snapshot.get(ROOT, "media").unwrap().unwrap().0.to_str(),
+        snapshot.get(ROOT, "media").unwrap().unwrap().0.as_str(),
         Some(digest.as_str())
     );
     response.complete(Ok(BTreeMap::from([
@@ -673,7 +673,7 @@ fn tiled_history_semantic_open_preserves_pending_owner_and_other_tile_stays_live
                 use automerge::ReadDoc;
                 let (value, object) = doc.get(ROOT, "body").unwrap().unwrap();
                 value
-                    .to_str()
+                    .as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| doc.text(object).unwrap())
             })
@@ -1415,16 +1415,16 @@ fn legacy_ui_restore_schedules_only_target_and_reopens_durable_result() {
             .unwrap(),
         "old"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-        && std::time::Instant::now() < deadline
+        && crate::time::now() < deadline
     {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(crate::time::Duration::from_millis(10));
     }
     assert_eq!(
         store.save_status(&first.id).unwrap(),
         crate::record::RecordSaveStatus::Saved,
-        "normal target Autosave acknowledges restore without sweep/flush"
+        "normal target DocWriter acknowledges restore without sweep/flush"
     );
     assert_eq!(
         store
@@ -1514,7 +1514,7 @@ pub(crate) fn legacy_body(
         .read_checked(&checkout.id, |doc| {
             let (value, object) = doc.get(ROOT, "body").unwrap().unwrap();
             value
-                .to_str()
+                .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| doc.text(object).unwrap())
         })
@@ -1696,7 +1696,7 @@ fn check_automatic_media(mut driver: Driver, selected: automerge::ChangeHash) {
         .unwrap();
     let snapshot = automerge::AutoCommit::load(after.0.snapshot.bytes()).unwrap();
     assert_eq!(
-        snapshot.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+        snapshot.get(ROOT, "body").unwrap().unwrap().0.as_str(),
         Some("selected media")
     );
     assert_eq!(after.0.resource.app_id, APP);

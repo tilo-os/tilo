@@ -5,10 +5,10 @@
 //! its causal parents. Rebuilding the graph after a restart or merge therefore
 //! recovers the same branch points, merge points, and revision identifiers.
 
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Stable, content-addressed identifier for one document revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -93,7 +93,7 @@ impl RevisionHistory {
                 children: Vec::new(),
                 actor: change.actor_id().to_hex_string(),
                 timestamp: timestamp(change.timestamp()),
-                message: change.message().cloned(),
+                message: change.message().map(str::to_owned),
                 operations: change.len(),
                 is_head: head_set.contains(&RevisionId(change.hash())),
             })

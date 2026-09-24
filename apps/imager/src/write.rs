@@ -259,7 +259,7 @@ fn target_lock_name(target: &TargetDrive) -> String {
             || format!("path:{}", target.dev_path()),
             |id| format!("id:{id}"),
         );
-    format!("{:x}", Sha256::digest(identity.as_bytes()))
+    hex::encode(Sha256::digest(identity.as_bytes()))
 }
 
 #[cfg(unix)]
@@ -270,8 +270,10 @@ struct TargetWriteLock(std::fs::File);
 impl Drop for TargetWriteLock {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;
-        // Closing also releases flock, but an explicit unlock makes the
-        // lifetime obvious and permits deterministic contention tests.
+        // Closing alone would leave the flock held while a child another
+        // thread is spawning still shares the descriptor; unlocking releases
+        // the open file description's lock at once.
+        // SAFETY: the owned descriptor stays live for this call.
         unsafe {
             libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
         }
@@ -526,7 +528,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_sha256 {
-        let actual = format!("{:x}", hash.finalize());
+        let actual = hex::encode(hash.finalize());
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -578,7 +580,7 @@ fn hash_source_exact(
             "source image became larger after review",
         ));
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// Re-read `dst` and compare it against `src`, [`CHUNK`] bytes at a time, over
@@ -836,7 +838,7 @@ fn run_job_file_bound(
         .source
         .expected_sha256
         .as_deref()
-        .is_some_and(|expected| !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected))
+        .is_some_and(|expected| !hex::encode(digest.finalize()).eq_ignore_ascii_case(expected))
     {
         return JobResult::WriteFailed(
             "source image no longer matches its signed release catalog".into(),
@@ -1010,67 +1012,31 @@ fn run_system_job(
 }
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-fn udisks_object_path(device_name: &str) -> String {
-    use std::fmt::Write as _;
-
-    let leaf = device_name.strip_prefix("/dev/").unwrap_or(device_name);
-    let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
-    for byte in leaf.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            path.push(byte as char);
-        } else {
-            let _ = write!(path, "_{byte:02x}");
-        }
-    }
-    path
-}
-
-#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn unmount_udisks_filesystems(
-    connection: &zbus::blocking::Connection,
+    udisks: &block_devices::udisks::Udisks,
     target: &TargetDrive,
 ) -> io::Result<()> {
-    use std::collections::HashMap;
-    use zbus::zvariant::Value;
-
     for name in std::iter::once(target.name.as_str()).chain(
         target
             .partitions
             .iter()
             .map(|partition| partition.name.as_str()),
     ) {
-        let block = zbus::blocking::Proxy::new(
-            connection,
-            "org.freedesktop.UDisks2",
-            udisks_object_path(name),
-            "org.freedesktop.UDisks2.Block",
-        )
-        .map_err(|error| io::Error::other(format!("UDisks2 block lookup failed: {error}")))?;
-        let usage: String = block
-            .get_property("IdUsage")
+        let usage = udisks
+            .id_usage(name)
             .map_err(|error| io::Error::other(format!("UDisks2 safety query failed: {error}")))?;
         if usage != "filesystem" {
             continue;
         }
-        let proxy = zbus::blocking::Proxy::new(
-            connection,
-            "org.freedesktop.UDisks2",
-            udisks_object_path(name),
-            "org.freedesktop.UDisks2.Filesystem",
-        )
-        .map_err(|error| io::Error::other(format!("UDisks2 partition lookup failed: {error}")))?;
-        let mount_points: Vec<Vec<u8>> = proxy.get_property("MountPoints").map_err(|error| {
+        let mount_points = udisks.mount_points(name).map_err(|error| {
             io::Error::other(format!("UDisks2 mount-state query failed: {error}"))
         })?;
         if mount_points.is_empty() {
             continue;
         }
-        let options: HashMap<&str, Value<'_>> = HashMap::new();
-        proxy
-            .call::<_, _, ()>("Unmount", &(options,))
-            .map_err(|error| {
-                io::Error::other(format!("UDisks2 could not unmount {name}: {error}"))
-            })?;
+        udisks.unmount(name).map_err(|error| {
+            io::Error::other(format!("UDisks2 could not unmount {name}: {error}"))
+        })?;
     }
     Ok(())
 }
@@ -1084,20 +1050,16 @@ fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     use zbus::zvariant::{OwnedFd, Value};
 
     revalidate_target(target)?;
-    let connection = zbus::blocking::Connection::system()
+    let udisks = block_devices::udisks::Udisks::system()
         .map_err(|error| io::Error::other(format!("could not reach UDisks2: {error}")))?;
-    unmount_udisks_filesystems(&connection, target)?;
+    unmount_udisks_filesystems(&udisks, target)?;
     // Revalidate after unmounting: removable media can disappear while an
     // authorization prompt is on screen. UDisks2 then independently resolves
     // and exclusively opens the same object.
     revalidate_target(target)?;
-    let proxy = zbus::blocking::Proxy::new(
-        &connection,
-        "org.freedesktop.UDisks2",
-        udisks_object_path(&target.name),
-        "org.freedesktop.UDisks2.Block",
-    )
-    .map_err(|error| io::Error::other(format!("UDisks2 device lookup failed: {error}")))?;
+    let proxy = udisks
+        .block(&target.name)
+        .map_err(|error| io::Error::other(format!("UDisks2 device lookup failed: {error}")))?;
     let flags = libc::O_EXCL | libc::O_SYNC | libc::O_CLOEXEC;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
     options.insert("flags", Value::from(flags));
@@ -1216,7 +1178,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     if request_bytes.len() > 1024 * 1024 {
         return Err("write helper request is unexpectedly large".into());
     }
-    let actual_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    let actual_digest = hex::encode(Sha256::digest(&request_bytes));
     if expected_digest.len() != 64
         || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
         || !actual_digest.eq_ignore_ascii_case(expected_digest)
@@ -1445,7 +1407,7 @@ fn run_privileged_helper(
     request_file.flush()?;
     request_file.sync_all()?;
     drop(request_file);
-    let request_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    let request_digest = hex::encode(Sha256::digest(&request_bytes));
     let executable = helper_executable()?;
     let mut child = elevated_helper_command(
         &executable,
@@ -1912,11 +1874,6 @@ pub fn spawn_job(
 mod tests {
     use super::*;
     use crate::model::{sample_source, sample_targets};
-    use std::sync::Mutex;
-
-    /// Serialises tests which change process environment, since it is shared
-    /// across parallel test threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn target_lock_prefers_stable_hardware_identity_then_falls_back_to_path() {
@@ -1969,10 +1926,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn default_backend_is_disabled_without_gate() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // No opt-in env var set → unavailable, never a fake success.
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
     }
@@ -1980,46 +1936,30 @@ mod tests {
     #[test]
     #[cfg(feature = "host-media-writer")]
     fn packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
     }
 
     #[test]
     fn live_ui_uses_short_lived_privileged_helper() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::set_var("IMAGER_LIVE", "1") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE")
+            .set("IMAGER_LIVE", "1");
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
     }
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
     #[test]
     fn flatpak_selects_udisks_without_enabling_direct_device_writes() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
-        unsafe { std::env::set_var("TILO_IMAGER_FLATPAK", "1") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE")
+            .remove("IMAGER_LIVE")
+            .set("TILO_IMAGER_FLATPAK", "1");
         assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
         assert!(!allow_write(), "the sandbox never gains direct /dev access");
-        unsafe { std::env::remove_var("TILO_IMAGER_FLATPAK") };
-    }
-
-    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-    #[test]
-    fn udisks_path_encoding_cannot_escape_the_block_device_namespace() {
-        assert_eq!(
-            udisks_object_path("/dev/dm-0"),
-            "/org/freedesktop/UDisks2/block_devices/dm_2d0"
-        );
-        assert_eq!(
-            udisks_object_path("../../sda"),
-            "/org/freedesktop/UDisks2/block_devices/_2e_2e_2f_2e_2e_2fsda"
-        );
     }
 
     #[test]
@@ -2032,14 +1972,14 @@ mod tests {
 
     #[test]
     fn system_backend_selected_only_with_gate_on() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // The real block-device backend is chosen ONLY when the operator opts
         // in explicitly; flipping the gate is the single switch between the
         // disabled path and the real device write.
-        unsafe { std::env::set_var("TILO_IMAGER_ALLOW_WRITE", "1") };
+        env.set("TILO_IMAGER_ALLOW_WRITE", "1");
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE");
         let expected = if cfg!(feature = "host-media-writer") {
             WriteBackend::PrivilegedHelper
         } else {
@@ -2066,11 +2006,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         #[cfg(target_os = "linux")]
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         #[cfg(target_os = "linux")]
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
         let work = tempfile::Builder::new()
             .prefix("tilo-imager-write-")
             .tempdir()
@@ -2096,9 +2034,7 @@ mod tests {
         ];
         let error = maybe_run_write_helper(&args).unwrap_err();
         #[cfg(target_os = "linux")]
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert!(error.to_string().contains("changed after authorization"));
         assert!(std::fs::read(progress_path).unwrap().is_empty());
     }
@@ -2108,7 +2044,7 @@ mod tests {
     fn helper_rejects_a_non_private_job_directory() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let work = tempfile::Builder::new()
             .prefix("tilo-imager-write-")
             .tempdir()
@@ -2116,15 +2052,11 @@ mod tests {
         let request_path = work.path().join("request.json");
         std::fs::write(&request_path, b"{}").unwrap();
         std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
 
         let error = read_linux_helper_request(&request_path).unwrap_err();
 
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("not private"));
     }
@@ -2135,22 +2067,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::fs::symlink;
 
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let work = tempfile::tempdir().unwrap();
         let outside = work.path().join("outside");
         let request = work.path().join("request.json");
         std::fs::write(&outside, b"root-only payload").unwrap();
         symlink(&outside, &request).unwrap();
         std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
 
         let error = read_linux_helper_request(&request).unwrap_err();
 
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
     }
 
@@ -2440,11 +2368,10 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn spawn_refuses_instead_of_simulating_with_gate_off() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // Validation remains pure, but the live start refuses rather than
         // reporting synthetic progress and success.
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
         let (start, rx, control) = spawn_job(r, "sdb");

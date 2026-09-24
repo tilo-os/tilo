@@ -108,9 +108,20 @@ pub fn staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-/// The installer binary; `TILO_INSTALL_BIN` overrides, matching the store app and compositor launcher resolution.
+/// The installer binary. `TILO_INSTALL_BIN` overrides it in a developer
+/// build only (see [`crate::dev_env`]), matching the compositor's launcher
+/// resolution; a release build runs `tilo-install` from `PATH`.
 pub fn tilo_install_bin() -> String {
-    std::env::var("TILO_INSTALL_BIN").unwrap_or_else(|_| "tilo-install".to_string())
+    tilo_install_bin_from(crate::dev_env::dev_override(
+        crate::dev_env::INSTALL_BIN_ENV,
+    ))
+}
+
+/// [`tilo_install_bin`] given the override the build's gate let through.
+fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
+    allowed_override
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| "tilo-install".to_string())
 }
 
 /// The exact `tilo-install` invocation [`install`] runs. Split out so a
@@ -234,7 +245,7 @@ fn download_reporting_limited(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<u64, String> {
     let url = safe_download_url(url)?;
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-app/0.1")
         .timeout(download_timeout())
         // The publisher-signed URL is the only endpoint authorized to serve
@@ -505,6 +516,15 @@ fn installer_complaint(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_release_build_runs_the_installer_from_path() {
+        use crate::dev_env::{INSTALL_BIN_ENV, dev_override_from};
+        let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+        assert_eq!(tilo_install_bin_from(gated), "tilo-install");
+        let honoured = dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
+        assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
+    }
 
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
         CatalogueApp {

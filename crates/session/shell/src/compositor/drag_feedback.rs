@@ -25,12 +25,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
-
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::{
-    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
 use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
@@ -46,10 +41,10 @@ const CHIP_DX: f64 = 14.0;
 const CHIP_DY: f64 = 16.0;
 /// Cursor arrow, in units of its own height.
 const CURSOR_H: f64 = 20.0;
-const PREVIEW_MAX_W: f64 = 280.0;
-const PREVIEW_MAX_H: f64 = 190.0;
-const PREVIEW_MIN_W: f64 = 180.0;
-const PREVIEW_MIN_H: f64 = 112.0;
+const PREVIEW_MAX_W: f64 = 280.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MAX_H: f64 = 190.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_W: f64 = 180.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_H: f64 = 112.0; // Payload preview bound, not inter-control spacing.
 const PREVIEW_ALPHA: f32 = 0.42;
 const HANDLE_ALPHA: f32 = 0.5;
 
@@ -95,7 +90,10 @@ pub fn draw(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    if let Some(label) = label {
+    if let Some(preview) = visual.preview.as_ref() {
+        draw_preview(scene, cursor, preview, theme, text);
+    }
+    if let Some(label) = visual.label.as_deref() {
         // Theme type tokens already carry the user's text scale; the chip
         // paints with those resolved sizes, so the renderer must not scale
         // them again (HIG §7a) — reset for this pass, as the shell's
@@ -437,28 +435,9 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
         Some(i) => path.get(i..).unwrap_or(path),
     };
     let last = path.rsplit('/').find(|s| !s.is_empty())?;
-    let name = percent_decode(last);
+    // A path segment: RFC 3986 rules, so a literal `+` stays a plus.
+    let name = ui::uri::decode(last);
     (!name.is_empty()).then_some(name)
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut rest = bytes;
-    while let Some((&first, tail)) = rest.split_first() {
-        if first == b'%'
-            && let Some(hex) = tail.get(..2)
-            && let Ok(hex_str) = std::str::from_utf8(hex)
-            && let Ok(v) = u8::from_str_radix(hex_str, 16)
-        {
-            out.push(v);
-            rest = tail.get(2..).unwrap_or(&[]);
-            continue;
-        }
-        out.push(first);
-        rest = tail;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A readable name for a set of paths the compositor itself is carrying.
@@ -583,6 +562,16 @@ mod tests {
             name_from_uri_list(b"file:///home/me/my%20photo%231.png\r\n").as_deref(),
             Some("my photo#1.png"),
             "a name a URI had to escape shows as the user wrote it"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/C++%20notes%2.txt\r\n").as_deref(),
+            Some("C++ notes%2.txt"),
+            "a plus is literal and a malformed escape is kept verbatim"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/caf%C3%A9%FF.txt\r\n").as_deref(),
+            Some("caf\u{e9}\u{fffd}.txt"),
+            "invalid UTF-8 is replaced, not dropped"
         );
         assert_eq!(
             name_from_uri_list(b"file://localhost/tmp/scan.jpg\r\n").as_deref(),

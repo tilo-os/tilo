@@ -441,6 +441,12 @@ COPY . /build
 # Layer timestamp rewriting can make a restored target cache newer than changed
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
+# That is TILO_CARGO_FRESHNESS=clean, the default and what CI builds. Local
+# builds (os/dev/local-inputs.sh) pass `content`: os/scripts/cargo-freshness.sh
+# marks exactly the sources whose contents changed newer than the cached target,
+# and every other source older, so Cargo reuses what did not change instead of
+# relinking ~50 binaries through thin LTO on every rebuild.
+ARG TILO_CARGO_FRESHNESS=clean
 ARG TILO_WITH_BROWSER
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
@@ -475,8 +481,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
     && { sccache --zero-stats 2>/dev/null || true; } \
-    && cargo clean --release \
-    && cargo clean --profile thin-app \
+    && case "$TILO_CARGO_FRESHNESS" in \
+         clean) cargo clean --release && cargo clean --profile thin-app ;; \
+         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+                    || { cargo clean --release && cargo clean --profile thin-app; } ;; \
+         *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
+       esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
          BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
        else \
@@ -562,9 +572,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
-    # Files is also a privileged, directly-invoked system recovery surface.
-    # In source mode package that standalone binary. With a release collection,
-    # every tapp already contains its independently built app binary.
+    # Files stays a standalone /usr/bin binary for recovery; its package is the
+    # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
@@ -586,7 +595,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
               case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
               [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
             done \
-         && cp /out/file-explorer /out/thin-apps/file-explorer \
          && cp target/thin-app/libruntime_dylib.so /out/ \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
@@ -706,21 +714,29 @@ COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
+# ---- Tilo build outputs, arranged by os/components.toml ---------------------
+# The manifest is the one record of which Tilo-built file lands where. This
+# stage applies it: every file of every image layer is installed under
+# /image/<layer>/, and each overlay below copies its layer as one tree. Dev
+# sysext layers are assembled by the same installer from the same entries, so
+# the image and a dev layer cannot place a binary differently. Only /out is
+# read, which a restored native builder payload provides as well. The manifest's
+# `direct` files (baked runtime, app store) are copied by the rootfs stage from
+# the builder itself, since the build writes them at their final paths.
+# tools/policy/check_component_manifest.py fails when a build output is copied
+# into the image outside this path.
+FROM ${BASE_REF} AS component-files
+ARG SOURCE_DATE_EPOCH=0
+COPY os/components.toml os/scripts/install-components.py /tilo-components/
+RUN --network=none \
+    --mount=type=bind,from=builder,source=/out,target=/out,ro \
+    python3 /tilo-components/install-components.py \
+      --manifest /tilo-components/components.toml \
+      --from /out --from /out/optional \
+      --dest /image --by-layer --all
+
 FROM scratch AS desktop-binaries
-COPY --from=builder \
-    /out/shell /out/fs /out/terminal /out/file-explorer /out/settings \
-    /out/tilo-model-manager /out/tilo-model-gateway \
-    /out/tilo-relay /out/tilo-relay-admin /out/tilo-enroll \
-    /out/tilo-greeter /out/tilo-installer /out/tilo-launcher \
-    /out/tilo-runtime-bundle /out/app /out/store /out/system /out/tilo-install /out/tilo-app-package /out/tilo-crypto \
-    /out/tilo-image-trust /out/tilo-device-key-init \
-    /usr/bin/
-COPY --from=builder /out/optional/ /usr/bin/
-COPY --chmod=0755 --from=builder \
-    /out/tilo-system-extension-manager /out/tilo-home-peer-control \
-    /out/tilo-cli-shim /out/tilo-unlock-helper /out/tilo-ush /out/tilo-projector \
-    /out/tilo-app-host \
-    /usr/libexec/
+COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
@@ -731,7 +747,7 @@ COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camer
 COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf
 
 FROM scratch AS rollback-files
-COPY --from=builder /out/tilo-rollback /usr/bin/tilo-rollback
+COPY --from=component-files /image/rollback-files/ /
 COPY \
     os/usr/libexec/tilo-rollback-common \
     os/usr/libexec/tilo-rollback-confirm \
@@ -753,7 +769,7 @@ COPY \
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
 
 FROM scratch AS recovery-files
-COPY --chmod=0755 --from=builder /out/tilo /usr/bin/tilo
+COPY --from=component-files /image/recovery-files/ /
 COPY --chmod=0755 \
     os/usr/libexec/tilo-deployment \
     os/usr/libexec/tilo-system-extension-activate \
@@ -1123,6 +1139,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # The frozen snapshot already resolves these development specs and their exact
 # runtime library closure. Erase the header/pkg-config payloads in the same
 # layer; their runtime dependencies remain for the copied compositor binaries.
+# The base already ships pkgconf, so the snapshot would not carry it; a later
+# stage (Wine's mingw64-libxslt) needs it again after this erase.
+# tilo-rpm-snapshot-package: pkgconf
+# tilo-rpm-snapshot-package: pkgconf-m4
+# tilo-rpm-snapshot-package: libpkgconf
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
@@ -1173,9 +1194,8 @@ COPY \
 RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
-# into this rootfs below). Copied as the contents of /out/optional/ because the
-# browser is omitted under TILO_WITH_BROWSER=0, and that leaves the directory
-# empty rather than leaving this COPY pointing at a path that does not exist.
+# into this rootfs below). An optional os/components.toml component: the
+# installer skips it when TILO_WITH_BROWSER=0 left no browser in /out/optional/.
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 # Graphical installer. Primarily consumed by the layered installer image
@@ -1209,6 +1229,12 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       /usr/share/licenses/tilo-doubletake/LICENSE \
     && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
       /usr/share/licenses/tilo-fluxcast/LICENSE
+# PDF rendering and text extraction. Sandboxed apps read /usr/lib64 through
+# the launcher's system read profile, so the viewer finds it without a grant.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-pdfium.sh,target=/tmp/install-pdfium.sh,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
 COPY os/usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf
 COPY \
@@ -1390,7 +1416,11 @@ COPY \
 # rule `brightnessctl` would have brought with it; Tilo writes the sysfs
 # attribute directly (no fork per keypress — brightness keys autorepeat)
 # and therefore ships the rule rather than the package.
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules /usr/lib/udev/rules.d/
+#
+# 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
+# only a hypervisor can attach) to the greetd user, whose greeter answers the
+# tilo-control action protocol there (crates/session/console-control).
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
@@ -1841,11 +1871,7 @@ COPY \
     os/usr/libexec/tilo-windows-owner \
     os/usr/libexec/tilo-windows-recovery-console \
     /usr/libexec/
-COPY --from=builder \
-    /out/tilo-windows-vm-control \
-    /out/tilo-windows-rail \
-    /out/tilo-windows-runtime \
-    /usr/libexec/
+COPY --from=component-files /image/windows/ /
 COPY os/usr/share/tilo/windows/ /usr/share/tilo/windows/
 COPY os/usr/share/polkit-1/actions/org.tilo.windows.policy /usr/share/polkit-1/actions/org.tilo.windows.policy
 COPY os/etc/polkit-1/rules.d/49-tilo-windows.rules /etc/polkit-1/rules.d/49-tilo-windows.rules
@@ -2049,7 +2075,10 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
 # unsigned OS image is refused at `bootc upgrade`. registries.d points the
-# verifier at cosign's sigstore attachment in the same repo.
+# verifier at cosign's sigstore attachment in the same repo. The unsigned dev
+# image repository (code.sandbox.example/qos/tilo-vm, os/Containerfile.dev, and its
+# former name tilo-dev) is rejected outright; only the dev image's own policy
+# admits it.
 
 
 # ---------------------------------------------------------------------------

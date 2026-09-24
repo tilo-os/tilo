@@ -18,7 +18,8 @@
 //! recent handoff, not a parallel photo/video library.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{
     CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
@@ -41,33 +42,6 @@ pub struct SharedCapture {
 
 // ---- scalar helpers --------------------------------------------------
 
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn get_int(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
-    }
-}
-
 fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
@@ -85,7 +59,7 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
 // ---- mode / facing --------------------------------------------------
 
 pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
-    get_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::parse_str(&s))
+    read_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::parse_str(&s))
 }
 
 pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
@@ -93,7 +67,7 @@ pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
 }
 
 pub fn read_facing(doc: &AutoCommit, root: &ObjId) -> Facing {
-    get_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s))
+    read_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s))
 }
 
 pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
@@ -107,31 +81,31 @@ pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
     let Some(m) = map_at(doc, root, "settings") else {
         return s;
     };
-    if let Some(v) = get_str(doc, &m, "resolution") {
+    if let Some(v) = read_str(doc, &m, "resolution") {
         s.resolution = Resolution::parse_str(&v);
     }
-    if let Some(v) = get_str(doc, &m, "photo_format") {
+    if let Some(v) = read_str(doc, &m, "photo_format") {
         s.photo_format = PhotoFormat::parse_str(&v);
     }
-    if let Some(v) = get_int(doc, &m, "timer") {
+    if let Some(v) = read_i64_coerced(doc, &m, "timer") {
         s.timer = Timer::from_seconds(v);
     }
-    if let Some(v) = get_bool(doc, &m, "grid") {
+    if let Some(v) = read_bool(doc, &m, "grid") {
         s.grid = v;
     }
-    if let Some(v) = get_bool(doc, &m, "level") {
+    if let Some(v) = read_bool(doc, &m, "level") {
         s.level = v;
     }
-    if let Some(v) = get_bool(doc, &m, "mirror_front") {
+    if let Some(v) = read_bool(doc, &m, "mirror_front") {
         s.mirror_front = v;
     }
-    if let Some(v) = get_bool(doc, &m, "geotag") {
+    if let Some(v) = read_bool(doc, &m, "geotag") {
         s.geotag = v;
     }
-    if let Some(v) = get_bool(doc, &m, "hdr") {
+    if let Some(v) = read_bool(doc, &m, "hdr") {
         s.hdr = v;
     }
-    if let Some(v) = get_str(doc, &m, "default_facing") {
+    if let Some(v) = read_str(doc, &m, "default_facing") {
         s.default_facing = Facing::parse_str(&v);
     }
     s
@@ -228,13 +202,13 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
         let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
             continue;
         };
-        let raw = get_str(doc, &m, "raw").unwrap_or_default();
+        let raw = read_str(doc, &m, "raw").unwrap_or_default();
         if raw.is_empty() {
             continue;
         }
         out.push(ScanEntry {
             raw,
-            ts: get_int(doc, &m, "ts").unwrap_or(0),
+            ts: read_i64_coerced(doc, &m, "ts").unwrap_or(0),
         });
     }
     out
@@ -267,7 +241,7 @@ pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) -> Re
     }
     for i in (0..n).rev() {
         if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-            && get_str(doc, &m, "raw").as_deref() == Some(raw)
+            && read_str(doc, &m, "raw").as_deref() == Some(raw)
         {
             doc.delete(&list, i)
                 .map_err(|_| "couldn't update scan history")?;
@@ -295,19 +269,21 @@ pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) -> Re
 /// can never be spliced together.
 pub fn read_recent_capture(doc: &AutoCommit, root: &ObjId) -> Option<SharedCapture> {
     let recent = map_at(doc, root, "recent_capture")?;
-    let (Some(id), Some(media_id)) = (get_str(doc, &recent, "id"), get_str(doc, &recent, "media"))
-    else {
+    let (Some(id), Some(media_id)) = (
+        read_str(doc, &recent, "id"),
+        read_str(doc, &recent, "media"),
+    ) else {
         return None;
     };
     if id.is_empty() || id.len() > 160 || !crate::media::is_media_id(&media_id) {
         return None;
     }
-    let kind = match get_str(doc, &recent, "kind").as_deref() {
+    let kind = match read_str(doc, &recent, "kind").as_deref() {
         Some("video") => CaptureKind::Video,
         _ => CaptureKind::Photo,
     };
-    let w = get_int(doc, &recent, "w").and_then(|n| u32::try_from(n).ok())?;
-    let h = get_int(doc, &recent, "h").and_then(|n| u32::try_from(n).ok())?;
+    let w = read_i64_coerced(doc, &recent, "w").and_then(|n| u32::try_from(n).ok())?;
+    let h = read_i64_coerced(doc, &recent, "h").and_then(|n| u32::try_from(n).ok())?;
     if w == 0 || h == 0 || u64::from(w).saturating_mul(u64::from(h)) > 33_554_432 {
         return None;
     }
@@ -315,14 +291,14 @@ pub fn read_recent_capture(doc: &AutoCommit, root: &ObjId) -> Option<SharedCaptu
         id,
         media_id,
         kind,
-        ts: get_int(doc, &recent, "ts").unwrap_or(0).max(0),
+        ts: read_i64_coerced(doc, &recent, "ts").unwrap_or(0).max(0),
         w,
         h,
-        dur_ms: get_int(doc, &recent, "dur").unwrap_or(0).max(0),
-        label: get_str(doc, &recent, "label")
+        dur_ms: read_i64_coerced(doc, &recent, "dur").unwrap_or(0).max(0),
+        label: read_str(doc, &recent, "label")
             .filter(|s| s.len() <= 256)
             .unwrap_or_else(|| "Capture".into()),
-        facing: get_str(doc, &recent, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s)),
+        facing: read_str(doc, &recent, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s)),
     })
 }
 
@@ -373,7 +349,7 @@ pub fn register_recent_capture(
 
 /// True once the doc has been initialised by this app.
 pub fn is_seeded(doc: &AutoCommit, root: &ObjId) -> bool {
-    get_str(doc, root, "mode").is_some()
+    read_str(doc, root, "mode").is_some()
 }
 
 /// Write capture preferences on first run (empty doc). Navigation is local

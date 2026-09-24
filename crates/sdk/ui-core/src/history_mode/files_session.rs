@@ -16,6 +16,8 @@ use std::{
     time::Duration,
 };
 
+use crate::background::Background;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
     host: uuid::Uuid,
@@ -36,8 +38,12 @@ enum Reply {
     ),
     Selection(Result<(FileHistorySnapshot, Option<FileHistorySnapshot>), Error>),
     Review(Operation, Result<Review, Outcome>),
+    /// The host refused to run the transport call in the background.
+    Unavailable,
     Outcome(Request, Outcome),
 }
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 struct Completion {
     key: Key,
     reply: Reply,
@@ -53,6 +59,7 @@ pub(super) struct FileController {
     rx: mpsc::Receiver<Completion>,
     inbox: RefCell<Vec<Completion>>,
     wake: crate::wake::WakeHandle,
+    background: Background,
     pub versions: Vec<FileVersionV1>,
     pub scope: Option<Scope>,
     pub current_revision: Option<collab_types::ContentRevisionV1>,
@@ -70,11 +77,13 @@ pub(super) struct FileController {
     pub live_updates: bool,
     active: bool,
     refreshing: bool,
-    next_poll: std::time::Instant,
+    next_poll: crate::time::Instant,
 }
 impl FileController {
     pub fn new(target: FileHistoryTarget) -> Self {
         let (tx, rx) = mpsc::channel();
+        let background = Background::current();
+        let now = background.now();
         Self {
             key: Key {
                 host: uuid::Uuid::new_v4(),
@@ -87,6 +96,7 @@ impl FileController {
             rx,
             inbox: RefCell::new(vec![]),
             wake: crate::wake::WakeHandle::new(),
+            background,
             versions: vec![],
             scope: None,
             current_revision: None,
@@ -104,7 +114,7 @@ impl FileController {
             live_updates: false,
             active: true,
             refreshing: false,
-            next_poll: std::time::Instant::now(),
+            next_poll: now,
         }
     }
     fn run(&self, work: impl FnOnce(Arc<dyn FileHistoryTransport>) -> Reply + Send + 'static) {
@@ -112,16 +122,22 @@ impl FileController {
         let key = self.key;
         let tx = self.tx.clone();
         let wake = self.wake.clone();
-        std::thread::spawn(move || {
+        let spawned = self.background.spawn("ui-file-history", move || {
             let reply = work(transport);
             let _ = tx.send(Completion { key, reply });
             wake.wake();
         });
+        if spawned.is_err() {
+            self.inbox.borrow_mut().push(Completion {
+                key,
+                reply: Reply::Unavailable,
+            });
+        }
     }
     pub fn has_results(&self) -> bool {
         self.inbox.borrow_mut().extend(self.rx.try_iter());
         !self.inbox.borrow().is_empty()
-            || self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll
+            || self.active && !self.refreshing && self.background.now() >= self.next_poll
     }
     pub fn load(&mut self) {
         if self.refreshing {
@@ -165,7 +181,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
-        self.next_poll = std::time::Instant::now();
+        self.next_poll = self.background.now();
         self.load();
     }
     /// Learned only from a successful authorized immutable metadata read.
@@ -274,15 +290,7 @@ impl FileController {
         >,
     ) {
         self.refreshing = false;
-        let now = std::time::Instant::now();
-        self.next_poll = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
-        let wake = self.wake.clone();
-        if self.active {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(2));
-                wake.wake();
-            });
-        }
+        self.schedule_poll();
         match result {
             Ok((scope, versions, current_revision))
                 if self.visible_identity(
@@ -335,7 +343,7 @@ impl FileController {
                     }
                     self.review_changed = true;
                     self.refreshing = false;
-                    self.next_poll = std::time::Instant::now();
+                    self.next_poll = self.background.now();
                 } else {
                     self.message =
                         "Invalid backend result; the exact request remains unresolved".into();
@@ -346,6 +354,11 @@ impl FileController {
                 continue;
             }
             match completion.reply {
+                Reply::Unavailable => {
+                    self.refreshing = false;
+                    self.schedule_poll();
+                    self.message = "File history is unavailable on this host".into();
+                }
                 Reply::Activity(result) => self.apply_activity(result),
                 Reply::Selection(result) => match result {
                     Ok((after, before))
@@ -408,10 +421,18 @@ impl FileController {
                 Reply::Outcome(..) => {}
             }
         }
-        if self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll {
+        if self.active && !self.refreshing && self.background.now() >= self.next_poll {
             self.load();
         }
         changed
+    }
+    /// Refresh the activity list again after the poll interval.
+    fn schedule_poll(&mut self) {
+        let now = self.background.now();
+        self.next_poll = now.checked_add(POLL_INTERVAL).unwrap_or(now);
+        if self.active {
+            self.background.wake_at(self.next_poll, self.wake.clone());
+        }
     }
 }
 fn load_all(
@@ -608,6 +629,9 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Upper bound for waits on background replies. Loops exit as soon as
+    /// the reply lands; the guard only turns a lost reply into a failure.
+    const HANG_GUARD: Duration = Duration::from_secs(30);
     struct Transport;
     impl FileHistoryTransport for Transport {
         fn read(&self, _: Query) -> Result<Value, Error> {
@@ -633,6 +657,40 @@ mod tests {
             label: "Report.txt".into(),
             transport: Arc::new(Transport),
         })
+    }
+    #[test]
+    fn activity_refresh_follows_the_background_clock() {
+        let pumped = crate::background::Pumped::new();
+        let mut controller = {
+            let _background = pumped.background().enter();
+            controller()
+        };
+        controller.load();
+        assert!(!controller.has_results());
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(controller.drain());
+        assert_eq!(controller.message, read_message(Error::Unavailable));
+        let refresh = pumped.next_deadline().expect("the next refresh is armed");
+        assert!(!controller.has_results());
+        pumped.advance(POLL_INTERVAL);
+        assert_eq!(pumped.now(), refresh);
+        assert!(controller.has_results());
+        controller.drain();
+        assert!(!pumped.is_idle(), "the due refresh queued the next load");
+    }
+    #[test]
+    fn a_host_without_background_work_reports_history_unavailable() {
+        let mut controller = {
+            let _background = Background::new(crate::background::NoBackground).enter();
+            controller()
+        };
+        controller.load();
+        assert!(controller.drain());
+        assert_eq!(
+            controller.message,
+            "File history is unavailable on this host"
+        );
+        assert!(!controller.has_results(), "no immediate retry loop");
     }
     fn scope() -> Scope {
         Scope {
@@ -931,12 +989,12 @@ mod tests {
         });
         let mut controller = controller();
         controller.target.transport = transport.clone();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::time::now() + Duration::from_secs(60);
         controller.load();
-        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        rx.recv_timeout(HANG_GUARD).unwrap();
         controller.select(version.id, None);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_none() && std::time::Instant::now() < deadline {
+        let deadline = crate::time::now() + HANG_GUARD;
+        while controller.after.is_none() && crate::time::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -945,7 +1003,16 @@ mod tests {
             "selected immutable preview must be installed while older activity is delayed"
         );
         transport.release.wait();
-        std::thread::sleep(Duration::from_millis(10));
+        // Wait for the delayed activity reply itself, so the assertion below
+        // sees it applied rather than racing its arrival.
+        let deadline = crate::time::now() + HANG_GUARD;
+        while !controller.has_results() && crate::time::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            controller.has_results(),
+            "the delayed activity reply arrives"
+        );
         controller.drain();
         assert!(
             controller.after.is_some(),
@@ -953,9 +1020,9 @@ mod tests {
         );
         let calls = transport.calls.load(Ordering::SeqCst);
         transport.revoked.store(true, Ordering::SeqCst);
-        controller.next_poll = std::time::Instant::now();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_some() && std::time::Instant::now() < deadline {
+        controller.next_poll = crate::time::now();
+        let deadline = crate::time::now() + HANG_GUARD;
+        while controller.after.is_some() && crate::time::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -995,7 +1062,7 @@ mod tests {
                 ),
             })
             .unwrap();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::time::now() + Duration::from_secs(60);
         controller.drain();
         assert!(
             controller.review.is_none(),

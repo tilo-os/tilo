@@ -23,13 +23,12 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use collab_types::{ChannelId, Role, generate_keypair};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
@@ -172,7 +171,7 @@ pub fn run(args: &[String]) {
               distinguishing them further would reduce clarity"
 )]
 fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
 
     // Recovery words exist only for a genuine threshold share. Complete a
@@ -207,9 +206,9 @@ fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     // checked_add: SystemTime's Add<Duration> panics on overflow. One hour
     // from now never overflows; falling back to "now" keeps this a real
     // handled path rather than a panic if it somehow ever did.
-    let expires_at = SystemTime::now()
+    let expires_at = tilo_ui::time::wall()
         .checked_add(std::time::Duration::from_secs(3600))
-        .unwrap_or_else(SystemTime::now);
+        .unwrap_or_else(tilo_ui::time::wall);
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),
         "engineering",

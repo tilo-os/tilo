@@ -2,7 +2,7 @@
 //! with a single `Animated<T: Lerp>` driver consumable by widgets.
 
 use crate::color_compat::ColorCompat;
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 pub trait Lerp {
     #[must_use]
@@ -167,7 +167,7 @@ impl<T: Lerp + Copy> Animated<T> {
         Self {
             from,
             to,
-            started: Instant::now(),
+            started: crate::time::now(),
             duration,
             curve,
         }
@@ -264,7 +264,7 @@ impl Transition {
     }
 
     fn at(value: f32, open: bool) -> Self {
-        let now = Instant::now();
+        let now = crate::time::now();
         Self {
             anim: Animated::starting_at(value, value, now, Duration::ZERO, Curve::Linear),
             open,
@@ -297,7 +297,7 @@ impl Transition {
     /// No-op when the intent is unchanged AND the animation has settled, so
     /// repeated calls each frame don't restart the curve.
     pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
-        self.set_open_at(open, duration, curve, Instant::now());
+        self.set_open_at(open, duration, curve, crate::time::now());
     }
 
     /// [`Self::set_open`] against a caller-supplied clock.
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn animated_progresses_through_curve_over_duration() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(
             0.0_f32,
             100.0,
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn animated_clamps_at_endpoints() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(
             0.0_f32,
             100.0,
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn done_flips_after_duration_elapsed() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(
             0.0_f32,
             100.0,
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn raw_t_is_unclamped() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::from_millis(100), Curve::Linear);
         assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
         let over = a.raw_t(now + Duration::from_millis(300));
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn zero_duration_is_immediate() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::ZERO, Curve::Linear);
         assert!(a.done(now));
         assert_eq!(a.current(now), 1.0);
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn animated_color_runs() {
         use vello::peniko::Color;
-        let now = Instant::now();
+        let now = crate::time::now();
         let a = Animated::starting_at(
             Color::from_rgba8(0, 0, 0, 255),
             Color::from_rgba8(200, 100, 50, 255),
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn transition_closed_is_invisible_open_is_visible() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let closed = Transition::closed();
         assert!(!closed.is_visible(now));
         assert!((closed.value(now) - 0.0).abs() < 1e-6);
@@ -512,7 +512,7 @@ mod tests {
     fn transition_opening_stays_visible_through_the_curve() {
         let mut t = Transition::closed();
         t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
-        assert!(t.is_visible(Instant::now()));
+        assert!(t.is_visible(crate::time::now()));
         assert!(t.is_open());
     }
 
@@ -520,7 +520,7 @@ mod tests {
     fn transition_closing_stays_visible_until_settled() {
         let mut t = Transition::open();
         t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
-        let now = Instant::now();
+        let now = crate::time::now();
         assert!(
             t.is_visible(now),
             "a closing surface must stay visible so its exit animates"
@@ -539,22 +539,22 @@ mod tests {
         // (mid-flight, not popped to 0).
         t.set_open(false, Duration::from_secs(1), Curve::Linear);
         assert!(!t.is_open());
-        assert!(t.is_visible(Instant::now()));
+        assert!(t.is_visible(crate::time::now()));
     }
 
     #[test]
     fn transition_repeated_same_intent_is_noop_once_settled() {
         let mut t = Transition::open();
-        let before = t.value(Instant::now());
+        let before = t.value(crate::time::now());
         t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
-        let after = t.value(Instant::now());
+        let after = t.value(crate::time::now());
         assert!((before - after).abs() < 1e-6);
         assert!(t.is_open());
     }
 
     #[test]
     fn capture_open_at_keeps_fractional_pose_at_future_times() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let t = Transition::capture_open_at(375);
         assert!((t.value(now + Duration::from_secs(1)) - 0.375).abs() < f32::EPSILON);
         assert!(t.is_visible(now + Duration::from_secs(1)));
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn capture_open_at_same_open_intent_does_not_advance_pose() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut t = Transition::capture_open_at(625);
         t.set_open_at(
             true,
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn capture_open_at_clamps_boundaries() {
-        let now = Instant::now();
+        let now = crate::time::now();
         assert_eq!(Transition::capture_open_at(0).value(now), 0.0);
         assert_eq!(Transition::capture_open_at(1_000).value(now), 1.0);
         assert_eq!(Transition::capture_open_at(u16::MAX).value(now), 1.0);
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn capture_open_at_closes_from_frozen_value() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut t = Transition::capture_open_at(500);
         t.set_open_at(false, Duration::from_millis(100), Curve::Linear, now);
         assert!((t.value(now) - 0.5).abs() < f32::EPSILON);

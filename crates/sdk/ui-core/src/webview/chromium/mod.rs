@@ -1,6 +1,11 @@
 //! Chromium helper transport, independent of native CEF build dependencies.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the Chromium helper process is supervised by threads"
+)]
 mod protocol;
 
+use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -8,7 +13,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
-use std::time::Duration;
 
 use super::{FrameSlot, KeyInput, MouseButton, WebViewCommand, WebViewEngine, WebViewEvent};
 use serde_json::{Value, json};
@@ -460,7 +464,7 @@ fn supervise_child(
             break;
         }
         if supervisor_shared.stopping.load(Ordering::Acquire) {
-            let began = shutdown_started.get_or_insert_with(std::time::Instant::now);
+            let began = shutdown_started.get_or_insert_with(crate::time::now);
             if began.elapsed() >= Duration::from_secs(35) {
                 let _ = child.kill();
                 let _ = child.wait();

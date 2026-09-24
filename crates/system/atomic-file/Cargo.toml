@@ -10,9 +10,15 @@ description = "Crash-safe file replacement: temp file, fsync, rename, fsync the 
 name = "atomic_file"
 path = "src/lib.rs"
 
-# Deliberately no dependencies. Every crate that persists anything needs this,
-# including ones that must not pay for automerge or the CLI SDK, so it stays a
-# std-only leaf.
+# Deliberately no default dependencies. Every crate that persists anything
+# needs this, including ones that must not pay for automerge or the CLI SDK, so
+# it stays a std-only leaf unless a caller opts into `json`.
+[features]
+json = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

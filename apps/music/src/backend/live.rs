@@ -150,10 +150,10 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 /// A real cache dir — never the working tree — so running the app / probe
 /// doesn't leave a `rustypipe_cache.json` in the source. Created if absent.
 fn cache_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(dirs::cache_dir)
+    // An absolute XDG_CACHE_HOME wins on every platform (sandboxed launches
+    // set one); otherwise the platform's own cache directory.
+    let base = xdg_paths::env_dir("XDG_CACHE_HOME")
+        .or_else(xdg_paths::cache_dir)
         .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("tilo-music");
     let _ = std::fs::create_dir_all(&dir);

@@ -7,6 +7,7 @@
 use std::io::Read;
 
 use accounts::SecretItem;
+use getrandom::{SysRng, rand_core::TryRng as _};
 use zeroize::Zeroizing;
 
 pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
@@ -255,11 +256,12 @@ pub fn export_encrypted_backup(
     }
     let mut salt = [0_u8; BACKUP_SALT_BYTES];
     let mut nonce = [0_u8; BACKUP_NONCE_BYTES];
-    getrandom::getrandom(&mut salt)
-        .and_then(|()| getrandom::getrandom(&mut nonce))
+    SysRng
+        .try_fill_bytes(&mut salt)
+        .and_then(|()| SysRng.try_fill_bytes(&mut nonce))
         .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
     let key = derive_backup_key(passphrase, &salt)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
     let mut header = Vec::with_capacity(BACKUP_HEADER_BYTES);
     header.extend_from_slice(BACKUP_MAGIC);
     header.push(BACKUP_VERSION);
@@ -267,7 +269,7 @@ pub fn export_encrypted_backup(
     header.extend_from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            <&XNonce>::from(&nonce),
             Payload {
                 msg: &plaintext,
                 aad: &header,
@@ -308,11 +310,12 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
         .split_at_checked(BACKUP_SALT_BYTES)
         .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
     let key = derive_backup_key(passphrase, salt)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(
-                XNonce::from_slice(nonce),
+                <&XNonce>::try_from(nonce)
+                    .map_err(|_| "This is not a valid Passwords backup".to_string())?,
                 Payload {
                     msg: ciphertext,
                     aad: header,
@@ -338,9 +341,25 @@ fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Argon2id v1.3 cost for backup keys. Backups do not record these, so they
+/// are part of the file format and must not follow the argon2 crate's
+/// defaults (which they matched when the format was introduced).
+const BACKUP_KDF_MEMORY_KIB: u32 = 19 * 1024;
+const BACKUP_KDF_ITERATIONS: u32 = 2;
+const BACKUP_KDF_LANES: u32 = 1;
+
 fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+
+    let params = Params::new(
+        BACKUP_KDF_MEMORY_KIB,
+        BACKUP_KDF_ITERATIONS,
+        BACKUP_KDF_LANES,
+        Some(32),
+    )
+    .map_err(|_| "Could not secure the backup password".to_string())?;
     let mut key = Zeroizing::new([0_u8; 32]);
-    argon2::Argon2::default()
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passphrase.as_bytes(), salt, key.as_mut())
         .map_err(|_| "Could not secure the backup password".to_string())?;
     Ok(key)
@@ -349,6 +368,21 @@ fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_key_derivation_is_stable_across_argon2_releases() {
+        // Recorded from the original `Argon2::default()` derivation; existing
+        // backups only open if this never changes.
+        let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
+        assert_eq!(
+            *key,
+            [
+                0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe, 0x94,
+                0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5, 0xc4, 0xd0,
+                0xab, 0x71, 0x71, 0xae,
+            ]
+        );
+    }
 
     #[test]
     fn parses_chrome_firefox_and_quoted_fields() {

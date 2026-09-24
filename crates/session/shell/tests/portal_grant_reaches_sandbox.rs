@@ -42,7 +42,7 @@ const APP: &str = "so.tilo.editor";
 fn store() -> (GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let handle = tree.shared();
     {
@@ -61,6 +61,7 @@ fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityP
         let tree = store.tree_handle();
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)

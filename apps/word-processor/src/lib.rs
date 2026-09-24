@@ -113,13 +113,13 @@ pub enum WpFormat {
     /// PDF — **export only** (rendered via the `qdoc-pdf` crate). Importing PDF is
     /// not supported and returns a clear error.
     Pdf,
-    /// HTML — export via the `qdoc-html` crate; **import** via `qdoc::HtmlCodec` (so
+    /// HTML — export via `qdoc::export_html`; **import** via `qdoc::HtmlCodec` (so
     /// `.html`/`.htm` files can be opened as well as saved).
     Html,
-    /// RTF — export via the `qdoc-rtf` crate; **import** via `qdoc::RtfCodec` (so
+    /// RTF — export via `qdoc::export_rtf`; **import** via `qdoc::RtfCodec` (so
     /// `.rtf` files can be opened as well as saved).
     Rtf,
-    /// EPUB — **export only** (rendered via the `qdoc-epub` crate). Importing EPUB
+    /// EPUB — **export only** (rendered via `qdoc::export_epub`). Importing EPUB
     /// is not supported and returns a clear error.
     Epub,
 }
@@ -157,10 +157,10 @@ impl WpFormat {
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
             // HTML import is handled by the `qdoc::HtmlCodec` codec (export still
-            // routes through `qdoc-html` below).
+            // routes through `qdoc::export_html` below).
             WpFormat::Html => qdoc::HtmlCodec.import(bytes, dm),
             // RTF import is handled by the `qdoc::RtfCodec` codec (export still
-            // routes through `qdoc-rtf` below).
+            // routes through `qdoc::export_rtf` below).
             WpFormat::Rtf => qdoc::RtfCodec.import(bytes, dm),
             WpFormat::Epub => Err(qdoc::CodecError::Unsupported(
                 "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
@@ -181,36 +181,27 @@ impl WpFormat {
                 qdoc_pdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
             // HTML/RTF aren't `FormatProvider` codecs either — they render from
-            // the materialized snapshot via `qdoc-html`/`qdoc-rtf`, returning UTF-8
-            // bytes.
+            // the materialized snapshot via `qdoc::export_html`/`qdoc::export_rtf`,
+            // returning UTF-8 bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
-                #[cfg(feature = "thin")]
                 let rendered = qdoc::export_html::render_html(
                     &snap,
                     qdoc::export_html::HtmlOptions::default(),
                 );
-                #[cfg(not(feature = "thin"))]
-                let rendered = qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default());
                 Ok(rendered.into_bytes())
             }
             WpFormat::Rtf => {
                 let snap = dr.materialize();
-                #[cfg(feature = "thin")]
                 let rendered = qdoc::export_rtf::render_rtf(&snap);
-                #[cfg(not(feature = "thin"))]
-                let rendered = qdoc_rtf::render_rtf(&snap);
                 Ok(rendered.into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
-            // ZIP container from the materialized snapshot via `qdoc-epub`. Map its
-            // error into the shared `CodecError`.
+            // ZIP container from the materialized snapshot via `qdoc::export_epub`.
+            // Map its error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                #[cfg(feature = "thin")]
                 let rendered = qdoc::export_epub::render_epub(&snap);
-                #[cfg(not(feature = "thin"))]
-                let rendered = qdoc_epub::render_epub(&snap);
                 rendered.map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
         }
@@ -492,9 +483,8 @@ pub mod recovery {
     #[cfg(unix)]
     #[test]
     fn recovery_identity_survives_creation_below_symlinked_ancestor() {
-        let _guard = crate::tests::RECOVERY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Holds the recovery base override steady while it is resolved.
+        let _env_lock = tilo_test_env::lock();
         let dir =
             std::env::temp_dir().join(format!("writer-recovery-identity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -684,7 +674,7 @@ mod tests {
         );
     }
 
-    /// Saving to a `*.html` path routes through `qdoc-html` and writes a complete
+    /// Saving to a `*.html` path routes through `qdoc::export_html` and writes a complete
     /// HTML document. HTML is export-only.
     #[test]
     fn save_document_to_html_writes_html() {
@@ -717,7 +707,7 @@ mod tests {
         );
     }
 
-    /// Saving to a `*.rtf` path routes through `qdoc-rtf` and writes a valid RTF
+    /// Saving to a `*.rtf` path routes through `qdoc::export_rtf` and writes a valid RTF
     /// document (the bytes start with the `{\rtf` signature). RTF is export-only.
     #[test]
     fn save_document_to_rtf_writes_rtf() {
@@ -748,7 +738,7 @@ mod tests {
         );
     }
 
-    /// Saving to a `*.epub` path routes through `qdoc-epub` and writes a valid
+    /// Saving to a `*.epub` path routes through `qdoc::export_epub` and writes a valid
     /// EPUB OCF container: the bytes are a ZIP archive (`PK` magic) whose first
     /// entry is the literal `mimetype` member. EPUB is export-only.
     #[test]
@@ -897,7 +887,7 @@ mod tests {
         );
     }
 
-    /// Full round-trip: render a Markdown-built document to `.rtf` via `qdoc-rtf`
+    /// Full round-trip: render a Markdown-built document to `.rtf` via `qdoc::export_rtf`
     /// (the export path), re-open it through `WpFormat::Rtf.import` (the new
     /// import path), and assert the text and a bold run survive.
     #[test]
@@ -912,7 +902,7 @@ mod tests {
                 .unwrap();
         }
 
-        // Export to RTF bytes via the editor's export path (qdoc-rtf).
+        // Export to RTF bytes via the editor's export path (`qdoc::export_rtf`).
         let containers = qdoc::model::open(&s.doc, &s.root).unwrap();
         let dr = qdoc::DocRef {
             doc: &s.doc,
@@ -1088,27 +1078,13 @@ mod tests {
 
     // ---- autosave / crash-recovery -----------------------------------------
 
-    /// Serialises the tests that mutate the process-global `RECOVERY_BASE_ENV`
-    /// (env vars are process-wide; cargo runs `#[test]`s in parallel by default).
-    /// Each such test holds this for its whole body so the var is never observed
-    /// half-set by a sibling. `lock().unwrap_or_else(|e| e.into_inner())` keeps a
-    /// panicking test from poisoning the suite.
-    pub(super) static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[cfg(windows)]
     #[test]
     fn recovery_defaults_to_native_local_app_data() {
-        let _guard = RECOVERY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = std::env::var_os(recovery::RECOVERY_BASE_ENV);
-        // SAFETY: recovery environment tests hold RECOVERY_ENV_LOCK and run serially.
-        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(recovery::RECOVERY_BASE_ENV);
         let actual = recovery::base_dir();
-        if let Some(previous) = previous {
-            // SAFETY: restore while still holding RECOVERY_ENV_LOCK.
-            unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, previous) };
-        }
+        drop(env);
         let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
         assert_eq!(actual, local.join("tilo/word-processor/recovery"));
         assert!(actual.is_absolute());
@@ -1131,12 +1107,9 @@ mod tests {
     /// documents map to distinct files. The untitled slot is a single fixed path.
     #[test]
     fn recovery_path_is_stable_per_document() {
-        let _guard = RECOVERY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_recovery_dir("stable");
-        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
-        unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(recovery::RECOVERY_BASE_ENV, &dir);
 
         let doc = std::path::Path::new("/home/u/My Notes.md");
         let p1 = recovery::recovery_path_for(Some(doc));
@@ -1157,10 +1130,6 @@ mod tests {
         let u2 = recovery::recovery_path_for(None);
         assert_eq!(u1, u2, "the untitled slot is a single stable path");
         assert_ne!(u1, p1, "untitled and titled documents don't collide");
-
-        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
-
-        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
     }
 
     /// `recovery::write` materializes a recovery copy under the (overridden) base
@@ -1168,12 +1137,9 @@ mod tests {
     /// filesystem (a temp dir), best-effort throughout.
     #[test]
     fn recovery_write_read_clear_roundtrip() {
-        let _guard = RECOVERY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_recovery_dir("rwc");
-        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
-        unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(recovery::RECOVERY_BASE_ENV, &dir);
         let doc = std::path::Path::new("/tmp/whatever/doc.md");
 
         assert!(
@@ -1200,8 +1166,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
-        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
     }
 
     /// `recovery::markdown_bytes` renders the live document to recovery Markdown

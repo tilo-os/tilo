@@ -583,21 +583,13 @@ impl Store {
 /// Format an epoch-seconds timestamp as a compact relative string
 /// ("3h", "2d", "Mar 14"). `now` is passed so it's testable.
 pub fn relative_time(published: i64, now: i64) -> String {
-    const MIN: i64 = 60;
-    const HOUR: i64 = 60 * MIN;
-    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * 86_400;
     if published <= 0 {
         return "—".to_string();
     }
     let delta = (now - published).max(0);
-    if delta < MIN {
-        "now".to_string()
-    } else if delta < HOUR {
-        format!("{}m", delta / MIN)
-    } else if delta < DAY {
-        format!("{}h", delta / HOUR)
-    } else if delta < 7 * DAY {
-        format!("{}d", delta / DAY)
+    if delta < WEEK {
+        ui::format::relative_compact(delta)
     } else {
         // Fall back to an absolute month/day.
         use chrono::{TimeZone, Utc};

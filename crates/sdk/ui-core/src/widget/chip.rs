@@ -524,26 +524,12 @@ fn truncate_to_width(
     avail: f64,
     text_renderer: &mut TextRenderer,
 ) -> String {
-    let (full, _) = text_renderer.measure(label, size, None);
-    if f64::from(full) <= avail {
-        return label.to_string();
+    let out = text_renderer.elide_to_width(label, size, crate::num::f32_of_f64(avail));
+    if out != label && out.starts_with(crate::text_render::ELLIPSIS) {
+        String::new()
+    } else {
+        out
     }
-    let chars: Vec<char> = label.chars().collect();
-    // Walk down from the full string; the first prefix that fits wins.
-    // Labels here are workspace names — short enough that a linear scan
-    // costs less than the branchy binary search it would replace.
-    for take in (1..chars.len()).rev() {
-        let Some(prefix) = chars.get(..take) else {
-            continue;
-        };
-        let mut cand: String = prefix.iter().collect();
-        cand.push('…');
-        let (w, _) = text_renderer.measure(&cand, size, None);
-        if f64::from(w) <= avail {
-            return cand;
-        }
-    }
-    String::new()
 }
 
 impl Widget for Chip {

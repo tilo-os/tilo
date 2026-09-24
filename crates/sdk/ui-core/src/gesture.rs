@@ -5,9 +5,9 @@
 //! caret/selection model. Lives in `ui` so every app gets consistent selection
 //! behaviour instead of re-deriving the timing/anchor rules.
 
+use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use vello::kurbo::Point;
 
 // Navigation gestures (back / forward): app-agnostic recognisers for the
@@ -341,7 +341,7 @@ impl NavGestureRecognizer {
         if !precise {
             return None;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let idle = self
             .last_scroll
             .is_none_or(|t| now.duration_since(t).as_millis() > SWIPE_IDLE_RESET_MS);
@@ -497,7 +497,7 @@ impl DragSelect {
     /// (shift held) and the granularity from the click count. A shift-press is
     /// never a multi-click — it always extends at char granularity.
     pub fn press(&mut self, pos: Point, shift: bool) -> PressIntent {
-        let now = Instant::now();
+        let now = crate::time::now();
         let multi = !shift
             && self
                 .last_click

@@ -60,7 +60,11 @@ pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
     }
     if registry.base_url.starts_with("https://") || registry.base_url.starts_with("http://") {
         let url = format!("{}/index.json", registry.base_url.trim_end_matches('/'));
-        let resp = reqwest::get(&url)
+        let resp = tilo_net::http::client()
+            .build()
+            .context("build registry HTTP client")?
+            .get(&url)
+            .send()
             .await
             .with_context(|| format!("GET {url}"))?
             .error_for_status()

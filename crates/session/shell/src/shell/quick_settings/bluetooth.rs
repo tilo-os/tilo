@@ -15,7 +15,8 @@ use ui::widget::{Button, ButtonFace};
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::drill_in::{
-    CONTROL_INSET, DrillInList, GLYPH, STATUS_DOT, trailing_dot_center, trailing_status_glyph,
+    CONTROL_INSET, DrillInList, GLYPH, LIST_TOP, STATUS_DOT, trailing_dot_center,
+    trailing_status_glyph,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,12 +39,7 @@ impl QuickSettingsBluetoothPane {
     const DEVICE_FOCUS_START: usize = 1;
 
     fn back_rect(panel: Rect) -> Rect {
-        Rect::new(
-            panel.x0 + 8.0,
-            panel.y0 + 8.0,
-            panel.x0 + 40.0,
-            panel.y0 + 40.0,
-        )
+        DrillInList::back_rect(panel)
     }
 
     pub fn reset_focus(&mut self) {
@@ -64,7 +60,8 @@ impl QuickSettingsBluetoothPane {
         }
         self.keyboard_focus = Some(*index);
         if let Some(device) = index.checked_sub(Self::DEVICE_FOCUS_START) {
-            self.list.ensure_visible(panel, devices.len(), 56.0, device);
+            self.list
+                .ensure_visible(panel, devices.len(), LIST_TOP, device);
         }
         true
     }
@@ -76,7 +73,7 @@ impl QuickSettingsBluetoothPane {
         )];
         rects.extend(
             self.list
-                .visible_rects(panel, devices.len(), 56.0)
+                .visible_rects(panel, devices.len(), LIST_TOP)
                 .into_iter()
                 .map(|(index, rect)| (format!("quick_settings_bluetooth_device[{index}]"), rect)),
         );
@@ -92,7 +89,7 @@ impl QuickSettingsBluetoothPane {
         } else {
             let device = index.checked_sub(Self::DEVICE_FOCUS_START)?;
             self.list
-                .visible_rects(panel, self.list.row_count(), 56.0)
+                .visible_rects(panel, self.list.row_count(), LIST_TOP)
                 .into_iter()
                 .find_map(|(index, rect)| (index == device).then_some(rect))
         }
@@ -149,12 +146,13 @@ impl QuickSettingsBluetoothPane {
             .keyboard_focus
             .and_then(|index| index.checked_sub(Self::DEVICE_FOCUS_START))
         {
-            self.list.ensure_visible(panel, devices.len(), 56.0, device);
+            self.list
+                .ensure_visible(panel, devices.len(), LIST_TOP, device);
         }
     }
 
     pub fn scroll_wheel(&mut self, panel: Rect, devices: &[BtDevice], rows: f64) -> bool {
-        self.list.scroll_wheel(panel, devices.len(), 56.0, rows)
+        self.list.scroll_wheel(panel, devices.len(), LIST_TOP, rows)
     }
 
     pub fn activate_focused(
@@ -171,7 +169,8 @@ impl QuickSettingsBluetoothPane {
         } else {
             self.list.layout(panel, devices.len());
             let device = index.saturating_sub(Self::DEVICE_FOCUS_START);
-            self.list.ensure_visible(panel, devices.len(), 56.0, device);
+            self.list
+                .ensure_visible(panel, devices.len(), LIST_TOP, device);
             let Some(row) = self.list.row_for(device) else {
                 return BluetoothOutcome::None;
             };
@@ -434,8 +433,8 @@ mod tests {
             BluetoothOutcome::Changed
         );
         assert!(devices[0].connected);
-        assert_eq!(actions.0.borrow()[0], "connect:02:00:00:00:00:01");
+        assert_eq!(actions.calls.borrow()[0], "connect:02:00:00:00:00:01");
         validated.disconnect_bluetooth(&devices[0].address).unwrap();
-        assert_eq!(actions.0.borrow()[1], "disconnect:02:00:00:00:00:01");
+        assert_eq!(actions.calls.borrow()[1], "disconnect:02:00:00:00:00:01");
     }
 }

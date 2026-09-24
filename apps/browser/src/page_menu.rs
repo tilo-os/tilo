@@ -63,9 +63,7 @@ impl PageMenu {
     pub fn choose(&mut self, index: usize, engine: &SharedEngine) {
         if let Some((command, _)) = self.items.get(index) {
             if *command == 26502 {
-                if let Some(clipboard) = ui::clipboard::clipboard_backend() {
-                    clipboard.set_text(ui::clipboard::ClipboardTarget::Clipboard, &self.link);
-                }
+                ui::text_selection::clipboard_copy(&self.link);
                 self.cancel(engine);
             } else {
                 engine.send(WebViewCommand::ContextMenuAction {

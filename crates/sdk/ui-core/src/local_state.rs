@@ -836,7 +836,7 @@ mod tests {
 
     #[test]
     fn authorized_update_can_finish_after_nonblocking_close() {
-        use std::time::Duration;
+        use crate::time::Duration;
 
         let (mut scope, rx) = bound_scope();
         let state = {

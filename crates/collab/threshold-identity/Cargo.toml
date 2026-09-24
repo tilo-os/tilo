@@ -30,10 +30,10 @@ collab-types = { path = "../collab-types" }
 # the recovery-share encoder. `serialization` implies `serde`.
 frost-ed25519 = { version = "3", features = ["serialization"] }
 
-# RNG primitives. `rand` 0.8 because frost-ed25519 3.0 still consumes
-# `rand_core` 0.6. `rand_chacha` provides a deterministic ChaCha RNG
-# used in the tests' fixed-seed setup.
-rand.workspace = true
+# RNG traits for the public API (rand_core 0.10, shared with
+# ed25519-dalek). frost-ed25519 3.0 still consumes rand_core 0.6; it is
+# reached only through frost's own re-export (see `src/rng.rs`).
+# `rand_chacha` seeds the never-observed placeholder key packages.
 rand_chacha.workspace = true
 rand_core.workspace = true
 

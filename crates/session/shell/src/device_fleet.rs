@@ -5,7 +5,8 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, RevocationEntry,
@@ -204,7 +205,7 @@ impl DeviceFleetStore {
             ));
         }
         let mut nonce = [0_u8; 16];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let token = mint_enrollment_token(
             profile.user_public_key,
             capabilities,

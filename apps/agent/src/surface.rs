@@ -539,41 +539,26 @@ impl Offer {
 /// inert offers the planner already consumes. No application registry or
 /// document reconstruction is involved: arbitrary apps appear here solely
 /// because they published a descriptor to the authenticated broker.
-pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
-    surfaces
+pub fn broker_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
+    catalogue
+        .rows
         .iter()
-        .filter(|surface| surface.live)
-        .flat_map(|surface| {
-            surface.actions.iter().map(|action| {
-                let input = if action.input.kind == "text" {
-                    tilo_actions::InputSpec::Text {
-                        prompt: action.input.prompt.clone(),
-                        placeholder: action.input.placeholder.clone(),
-                        collects: if action.input.wants_content {
-                            tilo_actions::Collects::Content
-                        } else {
-                            tilo_actions::Collects::Words
-                        },
-                    }
-                } else {
-                    tilo_actions::InputSpec::None
-                };
-                Offer {
-                    app: surface.app_id.clone(),
-                    broker_peer_id: Some(surface.peer_id),
-                    descriptor: ActionDescriptor {
-                        address: ActionAddress::new(&action.resource, &action.action),
-                        resource_kind: action.resource_kind.clone(),
-                        resource_label: action.resource_label.clone(),
-                        action_label: action.action_label.clone(),
-                        description: action.description.clone(),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: action.operation_kind,
-                        contract: action.contract.clone(),
-                        params: action.params.clone(),
-                        input,
-                    },
-                }
+        .filter_map(|entry| {
+            // A live application's actions name its broker connection; the
+            // workspace's own actions (governance, opening applications)
+            // keep the reserved publisher zero.
+            let peer = if let Ok(peer) = entry.provider.parse::<u64>() {
+                peer
+            } else {
+                tilo_actions::remote::workspace_provider_room(&entry.provider)?;
+                0
+            };
+            let mut descriptor = entry.action.clone()?;
+            descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
+            Some(Offer {
+                app: entry.app_id.clone(),
+                broker_peer_id: Some(peer),
+                descriptor,
             })
         })
         .collect()
@@ -1584,31 +1569,37 @@ mod tests {
 
     #[test]
     fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
-        let surface = |peer_id| ui::collaboration::BrokerActionSurface {
-            peer_id,
+        let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
+            provider: peer_id.to_string(),
             app_id: "so.tilo.calculator".into(),
-            cluster_id: "room".into(),
-            record_id: format!("window-{peer_id}"),
-            live: true,
-            actions: vec![ui::collaboration::BrokerActionDescriptor {
-                resource: "calculator.document".into(),
-                action: "clear".into(),
+            parent_resource: String::new(),
+            resource: tilo_actions::remote::CatalogueResource {
+                id: "calculator.document".into(),
+                kind: "calculator.document".into(),
+                label: "Calculator".into(),
+                presentation: None,
+            },
+            has_children: false,
+            visibility: None,
+            action: Some(ActionDescriptor {
+                address: ActionAddress::new("calculator.document", "clear"),
                 resource_kind: "calculator.document".into(),
                 resource_label: "Calculator".into(),
                 action_label: "Clear".into(),
                 description: None,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                params: Vec::new(),
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Effect,
                 contract: tilo_actions::ActionContract::default(),
-                input: ui::collaboration::BrokerActionInput {
-                    kind: "none".into(),
-                    prompt: String::new(),
-                    placeholder: String::new(),
-                    wants_content: false,
-                },
-            }],
+                params: Vec::new(),
+                input: tilo_actions::InputSpec::None,
+            }),
         };
-        let offers = broker_offers(&[surface(41), surface(42)]);
+        let catalogue = tilo_actions::remote::CataloguePage {
+            revision: "1".into(),
+            rows: vec![entry(41), entry(42)],
+            ..tilo_actions::remote::CataloguePage::default()
+        };
+        let offers = broker_offers(&catalogue);
         assert_eq!(offers.len(), 2);
         assert_ne!(offers[0].id(), offers[1].id());
         assert_eq!(

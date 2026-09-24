@@ -5,13 +5,13 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -291,6 +291,22 @@ pub struct TabBar {
     /// derived from its glyph rect at hit-test time (see
     /// [`Self::action_hit_rect`]).
     min_pointer_target: f64,
+    /// Last theme fast-duration, for animation scheduling outside `draw`.
+    drag_lift_duration: Duration,
+    /// Window groups paint the lifted handle together with the attached app
+    /// preview in the floating pass, above strip clips. Standalone tab bars
+    /// keep the legacy inline overlay for their own tests/embedders.
+    drag_overlay_owned_by_parent: bool,
+}
+
+/// Geometry shared by the tab handle and the window-content preview attached
+/// to it while the pointer is carrying a tab. Kept independent of paint so a
+/// parent can render the complete lifted object above strip clips.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TabDragVisual {
+    pub tab_id: u64,
+    pub lifted_handle: Rect,
+    pub lift_progress: f64,
 }
 
 impl TabBar {
@@ -350,6 +366,8 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
+            drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
@@ -376,7 +394,7 @@ impl TabBar {
             snap.insert(t.id, *rect);
         }
         self.prev_tab_rects_by_id = snap;
-        self.layout_anim_started = Some(Instant::now());
+        self.layout_anim_started = Some(crate::time::now());
     }
 
     /// Pin transient pill geometry at its resting state for deterministic
@@ -1130,7 +1148,7 @@ impl TabBar {
                 RevealAnim {
                     from: to,
                     to,
-                    started: Instant::now(),
+                    started: crate::time::now(),
                 },
             );
             return to;
@@ -1141,7 +1159,7 @@ impl TabBar {
                 RevealAnim {
                     from: to,
                     to,
-                    started: Instant::now(),
+                    started: crate::time::now(),
                 },
             );
             return to;
@@ -1155,7 +1173,7 @@ impl TabBar {
             RevealAnim {
                 from,
                 to,
-                started: Instant::now(),
+                started: crate::time::now(),
             },
         );
         from
@@ -1168,7 +1186,7 @@ impl TabBar {
     /// curve was running to sample.
     pub fn hold_reveal_at(&mut self, at: Duration) -> bool {
         let mut any = false;
-        let now = Instant::now();
+        let now = crate::time::now();
         for anim in self.reveal_anim.values_mut() {
             if (anim.from - anim.to).abs() <= f64::EPSILON {
                 continue;
@@ -1453,7 +1471,7 @@ impl TabBar {
             desc,
             pill_rect,
             close_rect,
-            started_at: Instant::now(),
+            started_at: crate::time::now(),
         });
         true
     }
@@ -1737,7 +1755,7 @@ impl TabBar {
         // `draw` plays its own fade-in via `inserted_at` instead.
         self.snapshot_layout_for_spring();
         self.tabs.insert(clamped, desc);
-        self.inserted_at.insert(id, Instant::now());
+        self.inserted_at.insert(id, crate::time::now());
         self.active_id = id;
     }
 
@@ -1765,7 +1783,7 @@ impl TabBar {
         if new_target != self.hover_drop_idx {
             self.hover_drop_idx = new_target;
             if new_target.is_some() {
-                self.hover_drop_animated_at = Some(Instant::now());
+                self.hover_drop_animated_at = Some(crate::time::now());
             } else {
                 self.hover_drop_animated_at = None;
             }
@@ -2938,7 +2956,7 @@ impl TabBar {
         if self.tab_rects.is_empty() {
             return;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed_ms = self.hover_drop_animated_at.map_or_else(
             || ms_f64(HOVER_DROP_FADE_MS),
             |t| duration_ms_f64(now.duration_since(t).as_millis()),
@@ -3077,7 +3095,7 @@ impl TabBar {
                 .bytes()
                 .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
             if self.pending_drag.is_none() {
-                self.drag_lifted_at = Some(Instant::now());
+                self.drag_lifted_at = Some(crate::time::now());
                 self.pending_drag = Some(DragPayload::Tab {
                     group: group_tag_hash,
                     tab: t.id,
@@ -3095,14 +3113,14 @@ impl TabBar {
             };
             if new_target != self.drop_zone_target {
                 self.drop_zone_target = new_target;
-                self.drop_zone_animated_at = Some(Instant::now());
+                self.drop_zone_animated_at = Some(crate::time::now());
             }
             // Same gap drives the white-line indicator; cross-group hovers
             // reach it via `set_external_drag_hover`.
             if new_target != self.hover_drop_idx {
                 self.hover_drop_idx = new_target;
                 if new_target.is_some() {
-                    self.hover_drop_animated_at = Some(Instant::now());
+                    self.hover_drop_animated_at = Some(crate::time::now());
                 } else {
                     self.hover_drop_animated_at = None;
                 }
@@ -4148,7 +4166,7 @@ mod tests {
         // Backdate `inserted_at` so both `draw`'s retain and the timestamp check
         // here consider it expired, rather than waiting out `INSERT_FADE_MS`.
         let mut b = bar();
-        let now = Instant::now();
+        let now = crate::time::now();
         b.inserted_at.insert(
             7,
             now.checked_sub(Duration::from_millis(INSERT_FADE_MS + 50))
@@ -4164,7 +4182,7 @@ mod tests {
     fn layout_spring_clears_itself_after_duration() {
         // Backdate `layout_anim_started` rather than waiting out `LAYOUT_ANIM_MS`.
         let mut b = bar();
-        let now = Instant::now();
+        let now = crate::time::now();
         b.layout_anim_started = Some(
             now.checked_sub(Duration::from_millis(LAYOUT_ANIM_MS + 50))
                 .unwrap_or(now),

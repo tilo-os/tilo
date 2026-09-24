@@ -269,6 +269,10 @@ pub struct ProcessPin {
 /// variables once, at first use. A variable already set in the caller's environment is left
 /// alone and recorded in [`ProcessPin::notes`] — combined with [`DEVICE_ENV`], that's a complete manual escape hatch.
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "called from `main` before the warm-up thread or any other thread is spawned, and the EGL/Vulkan loaders of this process read these variables at first use"
+)]
 pub fn pin_process() -> Option<ProcessPin> {
     let node = match probe() {
         Ok(node) => node,

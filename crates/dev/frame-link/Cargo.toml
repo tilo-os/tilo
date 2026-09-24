@@ -16,12 +16,12 @@ path = "src/bin/flatpak-share-demo.rs"
 
 [dependencies]
 # The library uses only the standard library and tracing. The demo binary also
-# depends on the shell's encoder/decoder types and a font rasteriser.
+# depends on the shell's encoder/decoder types and the toolkit's text stack.
 tracing.workspace = true
 
 # Demo-only dependencies. The demo and library share this workspace crate.
 shell = { path = "../../session/shell", default-features = false }
-ab_glyph = "0.2"
+cosmic-text = { workspace = true, features = ["fontconfig", "swash", "std"] }
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
 
 [dev-dependencies]
