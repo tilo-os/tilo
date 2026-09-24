@@ -674,7 +674,9 @@ mod tests {
     fn direct_invocation_without_shell_and_fake_ready_peer_are_refused() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::os::unix::net::UnixListener;
-        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        // Only the directory itself must be private; the platform temp
+        // directory keeps the socket paths below the sun_path limit.
+        let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
         let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
