@@ -8,6 +8,7 @@
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -230,7 +231,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
 
 fn current_shell_action_authorized(state: &ChromeState, id: &str) -> bool {
     let tree = state.tree();
-    let Some(workspace) = tree.active_workspace() else {
+    let Some(workspace) = tree.desktop.active_workspace() else {
         return false;
     };
     let user = state.local_user_for_room(&workspace.room);
@@ -257,6 +258,7 @@ fn active_workspace_id(
 ) -> Result<crate::shell::state::WorkspaceId, ActionError> {
     state
         .tree()
+        .desktop
         .active_workspace()
         .map(|workspace| workspace.id)
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))
@@ -280,6 +282,7 @@ fn active_identity(
     let (room, actor, may_administer) = {
         let tree = state.tree();
         let workspace = tree
+            .desktop
             .active_workspace()
             .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
         let actor = state.local_user_for_room(&workspace.room);
@@ -336,13 +339,10 @@ fn apply_permission_profile_action(
 ) -> Result<(), ActionError> {
     let actor = state.active_local_user();
     let mut tree = state.tree_mut();
-    let workspace_id = tree
+    let (workspace_id, room) = tree
+        .desktop
         .active_workspace()
-        .map(|workspace| workspace.id)
-        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    let room = tree
-        .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(|workspace| (workspace.id, workspace.room))
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
     if !tree.governs_room(room) {
         return Err(ActionError::Refused(
@@ -363,7 +363,8 @@ fn apply_permission_profile_action(
                     .to_string(),
                 rules,
             };
-            tree.active_workspace_mut()
+            tree.desktop
+                .active_workspace_mut()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
                 .save_permission_profile_as(&actor, profile.clone())
                 .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -403,11 +404,13 @@ fn apply_permission_profile_action(
                 .filter(|value| *value > 0)
                 .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
             let ids = tree
+                .desktop
                 .active_workspace_mut()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .assign_permission_profile_as(&actor, profile, subject, expiry)
+                .assign_permission_profile_as(&actor, profile, &subject, expiry)
                 .map_err(|error| ActionError::Refused(error.to_string()))?;
             let written = tree
+                .desktop
                 .active_workspace()
                 .map(|workspace| {
                     workspace
@@ -459,6 +462,7 @@ fn apply_ownership_proposal(
     }
     let current_owner = state
         .tree()
+        .desktop
         .active_workspace()
         .and_then(|workspace| workspace.owner.as_deref())
         .and_then(|owner| hex::decode(owner).ok())
@@ -470,6 +474,7 @@ fn apply_ownership_proposal(
     rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut proposal_id);
     let room = state
         .tree()
+        .desktop
         .active_workspace()
         .map(|workspace| workspace.room.to_string())
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
@@ -500,6 +505,7 @@ fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
     let workspace_id = active_workspace_id(state)?;
     let proposal = state
         .tree()
+        .desktop
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
@@ -533,6 +539,7 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
     let workspace_id = active_workspace_id(state)?;
     let proposal = state
         .tree()
+        .desktop
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
@@ -583,7 +590,7 @@ fn active_admin_workspace(
 > {
     let (workspace_id, room, actor, may_administer) = {
         let tree = state.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return Err(ActionError::Refused("no active workspace".into()));
         };
         let actor = state.local_user_for_room(&workspace.room);
@@ -628,7 +635,11 @@ fn name_invited_peer(state: &mut ChromeState, args: &ActionArgs) -> Result<Strin
     let user = state.active_local_user();
     let named = {
         let mut tree = state.tree_mut();
-        let Some(room) = tree.active_workspace().map(|workspace| workspace.room) else {
+        let Some(room) = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
             return Err(ActionError::Refused(
                 "there is no workspace here to invite anyone into".into(),
             ));
@@ -1241,8 +1252,10 @@ impl Action {
                 let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
-                    let Some((ws_id, room)) =
-                        tree.active_workspace().map(|w| (w.id, w.room.to_string()))
+                    let Some((ws_id, room)) = tree
+                        .desktop
+                        .active_workspace()
+                        .map(|w| (w.id, w.room.to_string()))
                     else {
                         return Err(ActionError::Refused(
                             "there is no workspace here to add an agent to".into(),
@@ -1407,7 +1420,7 @@ impl Action {
                     kind
                 };
                 let tree = st.tree();
-                let workspace = tree.active_workspace().ok_or_else(|| {
+                let workspace = tree.desktop.active_workspace().ok_or_else(|| {
                     ActionError::Refused("no active workspace accepts the record".into())
                 })?;
                 let user = st.local_user_for_room(&workspace.room);
@@ -1784,7 +1797,7 @@ impl SearchProvider for ActionsProvider {
             // session's own broker socket).
             if action.id.starts_with("agent.")
                 && (!ctx.chrome.collab_available()
-                    || ctx.chrome.tree().active_workspace().is_none())
+                    || ctx.chrome.tree().desktop.active_workspace().is_none())
             {
                 continue;
             }
@@ -1814,9 +1827,9 @@ impl SearchProvider for ActionsProvider {
                             let (workspace_id, room, actor) = {
                                 let state = chrome.borrow();
                                 let tree = state.tree();
-                                let workspace = tree.active_workspace().ok_or_else(|| {
-                                    ActionError::Refused("no active workspace".into())
-                                })?;
+                                let Some(workspace) = tree.desktop.active_workspace() else {
+                                    return Err(ActionError::Refused("no active workspace".into()));
+                                };
                                 let user = state.local_user_for_room(&workspace.room);
                                 let actor = workspace.actor_for_person(&user);
                                 if !shell_action_authorized_for(workspace, &actor, "record.bring") {
@@ -2051,7 +2064,7 @@ impl SearchProvider for ActionsProvider {
         let actor = ctx.chrome.active_local_user();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
-            tree.active_workspace().map(|workspace| {
+            tree.desktop.active_workspace().map(|workspace| {
                 crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
@@ -2093,7 +2106,7 @@ impl SearchProvider for ActionsProvider {
         }
         let profile_resource = {
             let tree = ctx.chrome.tree();
-            tree.active_workspace().map(|workspace| {
+            tree.desktop.active_workspace().map(|workspace| {
                 crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
@@ -2247,7 +2260,7 @@ impl SearchProvider for ActionsProvider {
         let actor = ctx.chrome.active_local_user();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
-            tree.active_workspace().map(|workspace| {
+            tree.desktop.active_workspace().map(|workspace| {
                 crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
             })
         };
@@ -2289,7 +2302,7 @@ impl SearchProvider for ActionsProvider {
         }
         let profile_resource = {
             let tree = ctx.chrome.tree();
-            tree.active_workspace().map(|workspace| {
+            tree.desktop.active_workspace().map(|workspace| {
                 crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
             })
         };
@@ -2397,6 +2410,7 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use parking_lot::RwLock;
@@ -2412,10 +2426,10 @@ mod tests {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut ws = Workspace::test_default(id, "Demo");
+        let mut ws = Workspace::new(id, "Demo");
         ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
-        tree.workspaces.push(ws);
-        tree.active = id;
+        tree.desktop.workspaces.push(ws);
+        tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
         ChromeState::new_with_handle(handle)
     }
@@ -2804,10 +2818,10 @@ mod tests {
 
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::test_default(id, "Someone else's workspace");
+        let mut workspace = Workspace::new(id, "Someone else's workspace");
         workspace.set_owner("a-different-person");
-        tree.workspaces.push(workspace);
-        tree.active = id;
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = id;
         let chrome = ChromeState::new_with_handle(Arc::new(RwLock::new(tree)));
 
         for action_id in [
@@ -2993,6 +3007,7 @@ mod tests {
         let before = c
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .expect("fixture has a room")
             .agent_members();
@@ -3011,6 +3026,7 @@ mod tests {
         let after = c
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .expect("fixture has a room")
             .agent_members();
@@ -3058,7 +3074,7 @@ mod tests {
 
         let state = c.borrow();
         let tree = state.tree();
-        let ws = tree.active_workspace().expect("fixture has room");
+        let ws = tree.desktop.active_workspace().expect("fixture has room");
         assert_eq!(
             ws.role_of_agent("operator"),
             Some(crate::shell::state::CapRole::Editor),
@@ -3102,6 +3118,7 @@ mod tests {
         let members = c
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .expect("fixture has a room")
             .agent_members();
@@ -3119,6 +3136,7 @@ mod tests {
         chrome
             .borrow()
             .tree_mut()
+            .desktop
             .active_workspace_mut()
             .expect("fixture has a workspace")
             .set_owner(owner);
@@ -3267,7 +3285,7 @@ mod tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            let workspace = tree.active_workspace_mut().expect("workspace");
+            let workspace = tree.desktop.active_workspace_mut().expect("workspace");
             workspace.owner = None;
             workspace.capabilities.clear();
         }
@@ -3760,7 +3778,7 @@ mod tests {
 
         let state = chrome.borrow();
         let tree = state.tree();
-        let workspace = tree.active_workspace().unwrap();
+        let workspace = tree.desktop.active_workspace().unwrap();
         assert!(workspace.allows(
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {

@@ -8,6 +8,7 @@
 //! Authority is decided from the transport-supplied [`Caller`] alone, with
 //! the same capability checks the admission path has always applied.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::sync::Arc;
 
 use tilo_actions::remote::{
@@ -130,7 +131,8 @@ impl CapnpBrokerState {
         };
         let actor = BrokerActor::for_caller(caller);
         let tree = membership.read();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .filter(|workspace| {
                 let room = workspace.room.to_string();

@@ -1311,7 +1311,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn empty_ws(id: u64) -> Workspace {
         // `Workspace` grew a durable room id, an owner and a capability list; the builder keeps this fixture from having to track them.
-        Workspace::test_default(WorkspaceId(id), "rd")
+        Workspace::new(WorkspaceId(id), "rd")
     }
 
     fn backend_with(injector: RemoteInputInjectorHandle) -> RemoteDesktopBackend {

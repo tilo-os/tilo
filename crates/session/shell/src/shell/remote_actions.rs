@@ -139,11 +139,11 @@ mod tests {
         BrokerActionHost,
         tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
     ) {
-        let mut workspace = Workspace::test_default(WorkspaceId(41), "Remote room");
+        let mut workspace = Workspace::new(WorkspaceId(41), "Remote room");
         workspace.set_owner("a1".repeat(32));
         let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let broker =
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
                 tree.shared(),
