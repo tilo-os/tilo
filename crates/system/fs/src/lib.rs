@@ -19,6 +19,8 @@ pub mod authenticated_transport;
 #[cfg(feature = "filesystem")]
 pub mod availability;
 #[cfg(feature = "filesystem")]
+mod blob_access;
+#[cfg(feature = "filesystem")]
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
 pub mod clock;

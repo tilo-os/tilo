@@ -1822,6 +1822,79 @@ async fn blob_authority_is_scoped_to_live_readable_paths() {
     );
 }
 
+#[tokio::test]
+async fn a_long_lived_blob_index_follows_every_namespace_change() {
+    let peer = identity_of(iroh::SecretKey::generate().public());
+    let mut acl = WorkspaceAcl::new();
+    acl.grant_read(peer, "/shared");
+    let handle = AclHandle::new(acl);
+    let policy = Some(handle.clone());
+    let store = ContentStore::memory();
+    let chunk_of = |manifest: bytes::Bytes| {
+        iroh_blobs::Hash::from(crate::content::Manifest::decode(&manifest).unwrap().chunks[0].hash)
+    };
+    let first = store.write_content(b"first").await.unwrap().unwrap();
+    let first_chunk = chunk_of(store.local(first).await.unwrap());
+    let second = store.write_content(b"second").await.unwrap().unwrap();
+    let second_chunk = chunk_of(store.local(second).await.unwrap());
+    let private = store.write_content(b"private").await.unwrap().unwrap();
+    let private_chunk = chunk_of(store.local(private).await.unwrap());
+
+    let mut ns = Namespace::new("host").unwrap();
+    let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+    let hidden = ns.create_dir(ROOT_INO, "hidden", 1).unwrap();
+    let first_ino = ns.create_file(shared, "first", Some(&first), 5, 1).unwrap();
+    ns.create_file(hidden, "private", Some(&private), 7, 1)
+        .unwrap();
+    let ns = Arc::new(Mutex::new(ns));
+    let index = BlobAccessIndex::new(Arc::clone(&ns));
+    let may = |wanted: Vec<iroh_blobs::Hash>, context: Vec<iroh_blobs::Hash>| {
+        let (policy, index, store) = (&policy, &index, &store);
+        async move {
+            authorize_blob_request(policy, index, store, None, (peer, None), &wanted, &context)
+                .await
+        }
+    };
+
+    assert!(may(vec![first], vec![]).await);
+    assert!(
+        may(vec![first_chunk], vec![first]).await,
+        "a chunk rides on its readable manifest named in the same request"
+    );
+    assert!(
+        may(vec![first_chunk], vec![]).await,
+        "without context the readable manifests are searched"
+    );
+    assert!(
+        !may(vec![private_chunk], vec![first]).await,
+        "a readable manifest in the request does not authorise another file's chunk"
+    );
+    assert!(!may(vec![private_chunk], vec![private]).await);
+    assert!(
+        !may(vec![first_chunk, private_chunk], vec![first]).await,
+        "one unreadable blob refuses the whole batch"
+    );
+
+    // Deleting the only reference revokes it on the very next request, even
+    // though the index was built before.
+    assert!(ns.lock().unwrap().remove(first_ino));
+    assert!(!may(vec![first], vec![]).await);
+    assert!(!may(vec![first_chunk], vec![first]).await);
+
+    // New content is readable at once.
+    ns.lock()
+        .unwrap()
+        .create_file(shared, "second", Some(&second), 6, 2)
+        .unwrap();
+    assert!(may(vec![second, second_chunk], vec![]).await);
+
+    handle.replace(WorkspaceAcl::new());
+    assert!(
+        !may(vec![second], vec![]).await,
+        "the live ACL decides even when the namespace is unchanged"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
