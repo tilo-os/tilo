@@ -334,7 +334,11 @@ impl SessionProtocol {
                 self.serve_authority(peer, request, &mut send).await?;
             }
             SessionOperationV1::Announce => {
-                let _ = self.announcements.send(remote);
+                // Only a peer this device pulls from (a workspace reader) may
+                // start a pass early; anyone else waits for the timer.
+                if authenticated_peer_may_read_whole_workspace(&self.policy, peer) {
+                    let _ = self.announcements.send(remote);
+                }
                 write_frame(&mut send, &SessionFrameV1::Done).await?;
             }
             SessionOperationV1::Ping => {
