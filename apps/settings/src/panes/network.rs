@@ -2924,7 +2924,9 @@ mod tests {
     }
 
     fn wait_for_password_prompt(pane: &mut NetworkPane, doc: &mut AutoCommit, root: &ObjId) {
-        for _ in 0..50 {
+        // A hang guard for the worker thread, not a latency budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             pane.sync(doc, root);
             if pane.expanded_ssid.is_some() {
                 return;
@@ -3108,7 +3110,9 @@ mod tests {
         // the recorder exactly as the password-bearing async path below does;
         // asserting immediately races the worker and can falsely report that
         // the visible Connect button did nothing.
-        for _ in 0..50 {
+        // A hang guard for the worker thread, not a latency budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if !rec.calls().is_empty() {
                 break;
             }
@@ -3222,7 +3226,9 @@ mod tests {
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
         pane.sync(&mut doc, &root);
-        for _ in 0..50 {
+        // A hang guard for the worker thread, not a latency budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &root);
             if !rec.calls.lock().unwrap().is_empty() {
                 break;
@@ -3270,7 +3276,9 @@ mod tests {
             true,
         );
         pane.sync(&mut doc, &root);
-        for _ in 0..50 {
+        // A hang guard for the worker thread, not a latency budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &root);
             if !commands.lock().unwrap().is_empty() {
                 break;
@@ -3309,7 +3317,9 @@ mod tests {
             .unwrap() = "hunter2".into();
         let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
         pane.sync(&mut doc, &root);
-        for _ in 0..50 {
+        // A hang guard for the worker thread, not a latency budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
             if !rec.calls.lock().unwrap().is_empty() {
                 break;
             }
