@@ -171,7 +171,8 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
         body["error"]
             .as_str()
             .unwrap()
-            .contains("membership reconciliation")
+            .contains("membership reconciliation"),
+        "{body}"
     );
     assert!(body.get("certificate").is_none());
     fs::remove_dir(&membership).unwrap();
