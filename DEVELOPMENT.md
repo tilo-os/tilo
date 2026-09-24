@@ -1053,6 +1053,13 @@ thread sees whichever value was set last.
   Executing a freshly written file directly fails intermittently with `ETXTBSY`
   when a sibling test forks while the file is still open for writing.
 
+Clippy's `disallowed_methods` (configured in `clippy.toml`, and repeated in
+`crates/sdk/ui-core/clippy.toml`) rejects `std::env::set_var`/`remove_var`
+calls outside `tilo-test-env`, and the PR lint gate fails on any new site. Use an
+injected path or `ScopedEnv`; only production code that must change its own
+environment (for example clearing systemd's `LISTEN_*` before any thread starts)
+takes a narrow `#[allow]` whose reason says why that is safe there.
+
 Full OS image, which needs rootless `podman` for the container step and `sudo`
 for the disk-image step:
 
