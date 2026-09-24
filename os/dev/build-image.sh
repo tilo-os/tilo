@@ -25,6 +25,8 @@
 #     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
+#   * TILO_IMAGE_ONLY=1 builds the container and stops: the base a dev image is
+#     derived from (os/dev/build-dev-image.sh, tilo-vm vm upgrade --from local).
 #   * The image is SEALED: it carries a Unified Kernel Image whose signed command
 #     line includes the hardening kargs and `tilo.generation=<N>`, which
 #     systemd-stub measures into PCR 11. Two consequences for this script:
@@ -44,7 +46,7 @@ set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) die "unknown arg: $a (host cargo build is gone; binaries compile in-image)" ;;
   esac
 done
@@ -574,6 +576,15 @@ else
   else
     build_image "$TILO_PROVISIONAL_CFS_DIGEST"
   fi
+fi
+
+# TILO_IMAGE_ONLY=1 stops at the container. Its UKI still seals the placeholder
+# composefs digest, so it is no install source; it is the base
+# os/dev/build-dev-image.sh derives the dev image from, which unseals it anyway.
+if [ "${TILO_IMAGE_ONLY:-0}" = 1 ]; then
+  [ "$TILO_SKIP_BUILD" != 1 ] || die "TILO_IMAGE_ONLY=1 with TILO_SKIP_BUILD=1 does nothing"
+  msg "DONE: $TILO_IMAGE (TILO_IMAGE_ONLY=1: container only, no disk and no closed seal)"
+  exit 0
 fi
 
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then

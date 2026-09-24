@@ -97,6 +97,11 @@ makes the image's entry the default again and removes every `tilo-vm-*`
 entry; tilo-vm reboots and confirms as above. After a direct boot, the same
 command boots the VM's disk again instead.
 
+A swapped kernel's entry carries the command line of the deployment it was
+installed from. Put the image's kernel back (`tilo-vm rollback --slot vm`
+down to the base generation) before `tilo-vm vm upgrade`, or the VM keeps
+booting the old deployment through that entry.
+
 A failed boot falls back to the previous default entry. If that is an
 earlier dev build of the same release, its modules may not match the
 current layer's: `tilo-vm rollback --slot vm` puts them back in step. GRUB

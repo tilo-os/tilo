@@ -177,7 +177,7 @@ Not constrained: **ports** (a `NetHost` scope names a host and carries no port) 
 - An app whose manifest enumerates endpoints is still filtered to them, because a `*` grant narrows to a declared allowlist rather than widening past it. This is the common case and it works.
 - An app whose manifest says `net.mode = "host"` is unrestricted once the user clicks the one network choice, and the UI offers no way to say "only `mail.example.com`". Closing this needs the composer to offer the package's declared endpoints as individual choices (the manifest is already parsed into `InstalledApp`), or a hostname text field. Until then, a host-scoped grant is reachable through the capability file and the manifest, not through the panel.
 
-If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `TILO_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it.
+If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `TILO_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it — in a developer build only. Like the launcher's other trust and policy overrides (system app store, runtime bundle root, trusted-publisher list, JIT and untrusted-parser policy files, D-Bus proxy binary; see `crates/packaging/launcher/src/dev_env.rs`), a release build ignores it with a one-time warning unless built with `--features dev-overrides`, and a release compositor strips all of them from the launcher's environment.
 
 ### Hardware
 

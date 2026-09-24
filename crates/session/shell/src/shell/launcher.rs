@@ -2055,6 +2055,34 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
     spawn_launch(app.package_id, app.display_name, command)
 }
 
+/// Put a [`LaunchCommand`]'s environment on the `tilo-launcher` process.
+///
+/// The launcher otherwise inherits the compositor's whole environment. A
+/// release launcher already ignores its developer-only overrides
+/// ([`launcher::dev_env::DEV_OVERRIDE_VARS`]); a release compositor also
+/// strips them, so a launcher built with different settings still never
+/// sees them.
+pub fn apply_launch_env(command: &mut std::process::Command, env: &[(String, String)]) {
+    apply_launch_env_with(command, env, crate::compositor::dev_env::DEV_ENV_OVERRIDES);
+}
+
+/// [`apply_launch_env`] as a function of the gate, so the release behaviour
+/// is assertable from a debug test run.
+fn apply_launch_env_with(
+    command: &mut std::process::Command,
+    env: &[(String, String)],
+    dev_overrides: bool,
+) {
+    if !dev_overrides {
+        for name in launcher::dev_env::DEV_OVERRIDE_VARS {
+            command.env_remove(name);
+        }
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+}
+
 /// Run `command` on a worker thread under `(package_id, display_name)`,
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.tapp`
 /// via `tilo-launcher run` and a host app via `run-host` — since they
@@ -2097,9 +2125,7 @@ pub fn spawn_launch(
     let spawn_result = builder.spawn(move || {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
-        for (k, v) in &command.env {
-            cmd.env(k, v);
-        }
+        apply_launch_env(&mut cmd, &command.env);
         // Not a terminal job: no stdin, and output is relayed (not
         // inherited) so it can be quoted back in a failure notification.
         cmd.stdin(Stdio::null());
@@ -3116,6 +3142,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// What the spawned launcher's environment will say about a variable.
+    #[derive(Debug, PartialEq, Eq)]
+    enum LauncherEnv {
+        Inherited,
+        Removed,
+        Set(String),
+    }
+
+    fn launcher_env_entry(command: &std::process::Command, name: &str) -> LauncherEnv {
+        match command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+        {
+            None => LauncherEnv::Inherited,
+            Some((_, None)) => LauncherEnv::Removed,
+            Some((_, Some(value))) => LauncherEnv::Set(value.to_string_lossy().into_owned()),
+        }
+    }
+
+    #[test]
+    fn a_release_compositor_strips_developer_overrides_from_the_launcher() {
+        let env = vec![("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string())];
+        let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+        apply_launch_env_with(&mut command, &env, false);
+        for name in launcher::dev_env::DEV_OVERRIDE_VARS {
+            assert_eq!(
+                launcher_env_entry(&command, name),
+                LauncherEnv::Removed,
+                "{name} must be removed from the launcher's environment",
+            );
+        }
+        assert_eq!(
+            launcher_env_entry(&command, "XDG_RUNTIME_DIR"),
+            LauncherEnv::Set("/run/user/1000".to_string()),
+        );
+        // The overlay the developer session relies on is covered by the list.
+        for name in [
+            "TILO_APPS_SYSTEM_DIR",
+            "TILO_APPS_SYSTEM_PAYLOAD_DIR",
+            "TILO_RUNTIME_BUNDLE_DIR",
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+        ] {
+            assert!(
+                launcher::dev_env::DEV_OVERRIDE_VARS.contains(&name),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_developer_compositor_leaves_the_launcher_environment_inherited() {
+        let env = vec![(
+            "TILO_RUNTIME_BUNDLE_DIR".to_string(),
+            "/dev/runtime".to_string(),
+        )];
+        let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+        apply_launch_env_with(&mut command, &env, true);
+        assert_eq!(
+            launcher_env_entry(&command, "TILO_RUNTIME_BUNDLE_DIR"),
+            LauncherEnv::Set("/dev/runtime".to_string()),
+        );
+        assert_eq!(
+            launcher_env_entry(&command, "TILO_JIT_ENTITLED_FILE"),
+            LauncherEnv::Inherited
+        );
     }
 
     #[test]

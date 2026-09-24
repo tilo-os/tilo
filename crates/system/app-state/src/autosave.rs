@@ -24,7 +24,7 @@ pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// Below this, compaction isn't worth it — a small document rewrites in microseconds and the
 /// append bookkeeping would dominate.
-const MIN_COMPACT_BYTES: usize = 64 * 1024;
+pub(crate) const MIN_COMPACT_BYTES: usize = 64 * 1024;
 
 /// One coherent worker acknowledgement; reading this never commits document operations.
 #[derive(Clone, Debug, Default)]

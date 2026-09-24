@@ -623,11 +623,15 @@ pub fn resolve_runtime(
         .split_once('/')
         .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
     // Look up: the configured/user root first, then the immutable system
-    // fallback. `default_bundle_path` intentionally honours
-    // TILO_RUNTIME_BUNDLE_DIR; developer sessions use it to keep the runtime
-    // matched to an overlaid registry/payload set instead of silently binding
-    // the installed `/usr` runtime.
-    let per_user = runtime_bundle::default_bundle_path(version).ok();
+    // fallback. A developer build honours TILO_RUNTIME_BUNDLE_DIR; developer
+    // sessions use it to keep the runtime matched to an overlaid
+    // registry/payload set instead of silently binding the installed `/usr`
+    // runtime. A release build ignores it (see `crate::dev_env`).
+    let per_user = runtime_bundle::default_bundle_path_from(
+        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
+        version,
+    )
+    .ok();
     let system = runtime_bundle::system_bundle_path(version);
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
@@ -655,7 +659,7 @@ pub fn resolve_runtime(
 ///   1. `opts.require_runtime_publisher`, if set, must match.
 ///   2. Else the system trust-list file, if present and non-empty
 ///      (`/etc/tilo/runtime-bundle-trusted-publishers.txt`, or
-///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`).
+///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE` in a developer build).
 ///   3. Else any signed publisher is accepted.
 ///
 /// Layering lets the OS image bake and pin a fresh key at build time.
@@ -781,12 +785,12 @@ fn trusted_publisher_pin_from_file() -> Option<String> {
 }
 
 /// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
-/// `None` when neither the env override nor the default file exists.
+/// `None` when neither the (developer-build) env override nor the default
+/// file exists.
 fn load_trusted_publisher_list() -> Option<Vec<String>> {
-    let path: PathBuf = match std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
-        Some(p) => PathBuf::from(p),
-        None => PathBuf::from("/etc/tilo/runtime-bundle-trusted-publishers.txt"),
-    };
+    let path = trusted_publishers_path_from(crate::dev_env::dev_override(
+        crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
+    ));
     let bytes = std::fs::read(&path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     let list: Vec<String> = text
@@ -796,6 +800,64 @@ fn load_trusted_publisher_list() -> Option<Vec<String>> {
         .map(std::string::ToString::to_string)
         .collect();
     Some(list)
+}
+
+/// The image's runtime trusted-publisher list.
+pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
+
+/// Where the trusted-publisher list is read from, given the override the
+/// build's gate let through ([`crate::dev_env::dev_override`]).
+fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
+    allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
+}
+
+#[cfg(test)]
+mod dev_override_tests {
+    use super::*;
+    use crate::dev_env::{TRUSTED_PUBLISHERS_FILE_ENV, dev_override_from};
+
+    #[test]
+    fn a_release_build_reads_the_images_trusted_publisher_list() {
+        let path = trusted_publishers_path_from(dev_override_from(
+            false,
+            TRUSTED_PUBLISHERS_FILE_ENV,
+            Some("/tmp/attacker-publishers.txt".into()),
+        ));
+        assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
+    }
+
+    #[test]
+    fn a_developer_build_honours_the_trusted_publisher_override() {
+        let path = trusted_publishers_path_from(dev_override_from(
+            true,
+            TRUSTED_PUBLISHERS_FILE_ENV,
+            Some("/dev/runtime/trusted-publishers.txt".into()),
+        ));
+        assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
+    }
+
+    #[test]
+    fn a_release_build_ignores_the_runtime_bundle_root_override() {
+        let gated = dev_override_from(
+            false,
+            runtime_bundle::RUNTIME_DIR_ENV,
+            Some("/tmp/attacker-runtime".into()),
+        );
+        // Resolution may fail on a machine with no data dir; what matters is
+        // that it never lands under the override.
+        if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
+            assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+        }
+        let honoured = dev_override_from(
+            true,
+            runtime_bundle::RUNTIME_DIR_ENV,
+            Some("/dev/runtime".into()),
+        );
+        assert_eq!(
+            runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
+            Some(PathBuf::from("/dev/runtime/1"))
+        );
+    }
 }
 
 /// Top-level entry: reads the manifest, builds the sandbox, execs.
@@ -849,8 +911,9 @@ pub enum LaunchMode {
 }
 
 /// Env override that turns the egress gate off, downgrading a host-scoped
-/// grant to unrestricted access. Explicit only — never a silent default.
-pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
+/// grant to unrestricted access. Explicit only — never a silent default —
+/// and honoured only by developer builds (see [`crate::dev_env`]).
+pub const NET_GATE_ENV: &str = crate::dev_env::NET_GATE_ENV;
 
 /// Start the egress gate if this launch needs one. Returns the bwrap bind
 /// description and the guard keeping the gate alive; both `None` when
