@@ -1314,61 +1314,68 @@ impl RealtimeDecoder {
             return Ok(None);
         }
         self.awaiting_keyframe = false;
+        loop {
+            match self.push_and_pull(unit, keyframe) {
+                Ok(sample) => {
+                    let picture = sample.and_then(|s| self.picture_from_sample(&s));
+                    if picture.is_some() {
+                        self.first_output_seen = true;
+                    }
+                    return Ok(picture);
+                }
+                Err(e) => {
+                    let failed = self.element().map_or("decoder", |e| e.element);
+                    tracing::warn!(
+                        "media: real-time decoder {failed} failed ({e}); trying the next"
+                    );
+                    self.tried.push(format!("{failed}: {e}"));
+                    self.start_next()?;
+                    // A keyframe can start the next element right away (a
+                    // hardware decoder that refuses the stream's size or
+                    // profile fails on exactly this unit); anything else
+                    // waits for the next keyframe.
+                    if !keyframe {
+                        return Ok(None);
+                    }
+                    self.awaiting_keyframe = false;
+                }
+            }
+        }
+    }
+
+    /// Push one unit into the running element and collect the newest
+    /// picture it has.
+    fn push_and_pull(
+        &mut self,
+        unit: &[u8],
+        keyframe: bool,
+    ) -> Result<Option<gst::Sample>, String> {
         // A monotonically increasing timestamp keeps every element's
         // bookkeeping happy; the caller's own timing travels separately.
         self.pts = self.pts.saturating_add(Duration::from_millis(1));
-        let buffer = {
-            let mut b = gst_buffer(unit.to_vec(), self.pts);
-            if !keyframe && let Some(b) = b.get_mut() {
-                b.set_flags(gst::BufferFlags::DELTA_UNIT);
-            }
-            b
-        };
+        let mut buffer = gst_buffer(unit.to_vec(), self.pts);
+        if !keyframe && let Some(b) = buffer.get_mut() {
+            b.set_flags(gst::BufferFlags::DELTA_UNIT);
+        }
         let timeout = if self.first_output_seen {
             FRAME_TIMEOUT
         } else {
             STARTUP_TIMEOUT
         };
-        let result = {
-            let Some((running, _)) = self.running.as_ref() else {
-                return Err(RealtimeError::Unavailable {
-                    codec: self.config.codec,
-                    tried: self.tried.clone(),
-                });
-            };
-            let mut newest = None;
-            let outcome = (|| -> Result<(), String> {
-                // Anything that arrived late from the previous unit first.
-                if let Some(s) = running.drain()?.pop() {
-                    newest = Some(s);
-                }
-                running.push(buffer)?;
-                if let Some(s) = running.next_sample(timeout)? {
-                    newest = Some(s);
-                }
-                if let Some(s) = running.drain()?.pop() {
-                    newest = Some(s);
-                }
-                Ok(())
-            })();
-            outcome.map(|()| newest)
-        };
-        match result {
-            Ok(sample) => {
-                let picture = sample.and_then(|s| self.picture_from_sample(&s));
-                if picture.is_some() {
-                    self.first_output_seen = true;
-                }
-                Ok(picture)
-            }
-            Err(e) => {
-                let failed = self.element().map_or("decoder", |e| e.element);
-                tracing::warn!("media: real-time decoder {failed} failed ({e}); trying the next");
-                self.tried.push(format!("{failed}: {e}"));
-                self.start_next()?;
-                Ok(None)
-            }
+        let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
+        let mut newest = None;
+        // Anything that arrived late from the previous unit first.
+        if let Some(s) = running.drain()?.pop() {
+            newest = Some(s);
         }
+        running.push(buffer)?;
+        if let Some(s) = running.next_sample(timeout)? {
+            newest = Some(s);
+        }
+        if let Some(s) = running.drain()?.pop() {
+            newest = Some(s);
+        }
+        Ok(newest)
     }
 
     fn picture_from_sample(&self, sample: &gst::Sample) -> Option<DecodedPicture> {
