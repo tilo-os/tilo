@@ -9,7 +9,7 @@
 //! `InputEvent` is the wire vocabulary peer→owner input travels in; the
 //! owner drops it if read-only, else hands it to a [`RemoteInputSink`].
 
-use crate::network::encoder::{EncodeError, H264Encoder};
+use crate::network::encoder::{EncodeError, VideoEncoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -243,7 +243,7 @@ pub enum EncodeTickOutcome {
 /// production, a synthesised RGBA frame in tests. Not mutated until an
 /// encode succeeds, so callers swallowing [`EncodeTickOutcome::EncodeFailed`] don't poison the timestamp.
 pub fn encode_tick<F>(
-    encoder: &mut H264Encoder,
+    encoder: &mut VideoEncoder,
     throttle: &mut StreamingThrottle,
     now: Instant,
     fetch_frame: F,
@@ -400,8 +400,9 @@ mod tests {
     /// `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
     #[test]
     fn shared_foreign_surface_round_trips_rgba() {
-        use crate::network::decoder::H264Decoder;
+        use crate::network::decoder::VideoDecoder;
         use crate::network::surface_tracker::SurfaceTracker;
+        use media::StreamCodec;
 
         const W: u32 = 64;
         const H: u32 = 64;
@@ -423,7 +424,8 @@ mod tests {
         tracker.deposit_for_test(SURFACE, input.clone(), W, H);
 
         // Production egress path — the streaming task wires exactly this shape.
-        let mut encoder = H264Encoder::new(W, H, 30).expect("encoder");
+        // VP9, royalty-free software: no GPU and no Cisco binary needed.
+        let mut encoder = VideoEncoder::new(StreamCodec::Vp9, W, H, 30).expect("encoder");
         let mut throttle = StreamingThrottle::new();
         let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
             tracker.take_latest(SURFACE).map(|frame| frame.rgba)
@@ -447,7 +449,7 @@ mod tests {
         );
 
         // Decode + PSNR check against the same floor as the gradient test.
-        let mut decoder = H264Decoder::new();
+        let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
         let frame = decoder.decode(&nalus).expect("decoder yields a frame");
         assert_eq!(frame.width, W);
         assert_eq!(frame.height, H);
@@ -461,7 +463,7 @@ mod tests {
         let rgba = match &frame.pixels {
             crate::network::decoder::DecodedPixels::Rgba8(b) => b,
             other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
-                panic!("H.264 decoder returned non-RGBA pixels: {other:?}")
+                panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
             }
         };
         let decoded_rgb = strip_alpha(rgba);
@@ -716,7 +718,7 @@ mod tests {
         let mut tracker = SurfaceTracker::new();
         tracker.deposit_for_test(SURFACE, frame.clone(), W, H);
 
-        let mut encoder = H264Encoder::new(W, H, 30).expect("encoder");
+        let mut encoder = VideoEncoder::new(media::StreamCodec::Vp9, W, H, 30).expect("encoder");
         let mut throttle = StreamingThrottle::new();
         let t0 = Instant::now();
 
