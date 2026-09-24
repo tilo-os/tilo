@@ -972,8 +972,21 @@ impl ChatApp {
                 doc,
                 &actions::ChatAction::SetCallTicket {
                     channel: channel.to_string(),
-                    user: me,
+                    user: me.clone(),
                     ticket,
+                },
+            );
+        }
+        // Announce which video codecs this peer decodes, so a sender picks
+        // one every member takes (AV1/VP9 when all have them in hardware).
+        if let Some(caps) = self.local_video_caps() {
+            self.perform_action(
+                doc,
+                &actions::ChatAction::SetCallVideoCaps {
+                    channel: channel.to_string(),
+                    user: me,
+                    hardware_decode: caps.hardware_decode,
+                    software_decode: caps.software_decode,
                 },
             );
         }
@@ -1100,6 +1113,7 @@ impl ChatApp {
         }
         let me = self.me.id.clone();
         let members = ChatDoc::list_voice_members(doc, &self.call.channel);
+        self.note_call_peer_video(&me, &members);
         for m in members {
             if m.user == me {
                 continue;

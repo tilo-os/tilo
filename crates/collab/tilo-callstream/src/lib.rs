@@ -37,6 +37,7 @@ pub use decoder::{
 };
 pub use encoder::{EncodeError, VideoEncoder};
 pub use media::StreamCodec;
+pub use media::realtime::{CodecCapabilities, local_capabilities, negotiate};
 pub use session::{VideoStreamReceiver, VideoStreamSender};
 pub use stream::{
     FrameError, MAX_BUFFERED_STREAM_LEN, MAX_ENCODED_FRAME_LEN, PeerId, ReceiverEvent,
