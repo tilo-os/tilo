@@ -53,8 +53,19 @@ fn production_open_completes_visual_work() {
         "opened PDF exposes its resources"
     );
     // Arrival of an imported payload must invalidate the materialised plan,
-    // even though the CRDT plan itself does not change.
-    let bytes = std::fs::read(path).expect("fixture bytes");
+    // even though the CRDT plan itself does not change. (The opened file is
+    // itself pinned in the store, so the import is a different PDF.)
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/doc/pdf/tests/fixtures/latin.pdf"),
+    )
+    .expect("fixture bytes");
+    assert!(
+        blobstore::store().has(&blobstore::hash_bytes(
+            &std::fs::read(&path).expect("opened bytes")
+        )),
+        "the opened document is kept in the content-addressed store"
+    );
     let hash = blobstore::hash_bytes(&bytes);
     assert!(
         !blobstore::store().has(&hash),
@@ -73,6 +84,7 @@ fn production_open_completes_visual_work() {
                 width_milli: 612_000,
                 height_milli: 792_000,
             }),
+            rotation: 0,
         }],
     );
     harness.relayout();

@@ -296,7 +296,7 @@ jobs:
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer')
+        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p thumbnail')
         run: |
           asset=$(bash tools/ci/install-pdfium.sh --asset-name)
           ./os/dev/cache-github-assets.sh "$asset"

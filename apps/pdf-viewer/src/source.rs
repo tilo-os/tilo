@@ -38,7 +38,8 @@ use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat}
 
 use crate::doc::{ImportedPage, PagePlanEntry};
 use crate::model::{
-    AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature, SignatureInk,
+    AnnoKind, Annotation, Comment, Document, FormEntry, MarkupStyle, OutlineItem, PtRect,
+    Signature, SignatureInk,
 };
 use crate::text_layer::PageText;
 
@@ -259,14 +260,33 @@ pub struct RasterBackend {
     /// This lets UI layout remain stable while `blobstore::get()` asks peers.
     pending_sizes: Vec<Option<(f64, f64)>>,
     pending_hashes: Vec<Option<String>>,
-    /// Rendered bitmaps keyed by (source, source-page, target-width bucket).
-    cache: HashMap<(usize, usize, u32), PenikoImage>,
+    /// Recorded rotation (degrees) of each displayed page occurrence.
+    rotations: Vec<i32>,
+    /// Rendered bitmaps keyed by (source, source-page, target-width bucket,
+    /// rotation).
+    cache: HashMap<RasterKey, PenikoImage>,
     /// Byte size and recency bookkeeping for the bounded raster cache.
-    cache_sizes: HashMap<(usize, usize, u32), usize>,
-    cache_lru: VecDeque<(usize, usize, u32)>,
+    cache_sizes: HashMap<RasterKey, usize>,
+    cache_lru: VecDeque<RasterKey>,
     cache_bytes: usize,
     /// Per-source-page extracted text layer, filled lazily on first request.
     text_cache: HashMap<(usize, usize), Arc<PageText>>,
+    /// Content hash and length of the opened bytes, which are kept in the
+    /// content-addressed blob store.
+    source_hash: String,
+    source_len: u64,
+}
+
+/// A cached bitmap's identity: source, source page, width bucket, rotation.
+type RasterKey = (usize, usize, u32, i32);
+
+/// A page size after an added rotation.
+fn rotated_size((w, h): (f64, f64), degrees: i32) -> (f64, f64) {
+    if degrees.rem_euclid(180) == 90 {
+        (h, w)
+    } else {
+        (w, h)
+    }
 }
 
 /// The process-wide PDF engine.
@@ -352,6 +372,13 @@ impl RasterBackend {
 
     fn open(bytes: &[u8]) -> anyhow::Result<Self> {
         let engine = engine()?;
+        // The document is an immutable blob: keep the bytes in the
+        // content-addressed store (deduplicated by hash) so the markup record
+        // can pin exactly what it annotates. A store that refuses (size
+        // limits) still leaves the hash as the identity.
+        let source_hash =
+            qdoc::blobstore::put(bytes).unwrap_or_else(|| qdoc::blobstore::hash_bytes(bytes));
+        let byte_len = bytes.len() as u64;
         let source = match engine.open_bytes(bytes) {
             Ok(doc) => Self::source_from(doc)
                 .ok_or_else(|| anyhow!("the PDF has no pages or unsupported page sizes"))?,
@@ -371,12 +398,33 @@ impl RasterBackend {
             plan,
             pending_sizes: vec![None; source_len],
             pending_hashes: vec![None; source_len],
+            rotations: vec![0; source_len],
             cache: HashMap::new(),
             cache_sizes: HashMap::new(),
             cache_lru: VecDeque::new(),
             cache_bytes: 0,
             text_cache: HashMap::new(),
+            source_hash,
+            source_len: byte_len,
         })
+    }
+
+    /// Content hash of the opened bytes.
+    pub fn source_hash(&self) -> &str {
+        &self.source_hash
+    }
+
+    pub fn source_len(&self) -> u64 {
+        self.source_len
+    }
+
+    /// The opened document's form fields, their widgets mapped to displayed
+    /// pages of the original plan.
+    pub fn form_fields(&self) -> Vec<tilo_pdf::FormField> {
+        self.sources
+            .first()
+            .and_then(|s| s.doc.form_fields().ok())
+            .unwrap_or_default()
     }
 
     /// Number of displayed pages (the length of the editable page plan).
@@ -445,6 +493,10 @@ impl RasterBackend {
                     .map(|imported| imported.hash.clone())
             })
             .collect();
+        self.rotations = entries
+            .iter()
+            .map(|entry| entry.rotation.rem_euclid(360))
+            .collect();
         self.plan = entries
             .iter()
             .map(|entry| match &entry.imported {
@@ -488,19 +540,39 @@ impl RasterBackend {
             .unwrap_or((612.0, 792.0))
     }
 
-    /// Size of displayed page `display_idx`, in PDF points.
+    /// Size of displayed page `display_idx`, in PDF points, with its recorded
+    /// rotation applied.
     pub fn page_size(&self, display_idx: usize) -> (f64, f64) {
-        self.slot(display_idx)
+        let size = self
+            .slot(display_idx)
             .and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
             .or_else(|| self.pending_sizes.get(display_idx).copied().flatten())
-            .unwrap_or_else(|| self.first_page_size())
+            .unwrap_or_else(|| self.first_page_size());
+        rotated_size(size, self.page_rotation(display_idx))
     }
 
-    /// How displayed page `display_idx` maps between PDF user space and the
-    /// reader's page-point (display) space.
+    /// The source page's own geometry for displayed page `display_idx` (its
+    /// `/Rotate`, not the occurrence's recorded rotation).
     pub fn page_geometry(&self, display_idx: usize) -> Option<tilo_pdf::PageGeometry> {
         let slot = self.slot(display_idx)?;
         self.sources.get(slot.source)?.geometry(slot.page)
+    }
+
+    /// The recorded rotation (degrees) of displayed page `display_idx`.
+    pub fn page_rotation(&self, display_idx: usize) -> i32 {
+        self.rotations.get(display_idx).copied().unwrap_or(0)
+    }
+
+    /// Own geometry and recorded rotation of every displayed page.
+    pub fn page_layout(&self) -> (Vec<Option<tilo_pdf::PageGeometry>>, Vec<i32>) {
+        (
+            (0..self.page_count())
+                .map(|i| self.page_geometry(i))
+                .collect(),
+            (0..self.page_count())
+                .map(|i| self.page_rotation(i))
+                .collect(),
+        )
     }
 
     // ---- page editing -----------------------------------------------
@@ -515,9 +587,16 @@ impl RasterBackend {
         let slot = self.plan.remove(from);
         let size = self.pending_sizes.remove(from);
         let hash = self.pending_hashes.remove(from);
+        let rotation = if from < self.rotations.len() {
+            self.rotations.remove(from)
+        } else {
+            0
+        };
         self.plan.insert(to, slot);
         self.pending_sizes.insert(to, size);
         self.pending_hashes.insert(to, hash);
+        self.rotations
+            .insert(to.min(self.rotations.len()), rotation);
     }
 
     /// Remove displayed page `idx`. Keeps at least one page.
@@ -526,6 +605,9 @@ impl RasterBackend {
             self.plan.remove(idx);
             self.pending_sizes.remove(idx);
             self.pending_hashes.remove(idx);
+            if idx < self.rotations.len() {
+                self.rotations.remove(idx);
+            }
         }
     }
 
@@ -538,6 +620,9 @@ impl RasterBackend {
                 .insert(idx + 1, self.pending_sizes.get(idx).copied().flatten());
             self.pending_hashes
                 .insert(idx + 1, self.pending_hashes.get(idx).cloned().flatten());
+            let rotation = self.page_rotation(idx);
+            self.rotations
+                .insert((idx + 1).min(self.rotations.len()), rotation);
         }
     }
 
@@ -565,6 +650,8 @@ impl RasterBackend {
             );
             self.pending_sizes.insert(at + page, None);
             self.pending_hashes.insert(at + page, None);
+            self.rotations
+                .insert((at + page).min(self.rotations.len()), 0);
         }
         Ok(n)
     }
@@ -590,6 +677,7 @@ impl RasterBackend {
         );
         self.pending_sizes.insert(at, None);
         self.pending_hashes.insert(at, None);
+        self.rotations.insert(at.min(self.rotations.len()), 0);
         Ok(())
     }
 
@@ -674,10 +762,13 @@ impl RasterBackend {
                 else {
                     return false;
                 };
-                let Some(bucket) = Self::bucket_for_page(target_w, *size) else {
+                let rotation = self.page_rotation(display_idx);
+                let Some(bucket) = Self::bucket_for_page(target_w, rotated_size(*size, rotation))
+                else {
                     return false;
                 };
-                self.cache.contains_key(&(slot.source, slot.page, bucket))
+                self.cache
+                    .contains_key(&(slot.source, slot.page, bucket, rotation))
             }
             None => false,
         }
@@ -689,15 +780,18 @@ impl RasterBackend {
     #[cfg(test)]
     pub fn cached_full_page_count(&self) -> usize {
         const THUMB_MAX: u32 = 600;
-        self.cache.keys().filter(|(_, _, b)| *b > THUMB_MAX).count()
+        self.cache
+            .keys()
+            .filter(|(_, _, b, _)| *b > THUMB_MAX)
+            .count()
     }
 
-    fn touch_cache(&mut self, key: (usize, usize, u32)) {
+    fn touch_cache(&mut self, key: RasterKey) {
         self.cache_lru.retain(|candidate| *candidate != key);
         self.cache_lru.push_back(key);
     }
 
-    fn evict_cache(&mut self, key: (usize, usize, u32)) {
+    fn evict_cache(&mut self, key: RasterKey) {
         self.cache.remove(&key);
         self.cache_bytes = self
             .cache_bytes
@@ -705,7 +799,7 @@ impl RasterBackend {
         self.cache_lru.retain(|candidate| *candidate != key);
     }
 
-    fn cache_image(&mut self, key: (usize, usize, u32), image: PenikoImage) {
+    fn cache_image(&mut self, key: RasterKey, image: PenikoImage) {
         let bytes = usize::try_from(image.width)
             .ok()
             .and_then(|width| {
@@ -747,9 +841,13 @@ impl RasterBackend {
     /// buffer, wrapped without a copy.
     pub fn render(&mut self, display_idx: usize, target_w: u32) -> Option<PenikoImage> {
         let slot = self.slot(display_idx)?;
-        let size = *self.sources.get(slot.source)?.page_sizes.get(slot.page)?;
+        let rotation = self.page_rotation(display_idx);
+        let size = rotated_size(
+            *self.sources.get(slot.source)?.page_sizes.get(slot.page)?,
+            rotation,
+        );
         let bucket = Self::bucket_for_page(target_w, size)?;
-        let key = (slot.source, slot.page, bucket);
+        let key = (slot.source, slot.page, bucket, rotation);
         if let Some(img) = self.cache.get(&key).cloned() {
             self.touch_cache(key);
             return Some(img);
@@ -818,7 +916,7 @@ impl RasterBackend {
             .cache
             .keys()
             .copied()
-            .filter(|(_, _, bucket)| *bucket > keep && *bucket > THUMB_MAX)
+            .filter(|(_, _, bucket, _)| *bucket > keep && *bucket > THUMB_MAX)
             .collect();
         for key in stale {
             self.evict_cache(key);
@@ -841,47 +939,49 @@ impl RasterBackend {
     }
 
     /// Export the edited document — the pages in the current plan order,
-    /// including imported PDF/image pages — with the reader's markup written
-    /// as standard PDF annotations, and write it to `out`. Highlights become
-    /// highlight annotations, ink becomes ink annotations, sticky notes become
-    /// text annotations carrying their comment thread, and signatures become
+    /// including imported PDF/image pages and each page's recorded rotation —
+    /// with the reader's markup written as standard PDF annotations and the
+    /// recorded form values as the form's field values, and write it to
+    /// `out`. Highlights, underlines and strike-outs become text-markup
+    /// annotations, ink becomes ink annotations, sticky notes become text
+    /// annotations carrying their comment thread, and signatures become
     /// stamps whose appearance is the signer's real ink (or typed name) plus
-    /// the signer name and date. Every reader shows them; the original bytes
-    /// are kept as they are and the edits appended as an incremental update.
+    /// the signer name and date. The original bytes are kept as they are and
+    /// the edits appended as an incremental update; the same markup on the
+    /// same bytes always exports to the same file.
+    ///
+    /// `annotations` and `signatures` must be in PDF user space.
     ///
     /// # Errors
     ///
     /// Returns an error if a planned page is still awaiting imported content,
     /// if the engine fails to export, or if writing `out` fails.
-    pub fn save_annotated(
-        &self,
-        annotations: &[Annotation],
-        comments: &[Comment],
-        signatures: &[Signature],
-        out: &Path,
-    ) -> anyhow::Result<()> {
-        let edits = self.edits_for(annotations, comments, signatures)?;
+    pub fn save_annotated(&self, markup: &ExportMarkup, out: &Path) -> anyhow::Result<()> {
+        let bytes = self.export_bytes(markup)?;
+        std::fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
+        Ok(())
+    }
+
+    /// The exported PDF bytes for `markup` (see [`Self::save_annotated`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::save_annotated`], without the write.
+    pub fn export_bytes(&self, markup: &ExportMarkup) -> anyhow::Result<Vec<u8>> {
+        let edits = self.edits_for(markup)?;
         let base = self
             .sources
             .first()
             .ok_or_else(|| anyhow!("no document is open"))?;
         let imports: Vec<&tilo_pdf::Document> =
             self.sources.iter().skip(1).map(|s| &s.doc).collect();
-        let bytes = base
-            .doc
+        base.doc
             .export(&edits, &imports)
-            .map_err(|e| anyhow!("exporting the PDF: {e}"))?;
-        std::fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
-        Ok(())
+            .map_err(|e| anyhow!("exporting the PDF: {e}"))
     }
 
     /// The engine edits for the current plan and markup.
-    fn edits_for(
-        &self,
-        annotations: &[Annotation],
-        comments: &[Comment],
-        signatures: &[Signature],
-    ) -> anyhow::Result<tilo_pdf::Edits> {
+    fn edits_for(&self, markup: &ExportMarkup) -> anyhow::Result<tilo_pdf::Edits> {
         let mut edits = tilo_pdf::Edits::default();
         for (dest, slot) in self.plan.iter().enumerate() {
             let slot = slot
@@ -895,48 +995,54 @@ impl RasterBackend {
                         page: slot.page,
                     }
                 },
-                rotation: tilo_pdf::Rotation::None,
+                rotation: tilo_pdf::Rotation::from_degrees(self.page_rotation(dest))
+                    .unwrap_or_default(),
             });
         }
-        let identity = self
-            .plan
-            .iter()
-            .enumerate()
-            .all(|(i, s)| *s == Some(PageSlot { source: 0, page: i }))
-            && self.plan.len() == self.sources.first().map_or(0, |s| s.page_sizes.len());
+        let identity = edits.pages.iter().enumerate().all(|(i, p)| {
+            p.source == tilo_pdf::PageSource::Original(i) && p.rotation == tilo_pdf::Rotation::None
+        }) && self.plan.len()
+            == self.sources.first().map_or(0, |s| s.page_sizes.len());
         if identity {
             edits.pages.clear();
         }
-        for (idx, _) in self.plan.iter().enumerate() {
+        let point = |(x, y): (f64, f64)| tilo_pdf::Point::new(x as f32, y as f32);
+        let rect = |r: &PtRect| {
+            tilo_pdf::Rect::from_corners(point((r.x, r.y)), point((r.x + r.w, r.y + r.h)))
+        };
+        for idx in 0..self.plan.len() {
             let page_no = idx + 1;
-            let Some(geometry) = self.page_geometry(idx) else {
-                continue;
-            };
-            let user = |x: f64, y: f64| geometry.to_user(tilo_pdf::Point::new(x as f32, y as f32));
-            let user_rect = |r: &PtRect| {
-                geometry.rect_to_user(tilo_pdf::Rect::from_xywh(
-                    r.x as f32, r.y as f32, r.w as f32, r.h as f32,
-                ))
-            };
-            for a in annotations.iter().filter(|a| a.page == page_no) {
+            for a in markup.annotations.iter().filter(|a| a.page == page_no) {
                 let (r, g, b) = a.color.rgb();
-                let thread = comments
+                let thread = markup
+                    .comments
                     .iter()
                     .find(|c| c.anno_id.as_deref() == Some(a.id.as_str()));
                 let kind = match &a.kind {
-                    AnnoKind::Highlight { rect } => tilo_pdf::NewAnnotationKind::Highlight {
-                        quads: vec![user_rect(rect)],
-                    },
+                    AnnoKind::Markup { style, quads } => {
+                        let quads = quads.iter().map(rect).collect();
+                        match style {
+                            MarkupStyle::Highlight => {
+                                tilo_pdf::NewAnnotationKind::Highlight { quads }
+                            }
+                            MarkupStyle::Underline => {
+                                tilo_pdf::NewAnnotationKind::Underline { quads }
+                            }
+                            MarkupStyle::StrikeOut => {
+                                tilo_pdf::NewAnnotationKind::StrikeOut { quads }
+                            }
+                        }
+                    }
                     AnnoKind::Ink { points } if points.len() >= 2 => {
                         tilo_pdf::NewAnnotationKind::Ink {
-                            strokes: vec![points.iter().map(|(x, y)| user(*x, *y)).collect()],
+                            strokes: vec![points.iter().copied().map(point).collect()],
                             width: 2.0,
                         }
                     }
                     AnnoKind::Ink { .. } => continue,
-                    AnnoKind::Note { x, y } => {
-                        tilo_pdf::NewAnnotationKind::Note { at: user(*x, *y) }
-                    }
+                    AnnoKind::Note { x, y } => tilo_pdf::NewAnnotationKind::Note {
+                        at: point((*x, *y)),
+                    },
                 };
                 edits.annotations.push(tilo_pdf::NewAnnotation {
                     page: idx,
@@ -945,17 +1051,66 @@ impl RasterBackend {
                     author: a.author.clone(),
                     contents: thread.map(thread_text).unwrap_or_default(),
                     name: a.id.clone(),
-                    modified: String::new(),
+                    modified: pdf_date(a.created_ms),
                 });
             }
-            for s in signatures.iter().filter(|s| s.page == page_no) {
-                edits
-                    .annotations
-                    .push(signature_stamp(idx, s, &user, &user_rect));
+            for s in markup.signatures.iter().filter(|s| s.page == page_no) {
+                edits.annotations.push(signature_stamp(idx, s));
             }
         }
+        edits.form_values = markup
+            .form_values
+            .iter()
+            .map(|(name, value)| tilo_pdf::FormValue {
+                name: name.clone(),
+                value: match value {
+                    FormEntry::Text(t) => tilo_pdf::FieldValue::Text(t.clone()),
+                    FormEntry::Choice(c) => tilo_pdf::FieldValue::Choice(c.clone()),
+                    FormEntry::Checked { on, export } => tilo_pdf::FieldValue::Checked {
+                        on: *on,
+                        export: export.clone(),
+                    },
+                },
+            })
+            .collect();
         Ok(edits)
     }
+}
+
+/// Everything an export writes on top of the page plan: markup in PDF user
+/// space, the comment threads notes carry, and recorded form values.
+#[derive(Clone, Debug, Default)]
+pub struct ExportMarkup {
+    pub annotations: Vec<Annotation>,
+    pub comments: Vec<Comment>,
+    pub signatures: Vec<Signature>,
+    pub form_values: Vec<(String, FormEntry)>,
+}
+
+/// A PDF date (`D:YYYYMMDDHHmmSSZ`) for unix milliseconds; empty for 0.
+fn pdf_date(ms: i64) -> String {
+    if ms <= 0 {
+        return String::new();
+    }
+    let secs = ms / 1000;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant's algorithm), proleptic Gregorian.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "D:{year:04}{month:02}{day:02}{:02}{:02}{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 /// A comment thread as annotation text: the body, then each reply.
@@ -970,17 +1125,16 @@ fn thread_text(c: &Comment) -> String {
     text
 }
 
-/// A signature as a stamp: its real ink (drawn strokes, or the typed name),
-/// a baseline, and the signer name and date as text.
-fn signature_stamp(
-    page: usize,
-    s: &Signature,
-    user: &dyn Fn(f64, f64) -> tilo_pdf::Point,
-    user_rect: &dyn Fn(&PtRect) -> tilo_pdf::Rect,
-) -> tilo_pdf::NewAnnotation {
+/// A signature (its box in PDF user space) as a stamp: its real ink (drawn
+/// strokes, or the typed name), a baseline, and the signer name and date as
+/// text, laid out top-down inside the box.
+fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
     let r = &s.rect;
-    let area = PtRect::new(r.x + r.w * 0.06, r.y + r.h * 0.10, r.w * 0.88, r.h * 0.46);
-    let base_y = r.y + r.h * 0.62;
+    // Local layout coordinates run down from the box's top-left corner.
+    let top = r.y + r.h;
+    let at = |u: f64, v: f64| tilo_pdf::Point::new((r.x + u) as f32, (top - v) as f32);
+    let area = (r.w * 0.06, r.h * 0.10, r.w * 0.88, r.h * 0.46);
+    let base = r.h * 0.62;
     let mut strokes: Vec<Vec<tilo_pdf::Point>> = Vec::new();
     let mut text = Vec::new();
     match &s.ink {
@@ -990,9 +1144,9 @@ fn signature_stamp(
                     stroke
                         .iter()
                         .map(|(nx, ny)| {
-                            user(
-                                area.x + nx.clamp(0.0, 1.0) * area.w,
-                                area.y + ny.clamp(0.0, 1.0) * area.h,
+                            at(
+                                area.0 + nx.clamp(0.0, 1.0) * area.2,
+                                area.1 + ny.clamp(0.0, 1.0) * area.3,
                             )
                         })
                         .collect(),
@@ -1002,30 +1156,30 @@ fn signature_stamp(
         SignatureInk::Typed => {
             if !s.signer.trim().is_empty() {
                 text.push(tilo_pdf::StampText {
-                    at: user(area.x, area.y + area.h * 0.85),
-                    size: (area.h * 0.72).clamp(10.0, 22.0) as f32,
+                    at: at(area.0, area.1 + area.3 * 0.85),
+                    size: (area.3 * 0.72).clamp(10.0, 22.0) as f32,
                     text: s.signer.trim().to_string(),
                 });
             }
         }
     }
-    strokes.push(vec![user(r.x + 8.0, base_y), user(r.x + r.w - 8.0, base_y)]);
+    strokes.push(vec![at(8.0, base), at(r.w - 8.0, base)]);
     if !s.signer.trim().is_empty() {
         text.push(tilo_pdf::StampText {
-            at: user(r.x + 8.0, base_y + 12.0),
+            at: at(8.0, base + 12.0),
             size: 10.0,
             text: s.signer.trim().to_string(),
         });
     }
     text.push(tilo_pdf::StampText {
-        at: user(r.x + 8.0, base_y + 24.0),
+        at: at(8.0, base + 24.0),
         size: 7.5,
         text: format!("Signed {}", s.date),
     });
     tilo_pdf::NewAnnotation {
         page,
         kind: tilo_pdf::NewAnnotationKind::Stamp {
-            rect: user_rect(r),
+            rect: tilo_pdf::Rect::from_xywh(r.x as f32, r.y as f32, r.w as f32, r.h as f32),
             strokes,
             stroke_width: 1.6,
             text,
@@ -1089,9 +1243,8 @@ pub struct SaveRequest {
     /// exact even when a user selects the same destination twice.
     pub id: u64,
     pub document_id: u64,
-    pub annotations: Vec<Annotation>,
-    pub comments: Vec<Comment>,
-    pub signatures: Vec<Signature>,
+    /// The markup to export, in PDF user space.
+    pub markup: ExportMarkup,
     pub path: PathBuf,
 }
 
@@ -1155,7 +1308,18 @@ pub enum RasterCommand {
 #[derive(Clone, Debug)]
 pub struct RasterDocument {
     pub id: u64,
+    /// Displayed page sizes, recorded rotation applied.
     pub page_sizes: Vec<(f64, f64)>,
+    /// Each displayed page's own geometry (`None` while its bytes are
+    /// unavailable).
+    pub geometries: Vec<Option<tilo_pdf::PageGeometry>>,
+    /// Each displayed page's recorded rotation, in degrees.
+    pub rotations: Vec<i32>,
+    /// The document's form fields.
+    pub form_fields: Vec<tilo_pdf::FormField>,
+    /// Content hash and length of the opened bytes.
+    pub source_hash: String,
+    pub source_len: u64,
 }
 
 /// Results delivered back to the UI by [`RasterHandle::drain_events`].
@@ -1198,6 +1362,8 @@ pub enum RasterEvent {
     Reconciled {
         request: ReconcileRequest,
         page_sizes: Vec<(f64, f64)>,
+        geometries: Vec<Option<tilo_pdf::PageGeometry>>,
+        rotations: Vec<i32>,
     },
     ReconcileFailed {
         request: ReconcileRequest,
@@ -1872,6 +2038,10 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                     let page_sizes = (0..raster.page_count())
                         .map(|page| raster.page_size(page))
                         .collect();
+                    let (geometries, rotations) = raster.page_layout();
+                    let form_fields = raster.form_fields();
+                    let source_hash = raster.source_hash().to_string();
+                    let source_len = raster.source_len();
                     active
                         .entry(session_id)
                         .or_default()
@@ -1879,6 +2049,11 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                     let raster = RasterDocument {
                         id: request.id,
                         page_sizes,
+                        geometries,
+                        rotations,
+                        form_fields,
+                        source_hash,
+                        source_len,
                     };
                     RasterEvent::Opened {
                         request,
@@ -1939,9 +2114,12 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                         let page_sizes = (0..backend.page_count())
                             .map(|page| backend.page_size(page))
                             .collect();
+                        let (geometries, rotations) = backend.page_layout();
                         RasterEvent::Reconciled {
                             request,
                             page_sizes,
+                            geometries,
+                            rotations,
                         }
                     } else {
                         RasterEvent::ReconcileFailed {
@@ -1964,12 +2142,7 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                 Some(backend) => match private_save_path(&request.path, request.id) {
                     Ok(private) => {
                         let temporary = private.temporary.clone();
-                        match backend.save_annotated(
-                            &request.annotations,
-                            &request.comments,
-                            &request.signatures,
-                            &temporary,
-                        ) {
+                        match backend.save_annotated(&request.markup, &temporary) {
                             Ok(()) => {
                                 prepared_saves
                                     .insert((session_id, request.id), (request.clone(), private));
@@ -2550,6 +2723,7 @@ mod tests {
             text: "x".repeat(MAX_PENDING_RESULT_BYTES + 1),
             chars: Vec::new(),
             layer: None,
+            map: None,
         });
         assert!(matches!(
             bound_page_event(RasterEvent::TextExtracted {
@@ -2623,6 +2797,7 @@ mod tests {
                 id: "first".into(),
                 source_page: 1,
                 imported: None,
+                rotation: 0,
             }],
         };
         let latest = ReconcileRequest {
@@ -2631,6 +2806,7 @@ mod tests {
                 id: "latest".into(),
                 source_page: 1,
                 imported: None,
+                rotation: 0,
             }],
         };
         handle.reconcile_page_plan(first).expect("queue first plan");

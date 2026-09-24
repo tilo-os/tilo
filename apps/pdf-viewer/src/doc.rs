@@ -16,15 +16,42 @@
 //!
 //! ```text
 //! root
-//! ├── "meta" (Map) { title, author, seeded:bool }
-//! ├── "page-plan" (List of Map) { id, source-page }
+//! ├── "meta" (Map) { title, author, seeded:bool,
+//! │                  source-hash, source-len, source-mime }
+//! ├── "page-plan" (List of Map) { id, source-page, [import descriptor] }
+//! ├── "page-plan-tombstones" (Map) { <page id>: true }
+//! ├── "page-rotation" (Map) { <page id>: degrees }
 //! ├── "annotations" (List of Map)
-//! │     { id, page, kind, color, author, x, y, w, h, points }
+//! │     { id, page-id, kind, color, author, created-ms, geom-space,
+//! │       quads, chars | points | x, y }
 //! ├── "comments" (List of Map)
-//! │     { id, anno, page, author, body, created, resolved, replies:List }
-//! └── "signatures" (List of Map)
-//!       { id, page, x, y, w, h, signer, date, ink, strokes }
+//! │     { id, anno, page-id, author, body, created, resolved, replies:List }
+//! ├── "signatures" (List of Map)
+//! │     { id, page-id, geom-space, x, y, w, h, signer, date, ink, strokes }
+//! └── "form-values" (Map) { <field name>: Map { kind, value, export } }
 //! ```
+//!
+//! **The PDF itself is an immutable blob.** `meta.source-*` pins the
+//! content hash of the bytes the markup was made against; the same bytes are
+//! kept in the content-addressed blob store and listed as a blob reference in
+//! the record's metadata. Every annotation below is relative to those bytes.
+//!
+//! **Anchors are stable.** Markup names its page by durable occurrence id
+//! (`page-id`), never by position, so reordering pages, deleting them and
+//! annotating concurrently compose. Geometry is stored in the page's PDF user
+//! space (`geom-space: "user"`), which does not change however the page is
+//! displayed or rotated; text markup also keeps the engine character range it
+//! covers (`chars`). Records written before these fields carry page-point
+//! geometry and a page ordinal, and are still read.
+//!
+//! **Concurrency.** Lists merge by Automerge's list CRDT, so concurrent
+//! annotations on one page all survive. Deleting a page writes a delete-wins
+//! tombstone; markup anchored to it stays in the record (hidden) and comes
+//! back if the page is restored by undo or history. Page rotation and form
+//! values are last-writer-wins registers (one map key per page / field):
+//! concurrent writes converge on the value of the operation Automerge orders
+//! last (highest Lamport counter, ties broken by actor id); the other value
+//! remains in the key's conflict set.
 //!
 //! View state (current page, zoom, active tool) is deliberately NOT here —
 //! it is per-peer, so two reviewers can look at different pages of the
@@ -36,7 +63,10 @@ use ui::doc::{read_bool, read_number, read_scalar, read_str};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
+use crate::model::{
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, MarkupStyle, PtRect, Reply, Signature,
+    Swatch,
+};
 
 /// A durable page-plan entry. `source_page` names the immutable original page
 /// in the opened PDF; `id` names this occurrence (duplicates therefore get a
@@ -49,6 +79,11 @@ pub struct PagePlanEntry {
     /// populated value names bytes in qdoc's content-addressed store; bytes
     /// never enter Automerge.
     pub imported: Option<ImportedPage>,
+    /// Clockwise rotation (0, 90, 180 or 270) added to the source page's own.
+    /// Held in the record's `page-rotation` map, keyed by occurrence id, so a
+    /// concurrent move of the occurrence cannot lose it.
+    #[serde(default)]
+    pub rotation: i32,
 }
 
 /// A page occurrence from an imported payload. Dimensions are captured at
@@ -101,10 +136,56 @@ impl PdfDoc {
         }
     }
 
-    fn list_ro(doc: &AutoCommit, key: &str) -> Option<ObjId> {
-        match doc.get(&ROOT, key) {
-            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-            _ => None,
+    /// Every object of type `ty` at root `key`: the one Automerge shows
+    /// first, then any other replica created concurrently under the same key.
+    /// Two peers that each create a container before syncing produce two
+    /// objects; reading all of them keeps both peers' entries.
+    fn roots(doc: &AutoCommit, key: &str, ty: ObjType) -> Vec<ObjId> {
+        let mut out: Vec<ObjId> = Vec::new();
+        if let Ok(Some((Value::Object(t), id))) = doc.get(&ROOT, key)
+            && t == ty
+        {
+            out.push(id);
+        }
+        for (value, id) in doc.get_all(&ROOT, key).unwrap_or_default() {
+            if matches!(value, Value::Object(t) if t == ty) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// Every entry map of the lists at root `key`, in list order, the
+    /// visible list first.
+    fn entries(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+        let mut out = Vec::new();
+        for list in Self::roots(doc, key, ObjType::List) {
+            for i in 0..doc.length(&list) {
+                if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
+                    out.push(m);
+                }
+            }
+        }
+        out
+    }
+
+    /// The list and position of entry `id` among the lists at root `key`.
+    fn locate(doc: &AutoCommit, key: &str, id: &str) -> Option<(ObjId, usize)> {
+        Self::roots(doc, key, ObjType::List)
+            .into_iter()
+            .find_map(|list| Self::index_of(doc, &list, id).map(|i| (list, i)))
+    }
+
+    /// Create every container the schema uses, once, when the record is
+    /// first seeded, so replicas that sync the seed share them.
+    fn ensure_containers(doc: &mut AutoCommit) {
+        for key in ["annotations", "comments", "signatures"] {
+            let _ = Self::list(doc, key);
+        }
+        for key in ["page-plan-tombstones", "page-rotation", "form-values"] {
+            if Self::roots(doc, key, ObjType::Map).is_empty() {
+                let _ = doc.put_object(&ROOT, key, ObjType::Map);
+            }
         }
     }
 
@@ -112,11 +193,9 @@ impl PdfDoc {
     /// still hold the old list object after a deletion; the keyed marker keeps
     /// that occurrence hidden when the replicas merge instead of reviving it.
     fn page_tombstoned(doc: &AutoCommit, id: &str) -> bool {
-        matches!(
-            doc.get(&ROOT, "page-plan-tombstones"),
-            Ok(Some((Value::Object(ObjType::Map), map)))
-                if doc.get(&map, id).ok().flatten().is_some()
-        )
+        Self::roots(doc, "page-plan-tombstones", ObjType::Map)
+            .iter()
+            .any(|map| doc.get(map, id).ok().flatten().is_some())
     }
 
     fn tombstone_page(doc: &mut AutoCommit, id: &str) {
@@ -174,6 +253,7 @@ impl PdfDoc {
         if read_bool(doc, &meta, "page-plan-seeded").unwrap_or(false) {
             return;
         }
+        Self::ensure_containers(doc);
 
         let canonical = Self::list_page_plan(doc);
         // Documents written before this marker use a non-empty source plan as
@@ -208,15 +288,10 @@ impl PdfDoc {
     /// deterministic list order. Invalid maps do not reserve an id, so a later
     /// valid representation can still repair a malformed concurrent entry.
     pub fn list_page_plan(doc: &AutoCommit) -> Vec<PagePlanEntry> {
-        let Some(list) = Self::list_ro(doc, "page-plan") else {
-            return Vec::new();
-        };
         let mut seen = HashSet::new();
-        (0..doc.length(&list))
-            .filter_map(|index| {
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
-                    return None;
-                };
+        Self::entries(doc, "page-plan")
+            .into_iter()
+            .filter_map(|entry| {
                 let id = read_str(doc, &entry, "id")?;
                 let source_page = Self::get_i64(doc, &entry, "source-page")? as usize;
                 let imported = match read_str(doc, &entry, "content-hash") {
@@ -233,7 +308,8 @@ impl PdfDoc {
                     && !Self::page_tombstoned(doc, &id)
                     && imported.as_ref().is_none_or(ImportedPage::valid)
                     && seen.insert(id.clone()))
-                .then_some(PagePlanEntry {
+                .then(|| PagePlanEntry {
+                    rotation: Self::page_rotation(doc, &id),
                     id,
                     source_page,
                     imported,
@@ -248,26 +324,13 @@ impl PdfDoc {
             .map(|entry| entry.id.clone())
     }
 
-    fn page_number_for_id(doc: &AutoCommit, id: &str) -> Option<usize> {
-        Self::list_page_plan(doc)
-            .iter()
-            .position(|entry| entry.id == id)
-            .map(|index| index + 1)
-    }
-
     /// Upgrade ordinal-only anchors from records written before durable page
     /// occurrences existed. This is schema hydration, not a user edit: it runs
     /// once after the deterministic source plan is available and preserves the
     /// page each legacy anchor originally denoted.
     pub fn migrate_page_anchors(doc: &mut AutoCommit) {
         for key in ["annotations", "comments", "signatures"] {
-            let Some(list) = Self::list(doc, key) else {
-                continue;
-            };
-            for index in 0..doc.length(&list) {
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
-                    continue;
-                };
+            for entry in Self::entries(doc, key) {
                 if read_str(doc, &entry, "page-id").is_some() {
                     continue;
                 }
@@ -285,13 +348,10 @@ impl PdfDoc {
         new_id: &str,
         expected: &PagePlanEntry,
     ) {
-        let Some(list) = Self::list(doc, "page-plan") else {
-            return;
-        };
-        if Self::page_tombstoned(doc, new_id) || Self::index_of(doc, &list, new_id).is_some() {
+        if Self::page_tombstoned(doc, new_id) || Self::locate(doc, "page-plan", new_id).is_some() {
             return;
         }
-        let Some(index) = Self::index_of(doc, &list, id) else {
+        let Some((list, index)) = Self::locate(doc, "page-plan", id) else {
             return;
         };
         let Some(stored) = Self::list_page_plan(doc)
@@ -331,11 +391,9 @@ impl PdfDoc {
         {
             return;
         }
-        let Some(list) = Self::list(doc, "page-plan") else {
-            return;
-        };
         if pages.iter().any(|entry| {
-            Self::page_tombstoned(doc, &entry.id) || Self::index_of(doc, &list, &entry.id).is_some()
+            Self::page_tombstoned(doc, &entry.id)
+                || Self::locate(doc, "page-plan", &entry.id).is_some()
         }) {
             return;
         }
@@ -343,9 +401,16 @@ impl PdfDoc {
         if pages.iter().any(|entry| !seen.insert(&entry.id)) {
             return;
         }
-        let at = after_id
-            .and_then(|id| Self::index_of(doc, &list, id).map(|i| i + 1))
-            .unwrap_or_else(|| doc.length(&list));
+        let located = after_id.and_then(|id| Self::locate(doc, "page-plan", id));
+        let (list, at) = if let Some((list, i)) = located {
+            (list, i + 1)
+        } else {
+            let Some(list) = Self::list(doc, "page-plan") else {
+                return;
+            };
+            let end = doc.length(&list);
+            (list, end)
+        };
         for (at, page) in (at..).zip(pages) {
             let Ok(map) = doc.insert_object(&list, at, ObjType::Map) else {
                 return;
@@ -367,13 +432,27 @@ impl PdfDoc {
     }
 
     pub fn delete_page_plan(doc: &mut AutoCommit, id: &str) {
-        let Some(list) = Self::list(doc, "page-plan") else {
-            return;
-        };
         if Self::list_page_plan(doc).len() <= 1 {
             return;
         }
         Self::tombstone_page(doc, id);
+        Self::remove_plan_entries(doc, id);
+        // Markup anchored to the occurrence is kept: it is hidden while the
+        // page is deleted and reappears if the deletion is undone or an
+        // earlier version is restored. A duplicate deliberately duplicates
+        // only page content, never review markup.
+    }
+
+    /// Remove every physical representation of occurrence `id` from every
+    /// page-plan list.
+    fn remove_plan_entries(doc: &mut AutoCommit, id: &str) {
+        for list in Self::roots(doc, "page-plan", ObjType::List) {
+            Self::remove_from_list(doc, &list, id);
+        }
+    }
+
+    fn remove_from_list(doc: &mut AutoCommit, list: &ObjId, id: &str) {
+        let list = list.clone();
         for index in (0..doc.length(&list)).rev() {
             let is_target = doc
                 .get(&list, index)
@@ -389,56 +468,160 @@ impl PdfDoc {
                 let _ = doc.delete(&list, index);
             }
         }
-        Self::delete_page_anchors(doc, id);
     }
 
-    /// Deleting an occurrence removes all markup attached specifically to it.
-    /// A duplicate deliberately duplicates only page content, never review
-    /// markup; users can add independent annotations to the new occurrence.
-    fn delete_page_anchors(doc: &mut AutoCommit, page_id: &str) {
-        let annotation_ids: Vec<String> = Self::list_annotations(doc)
-            .into_iter()
-            .filter(|annotation| {
-                Self::annotation_page_id(doc, &annotation.id).as_deref() == Some(page_id)
-            })
-            .map(|annotation| annotation.id)
-            .collect();
-        for id in annotation_ids {
-            Self::delete_annotation(doc, &id);
+    // ---- page rotation ----------------------------------------------
+
+    /// The rotation (0, 90, 180, 270) recorded for page occurrence `id`.
+    pub fn page_rotation(doc: &AutoCommit, id: &str) -> i32 {
+        Self::roots(doc, "page-rotation", ObjType::Map)
+            .iter()
+            .find_map(|map| Self::get_i64(doc, map, id))
+            .and_then(|d| i32::try_from(d).ok())
+            .filter(|d| d % 90 == 0)
+            .map_or(0, |d| d.rem_euclid(360))
+    }
+
+    /// Set page occurrence `id`'s rotation (any multiple of 90).
+    pub fn set_page_rotation(doc: &mut AutoCommit, id: &str, degrees: i32) {
+        if degrees % 90 != 0 || id.is_empty() {
+            return;
         }
-        for key in ["comments", "signatures"] {
-            let Some(list) = Self::list(doc, key) else {
+        let map = match doc.get(&ROOT, "page-rotation") {
+            Ok(Some((Value::Object(ObjType::Map), map))) => Some(map),
+            _ => doc.put_object(&ROOT, "page-rotation", ObjType::Map).ok(),
+        };
+        if let Some(map) = map {
+            let _ = doc.put(&map, id, i64::from(degrees.rem_euclid(360)));
+        }
+    }
+
+    // ---- the pinned source blob -------------------------------------
+
+    /// The content hash, length and type of the PDF bytes this record's
+    /// markup was made against.
+    pub fn source(doc: &AutoCommit) -> Option<(String, u64, String)> {
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return None;
+        };
+        let hash = read_str(doc, &meta, "source-hash")?;
+        let len = Self::get_i64(doc, &meta, "source-len").and_then(|l| u64::try_from(l).ok())?;
+        let mime = read_str(doc, &meta, "source-mime").unwrap_or_else(|| "application/pdf".into());
+        Some((hash, len, mime))
+    }
+
+    /// Pin the source bytes by content hash. The first pin wins: a record
+    /// never silently re-targets its markup at different bytes.
+    pub fn pin_source(doc: &mut AutoCommit, hash: &str, len: u64, mime: &str) {
+        let valid = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        if !valid || Self::source(doc).is_some() {
+            return;
+        }
+        let Some(meta) = Self::meta(doc) else {
+            return;
+        };
+        let _ = doc.put(&meta, "source-hash", hash.to_ascii_lowercase());
+        let _ = doc.put(&meta, "source-len", i64::try_from(len).unwrap_or(i64::MAX));
+        let _ = doc.put(&meta, "source-mime", mime);
+        let _ = ui::record::add_blob_reference(
+            doc,
+            &ui::record::BlobRef {
+                hash: hash.to_ascii_lowercase(),
+                len,
+                mime: mime.to_string(),
+                relation: "source".to_string(),
+            },
+        );
+    }
+
+    // ---- form values ------------------------------------------------
+
+    /// Every form value held in the record, by field name.
+    pub fn form_values(doc: &AutoCommit) -> std::collections::BTreeMap<String, FormEntry> {
+        let mut out = std::collections::BTreeMap::new();
+        for map in Self::roots(doc, "form-values", ObjType::Map) {
+            Self::read_form_values(doc, &map, &mut out);
+        }
+        out
+    }
+
+    /// Add `map`'s entries to `out`, keeping values already there (a map
+    /// Automerge shows first takes precedence over a concurrent duplicate).
+    fn read_form_values(
+        doc: &AutoCommit,
+        map: &ObjId,
+        out: &mut std::collections::BTreeMap<String, FormEntry>,
+    ) {
+        let map = map.clone();
+        for name in doc.keys(&map) {
+            if out.contains_key(&name) {
+                continue;
+            }
+            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&map, name.as_str())
+            else {
                 continue;
             };
-            for index in (0..doc.length(&list)).rev() {
-                let anchored = doc
-                    .get(&list, index)
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, entry)| {
-                        matches!(value, Value::Object(ObjType::Map))
-                            .then(|| read_str(doc, &entry, "page-id"))
-                            .flatten()
-                    })
-                    .as_deref()
-                    == Some(page_id);
-                if anchored {
-                    let _ = doc.delete(&list, index);
-                }
+            let value = read_str(doc, &entry, "value").unwrap_or_default();
+            let parsed = match read_str(doc, &entry, "kind").as_deref() {
+                Some("text") => Some(FormEntry::Text(value)),
+                Some("choice") => Some(FormEntry::Choice(value)),
+                Some("checked") => Some(FormEntry::Checked {
+                    on: value == "on",
+                    export: read_str(doc, &entry, "export"),
+                }),
+                _ => None,
+            };
+            if let Some(parsed) = parsed {
+                out.insert(name, parsed);
             }
         }
     }
 
+    /// Record a value for field `name`. Each assignment replaces the whole
+    /// entry, so concurrent assignments resolve as one register (see the
+    /// module documentation).
+    pub fn set_form_value(doc: &mut AutoCommit, name: &str, value: &FormEntry) {
+        if name.is_empty() || name.len() > 1024 {
+            return;
+        }
+        let map = match doc.get(&ROOT, "form-values") {
+            Ok(Some((Value::Object(ObjType::Map), map))) => Some(map),
+            _ => doc.put_object(&ROOT, "form-values", ObjType::Map).ok(),
+        };
+        let Some(map) = map else {
+            return;
+        };
+        let Ok(entry) = doc.put_object(&map, name, ObjType::Map) else {
+            return;
+        };
+        let (kind, text, export) = match value {
+            FormEntry::Text(t) => ("text", t.clone(), None),
+            FormEntry::Choice(c) => ("choice", c.clone(), None),
+            FormEntry::Checked { on, export } => (
+                "checked",
+                if *on { "on" } else { "off" }.to_string(),
+                export.clone(),
+            ),
+        };
+        let _ = doc.put(&entry, "kind", kind);
+        let _ = doc.put(&entry, "value", text);
+        if let Some(export) = export {
+            let _ = doc.put(&entry, "export", export);
+        }
+    }
+
+    /// Forget the recorded value for field `name` (the PDF's own value shows
+    /// again).
+    pub fn clear_form_value(doc: &mut AutoCommit, name: &str) {
+        for map in Self::roots(doc, "form-values", ObjType::Map) {
+            let _ = doc.delete(&map, name);
+        }
+    }
+
     pub fn move_page_plan(doc: &mut AutoCommit, id: &str, after_id: Option<&str>) {
-        let Some(list) = Self::list(doc, "page-plan") else {
+        if Self::locate(doc, "page-plan", id).is_none() {
             return;
-        };
-        let Some(from) = Self::index_of(doc, &list, id) else {
-            return;
-        };
-        let Ok(Some((Value::Object(ObjType::Map), _))) = doc.get(&list, from) else {
-            return;
-        };
+        }
         let Some(moved_entry) = Self::list_page_plan(doc)
             .into_iter()
             .find(|candidate| candidate.id == id)
@@ -448,24 +631,16 @@ impl PdfDoc {
         // Remove every physical representation of this durable occurrence.
         // Concurrent moves can each have inserted one, and leaving an older
         // one behind would let a subsequent delete reveal a ghost page.
-        for index in (0..doc.length(&list)).rev() {
-            let is_target = doc
-                .get(&list, index)
-                .ok()
-                .flatten()
-                .and_then(|(value, entry)| {
-                    matches!(value, Value::Object(ObjType::Map))
-                        .then(|| read_str(doc, &entry, "id"))
-                        .flatten()
-                })
-                .is_some_and(|candidate| candidate == id);
-            if is_target {
-                let _ = doc.delete(&list, index);
-            }
-        }
-        let to = after_id
-            .and_then(|after| Self::index_of(doc, &list, after).map(|i| i + 1))
-            .unwrap_or(0);
+        Self::remove_plan_entries(doc, id);
+        let located = after_id.and_then(|after| Self::locate(doc, "page-plan", after));
+        let (list, to) = if let Some((list, i)) = located {
+            (list, i + 1)
+        } else {
+            let Some(list) = Self::list(doc, "page-plan") else {
+                return;
+            };
+            (list, 0)
+        };
         let Ok(moved) = doc.insert_object(&list, to, ObjType::Map) else {
             return;
         };
@@ -493,7 +668,72 @@ impl PdfDoc {
             .collect()
     }
 
-    pub fn add_annotation(doc: &mut AutoCommit, a: &Annotation) {
+    fn rects_to_str(rects: &[PtRect]) -> String {
+        rects
+            .iter()
+            .map(|r| format!("{:.2},{:.2},{:.2},{:.2}", r.x, r.y, r.w, r.h))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn rects_from_str(s: &str) -> Vec<PtRect> {
+        s.split_whitespace()
+            .filter_map(|quad| {
+                let v: Vec<f64> = quad.split(',').filter_map(|n| n.parse().ok()).collect();
+                match v.as_slice() {
+                    [left, top, width, height]
+                        if [left, top, width, height].iter().all(|n| n.is_finite()) =>
+                    {
+                        Some(PtRect::new(*left, *top, *width, *height))
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Map of page occurrence id → 1-based displayed page number.
+    fn page_numbers(doc: &AutoCommit) -> std::collections::HashMap<String, usize> {
+        Self::list_page_plan(doc)
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| (entry.id, i + 1))
+            .collect()
+    }
+
+    /// The displayed page an anchored entry is on: its occurrence's position,
+    /// or `None` while that occurrence is deleted. Entries written before
+    /// occurrence ids fall back to their stored ordinal.
+    fn resolve_page(
+        doc: &AutoCommit,
+        entry: &ObjId,
+        numbers: &std::collections::HashMap<String, usize>,
+    ) -> Option<usize> {
+        match read_str(doc, entry, "page-id") {
+            Some(id) => numbers.get(&id).copied(),
+            None => Some(Self::get_i64(doc, entry, "page").map_or(1, |p| p.max(1) as usize)),
+        }
+    }
+
+    fn space_of(doc: &AutoCommit, entry: &ObjId) -> GeomSpace {
+        if read_str(doc, entry, "geom-space").as_deref() == Some("user") {
+            GeomSpace::User
+        } else {
+            GeomSpace::Page
+        }
+    }
+
+    /// Add an annotation anchored to page occurrence `page_id`, or — for a
+    /// caller that only knows a page number — to the occurrence currently at
+    /// `a.page`.
+    pub fn add_annotation(doc: &mut AutoCommit, a: &Annotation, page_id: Option<&str>) {
+        if Self::locate(doc, "annotations", &a.id).is_some() {
+            // A redelivered action envelope: the id is already present.
+            return;
+        }
+        let page_id = page_id
+            .map(str::to_string)
+            .or_else(|| Self::page_id_for_number(doc, a.page));
         let Some(list) = Self::list(doc, "annotations") else {
             return;
         };
@@ -503,18 +743,24 @@ impl PdfDoc {
         };
         let _ = doc.put(&m, "id", a.id.as_str());
         let _ = doc.put(&m, "page", a.page as i64);
-        if let Some(page_id) = Self::page_id_for_number(doc, a.page) {
+        if let Some(page_id) = page_id {
             let _ = doc.put(&m, "page-id", page_id);
         }
         let _ = doc.put(&m, "kind", a.kind.type_key());
         let _ = doc.put(&m, "color", a.color.key());
         let _ = doc.put(&m, "author", a.author.as_str());
+        if a.created_ms != 0 {
+            let _ = doc.put(&m, "created-ms", a.created_ms);
+        }
+        if a.space == GeomSpace::User {
+            let _ = doc.put(&m, "geom-space", "user");
+        }
         match &a.kind {
-            AnnoKind::Highlight { rect } => {
-                let _ = doc.put(&m, "x", rect.x);
-                let _ = doc.put(&m, "y", rect.y);
-                let _ = doc.put(&m, "w", rect.w);
-                let _ = doc.put(&m, "h", rect.h);
+            AnnoKind::Markup { quads, .. } => {
+                let _ = doc.put(&m, "quads", Self::rects_to_str(quads));
+                if let Some((start, end)) = a.chars {
+                    let _ = doc.put(&m, "chars", format!("{start},{end}"));
+                }
             }
             AnnoKind::Note { x, y } => {
                 let _ = doc.put(&m, "x", *x);
@@ -526,53 +772,87 @@ impl PdfDoc {
         }
     }
 
-    pub fn list_annotations(doc: &AutoCommit) -> Vec<Annotation> {
-        let Some(list) = Self::list_ro(doc, "annotations") else {
-            return Vec::new();
+    fn read_annotation(
+        doc: &AutoCommit,
+        m: &ObjId,
+        numbers: &std::collections::HashMap<String, usize>,
+    ) -> (Option<usize>, Annotation) {
+        let id = read_str(doc, m, "id").unwrap_or_default();
+        let page = Self::resolve_page(doc, m, numbers);
+        let color = Swatch::parse(&read_str(doc, m, "color").unwrap_or_default());
+        let author = read_str(doc, m, "author").unwrap_or_default();
+        let kind_key = read_str(doc, m, "kind").unwrap_or_default();
+        let kind = if let Some(style) = MarkupStyle::parse(&kind_key) {
+            let quads = read_str(doc, m, "quads").map_or_else(
+                || {
+                    // Records from before multi-band markup: one rectangle.
+                    vec![PtRect::new(
+                        read_number(doc, m, "x").unwrap_or(0.0),
+                        read_number(doc, m, "y").unwrap_or(0.0),
+                        read_number(doc, m, "w").unwrap_or(0.0),
+                        read_number(doc, m, "h").unwrap_or(0.0),
+                    )]
+                },
+                |s| Self::rects_from_str(&s),
+            );
+            AnnoKind::Markup { style, quads }
+        } else if kind_key == "ink" {
+            AnnoKind::Ink {
+                points: Self::points_from_str(&read_str(doc, m, "points").unwrap_or_default()),
+            }
+        } else {
+            AnnoKind::Note {
+                x: read_number(doc, m, "x").unwrap_or(0.0),
+                y: read_number(doc, m, "y").unwrap_or(0.0),
+            }
         };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
-                continue;
-            };
-            let id = read_str(doc, &m, "id").unwrap_or_default();
-            let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
-            let page = read_str(doc, &m, "page-id")
-                .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
-                .unwrap_or(legacy_page);
-            let color = Swatch::parse(&read_str(doc, &m, "color").unwrap_or_default());
-            let author = read_str(doc, &m, "author").unwrap_or_default();
-            let kind = match read_str(doc, &m, "kind").as_deref() {
-                Some("highlight") => AnnoKind::Highlight {
-                    rect: PtRect::new(
-                        read_number(doc, &m, "x").unwrap_or(0.0),
-                        read_number(doc, &m, "y").unwrap_or(0.0),
-                        read_number(doc, &m, "w").unwrap_or(0.0),
-                        read_number(doc, &m, "h").unwrap_or(0.0),
-                    ),
-                },
-                Some("ink") => AnnoKind::Ink {
-                    points: Self::points_from_str(&read_str(doc, &m, "points").unwrap_or_default()),
-                },
-                _ => AnnoKind::Note {
-                    x: read_number(doc, &m, "x").unwrap_or(0.0),
-                    y: read_number(doc, &m, "y").unwrap_or(0.0),
-                },
-            };
-            out.push(Annotation {
+        let chars = read_str(doc, m, "chars").and_then(|s| {
+            let (a, b) = s.split_once(',')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        });
+        (
+            page,
+            Annotation {
                 id,
-                page,
+                page: page.unwrap_or(0),
                 kind,
                 color,
                 author,
-            });
+                chars,
+                created_ms: Self::get_i64(doc, m, "created-ms").unwrap_or(0),
+                space: Self::space_of(doc, m),
+            },
+        )
+    }
+
+    /// Annotations on pages that are currently part of the document.
+    /// Annotations anchored to a deleted page stay in the record but are not
+    /// listed until the page comes back.
+    pub fn list_annotations(doc: &AutoCommit) -> Vec<Annotation> {
+        Self::list_annotations_with_hidden(doc)
+            .into_iter()
+            .filter(|a| a.page > 0)
+            .collect()
+    }
+
+    /// Every annotation in the record, those anchored to a deleted page with
+    /// `page == 0`.
+    pub fn list_annotations_with_hidden(doc: &AutoCommit) -> Vec<Annotation> {
+        let numbers = Self::page_numbers(doc);
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for m in Self::entries(doc, "annotations") {
+            let (_, annotation) = Self::read_annotation(doc, &m, &numbers);
+            if seen.insert(annotation.id.clone()) {
+                out.push(annotation);
+            }
         }
         out
     }
 
-    fn annotation_page_id(doc: &AutoCommit, id: &str) -> Option<String> {
-        let list = Self::list_ro(doc, "annotations")?;
-        let index = Self::index_of(doc, &list, id)?;
+    /// The page occurrence an annotation is anchored to.
+    pub fn annotation_page_id(doc: &AutoCommit, id: &str) -> Option<String> {
+        let (list, index) = Self::locate(doc, "annotations", id)?;
         let (_, entry) = doc.get(&list, index).ok()??;
         read_str(doc, &entry, "page-id")
     }
@@ -589,10 +869,7 @@ impl PdfDoc {
     }
 
     pub fn set_annotation_color(doc: &mut AutoCommit, id: &str, color: Swatch) {
-        let Some(list) = Self::list(doc, "annotations") else {
-            return;
-        };
-        if let Some(i) = Self::index_of(doc, &list, id)
+        if let Some((list, i)) = Self::locate(doc, "annotations", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
             let _ = doc.put(&m, "color", color.key());
@@ -603,41 +880,46 @@ impl PdfDoc {
     /// draggable annotation markers — repositioning a sticky note. Highlights
     /// keep their width/height and shift; notes carry only a point. A no-op for
     /// ink (its geometry is the polyline, not a single anchor).
-    pub fn set_annotation_position(doc: &mut AutoCommit, id: &str, x: f64, y: f64) {
-        let Some(list) = Self::list(doc, "annotations") else {
-            return;
-        };
-        if let Some(i) = Self::index_of(doc, &list, id)
+    pub fn set_annotation_position(
+        doc: &mut AutoCommit,
+        id: &str,
+        x: f64,
+        y: f64,
+        space: GeomSpace,
+    ) {
+        if let Some((list, i)) = Self::locate(doc, "annotations", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-            && read_str(doc, &m, "kind").as_deref() != Some("ink")
+            && read_str(doc, &m, "kind").as_deref() == Some("note")
         {
             let _ = doc.put(&m, "x", x);
             let _ = doc.put(&m, "y", y);
+            if space == GeomSpace::User {
+                let _ = doc.put(&m, "geom-space", "user");
+            } else {
+                let _ = doc.delete(&m, "geom-space");
+            }
         }
     }
 
     pub fn delete_annotation(doc: &mut AutoCommit, id: &str) {
-        if let Some(list) = Self::list(doc, "annotations")
-            && let Some(i) = Self::index_of(doc, &list, id)
-        {
+        if let Some((list, i)) = Self::locate(doc, "annotations", id) {
             let _ = doc.delete(&list, i);
         }
         // Any comments anchored to this annotation are removed with it so a
         // deleted note never leaves a dangling thread behind in the rail.
-        let Some(comments) = Self::list(doc, "comments") else {
-            return;
-        };
-        let mut i = 0;
-        while i < doc.length(&comments) {
-            let anchored = matches!(
-                doc.get(&comments, i),
-                Ok(Some((Value::Object(ObjType::Map), m)))
-                    if read_str(doc, &m, "anno").as_deref() == Some(id)
-            );
-            if anchored {
-                let _ = doc.delete(&comments, i);
-            } else {
-                i += 1;
+        for comments in Self::roots(doc, "comments", ObjType::List) {
+            let mut i = 0;
+            while i < doc.length(&comments) {
+                let anchored = matches!(
+                    doc.get(&comments, i),
+                    Ok(Some((Value::Object(ObjType::Map), m)))
+                        if read_str(doc, &m, "anno").as_deref() == Some(id)
+                );
+                if anchored {
+                    let _ = doc.delete(&comments, i);
+                } else {
+                    i += 1;
+                }
             }
         }
     }
@@ -645,6 +927,9 @@ impl PdfDoc {
     // ---- comments ---------------------------------------------------
 
     pub fn add_comment(doc: &mut AutoCommit, c: &Comment) {
+        if Self::locate(doc, "comments", &c.id).is_some() {
+            return;
+        }
         let Some(list) = Self::list(doc, "comments") else {
             return;
         };
@@ -657,7 +942,13 @@ impl PdfDoc {
             let _ = doc.put(&m, "anno", a.as_str());
         }
         let _ = doc.put(&m, "page", c.page as i64);
-        if let Some(page_id) = Self::page_id_for_number(doc, c.page) {
+        // A comment on an annotation follows the annotation's page.
+        let page_id = c
+            .anno_id
+            .as_deref()
+            .and_then(|a| Self::annotation_page_id(doc, a))
+            .or_else(|| Self::page_id_for_number(doc, c.page));
+        if let Some(page_id) = page_id {
             let _ = doc.put(&m, "page-id", page_id);
         }
         let _ = doc.put(&m, "author", c.author.as_str());
@@ -678,20 +969,19 @@ impl PdfDoc {
     }
 
     pub fn list_comments(doc: &AutoCommit) -> Vec<Comment> {
-        let Some(list) = Self::list_ro(doc, "comments") else {
-            return Vec::new();
-        };
+        let numbers = Self::page_numbers(doc);
+        let mut seen_ids = HashSet::new();
         let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
+        for m in Self::entries(doc, "comments") {
+            if !read_str(doc, &m, "id").is_some_and(|id| seen_ids.insert(id)) {
                 continue;
-            };
+            }
             let id = read_str(doc, &m, "id").unwrap_or_default();
             let anno_id = read_str(doc, &m, "anno");
-            let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
-            let page = read_str(doc, &m, "page-id")
-                .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
-                .unwrap_or(legacy_page);
+            let Some(page) = Self::resolve_page(doc, &m, &numbers) else {
+                // On a deleted page: kept, but hidden until it returns.
+                continue;
+            };
             let author = read_str(doc, &m, "author").unwrap_or_default();
             let body = read_str(doc, &m, "body").unwrap_or_default();
             let created = Self::get_i64(doc, &m, "created").unwrap_or(0);
@@ -734,10 +1024,7 @@ impl PdfDoc {
     }
 
     pub fn set_comment_resolved(doc: &mut AutoCommit, id: &str, resolved: bool) {
-        let Some(list) = Self::list(doc, "comments") else {
-            return;
-        };
-        if let Some(i) = Self::index_of(doc, &list, id)
+        if let Some((list, i)) = Self::locate(doc, "comments", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
             let _ = doc.put(&m, "resolved", resolved);
@@ -747,10 +1034,7 @@ impl PdfDoc {
     /// Replace a comment's body text. Used by the inline editor when the user
     /// types into a note or comment thread.
     pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
-        let Some(list) = Self::list(doc, "comments") else {
-            return;
-        };
-        if let Some(i) = Self::index_of(doc, &list, id)
+        if let Some((list, i)) = Self::locate(doc, "comments", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
             let _ = doc.put(&m, "body", body);
@@ -758,9 +1042,7 @@ impl PdfDoc {
     }
 
     pub fn delete_comment(doc: &mut AutoCommit, id: &str) {
-        if let Some(list) = Self::list(doc, "comments")
-            && let Some(i) = Self::index_of(doc, &list, id)
-        {
+        if let Some((list, i)) = Self::locate(doc, "comments", id) {
             let _ = doc.delete(&list, i);
         }
     }
@@ -769,10 +1051,7 @@ impl PdfDoc {
         if reply.id.trim().is_empty() {
             return;
         }
-        let Some(list) = Self::list(doc, "comments") else {
-            return;
-        };
-        if let Some(i) = Self::index_of(doc, &list, comment_id)
+        if let Some((list, i)) = Self::locate(doc, "comments", comment_id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
             let replies = match doc.get(&m, "replies") {
@@ -830,7 +1109,13 @@ impl PdfDoc {
             .collect()
     }
 
-    pub fn add_signature(doc: &mut AutoCommit, s: &Signature) {
+    pub fn add_signature(doc: &mut AutoCommit, s: &Signature, page_id: Option<&str>) {
+        let page_id = page_id
+            .map(str::to_string)
+            .or_else(|| Self::page_id_for_number(doc, s.page));
+        if Self::locate(doc, "signatures", &s.id).is_some() {
+            return;
+        }
         let Some(list) = Self::list(doc, "signatures") else {
             return;
         };
@@ -840,8 +1125,11 @@ impl PdfDoc {
         };
         let _ = doc.put(&m, "id", s.id.as_str());
         let _ = doc.put(&m, "page", s.page as i64);
-        if let Some(page_id) = Self::page_id_for_number(doc, s.page) {
+        if let Some(page_id) = page_id {
             let _ = doc.put(&m, "page-id", page_id);
+        }
+        if s.space == GeomSpace::User {
+            let _ = doc.put(&m, "geom-space", "user");
         }
         let _ = doc.put(&m, "x", s.rect.x);
         let _ = doc.put(&m, "y", s.rect.y);
@@ -861,14 +1149,13 @@ impl PdfDoc {
     }
 
     pub fn list_signatures(doc: &AutoCommit) -> Vec<Signature> {
-        let Some(list) = Self::list_ro(doc, "signatures") else {
-            return Vec::new();
-        };
+        let numbers = Self::page_numbers(doc);
+        let mut seen_ids = HashSet::new();
         let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
+        for m in Self::entries(doc, "signatures") {
+            if !read_str(doc, &m, "id").is_some_and(|id| seen_ids.insert(id)) {
                 continue;
-            };
+            }
             // Signatures written before real ink existed carry no "ink" field;
             // they render as a typed-name signature (no fabricated squiggle).
             let ink = match read_str(doc, &m, "ink").as_deref() {
@@ -879,11 +1166,13 @@ impl PdfDoc {
                 },
                 _ => crate::model::SignatureInk::Typed,
             };
+            let Some(page) = Self::resolve_page(doc, &m, &numbers) else {
+                continue;
+            };
             out.push(Signature {
                 id: read_str(doc, &m, "id").unwrap_or_default(),
-                page: read_str(doc, &m, "page-id")
-                    .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
-                    .unwrap_or_else(|| Self::get_i64(doc, &m, "page").unwrap_or(1) as usize),
+                page,
+                space: Self::space_of(doc, &m),
                 rect: PtRect::new(
                     read_number(doc, &m, "x").unwrap_or(0.0),
                     read_number(doc, &m, "y").unwrap_or(0.0),
@@ -899,9 +1188,7 @@ impl PdfDoc {
     }
 
     pub fn delete_signature(doc: &mut AutoCommit, id: &str) {
-        if let Some(list) = Self::list(doc, "signatures")
-            && let Some(i) = Self::index_of(doc, &list, id)
-        {
+        if let Some((list, i)) = Self::locate(doc, "signatures", id) {
             let _ = doc.delete(&list, i);
         }
     }
@@ -910,18 +1197,21 @@ impl PdfDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
+    use crate::model::{
+        AnnoKind, Annotation, Comment, GeomSpace, PtRect, Reply, Signature, Swatch,
+    };
     use tilo_automerge::ApplyIncoming;
 
     fn hl(page: usize) -> Annotation {
         Annotation {
             id: Annotation::new_id(),
             page,
-            kind: AnnoKind::Highlight {
-                rect: PtRect::new(10.0, 20.0, 100.0, 14.0),
-            },
+            kind: AnnoKind::highlight(PtRect::new(10.0, 20.0, 100.0, 14.0)),
             color: Swatch::Yellow,
             author: "Alice".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         }
     }
 
@@ -929,14 +1219,14 @@ mod tests {
     fn annotation_round_trips() {
         let mut doc = AutoCommit::new();
         let a = hl(2);
-        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::add_annotation(&mut doc, &a, None);
         let list = PdfDoc::list_annotations(&doc);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].page, 2);
         assert_eq!(list[0].color, Swatch::Yellow);
         match &list[0].kind {
-            AnnoKind::Highlight { rect } => {
-                assert!((rect.w - 100.0).abs() < 1e-6);
+            AnnoKind::Markup { quads, .. } => {
+                assert!((quads[0].w - 100.0).abs() < 1e-6);
             }
             _ => panic!("expected highlight"),
         }
@@ -953,8 +1243,11 @@ mod tests {
             },
             color: Swatch::Blue,
             author: "Bob".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
-        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::add_annotation(&mut doc, &a, None);
         let got = PdfDoc::list_annotations(&doc);
         match &got[0].kind {
             AnnoKind::Ink { points } => {
@@ -971,7 +1264,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let a = hl(1);
         let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::add_annotation(&mut doc, &a, None);
         PdfDoc::set_annotation_color(&mut doc, &id, Swatch::Green);
         assert_eq!(PdfDoc::list_annotations(&doc)[0].color, Swatch::Green);
         PdfDoc::delete_annotation(&mut doc, &id);
@@ -987,10 +1280,13 @@ mod tests {
             kind: AnnoKind::Note { x: 30.0, y: 40.0 },
             color: Swatch::Blue,
             author: "Alice".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a);
-        PdfDoc::set_annotation_position(&mut doc, &id, 120.5, 210.25);
+        PdfDoc::add_annotation(&mut doc, &a, None);
+        PdfDoc::set_annotation_position(&mut doc, &id, 120.5, 210.25, GeomSpace::Page);
         match &PdfDoc::list_annotations(&doc)[0].kind {
             AnnoKind::Note { x, y } => {
                 assert!((x - 120.5).abs() < 1e-6, "note x moved");
@@ -1012,10 +1308,13 @@ mod tests {
             },
             color: Swatch::Blue,
             author: "Bob".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let id = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a);
-        PdfDoc::set_annotation_position(&mut doc, &id, 99.0, 99.0);
+        PdfDoc::add_annotation(&mut doc, &a, None);
+        PdfDoc::set_annotation_position(&mut doc, &id, 99.0, 99.0, GeomSpace::Page);
         match &PdfDoc::list_annotations(&doc)[0].kind {
             AnnoKind::Ink { points } => assert_eq!(points.len(), 2, "ink polyline preserved"),
             _ => panic!("expected ink"),
@@ -1145,8 +1444,9 @@ mod tests {
             signer: "Alice Example".into(),
             date: "2026-06-30".into(),
             ink: crate::model::SignatureInk::Typed,
+            space: crate::model::GeomSpace::Page,
         };
-        PdfDoc::add_signature(&mut doc, &s);
+        PdfDoc::add_signature(&mut doc, &s, None);
         let got = PdfDoc::list_signatures(&doc);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].signer, "Alice Example");
@@ -1168,8 +1468,9 @@ mod tests {
             signer: "Grace".into(),
             date: "2026-08-17".into(),
             ink: crate::model::SignatureInk::Drawn { strokes },
+            space: crate::model::GeomSpace::Page,
         };
-        PdfDoc::add_signature(&mut doc, &s);
+        PdfDoc::add_signature(&mut doc, &s, None);
         let got = PdfDoc::list_signatures(&doc);
         assert_eq!(got.len(), 1);
         match &got[0].ink {
@@ -1188,7 +1489,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let a = hl(1);
         let aid = a.id.clone();
-        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::add_annotation(&mut doc, &a, None);
         PdfDoc::add_comment(
             &mut doc,
             &Comment {
@@ -1253,9 +1554,10 @@ mod tests {
             signer: "Alice".into(),
             date: "2026-06-30".into(),
             ink: crate::model::SignatureInk::Typed,
+            space: crate::model::GeomSpace::Page,
         };
         let sid = s.id.clone();
-        PdfDoc::add_signature(&mut doc, &s);
+        PdfDoc::add_signature(&mut doc, &s, None);
         PdfDoc::delete_signature(&mut doc, &sid);
         assert!(PdfDoc::list_signatures(&doc).is_empty());
     }
@@ -1311,7 +1613,7 @@ mod tests {
         PdfDoc::ensure_page_plan(&mut doc, 3);
         let annotation = hl(1);
         let annotation_id = annotation.id.clone();
-        PdfDoc::add_annotation(&mut doc, &annotation);
+        PdfDoc::add_annotation(&mut doc, &annotation, None);
         PdfDoc::add_comment(
             &mut doc,
             &Comment {
@@ -1334,7 +1636,9 @@ mod tests {
                 signer: "Alice".into(),
                 date: "2026-01-01".into(),
                 ink: crate::model::SignatureInk::Typed,
+                space: crate::model::GeomSpace::Page,
             },
+            None,
         );
 
         PdfDoc::move_page_plan(&mut doc, "source-1", Some("source-3"));
@@ -1346,6 +1650,14 @@ mod tests {
         assert!(PdfDoc::list_annotations(&doc).is_empty());
         assert!(PdfDoc::list_comments(&doc).is_empty());
         assert!(PdfDoc::list_signatures(&doc).is_empty());
+        // The markup stays in the record, attached to the deleted page.
+        let hidden = PdfDoc::list_annotations_with_hidden(&doc);
+        assert_eq!(hidden.len(), 1);
+        assert_eq!(hidden[0].page, 0);
+        assert_eq!(
+            PdfDoc::annotation_page_id(&doc, &hidden[0].id).as_deref(),
+            Some("source-1")
+        );
     }
 
     #[test]
@@ -1363,6 +1675,7 @@ mod tests {
             id: "imported-image".into(),
             source_page: 1,
             imported: Some(imported),
+            rotation: 0,
         };
         PdfDoc::import_pages(&mut doc, Some("source-1"), std::slice::from_ref(&page));
         assert_eq!(PdfDoc::list_page_plan(&doc)[1], page);

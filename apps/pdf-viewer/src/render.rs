@@ -26,7 +26,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
-    AnnoKind, Annotation, Block, MARGIN, PAGE_W, Page, Signature, SignatureInk, Swatch,
+    AnnoKind, Annotation, Block, MARGIN, MarkupStyle, PAGE_W, Page, Signature, SignatureInk, Swatch,
 };
 
 pub fn ink() -> Color {
@@ -240,13 +240,19 @@ fn draw_page_backdrop(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect
     card_rr
 }
 
-/// Paint the raster backend's page bitmap (engine output) scaled to fill the
-/// card width.
+/// Paint the raster backend's page bitmap (engine output) fitted into the
+/// card and centred — a page whose rotation or size differs from the card's
+/// keeps its aspect, matching the reader's page maps
+/// ([`crate::model::PageMap`]) so overlays line up.
 fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
     if img.width > 0 && img.height > 0 {
-        let sx = card.width() / f64::from(img.width);
-        let img_tf =
-            base * Affine::translate((card.x0, card.y0)) * Affine::scale_non_uniform(sx, sx);
+        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+        let s = crate::model::fit_scale(card.width(), card.height(), iw, ih);
+        let dx = ((card.width() - iw * s) / 2.0).max(0.0);
+        let dy = ((card.height() - ih * s) / 2.0).max(0.0);
+        let img_tf = base
+            * Affine::translate((card.x0 + dx, card.y0 + dy))
+            * Affine::scale_non_uniform(s, s);
         scene.draw_image(img, img_tf);
     }
 }
@@ -487,7 +493,10 @@ fn draw_page_blocks<S: std::hash::BuildHasher>(
 
 /// Draw one page: paper card, drop shadow, content, search bands, then
 /// the annotations + signatures that live on it.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 pub fn draw_page<S: std::hash::BuildHasher>(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -592,7 +601,10 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
     Point::new(origin.x + x * scale, origin.y + y * scale)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 fn draw_annotation(
     scene: &mut Scene,
     tr: &TextRenderer,
@@ -605,11 +617,30 @@ fn draw_annotation(
 ) {
     let col = swatch_color(theme, a.color);
     match &a.kind {
-        AnnoKind::Highlight { rect } => {
-            let p0 = pt(origin, scale, rect.x, rect.y);
-            let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
-            scene.fill(Fill::NonZero, base, alpha(col, 92), None, &r);
-            if selected {
+        AnnoKind::Markup { style, quads } => {
+            let mut bounds: Option<Rect> = None;
+            for rect in quads {
+                let p0 = pt(origin, scale, rect.x, rect.y);
+                let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
+                match style {
+                    MarkupStyle::Highlight => {
+                        scene.fill(Fill::NonZero, base, alpha(col, 92), None, &r);
+                    }
+                    MarkupStyle::Underline | MarkupStyle::StrikeOut => {
+                        // A line at the baseline (underline) or through the
+                        // middle (strike-out) of each band.
+                        let y = if *style == MarkupStyle::Underline {
+                            r.y0 + r.height() * 0.9
+                        } else {
+                            r.y0 + r.height() * 0.55
+                        };
+                        let line = vello::kurbo::Line::new((r.x0, y), (r.x1, y));
+                        scene.stroke(&Stroke::new((1.4 * scale).max(1.0)), base, col, None, &line);
+                    }
+                }
+                bounds = Some(bounds.map_or(r, |b| b.union(r)));
+            }
+            if selected && let Some(r) = bounds {
                 scene.stroke(&Stroke::new(1.5), base, col, None, &r);
                 draw_handles(scene, theme, base, r);
             }
@@ -984,7 +1015,10 @@ fn draw_thumbnail_vector_blocks(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the shared page-draw context explicitly"
+)]
 pub fn draw_thumbnail(
     scene: &mut Scene,
     theme: &Theme,
