@@ -3541,7 +3541,25 @@ mod tests {
             break;
         }
         assert!(!argv.is_empty(), "fs.service has no ExecStart=");
-        argv
+        // systemd splits an unquoted `$VAR` into words; resolve it from the
+        // unit's own `Environment=` default, which is what a boot without an
+        // override file runs.
+        let defaults: std::collections::HashMap<&str, &str> = unit
+            .lines()
+            .filter_map(|line| line.strip_prefix("Environment="))
+            .filter_map(|assignment| assignment.split_once('='))
+            .collect();
+        argv.into_iter()
+            .flat_map(|word| match word.strip_prefix('$') {
+                Some(name) => defaults
+                    .get(name)
+                    .unwrap_or_else(|| panic!("fs.service uses ${name} without a default"))
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                None => vec![word],
+            })
+            .collect()
     }
 
     #[test]
