@@ -66,7 +66,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub use edits::{
-    Edits, FieldValue, FormValue, NewAnnotation, NewAnnotationKind, PageEdit, PageSource,
+    Edits, FieldValue, FormValue, NewAnnotation, NewAnnotationKind, PageEdit, PageSource, StampText,
 };
 pub use error::{Error, Result};
 pub use geom::{PageGeometry, PageSize, Point, Rect, Rotation};
@@ -416,6 +416,17 @@ impl Engine {
         match &self.inner.backend {
             Backend::Sandboxed(s) => s.probe(path).map(Some),
             Backend::InProcess(_) => Ok(None),
+        }
+    }
+
+    /// Make a development build of the helper crash in the middle of a
+    /// request, returning the error that request produced. For crash
+    /// recovery tests.
+    #[doc(hidden)]
+    pub fn crash_helper_for_test(&self) -> Option<Error> {
+        match &self.inner.backend {
+            Backend::Sandboxed(s) => Some(s.abort_helper()),
+            Backend::InProcess(_) => None,
         }
     }
 
