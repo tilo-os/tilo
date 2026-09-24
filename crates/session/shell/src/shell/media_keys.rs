@@ -72,7 +72,16 @@ pub fn classify(event: &WindowEvent) -> Option<MediaKey> {
 /// shelling out again) and written back so the tray indicator moves the
 /// same frame. `None` when nothing could be done, so the caller shows no
 /// OSD rather than claim a change that didn't happen.
-pub fn apply(key: MediaKey, actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
+///
+/// Transport keys address a media player over D-Bus, which the caller must
+/// not wait on: they return `None` at once, and their OSD arrives later
+/// through `transport_osd` if the player answers.
+pub fn apply(
+    key: MediaKey,
+    actions: &dyn QsActions,
+    status: Option<&StatusBridge>,
+    transport_osd: &crate::session_runtime::Delivery<Osd>,
+) -> Option<Osd> {
     match key {
         MediaKey::VolumeUp => step_volume(VOLUME_STEP, actions, status),
         MediaKey::VolumeDown => step_volume(-VOLUME_STEP, actions, status),
@@ -80,9 +89,9 @@ pub fn apply(key: MediaKey, actions: &dyn QsActions, status: Option<&StatusBridg
         MediaKey::MicMute => toggle_mic_mute(),
         MediaKey::BrightnessUp => step_brightness(BRIGHTNESS_STEP, actions),
         MediaKey::BrightnessDown => step_brightness(-BRIGHTNESS_STEP, actions),
-        MediaKey::PlayPause => transport(crate::shell::mpris::Command::PlayPause),
-        MediaKey::NextTrack => transport(crate::shell::mpris::Command::Next),
-        MediaKey::PreviousTrack => transport(crate::shell::mpris::Command::Previous),
+        MediaKey::PlayPause => transport(crate::shell::mpris::Command::PlayPause, transport_osd),
+        MediaKey::NextTrack => transport(crate::shell::mpris::Command::Next, transport_osd),
+        MediaKey::PreviousTrack => transport(crate::shell::mpris::Command::Previous, transport_osd),
     }
 }
 
@@ -144,22 +153,68 @@ fn step_brightness(delta: f32, actions: &dyn QsActions) -> Option<Osd> {
     Some(Osd::brightness(next))
 }
 
-fn transport(cmd: crate::shell::mpris::Command) -> Option<Osd> {
-    let outcome = crate::shell::mpris::send(cmd)?;
-    Some(Osd::transport(match outcome {
+fn transport(
+    cmd: crate::shell::mpris::Command,
+    transport_osd: &crate::session_runtime::Delivery<Osd>,
+) -> Option<Osd> {
+    let delivery = transport_osd.clone();
+    crate::shell::mpris::send(cmd, move |outcome| {
+        delivery.deliver(transport_outcome_osd(cmd, outcome));
+    });
+    None
+}
+
+/// The OSD for a transport command the player accepted.
+fn transport_outcome_osd(
+    cmd: crate::shell::mpris::Command,
+    outcome: crate::shell::mpris::Outcome,
+) -> Osd {
+    Osd::transport(match outcome {
         crate::shell::mpris::Outcome::NowPlaying => Transport::Play,
         crate::shell::mpris::Outcome::NowPaused => Transport::Pause,
         crate::shell::mpris::Outcome::Skipped => match cmd {
             crate::shell::mpris::Command::Next => Transport::Next,
             _ => Transport::Previous,
         },
-    }))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    /// `apply` for the keys these tests press, which never reach a player.
+    fn apply_local(
+        key: MediaKey,
+        actions: &dyn QsActions,
+        status: Option<&StatusBridge>,
+    ) -> Option<Osd> {
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        apply(key, actions, status, &transport_osd)
+    }
+
+    #[test]
+    fn a_transport_osd_names_the_resulting_state() {
+        use crate::shell::mpris::{Command, Outcome};
+        use crate::shell::osd::OsdKind;
+        assert_eq!(
+            transport_outcome_osd(Command::PlayPause, Outcome::NowPaused).kind,
+            OsdKind::Transport(Transport::Pause)
+        );
+        assert_eq!(
+            transport_outcome_osd(Command::PlayPause, Outcome::NowPlaying).kind,
+            OsdKind::Transport(Transport::Play)
+        );
+        assert_eq!(
+            transport_outcome_osd(Command::Next, Outcome::Skipped).kind,
+            OsdKind::Transport(Transport::Next)
+        );
+        assert_eq!(
+            transport_outcome_osd(Command::Previous, Outcome::Skipped).kind,
+            OsdKind::Transport(Transport::Previous)
+        );
+    }
 
     /// Build a `KeyboardInput` event for `key` via the zeroed-struct
     /// workaround (winit's `KeyEvent` has a private `platform_specific` field).
@@ -291,7 +346,7 @@ mod tests {
     fn volume_up_steps_by_five_percent_and_publishes_the_new_level() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.40, false);
-        let osd = apply(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(rec.calls.borrow().as_slice(), ["volume=45.0"]);
         assert_eq!(osd.caption(), "Volume 45%");
         let published = bridge.snapshot().volume.unwrap().level;
@@ -305,7 +360,7 @@ mod tests {
     fn volume_down_steps_the_other_way_and_stops_at_silence() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.02, false);
-        let osd = apply(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(rec.calls.borrow().as_slice(), ["volume=0.0"]);
         assert_eq!(osd.caption(), "Volume 0%");
     }
@@ -314,7 +369,7 @@ mod tests {
     fn volume_up_never_exceeds_full_scale() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.98, false);
-        apply(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+        apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(rec.calls.borrow().as_slice(), ["volume=100.0"]);
     }
 
@@ -322,7 +377,7 @@ mod tests {
     fn turning_a_muted_sink_up_unmutes_it() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.30, true);
-        let osd = apply(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).expect("an OSD");
         assert!(
             rec.calls.borrow().contains(&"mute=false".to_string()),
             "reaching for volume-up on a muted sink means 'let me hear it': {:?}",
@@ -338,7 +393,7 @@ mod tests {
         rec.fail_unmute.set(true);
         let bridge = bridge_at(0.30, true);
 
-        assert!(apply(MediaKey::VolumeUp, &rec, Some(&bridge)).is_none());
+        assert!(apply_local(MediaKey::VolumeUp, &rec, Some(&bridge)).is_none());
         assert_eq!(rec.calls.borrow().as_slice(), ["volume=35.0", "mute=false"]);
         assert!(
             bridge.snapshot().volume.unwrap().muted,
@@ -350,7 +405,7 @@ mod tests {
     fn turning_a_muted_sink_down_leaves_it_muted() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.30, true);
-        let osd = apply(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeDown, &rec, Some(&bridge)).expect("an OSD");
         assert!(
             !rec.calls.borrow().contains(&"mute=false".to_string()),
             "turning down is not a request to hear anything"
@@ -362,12 +417,12 @@ mod tests {
     fn the_mute_key_flips_the_state_and_says_so() {
         let rec = Recorder::default();
         let bridge = bridge_at(0.50, false);
-        let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(rec.calls.borrow().as_slice(), ["toggle_mute"]);
         assert_eq!(osd.caption(), "Muted");
         assert!(bridge.snapshot().volume.unwrap().muted);
 
-        let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
         assert_eq!(osd.caption(), "Volume 50%");
         assert!(!bridge.snapshot().volume.unwrap().muted);
     }
@@ -378,7 +433,7 @@ mod tests {
         let rec = Recorder::default();
         *rec.bridge_on_toggle.borrow_mut() = Some(bridge.clone());
 
-        let osd = apply(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+        let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
 
         assert_eq!(osd.caption(), "Muted");
         assert!(
@@ -393,7 +448,7 @@ mod tests {
         // No bridge reading; this host may have no wpctl in the test sandbox.
         if os_actions::get_volume_state().is_err() {
             assert!(
-                apply(MediaKey::VolumeUp, &rec, None).is_none(),
+                apply_local(MediaKey::VolumeUp, &rec, None).is_none(),
                 "no slab may claim a change that did not happen"
             );
             assert!(

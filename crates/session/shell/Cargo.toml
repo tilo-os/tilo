@@ -186,7 +186,7 @@ tilo-projector = { path = "../../system/projector" }
 # the `log` crate. `ffmpeg-next` has no `log` dependency, so it side-
 # steps the conflict entirely.
 ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
-zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
+zbus = { workspace = true, features = ["tokio", "p2p"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
