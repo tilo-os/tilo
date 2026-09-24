@@ -69,7 +69,9 @@ jobs:
       # label, and `latest` moves only after a complete publication. Any
       # failure to read it (no image yet, registry trouble) publishes rather
       # than risking a stale channel; a redundant release costs runner time
-      # only.
+      # only. The same holds for this commit's dev-trust integration image,
+      # which is what a nightly run produces while publication is not
+      # configured.
       - name: Read the revision of the latest published image
         id: published
         if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -95,8 +97,15 @@ jobs:
           else
             echo '::warning::skopeo is unavailable; publishing without a freshness check'
           fi
+          integration=""
+          if command -v skopeo >/dev/null; then
+            integration="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+              "docker://code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
+          fi
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-          echo "::notice::latest published OS revision: ${revision:-unknown}; main: $GITHUB_SHA"
+          echo "integration-revision=$integration" >> "$GITHUB_OUTPUT"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $GITHUB_SHA"
 
       - name: Select validation or native publication lanes
         id: matrix
@@ -106,6 +115,11 @@ jobs:
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
           PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
+          INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
+          # Publication refuses to start without these protected inputs. Until
+          # they are configured the nightly run is a main integration build, so
+          # dev VMs still get a same-commit image every night.
+          PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
         run: |
           set -euo pipefail
           publish=false
@@ -122,8 +136,13 @@ jobs:
             if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
               skip=true
               echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
-            else
+            elif [[ ${PUBLICATION_CONFIGURED:-false} == true ]]; then
               publish=true
+            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::the integration image of $GITHUB_SHA already exists and publication is not configured; skipping the nightly build"
+            else
+              echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
             fi
           fi
           if [[ $publish == true ]]; then
@@ -827,6 +846,38 @@ jobs:
           cache-from: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }},mode=min
 
+      # Dev VMs must not wait on release gating. Every main build that gets
+      # this far pushes its image, unsigned, to tilo-ci: a development-only
+      # repository that production policy rejects
+      # (os/etc/containers/policy.json). dev-disk.yml builds the dev image and
+      # disk from it when this run does not also promote a signed release.
+      # No release channel, generation or signature is involved.
+      - name: Publish the dev-trust integration image
+        id: dev-image
+        if: steps.release-mode.outputs.validate == 'true' && github.ref == 'refs/heads/main'
+        # A registry hiccup here must never block a release.
+        continue-on-error: true
+        env:
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"
+          digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
+          TMPDIR=/var/tmp skopeo copy --retry-times 3 --dest-creds "$REGISTRY_CREDS" \
+            --digestfile "$digest_file" \
+            oci-archive:/var/tmp/tilo-image.tar "docker://$ref"
+          digest="$(tr -d '[:space:]' < "$digest_file")"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          revision="$(skopeo inspect --creds "$REGISTRY_CREDS" "docker://code.podesta.ai/qos/tilo-ci@$digest" \
+            | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
+          [[ $revision == "$GITHUB_SHA" ]] || {
+            echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "::notice::pushed dev-trust integration image $ref ($digest)"
+
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
@@ -1463,33 +1514,68 @@ jobs:
           path: tilo-os-release-index.json
           if-no-files-found: error
 
-  # Dev VM disks are derived from the release just promoted, never rebuilt from
-  # source here. The request pins the exact source revision and index digest, so
-  # a later main commit cannot change what the dev image is built on.
+  # Dev VM disks are derived from an image this run produced, never rebuilt
+  # from source here. A promoted release is preferred: the request pins its
+  # exact index digest. Otherwise a main run that built an image requests
+  # disks from its dev-trust integration image, so dev VMs keep up with main
+  # even while publication is failing or was not requested. Either way the
+  # request pins the source revision and digest, so a later main commit cannot
+  # change what the dev image is built on.
   dispatch-dev-disk:
-    needs: [plan, promote-multiarch]
-    if: needs.plan.outputs.publish == 'true'
+    needs: [plan, build-and-push, promote-multiarch]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.promote-multiarch.result == 'success' || (github.ref == 'refs/heads/main' && needs.build-and-push.result != 'skipped' && needs.build-and-push.result != 'cancelled')) }}
     runs-on: runner
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: needs.promote-multiarch.result == 'success'
         with:
           name: tilo-os-release-index
           path: release-index
-      - name: Request dev VM disks for this release
+      - name: Request dev VM disks for this run's image
         env:
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          PROMOTED: ${{ needs.promote-multiarch.result == 'success' }}
         run: |
           set -euo pipefail
-          image="$(jq -er .image release-index/tilo-os-release-index.json)"
-          [[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
-            echo "::error::unexpected release index image: $image"
-            exit 1
-          }
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            tag="${GITHUB_REF_NAME#v}"
+          if [[ $PROMOTED == true ]]; then
+            image="$(jq -er .image release-index/tilo-os-release-index.json)"
+            [[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error::unexpected release index image: $image"
+              exit 1
+            }
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              tag="${GITHUB_REF_NAME#v}"
+            else
+              tag="main-${GITHUB_SHA:0:7}"
+            fi
           else
-            tag="main-${GITHUB_SHA:0:7}"
+            # The dev-trust image of the x86_64 lane, which every main build
+            # has. Its revision label is checked here and again by dev-disk.
+            if ! command -v skopeo >/dev/null; then
+              if command -v apt-get >/dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                sudo -n apt-get -o Acquire::Retries=3 update
+                sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+              else
+                sudo -n dnf --setopt=retries=3 install -y skopeo
+              fi
+            fi
+            ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64"
+            if ! raw="$(skopeo inspect --retry-times 3 --raw --creds "$REGISTRY_CREDS" "docker://$ref")"; then
+              echo "::notice::no dev-trust integration image $ref; this run built none, so no dev disk is requested"
+              exit 0
+            fi
+            digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+            image="code.podesta.ai/qos/tilo-ci@$digest"
+            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" "docker://$image" \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
+            [[ $revision == "$GITHUB_SHA" ]] || {
+              echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+              exit 1
+            }
+            tag="main-${GITHUB_SHA:0:7}-ci"
           fi
           payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
             --arg base "$image" --arg tag "$tag" \
