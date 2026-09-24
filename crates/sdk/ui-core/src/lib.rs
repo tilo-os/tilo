@@ -51,6 +51,14 @@
     clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        reason = "unit tests may drive real threads and wait on the real clock; the rule guards the library"
+    )
+)]
+
 //! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
 //! # Reach for the toolkit's stack through the toolkit
@@ -108,6 +116,7 @@ extern crate self as tilo_ui;
 pub(crate) mod application_test_support;
 
 pub mod app;
+pub mod background;
 pub mod caps_lock;
 pub mod capture;
 pub mod chart_palette;
@@ -234,7 +243,7 @@ pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
-pub use image_store::{Fetcher, ImageStore};
+pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{
     ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,

@@ -12,6 +12,10 @@
 //! it must **never** run on the UI thread. [`DesktopLocation`] spawns a worker
 //! thread with its own small Tokio runtime, runs the D-Bus round-trip there,
 //! and hands the outcome back over an [`std::sync::mpsc`] channel.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the portal location request runs on its own thread"
+)]
 
 #[cfg(all(feature = "portal", unix))]
 use std::time::Duration;

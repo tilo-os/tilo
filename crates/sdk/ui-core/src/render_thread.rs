@@ -18,6 +18,10 @@
 //! On `exiting`, the App sends `RenderRequest::Shutdown` and `join()`s the
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the GPU render worker is a dedicated thread"
+)]
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{

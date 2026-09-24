@@ -215,6 +215,10 @@ pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, St
 /// This owns no window/surface and can safely finish if construction fails:
 /// dropping the receiving end drops the prepared GPU resources at send.
 #[cfg(windows)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: GPU preparation overlaps app start on its own thread"
+)]
 pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
     if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
         return None;
@@ -348,6 +352,10 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     Ok(renderer)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: window render setup probes the GPU on its own thread"
+)]
 fn begin_window_render_init(
     window: Arc<Window>,
     transparent: bool,

@@ -9,6 +9,10 @@
 //! presence may be shed. Joining, document signing and envelope
 //! verification all happen on the worker with the certified launcher (or
 //! host-supplied) identity.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the shovel thread bridges a blocking socket"
+)]
 
 use super::{
     ActionDirectoryRequest, Backend, BrokerActionDescriptor, BrokerActionSurface, CollabEvent,

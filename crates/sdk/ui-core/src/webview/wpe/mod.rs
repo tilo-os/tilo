@@ -16,6 +16,10 @@
 //! The engine thread runs for the process lifetime — a browser window owns
 //! exactly one engine. Dropping `WpeEngine` leaks the thread by design
 //! (WebKit teardown is not worth the shutdown races for a per-window process).
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: WPE WebKit runs on a dedicated engine thread"
+)]
 
 pub mod egl;
 mod ffi;

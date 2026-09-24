@@ -6,8 +6,13 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 
-# The toolkit reads the clock only through `ui::time`, so a host can supply it.
+# The toolkit reads the clock only through `ui::time` and runs background work
+# and timers only through `ui::background`, so a host can supply both. Native
+# runner modules opt out with a reasoned module-level `allow`.
 disallowed-methods = [
     { path = "std::time::Instant::now", reason = "read the clock through `crate::time::now()`" },
     { path = "std::time::SystemTime::now", reason = "read the clock through `crate::time::wall()`" },
+    { path = "std::thread::spawn", reason = "run background work through `crate::background::Background::spawn`" },
+    { path = "std::thread::Builder::spawn", reason = "run background work through `crate::background::Background::spawn`" },
+    { path = "std::thread::sleep", reason = "schedule a wake with `crate::background::Background::wake_at` instead of blocking" },
 ]
