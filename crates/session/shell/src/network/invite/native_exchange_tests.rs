@@ -394,7 +394,7 @@ async fn actual_exchange(restart: bool) {
     receiving_owner
         .with_current(room, |view| {
             assert!(
-                view.peer().document("dev.qos.chat", "").is_some(),
+                view.peer().document("so.tilo.chat", "").is_some(),
                 "actual retained Chat admitted before fanout"
             );
             Ok(())

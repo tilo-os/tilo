@@ -22,7 +22,7 @@ fn opening(owner: &SessionOwner) -> OwnerCommitRequest {
                         .collect(),
                 },
                 command: DesktopCommand::OpenTab {
-                    app: "dev.qos.notes".into(),
+                    app: "so.tilo.notes".into(),
                     placement: TabPlacement::EmptyWorkspace,
                 },
             },

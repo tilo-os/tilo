@@ -292,7 +292,7 @@ fn write_allowed(owner: &SessionOwner, current: &CommittedAuthority) -> bool {
     workspace.allows(
         &workspace.actor_for_person(&hex::encode(owner.identity.native_cert.user_public_key)),
         &collab_types::caps::ResourceRef::Action {
-            app: "dev.qos.word-processor".into(),
+            app: "so.tilo.word-processor".into(),
             action: "replace-text".into(),
         },
         collab_types::caps::Verb::Write,
@@ -364,7 +364,7 @@ async fn native_private_retained_real_broker_reply_rechecks_owner_before_output(
         &current,
         collab_types::caps::CapOverride::restrict_role_in_app(
             collab_types::Role::Owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             collab_types::caps::Verb::Read,
         ),
     );
@@ -447,7 +447,7 @@ fn native_private_idle_watch_keeps_original_custody_after_fresh_status() {
                 &current,
                 collab_types::caps::CapOverride::restrict_role_in_app(
                     collab_types::Role::Owner,
-                    "dev.qos.word-processor",
+                    "so.tilo.word-processor",
                     collab_types::caps::Verb::Read,
                 ),
             );
@@ -600,7 +600,7 @@ fn native_private_ready_event_old_fence_cannot_be_blessed_by_same_uuid_fresh_sta
         &current,
         collab_types::caps::CapOverride::restrict_role_in_app(
             collab_types::Role::Owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             collab_types::caps::Verb::Read,
         ),
     );
@@ -693,7 +693,7 @@ fn native_private_retained_reply_expires_without_policy_document_change() {
         &current,
         collab_types::caps::CapOverride::restrict_role_in_app(
             collab_types::Role::Owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             collab_types::caps::Verb::Read,
         )
         .expiring(collab_types::caps::Expiry::AtUnix(expiry)),

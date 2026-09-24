@@ -6,14 +6,14 @@ pub(crate) fn voice_store() -> (tempfile::TempDir, Store, qos_user_identity::Dev
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     let now = qos_relay::clock::now_ns();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
-    let mut chat = AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let channel = chat
         .put_object(&channels, "cloud_voice", ObjType::Map)
         .unwrap();
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "cloud").unwrap();
-    peer.publish_document("dev.qos.chat", "", chat.save(), &store.key(), now_time(now))
+    peer.publish_document("so.tilo.chat", "", chat.save(), &store.key(), now_time(now))
         .unwrap();
     let mut state = store.state.clone();
     state.outbox.extend(
@@ -41,7 +41,7 @@ pub(crate) fn voice_store() -> (tempfile::TempDir, Store, qos_user_identity::Dev
 
 fn create() -> admin::CollaborationAdminOperation {
     admin::CollaborationAdminOperation::MediaCreate(admin::MediaCreateInput {
-        app_id: "dev.qos.chat".into(),
+        app_id: "so.tilo.chat".into(),
         record_id: "".into(),
         channel_id: "cloud_voice".into(),
         expected_authorization_revision: None,

@@ -133,7 +133,7 @@ impl Fixture {
                 SeedState {
                     room_changes: vec![],
                     documents: vec![SeedDocument {
-                        app_id: "dev.qos.chat".into(),
+                        app_id: "so.tilo.chat".into(),
                         record_id: "".into(),
                         kind: "chat".into(),
                         bytes: chat.save(),
@@ -145,7 +145,7 @@ impl Fixture {
             .unwrap();
         let binding = self
             .peer
-            .resolve_media_binding("dev.qos.chat", "", "voice")
+            .resolve_media_binding("so.tilo.chat", "", "voice")
             .unwrap();
         let policy = media::RoomMediaV1 {
             version: 1,

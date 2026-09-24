@@ -172,7 +172,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                     .map(|cap| cap.with_expiry(100))
                     .collect();
                 let route = CrdtRoute::record(
-                    "dev.qos.word-processor",
+                    "so.tilo.word-processor",
                     workspace.room.to_string(),
                     "document-1",
                 );

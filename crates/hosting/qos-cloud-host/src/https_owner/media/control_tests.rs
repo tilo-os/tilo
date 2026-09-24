@@ -179,7 +179,7 @@ impl Fixture {
                     room: room.clone(),
                     invocation_id: "media-control-create".into(),
                     operation: NativeOperation::MediaCreate(MediaCreateInput {
-                        app_id: "dev.qos.chat".into(),
+                        app_id: "so.tilo.chat".into(),
                         record_id: "".into(),
                         channel_id: "cloud_voice".into(),
                         expected_authorization_revision: None,

@@ -47,9 +47,9 @@ async fn cloud_policy_clock_actual_queued_document_rejects_replacement_store() {
         let store = owner.store().unwrap();
         let peer = store.peer().unwrap();
         (
-            ui::collaboration::RouteSpec::app("dev.qos.chat", peer.room().parse().unwrap()),
+            ui::collaboration::RouteSpec::app("so.tilo.chat", peer.room().parse().unwrap()),
             peer.authority().clone(),
-            collab_types::DocumentMutation::Snapshot(peer.document("dev.qos.chat", "").unwrap()),
+            collab_types::DocumentMutation::Snapshot(peer.document("so.tilo.chat", "").unwrap()),
         )
     };
     let (documents, mut requests) =
@@ -142,9 +142,9 @@ async fn cloud_policy_clock_selected_source_retirement_denies_pending_document_a
         let store = owner.store().unwrap();
         let peer = store.peer().unwrap();
         (
-            ui::collaboration::RouteSpec::app("dev.qos.chat", peer.room().parse().unwrap()),
+            ui::collaboration::RouteSpec::app("so.tilo.chat", peer.room().parse().unwrap()),
             peer.authority().clone(),
-            collab_types::DocumentMutation::Snapshot(peer.document("dev.qos.chat", "").unwrap()),
+            collab_types::DocumentMutation::Snapshot(peer.document("so.tilo.chat", "").unwrap()),
         )
     };
     let (documents, mut requests) =

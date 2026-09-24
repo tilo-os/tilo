@@ -296,7 +296,7 @@ mod tests {
             !id.contains("100"),
             "public ID does not expose device serial"
         );
-        let app = VerifiedAppRegistration::new_verified("dev.qos.chat", "room").unwrap();
+        let app = VerifiedAppRegistration::new_verified("so.tilo.chat", "room").unwrap();
         let binding = CaptureSessionBinding::from_verified(&app, "call", "device").unwrap();
         let now = Instant::now();
         let lease = {

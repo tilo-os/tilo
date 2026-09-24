@@ -67,10 +67,10 @@ fn open_app(owner: &mut SessionOwner, app: &str, placement: TabPlacement) {
 #[test]
 fn named_empty_workspace_survives_reopen_and_opens_its_first_application() {
     for app in [
-        "dev.qos.notes",
-        "dev.qos.word-processor",
-        "dev.qos.calculator",
-        "dev.qos.chat",
+        "so.tilo.notes",
+        "so.tilo.word-processor",
+        "so.tilo.calculator",
+        "so.tilo.chat",
     ] {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("workspace");
@@ -183,8 +183,8 @@ fn reopening_chat_reuses_its_empty_primary_record() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("workspace");
     let mut owner = SessionOwner::initialize_workspace(&path, "Chat workspace").unwrap();
-    open_app(&mut owner, "dev.qos.chat", TabPlacement::EmptyWorkspace);
-    let before = owner.peer().document("dev.qos.chat", "").unwrap();
+    open_app(&mut owner, "so.tilo.chat", TabPlacement::EmptyWorkspace);
+    let before = owner.peer().document("so.tilo.chat", "").unwrap();
     let doc = ui::automerge::AutoCommit::load(&before).unwrap();
     assert!(chat::doc::ChatDoc::list_messages(&doc, "c_general").is_empty());
     assert_eq!(chat::doc::ChatDoc::list_users(&doc).len(), 1);
@@ -196,11 +196,11 @@ fn reopening_chat_reuses_its_empty_primary_record() {
         .id;
     open_app(
         &mut owner,
-        "dev.qos.chat",
+        "so.tilo.chat",
         TabPlacement::NewGroup { strip, after: None },
     );
     assert_eq!(owner.status().records.len(), 1);
-    assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), before);
+    assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), before);
     let topology =
         qos_desktop::projection::RoomProjection::contents_of(owner.peer().admitted_room().unwrap());
     assert_eq!(topology[0].groups.len(), 2);

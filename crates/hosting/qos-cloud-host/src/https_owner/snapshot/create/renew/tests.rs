@@ -182,7 +182,7 @@ fn admit_large_original(f: &crate::https_owner::data::tests::Fixture) {
     let mut store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
     let mut author = store.peer().unwrap();
     // This is the real installed primary Chat record required by Cloud enrollment.
-    let mut doc = AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut doc = AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = doc.get_heads();
     let mut bytes = vec![0; 600 * 1024];
     blake3::Hasher::new()
@@ -195,7 +195,7 @@ fn admit_large_original(f: &crate::https_owner::data::tests::Fixture) {
     let now = qos_relay::clock::now_ns();
     let message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             doc.save_after(&heads),
             &store.key(),

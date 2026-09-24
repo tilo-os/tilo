@@ -580,7 +580,7 @@ fn committed_authority_rejected_signed_input_preserves_media_but_failed_barrier_
     actions.set_ready(true);
     actions.set_ready(false);
     assert!(permit.current(Direction::Publish, name));
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut candidate = f.owner.peer().clone();
     let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -632,7 +632,7 @@ fn room_media_policy_legacy_voice_rows_cannot_authorize_join() {
         owner,
         service,
     };
-    assert!(f.owner.peer().document("dev.qos.chat", "").is_some());
+    assert!(f.owner.peer().document("so.tilo.chat", "").is_some());
     assert!(f.owner.peer().validated_media_policy().unwrap().is_none());
     assert!(
         matches!(

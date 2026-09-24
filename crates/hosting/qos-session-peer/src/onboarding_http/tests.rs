@@ -634,7 +634,7 @@ fn large_publication(f: &mut Fixture) {
     let text = hex::encode(input);
     f.current
         .with_owner(&mut f.owner, |owner| {
-            crate::owner::mutate_owned_record_for_test(owner, "dev.qos.chat", "", |doc| {
+            crate::owner::mutate_owned_record_for_test(owner, "so.tilo.chat", "", |doc| {
                 doc.put(ui::automerge::ROOT, "onboarding_handoff_fixture", text)
                     .unwrap();
             })
@@ -1010,7 +1010,7 @@ async fn onboarding_mid_size_inline_join_reply_fits_response_capacity() {
     let text = hex::encode(input);
     f.current
         .with_owner(&mut f.owner, |owner| {
-            crate::owner::mutate_owned_record_for_test(owner, "dev.qos.chat", "", |doc| {
+            crate::owner::mutate_owned_record_for_test(owner, "so.tilo.chat", "", |doc| {
                 doc.put(ui::automerge::ROOT, "mid_size_fixture", text)
                     .unwrap();
             })

@@ -359,7 +359,7 @@ enum Observed {
 }
 
 /// Live record id of an application's record-less (package-primary) document,
-/// such as Chat's `("dev.qos.chat", "")`. Identical to the UI's
+/// such as Chat's `("so.tilo.chat", "")`. Identical to the UI's
 /// `ui::record::RecordId::package_primary()`, the id the desktop already uses
 /// for that document, and never a valid durable record id (durable ids are
 /// `file:`, `uuid:`, `tab:` or `derived:`), so the mapping is injective.

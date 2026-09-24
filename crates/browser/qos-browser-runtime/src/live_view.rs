@@ -622,9 +622,9 @@ mod tests {
         let records = BTreeMap::from([
             (
                 30,
-                ("dev.qos.word-processor".to_string(), "uuid:abc".to_string()),
+                ("so.tilo.word-processor".to_string(), "uuid:abc".to_string()),
             ),
-            (40, ("dev.qos.chat".to_string(), String::new())),
+            (40, ("so.tilo.chat".to_string(), String::new())),
         ]);
         (layout, records)
     }
@@ -636,7 +636,7 @@ mod tests {
         let value = snapshot_json(&layout, &records, caret);
         assert_eq!(
             value["focus"],
-            serde_json::json!({"app": "dev.qos.chat", "record": PACKAGE_PRIMARY_RECORD})
+            serde_json::json!({"app": "so.tilo.chat", "record": PACKAGE_PRIMARY_RECORD})
         );
         assert_eq!(
             value["focusRect"],
@@ -857,8 +857,8 @@ mod tests {
     #[test]
     fn live_record_maps_package_primary_and_bounds() {
         assert_eq!(
-            live_record("dev.qos.chat", ""),
-            Some(("dev.qos.chat".into(), PACKAGE_PRIMARY_RECORD.into()))
+            live_record("so.tilo.chat", ""),
+            Some(("so.tilo.chat".into(), PACKAGE_PRIMARY_RECORD.into()))
         );
         assert_eq!(live_record("", "x"), None);
         assert_eq!(live_record("a", &"r".repeat(129)), None);

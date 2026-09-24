@@ -48,7 +48,7 @@ fn policy(doc: &AutoCommit, room: RoomId) -> media::RoomMediaV1 {
             [7; 32],
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
-                    app_id: "dev.qos.chat".into(),
+                    app_id: "so.tilo.chat".into(),
                     record_id: "".into(),
                     channel_id: "voice".into(),
                     channel_object: "1@01".into(),

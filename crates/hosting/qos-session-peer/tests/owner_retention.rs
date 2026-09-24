@@ -338,7 +338,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
         let mut full_counts = BTreeSet::new();
         for round in 0..6 {
             let before_rows = owner.peer().rows();
-            let before_receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+            let before_receipt = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
             owner.refresh_checkpoint().unwrap();
             assert_eq!(
                 owner.peer().rows(),
@@ -346,7 +346,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 "same-head re-signing changed documents"
             );
             assert_ne!(
-                owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+                owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
                 before_receipt,
                 "same-head receipt must advance exactly"
             );
@@ -360,9 +360,9 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 owner.peer().rows().len() + 1,
                 "retain exactly one full owner checkpoint basis"
             );
-            let untouched = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+            let untouched = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
             let mut candidate = owner.peer().clone();
-            let app = "dev.qos.word-processor";
+            let app = "so.tilo.word-processor";
             let record = "tab:0000000000000001";
             let mut doc = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
             doc.put(ROOT, "qualification_commit", round as i64).unwrap();
@@ -374,7 +374,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 .commit_mutation_candidate(candidate, owner.directory().to_vec())
                 .unwrap();
             assert_eq!(
-                owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+                owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
                 untouched
             );
             publish(&owner, &native).unwrap();

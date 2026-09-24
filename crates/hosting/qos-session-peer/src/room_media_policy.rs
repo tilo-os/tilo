@@ -97,7 +97,7 @@ pub(crate) mod tests {
     };
 
     pub(crate) const CALL: [u8; 32] = [7; 32];
-    pub(crate) const APP: &str = "dev.qos.chat";
+    pub(crate) const APP: &str = "so.tilo.chat";
     pub(crate) const CHANNEL: &str = "governed-voice";
 
     pub(crate) fn commit_room(owner: &mut SessionOwner, mut room: AutoCommit) {

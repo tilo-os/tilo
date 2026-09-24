@@ -10,7 +10,7 @@ use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "dev.qos.chat";
+const APP: &str = "so.tilo.chat";
 
 fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {

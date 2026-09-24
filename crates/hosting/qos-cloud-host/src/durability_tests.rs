@@ -419,7 +419,7 @@ fn durability_addressed_exchange_does_not_report_uncertain_commit_as_rejected() 
 pub(super) fn document_message(store: &Store, device: &SigningKey) -> NeighbourMsg {
     use qos_actions::Action;
     let mut browser = store.peer_at(qos_relay::clock::now_ns()).unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = automerge::AutoCommit::load(&browser.document(app, record).unwrap()).unwrap();
     let before = doc.get_heads();

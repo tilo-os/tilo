@@ -396,7 +396,7 @@ mod tests {
         for (action, arguments) in [
             (
                 "media.call.create",
-                serde_json::json!({"app_id":"dev.qos.chat","record_id":"primary","channel_id":"voice","expected_authorization_revision":null,"allowed":{"publish":true,"subscribe":true}}),
+                serde_json::json!({"app_id":"so.tilo.chat","record_id":"primary","channel_id":"voice","expected_authorization_revision":null,"allowed":{"publish":true,"subscribe":true}}),
             ),
             (
                 "media.call.end",

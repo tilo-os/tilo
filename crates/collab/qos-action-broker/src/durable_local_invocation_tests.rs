@@ -165,7 +165,7 @@ async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation(
                     .map(|cap| cap.with_expiry(start_ns / 1_000_000_000 + 50))
                     .collect();
                 let route = CrdtRoute::record(
-                    "dev.qos.word-processor",
+                    "so.tilo.word-processor",
                     workspace.room.to_string(),
                     "document-1",
                 );

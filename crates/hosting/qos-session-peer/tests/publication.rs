@@ -102,7 +102,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
     let authority = owner.peer().authority().device_public_key;
     let mut offline = owner.peer().clone();
     let mut sender = owner.peer().clone();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = AutoCommit::load(&sender.document(app, record).unwrap()).unwrap();
     doc.set_actor(ui::automerge::ActorId::from(
@@ -122,7 +122,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         )
         .unwrap();
     let exact_original = postcard::to_stdvec(&original).unwrap();
-    let untouched = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+    let untouched = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
     owner
         .receive(
             TransportOrigin::RelayDelta(certificate.device_public_key),
@@ -137,7 +137,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         &[Retention::Delta, Retention::Checkpoint]
     );
     assert_eq!(
-        owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+        owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
         untouched
     );
     assert!(owner.peer().covers(&original));
@@ -211,7 +211,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         assert!(peer.covers(&original));
         assert!(peer.durable_covers_current(app, record).unwrap());
         assert_eq!(
-            peer.durable_coverage("dev.qos.chat", "").unwrap(),
+            peer.durable_coverage("so.tilo.chat", "").unwrap(),
             untouched
         );
     }
@@ -388,13 +388,13 @@ fn delivery_selected_publication_replays_native_checkpoint_after_local_edit_and_
     let mut offline = owner.peer().clone();
     let mut candidate = owner.peer().clone();
     let key = owner_key(&owner);
-    let mut document = AutoCommit::load(&candidate.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut document = AutoCommit::load(&candidate.document("so.tilo.chat", "").unwrap()).unwrap();
     document
         .put(ROOT, "delivery-local", "persisted once")
         .unwrap();
     document.commit();
     candidate
-        .publish_document("dev.qos.chat", "", document.save(), &key, SystemTime::now())
+        .publish_document("so.tilo.chat", "", document.save(), &key, SystemTime::now())
         .unwrap();
     let before_len = owner.outgoing().len();
     let receipt = owner
@@ -416,7 +416,7 @@ fn delivery_selected_publication_replays_native_checkpoint_after_local_edit_and_
     assert_eq!(offline.rows(), owner.peer().rows());
     assert_eq!(
         offline
-            .durable_coverage("dev.qos.chat", "")
+            .durable_coverage("so.tilo.chat", "")
             .unwrap()
             .unwrap()
             .generation,

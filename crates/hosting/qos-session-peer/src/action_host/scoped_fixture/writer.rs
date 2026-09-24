@@ -44,7 +44,7 @@ async fn accepted_chooser(fixture: &mut ScopedAppFixture, job: u64, entered: &mp
 }
 
 async fn writer_save_as(expire: bool) {
-    let mut fixture = ScopedAppFixture::new("dev.qos.word-processor");
+    let mut fixture = ScopedAppFixture::new("so.tilo.word-processor");
     fixture.wait_action("save-as").await;
     let output = fixture.root.path().join("original-caller.txt");
     std::fs::write(&output, SENTINEL).unwrap();
@@ -173,7 +173,7 @@ fn assert_read_remains_unavailable(resources: &[tilo_actions::Resource]) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scoped_writer_catalogue_matches_actual_admitted_document() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.word-processor");
+    let mut fixture = ScopedAppFixture::new("so.tilo.word-processor");
     let document = fixture
         .owner
         .peer()

@@ -98,7 +98,7 @@ fn opening(owner: &SessionOwner, app: &str) -> qos_peer_state::owner_commit::Own
 fn creation_open_tab_exact_retry_and_restart_retain_one_original_result() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     let first = owner.commit_desktop_command(&request).unwrap();
     assert_eq!(owner.aggregate.creation.as_ref().unwrap().len(), 1);
     let row = owner
@@ -143,7 +143,7 @@ fn creation_open_tab_exact_retry_and_restart_retain_one_original_result() {
 fn creation_terminal_barrier_failure_leaves_document_topology_and_result_unpublished() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     let root = owner.root().to_owned();
     let before = owner.status();
     let bytes = std::fs::read(root.join("session.bin")).unwrap();
@@ -190,7 +190,7 @@ fn creation_v6_requires_complete_canonical_section_and_v5_rejects_extension() {
 fn creation_retained_result_refreshes_expired_checkpoint_and_coalesces_fresh_retry() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     owner.commit_desktop_command(&request).unwrap();
     let row = owner
         .aggregate
@@ -258,7 +258,7 @@ fn creation_retained_result_refreshes_expired_checkpoint_and_coalesces_fresh_ret
 fn creation_restore_rejects_desktop_source_bytes_not_bound_to_original_intent() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     owner.commit_desktop_command(&request).unwrap();
     let mut row = owner
         .aggregate
@@ -282,11 +282,11 @@ fn creation_duplicate_tab_uses_same_result_ledger_and_exact_retry() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
     owner
-        .commit_desktop_command(&opening(&owner, "dev.qos.notes"))
+        .commit_desktop_command(&opening(&owner, "so.tilo.notes"))
         .unwrap();
     let contents =
         qos_desktop::projection::RoomProjection::contents_of(owner.peer.admitted_room().unwrap());
-    let mut duplicate = opening(&owner, "dev.qos.notes");
+    let mut duplicate = opening(&owner, "so.tilo.notes");
     let CommitOperation::DesktopCommand { command, .. } = &mut duplicate.operation else {
         unreachable!()
     };
@@ -370,7 +370,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
     let caller = admitted_guest(&mut owner);
-    let mut request = opening(&owner, "dev.qos.notes");
+    let mut request = opening(&owner, "so.tilo.notes");
     let qos_peer_state::owner_commit::CommitOperation::DesktopCommand { caller: actual, .. } =
         &mut request.operation
     else {
@@ -436,7 +436,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
 fn creation_uncertain_after_atomic_write_reopens_exact_whole_result_without_repeating_factory() {
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     let root = owner.root().to_owned();
     let before = owner.status();
     let result = crate::store::test_fault::with_fault(

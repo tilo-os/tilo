@@ -321,7 +321,7 @@ fn owner_mutations_journal_and_crash_recovery_reopens_the_exact_owner_state() {
         let path = temp.path().join("owner");
         let mut owner = crate::SessionOwner::initialize(&path).unwrap();
         let checkpoint = fs::read(path.join("session.bin")).unwrap();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         for step in 0..12i64 {
             let mut candidate = owner.peer().clone();

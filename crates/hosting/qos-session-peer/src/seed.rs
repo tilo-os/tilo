@@ -140,11 +140,11 @@ fn legacy_writer_notes_split(
             let writer = group
                 .tabs
                 .iter()
-                .position(|tab| app_is(&tab.tile, "dev.qos.word-processor"));
+                .position(|tab| app_is(&tab.tile, "so.tilo.word-processor"));
             let notes = group
                 .tabs
                 .iter()
-                .position(|tab| app_is(&tab.tile, "dev.qos.notes"));
+                .position(|tab| app_is(&tab.tile, "so.tilo.notes"));
             if writer.is_some() && notes.is_some() {
                 if matched.is_some() {
                     return Err("multiple legacy Writer and Notes groups".into());
@@ -198,7 +198,7 @@ fn legacy_writer_notes_split(
     let old_notes_tab = notes.id;
     let notes_record = routes.get(&old_notes_tab).cloned().unwrap_or_else(|| {
         qos_desktop::records::component_record(
-            "dev.qos.notes",
+            "so.tilo.notes",
             old_notes_tab,
             notes::definition().record_kind.clone(),
         )
@@ -239,7 +239,7 @@ pub(crate) fn seed(
     let mut documents = vec![];
     for (durable_app_id, definition, checkout) in [
         (
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             word_processor::definition(),
             RecordCheckout::new(
                 RecordId::for_tab(1),
@@ -247,7 +247,7 @@ pub(crate) fn seed(
             ),
         ),
         (
-            "dev.qos.chat",
+            "so.tilo.chat",
             chat::definition(),
             RecordCheckout::package_primary(chat::definition().record_kind.clone()),
         ),
@@ -325,10 +325,10 @@ pub(crate) fn bootstrap_desktop(
             return Ok(false);
         };
         if peer
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .is_none()
             || peer
-                .document("dev.qos.notes", &split.notes_record)
+                .document("so.tilo.notes", &split.notes_record)
                 .is_none()
         {
             return Err("legacy Writer or Notes record missing during topology migration".into());
@@ -362,9 +362,9 @@ pub(crate) fn bootstrap_desktop(
         return Ok(true);
     }
     if peer
-        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .document("so.tilo.word-processor", "tab:0000000000000001")
         .is_none()
-        || peer.document("dev.qos.chat", "").is_none()
+        || peer.document("so.tilo.chat", "").is_none()
     {
         return Err(
             "legacy canonical records missing; desktop migration cannot replace them".into(),
@@ -397,7 +397,7 @@ pub(crate) fn bootstrap_desktop(
     let chat_group = mint()?;
     let chat = mint()?;
     let definition = notes::definition();
-    let durable_app_id = "dev.qos.notes";
+    let durable_app_id = "so.tilo.notes";
     let checkout = qos_desktop::records::component_record(
         durable_app_id,
         notes,
@@ -430,21 +430,21 @@ pub(crate) fn bootstrap_desktop(
         window_groups: vec![
             WindowGroup {
                 id: writer_group,
-                tabs: vec![tile(writer, "Writer", "dev.qos.word-processor")],
+                tabs: vec![tile(writer, "Writer", "so.tilo.word-processor")],
                 active_tab: writer,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
             WindowGroup {
                 id: notes_group,
-                tabs: vec![tile(notes, "Notes", "dev.qos.notes")],
+                tabs: vec![tile(notes, "Notes", "so.tilo.notes")],
                 active_tab: notes,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
             WindowGroup {
                 id: chat_group,
-                tabs: vec![tile(chat, "Chat", "dev.qos.chat")],
+                tabs: vec![tile(chat, "Chat", "so.tilo.chat")],
                 active_tab: chat,
                 width: WindowWidth::Normal,
                 maximized: false,

@@ -94,6 +94,8 @@ fn runtime_admission() -> PrivateAgentLedgerV2 {
                 descriptor_revision: "b".repeat(64),
                 request: String::from_utf8(request).unwrap(),
                 grants: vec![GrantAction {
+                    // Frozen before the rename: the v1/v2 literal fixtures keep
+                    // the retired grant id, which must stay readable.
                     app_id: "dev.qos.word-processor".into(),
                     record_id: "tab:0000000000000001".into(),
                     resource: "document".into(),

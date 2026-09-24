@@ -169,7 +169,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .map(|cap| cap.with_expiry(100))
             .collect();
         let route = CrdtRoute::record(
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             workspace.room.to_string(),
             "document-1",
         );

@@ -108,12 +108,16 @@ impl Store {
                 vec![serde_json::json!({"kind":"status","parameters":{"invocation_id":"string"}})];
             for (app, record, descriptor) in [
                 (
-                    "dev.qos.word-processor",
-                    "tab:0000000000000001",
+                    crate::seeded_app_id(
+                        &peer,
+                        word_processor::definition().app_id,
+                        crate::WRITER_RECORD,
+                    ),
+                    crate::WRITER_RECORD,
                     serde_json::json!({"kind":"writer_insert","parameters":{"text":"string"}}),
                 ),
                 (
-                    "dev.qos.chat",
+                    crate::seeded_app_id(&peer, chat::definition().app_id, ""),
                     "",
                     serde_json::json!({"kind":"chat_send","parameters":{"channel":"string","text":"string"}}),
                 ),
@@ -548,13 +552,14 @@ impl Store {
             );
             return Ok(receipt);
         }
-        let (app, record) = match &request.operation {
+        let (current, record) = match &request.operation {
             NativeOperation::WriterInsert { .. } => {
-                ("dev.qos.word-processor", "tab:0000000000000001")
+                (word_processor::definition().app_id, crate::WRITER_RECORD)
             }
-            NativeOperation::ChatSend { .. } => ("dev.qos.chat", ""),
+            NativeOperation::ChatSend { .. } => (chat::definition().app_id, ""),
             _ => bail!("unsupported operation"),
         };
+        let app = crate::seeded_app_id(&peer, current, record);
         #[cfg(test)]
         policy_time_tests::before_document();
         let now = self.policy_now_or(now)?;
@@ -665,11 +670,14 @@ fn execute(
     let mut registry = ActionRegistry::new();
     word_processor::actions::register(&mut registry);
     chat::actions::register(&mut registry);
-    let (app, record) = match &r.operation {
-        NativeOperation::WriterInsert { .. } => ("dev.qos.word-processor", "tab:0000000000000001"),
-        NativeOperation::ChatSend { .. } => ("dev.qos.chat", ""),
+    let (current, record) = match &r.operation {
+        NativeOperation::WriterInsert { .. } => {
+            (word_processor::definition().app_id, crate::WRITER_RECORD)
+        }
+        NativeOperation::ChatSend { .. } => (chat::definition().app_id, ""),
         _ => bail!("unsupported operation"),
     };
+    let app = crate::seeded_app_id(peer, current, record);
     let bytes = peer
         .document(app, record)
         .ok_or_else(|| anyhow!("canonical record missing"))?;

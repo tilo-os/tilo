@@ -6,7 +6,7 @@ fn agent_prelaunch_recovery_current_publication_keeps_exact_retained_grants() {
     let caller = store.agent_caller(device).unwrap();
     let room: Uuid = store.state.room.parse().unwrap();
     let grant = GrantAction {
-        app_id: "dev.qos.chat".into(),
+        app_id: "so.tilo.chat".into(),
         record_id: "@qos:package-primary".into(),
         resource: "Document".into(),
         action: "collapse".into(),

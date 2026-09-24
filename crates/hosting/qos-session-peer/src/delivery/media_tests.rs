@@ -473,7 +473,7 @@ fn multi_author_fixture() -> (
             .unwrap();
         let mut author = owner.peer.clone();
         let mut document =
-            ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+            ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
         let before = document.get_heads();
         document
             .put(ROOT, format!("author-{byte}"), byte as u64)
@@ -481,7 +481,7 @@ fn multi_author_fixture() -> (
         document.commit();
         let message = author
             .publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 document.save_after(&before),
                 &key,
@@ -501,7 +501,7 @@ fn multi_author_fixture() -> (
             .peer
             .replay_floors()
             .iter()
-            .filter(|(app, record, _, _)| app == "dev.qos.chat" && record.is_empty())
+            .filter(|(app, record, _, _)| app == "so.tilo.chat" && record.is_empty())
             .count()
             >= 4
     );

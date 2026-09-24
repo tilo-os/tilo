@@ -1116,7 +1116,7 @@ mod publication_tests {
                 .unwrap();
         }
         let before = peer.clone();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut doc = automerge::AutoCommit::load(&peer.document(app, record).unwrap()).unwrap();
         let heads = doc.base_heads();
@@ -1225,7 +1225,7 @@ mod publication_tests {
         peer.install_seed(initial_state(room, &cert, &key).unwrap(), &key, now)
             .unwrap();
         let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut doc = automerge::AutoCommit::load(&peer.document(app, record).unwrap()).unwrap();
         let before = doc.base_heads();

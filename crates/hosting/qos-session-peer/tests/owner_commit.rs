@@ -4,7 +4,7 @@ use qos_session_peer::{SessionOwner, owner_commit::OwnerCommitMailbox};
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
 fn document(owner: &SessionOwner, sequence: u64) -> OwnerCommitRequest {
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
     doc.put(ROOT, "owner_commit_test", sequence).unwrap();
@@ -231,7 +231,7 @@ async fn small_commit_retains_baseline_and_publishes_only_touched_route() {
         .peer()
         .rows()
         .into_iter()
-        .find(|row| row.app_id != "dev.qos.word-processor")
+        .find(|row| row.app_id != "so.tilo.word-processor")
         .unwrap();
     let prior_receipt = owner
         .peer()
@@ -270,7 +270,7 @@ async fn small_commit_retains_baseline_and_publishes_only_touched_route() {
         qos_peer_state::NeighbourMsg::SyncResp { .. }
     ));
     assert!(
-        matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&tail[1]).unwrap(), qos_peer_state::NeighbourMsg::AppDocument { app_id, record_id, .. } if app_id == "dev.qos.word-processor" && record_id == "tab:0000000000000001")
+        matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&tail[1]).unwrap(), qos_peer_state::NeighbourMsg::AppDocument { app_id, record_id, .. } if app_id == "so.tilo.word-processor" && record_id == "tab:0000000000000001")
     );
     assert_eq!(
         owner
@@ -401,7 +401,7 @@ async fn failed_compaction_barrier_keeps_exact_recovery_tail_and_receipts() {
     let before = owner.status();
     let bytes = outgoing_bytes(&owner).to_vec();
     let kinds = outgoing_kinds(&owner).to_vec();
-    let receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+    let receipt = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
     let request = document(&owner, 3000);
     let CommitOperation::Document {
         app,
@@ -446,7 +446,7 @@ async fn failed_compaction_barrier_keeps_exact_recovery_tail_and_receipts() {
     assert_eq!(outgoing_bytes(&owner), bytes);
     assert_eq!(outgoing_kinds(&owner), kinds);
     assert_eq!(
-        owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+        owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
         receipt
     );
     drop(owner);

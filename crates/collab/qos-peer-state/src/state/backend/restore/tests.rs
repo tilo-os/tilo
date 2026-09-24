@@ -171,7 +171,7 @@ pub(in crate::state) fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
         SeedState {
             room_changes: seed_room(source.room(), &cert, &[cert.clone()]).unwrap(),
             documents: vec![SeedDocument {
-                app_id: "dev.qos.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 record_id: "".into(),
                 kind: "chat".into(),
                 bytes: chat.save(),
@@ -181,7 +181,7 @@ pub(in crate::state) fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
         now,
     )
     .unwrap();
-    let binding = media::resolve_chat_binding("dev.qos.chat", "", "voice", &chat).unwrap();
+    let binding = media::resolve_chat_binding("so.tilo.chat", "", "voice", &chat).unwrap();
     let mut room = peer.admitted_room().unwrap().clone();
     let policy = media::RoomMediaV1 {
         version: 1,

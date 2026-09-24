@@ -22,7 +22,7 @@ use qos_action_broker::enrolled_dispatch::{
 use std::os::fd::IntoRawFd;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-const WRITER: &str = "dev.qos.word-processor";
+const WRITER: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 
 fn device() -> [u8; 32] {

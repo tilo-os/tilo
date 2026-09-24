@@ -6,8 +6,8 @@ import {
 } from './live-overlay.mjs';
 import {createRemotePresence} from './live-presence.mjs';
 
-const WRITER = {app: 'dev.qos.word-processor', record: 'uuid:doc'};
-const CHAT = {app: 'dev.qos.chat', record: '@qos:package-primary'};
+const WRITER = {app: 'so.tilo.word-processor', record: 'uuid:doc'};
+const CHAT = {app: 'so.tilo.chat', record: '@qos:package-primary'};
 const G1 = '0000000000000001';
 const G2 = '0000000000000002';
 const G3 = '0000000000000003';

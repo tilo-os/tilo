@@ -164,15 +164,14 @@ pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {
             crate::AppKind::FileExplorer => Kind::Files,
             crate::AppKind::Browser => Kind::Browser,
             crate::AppKind::Other(id)
-                if [
-                    "Notes",
-                    "Word",
-                    "Editor",
-                    "dev.qos.word-processor",
-                    "dev.qos.notes",
-                ]
-                .iter()
-                .any(|known| id.eq_ignore_ascii_case(known)) =>
+                if ["Notes", "Word", "Editor"]
+                    .iter()
+                    .any(|known| id.eq_ignore_ascii_case(known))
+                    || ["so.tilo.word-processor", "so.tilo.notes"].iter().any(|known| {
+                        collab_types::first_party_app_ids::lookup_compatible_first_party_app_ids(
+                            id, known,
+                        )
+                    }) =>
             {
                 Kind::Editor
             }

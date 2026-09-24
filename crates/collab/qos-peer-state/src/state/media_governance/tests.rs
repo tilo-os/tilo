@@ -264,7 +264,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundt
     peer.select_admission_v5().unwrap();
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "label", "signed native snapshot").unwrap();
-    peer.publish_document("dev.qos.chat", "", chat.save(), &key, now)
+    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
         .unwrap();
     for seed in 110..118u8 {
         let author = SigningKey::from_bytes(&[seed; 32]);
@@ -277,7 +277,7 @@ fn room_media_security_proof_survives_signed_multi_author_unsorted_legacy_roundt
         chat.put(ROOT, format!("author-{seed}"), u64::from(seed))
             .unwrap();
         chat.commit();
-        peer.publish_incremental("dev.qos.chat", "", chat.save_after(&before), &author, now)
+        peer.publish_incremental("so.tilo.chat", "", chat.save_after(&before), &author, now)
             .unwrap();
     }
     let policy = RoomMediaV1 {
@@ -407,7 +407,7 @@ fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTim
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "label", "unchanged signed document")
         .unwrap();
-    peer.publish_document("dev.qos.chat", "", chat.save(), &key, now)
+    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
         .unwrap();
     (peer, root, key, now)
 }
@@ -551,14 +551,14 @@ fn room_media_security_no_policy_rejects_wrong_root_and_unrelated_mutations() {
     changed.core.receipts.insert("unrelated".into(), vec![1]);
     assert!(proof.validate(&peer, &changed).is_err());
     let mut changed = candidate.clone();
-    let mut chat = AutoCommit::load(&changed.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&changed.document("so.tilo.chat", "").unwrap()).unwrap();
     chat.put(ROOT, "label", "unrelated signed edit").unwrap();
     changed
-        .publish_document("dev.qos.chat", "", chat.save(), &key, now)
+        .publish_document("so.tilo.chat", "", chat.save(), &key, now)
         .unwrap();
     assert!(proof.validate(&peer, &changed).is_err());
     let route = Route {
-        app: "dev.qos.chat".into(),
+        app: "so.tilo.chat".into(),
         record: String::new(),
     };
     let mut changed = candidate.clone();

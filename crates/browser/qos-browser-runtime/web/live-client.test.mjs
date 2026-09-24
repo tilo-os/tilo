@@ -122,7 +122,7 @@ test('remote presence arrives with publish/receive timestamps and interpolated s
   b.live.start();
   await until(() => a.api.state === 'live' && b.api.state === 'live', 'both live');
   await until(() => b.api.stats().remotes === 1, 'member');
-  for (let i = 0; i < 5; i++) { a.api.publishPresence({pointer: [i * 10, 5], focus: {app: 'dev.qos.notes', record: 'n1'}}); await tick(); await tick(); }
+  for (let i = 0; i < 5; i++) { a.api.publishPresence({pointer: [i * 10, 5], focus: {app: 'so.tilo.notes', record: 'n1'}}); await tick(); await tick(); }
   await until(() => received.some(r => r.frame.pointer?.[0] === 40), 'latest pointer');
   const last = received.at(-1);
   assert.equal(last.publisher, 'b'.repeat(64));
@@ -131,7 +131,7 @@ test('remote presence arrives with publish/receive timestamps and interpolated s
   assert.ok(received.every((r, i) => i === 0 || r.frame.seq > received[i - 1].frame.seq), 'sequence ordered');
   const [remote] = b.api.remoteState();
   assert.equal(remote.publisher, 'b'.repeat(64));
-  assert.deepEqual(remote.focus, {app: 'dev.qos.notes', record: 'n1'});
+  assert.deepEqual(remote.focus, {app: 'so.tilo.notes', record: 'n1'});
   assert.ok(remote.pointer[0] <= 40 && remote.pointer[0] >= 0);
   a.live.close();
   await until(() => b.api.stats().remotes === 0, 'member left');
@@ -147,8 +147,8 @@ test('previews are ordered per record and only received for watched or focused r
   a.live.start();
   b.live.start();
   await until(() => a.api.state === 'live' && b.api.state === 'live' && b.api.stats().remotes === 1, 'live');
-  const record = {app: 'dev.qos.word-processor', record: 'doc-1'};
-  const other = {app: 'dev.qos.word-processor', record: 'doc-2'};
+  const record = {app: 'so.tilo.word-processor', record: 'doc-1'};
+  const other = {app: 'so.tilo.word-processor', record: 'doc-2'};
   const unwatch = b.api.watchRecord(record);
   await tick();
   for (let i = 0; i < 40; i++) a.api.publishPreview(record, [{kind: 'insert', at: '01', text: String(i)}]);
@@ -172,7 +172,7 @@ test('forwarded signed changes are admitted once through the runtime and snap pr
   b.api.onDurable(value => durable.push(value));
   b.live.start();
   await until(() => b.api.state === 'live', 'live');
-  const record = {app: 'dev.qos.notes', record: 'n1'};
+  const record = {app: 'so.tilo.notes', record: 'n1'};
   b.api.watchRecord(record);
   // The host forwards admitted changes on its own live namespace.
   const host = await createLiveTransport({library: fake.library}).connect({
@@ -214,7 +214,7 @@ test('speculative forwarded changes are reconciled at their confirmation deadlin
   const b = client(fake, 'c'.repeat(64), {runtime});
   b.live.start();
   await until(() => b.api.state === 'live', 'live');
-  const record = {app: 'dev.qos.chat', record: '@qos:package-primary'};
+  const record = {app: 'so.tilo.chat', record: '@qos:package-primary'};
   b.api.watchRecord(record);
   const host = await createLiveTransport({library: fake.library}).connect({
     endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
@@ -362,7 +362,7 @@ test('ops for the locally focused record are received from every member, echo ig
   a.live.start();
   b.live.start();
   await until(() => a.api.state === 'live' && b.api.state === 'live' && a.api.stats().remotes === 1, 'live');
-  const record = {app: 'dev.qos.notes', record: 'n9'};
+  const record = {app: 'so.tilo.notes', record: 'n9'};
   // Only a's own focus names the record; nothing is watched explicitly.
   a.api.publishPresence({focus: record});
   await tick();

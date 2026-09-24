@@ -56,13 +56,13 @@ fn charged_request(
 fn native_edit(owner: &SessionOwner, key: &str) -> Vec<u8> {
     let mut author = owner.peer().clone();
     let mut document =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = document.get_heads();
     document.put(ROOT, key, key).unwrap();
     document.commit();
     let msg = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             document.save_after(&heads),
             &owner.identity.native,
@@ -156,7 +156,7 @@ fn callback_commits_native_receipt_and_fresh_proof_retry_survives_owner_reopen()
         committed.digest
     );
     let path = f.owner.root().to_owned();
-    let document = f.owner.peer().document("dev.qos.chat", "").unwrap();
+    let document = f.owner.peer().document("so.tilo.chat", "").unwrap();
     drop(f.owner);
     f.owner = SessionOwner::open(&path).unwrap();
     f.owner.attach_data_resources(&budget).unwrap();
@@ -168,7 +168,7 @@ fn callback_commits_native_receipt_and_fresh_proof_retry_survives_owner_reopen()
     assert_eq!(retry, first);
     assert_eq!(f.owner.status().generation, generation);
     assert_eq!(
-        f.owner.peer().document("dev.qos.chat", "").unwrap(),
+        f.owner.peer().document("so.tilo.chat", "").unwrap(),
         document
     );
     let changed = state_body(1, &native_edit(&f.owner, "changed-same-id"));
@@ -654,7 +654,7 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
         // Rebase the real native author after each admitted operation/checkpoint.
         let mut author = f.owner.peer().clone();
         let mut document =
-            ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+            ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
         let heads = document.get_heads();
         let mut bytes = vec![0; 192 * 1024];
         let mut generator = blake3::Hasher::new();
@@ -671,7 +671,7 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
         document.commit();
         let message = author
             .publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 document.save_after(&heads),
                 &f.owner.identity.native,
@@ -940,7 +940,7 @@ fn stops_between_items(cause: BetweenItems) {
     let expires = admitted.session().expires_at_ns();
     let before = f.owner.status().generation;
     let admissions = f.owner.delivery_ledger().unwrap().admissions.len();
-    let document = f.owner.peer().document("dev.qos.chat", "").unwrap();
+    let document = f.owner.peer().document("so.tilo.chat", "").unwrap();
     let mut checks = 0;
     let outcome = admit_state_core(
         &mut f.owner,
@@ -977,7 +977,7 @@ fn stops_between_items(cause: BetweenItems) {
         admissions + 1
     );
     assert_eq!(
-        f.owner.peer().document("dev.qos.chat", "").unwrap(),
+        f.owner.peer().document("so.tilo.chat", "").unwrap(),
         document
     );
     assert!(f.owner.permits_publication());
@@ -1107,7 +1107,7 @@ fn native_batch_revalidates_real_governed_host_revocation_before_next_item() {
         )
         .unwrap();
     let before = f.owner.status().generation;
-    let document = f.owner.peer().document("dev.qos.chat", "").unwrap();
+    let document = f.owner.peer().document("so.tilo.chat", "").unwrap();
     let mut checks = 0;
     let outcome = admit_state_core(
         &mut f.owner,
@@ -1134,7 +1134,7 @@ fn native_batch_revalidates_real_governed_host_revocation_before_next_item() {
             .any(|entry| entry.revoked_device_public_key == host)
     );
     assert_eq!(
-        f.owner.peer().document("dev.qos.chat", "").unwrap(),
+        f.owner.peer().document("so.tilo.chat", "").unwrap(),
         document
     );
 }
@@ -1433,7 +1433,7 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
 fn native_edits(owner: &SessionOwner, keys: &[&str]) -> Vec<Vec<u8>> {
     let mut author = owner.peer().clone();
     let mut document =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     keys.iter()
         .map(|key| {
             let heads = document.get_heads();
@@ -1441,7 +1441,7 @@ fn native_edits(owner: &SessionOwner, keys: &[&str]) -> Vec<Vec<u8>> {
             document.commit();
             let msg = author
                 .publish_incremental(
-                    "dev.qos.chat",
+                    "so.tilo.chat",
                     "",
                     document.save_after(&heads),
                     &owner.identity.native,

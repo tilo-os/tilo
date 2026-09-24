@@ -694,9 +694,9 @@ fn delivery_fixture() -> (tempfile::TempDir, CloudStoreSource, PolicyTime, Vec<u
     let now = qos_relay::clock::now_ns();
     store.activate_delivery_storage(now).unwrap();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
-    let document = peer.document("dev.qos.chat", "").unwrap();
+    let document = peer.document("so.tilo.chat", "").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         document,
         &store.key(),

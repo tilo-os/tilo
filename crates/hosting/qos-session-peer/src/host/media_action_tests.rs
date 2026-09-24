@@ -35,13 +35,13 @@ struct Harness {
 
 fn add_channel(owner: &mut SessionOwner, channel: &str) {
     let mut peer = owner.peer().clone();
-    let mut chat = AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let object = chat.put_object(&channels, channel, ObjType::Map).unwrap();
     chat.put(&object, "kind", "voice").unwrap();
     chat.put(&object, "workspace", "home").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         chat.save(),
         &owner.identity.native,
@@ -267,7 +267,7 @@ async fn room_media_broker_certified_literals_persist_retry_and_reject() {
         for literal in ["media.call.create", "media.call.end", "media.call.restart", "media.call.directions.set", "media.call.participant.denial.set"] {
             assert!(surface["actions"].as_array().unwrap().iter().any(|action| action["action"] == literal), "canonical native catalogue missing {literal}: {surface}");
         }
-        let create = invoke(durable_host, peer, room, InvocationId::new(), "media.call.create", json!({"app_id":"dev.qos.chat", "record_id":"", "channel_id":"voice", "allowed":{"publish":true,"subscribe":true}}));
+        let create = invoke(durable_host, peer, room, InvocationId::new(), "media.call.create", json!({"app_id":"so.tilo.chat", "record_id":"", "channel_id":"voice", "allowed":{"publish":true,"subscribe":true}}));
         let request = send(&caller, room, source, target, create.clone());
         let created = success(harness.response(&caller, request, true).await);
         assert_eq!(created.epoch, 1);
@@ -319,7 +319,7 @@ async fn room_media_broker_certified_literals_persist_retry_and_reject() {
             });
             Ok::<_, String>(())
         }).unwrap().unwrap();
-        let request = send(&caller, room, source, target, invoke(durable_host, peer, room, InvocationId::new(), "media.call.create", json!({"app_id":"dev.qos.chat","record_id":"","channel_id":"additional","expected_authorization_revision":current.authorization_revision,"allowed":{"publish":true,"subscribe":true}})));
+        let request = send(&caller, room, source, target, invoke(durable_host, peer, room, InvocationId::new(), "media.call.create", json!({"app_id":"so.tilo.chat","record_id":"","channel_id":"additional","expected_authorization_revision":current.authorization_revision,"allowed":{"publish":true,"subscribe":true}})));
         assert!(matches!(harness.response(&caller, request, true).await, ActionMessage::Observation { update: Some(InvocationUpdate::Failed { error, .. }), .. } if error.code == "media_call_capacity"));
         assert_eq!(harness.owner.collaboration_state().administration.len(), 5);
         let stored_results = serde_json::to_value(&harness.owner.collaboration_state().administration).unwrap();

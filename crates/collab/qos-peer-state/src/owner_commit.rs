@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn document_binding_accepts_one_exact_legacy_wire_namespace() {
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let app = "dev.qos.notes";
+        let app = "so.tilo.notes";
         let record = "tab:1";
         let version = DocumentWireVersion::QosV1;
         let mutation = DocumentMutation::Incremental(vec![1, 2, 3]);

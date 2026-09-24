@@ -9,13 +9,13 @@ fn owner() -> (tempfile::TempDir, SessionOwner) {
 
 pub(super) fn upload(owner: &SessionOwner, author: &mut StatePeer, name: &str) -> Vec<u8> {
     let mut doc =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
     doc.commit();
     let message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             doc.save_after(&heads),
             &owner.identity.native,
@@ -85,7 +85,7 @@ fn delivery_upload_and_lost_reply_retry_share_exact_native_replay_evidence() {
     assert_eq!(first.result, DurableAdmissionKind::Accepted);
     assert_eq!(first.operations.len(), 1);
     let path = owner.root().to_owned();
-    let document = owner.peer.document("dev.qos.chat", "").unwrap();
+    let document = owner.peer.document("so.tilo.chat", "").unwrap();
     let generation = owner.status().generation;
     assert_eq!(first.committed.sequence, generation);
     let replay = owner.delivery_ledger().unwrap().replay[&generation].clone();
@@ -123,7 +123,7 @@ fn delivery_upload_and_lost_reply_retry_share_exact_native_replay_evidence() {
     };
     assert_eq!(duplicate.result, DurableAdmissionKind::Duplicate);
     assert_eq!(duplicate.committed, first.committed);
-    assert_eq!(owner.peer.document("dev.qos.chat", "").unwrap(), document);
+    assert_eq!(owner.peer.document("so.tilo.chat", "").unwrap(), document);
     assert_eq!(owner.delivery_ledger().unwrap().replay[&generation], replay);
     assert_eq!(owner.delivery_ledger().unwrap().replay.len(), 2);
 }
@@ -247,7 +247,7 @@ fn delivery_restore_rotates_only_explicitly_and_retains_native_receipt_identity(
     let bytes = upload(&owner, &mut author, "survives-restore");
     let first = durable(send(&mut owner, 1, &bytes).unwrap());
     let old = owner.delivery_ledger().unwrap().clone();
-    let doc = owner.peer.document("dev.qos.chat", "").unwrap();
+    let doc = owner.peer.document("so.tilo.chat", "").unwrap();
     owner.rotate_store_generation_for_restore().unwrap();
     let new = owner.delivery_ledger().unwrap();
     assert_ne!(new.store_generation, old.store_generation);
@@ -258,7 +258,7 @@ fn delivery_restore_rotates_only_explicitly_and_retains_native_receipt_identity(
     assert_eq!(retry.result, first.result);
     assert_eq!(retry.committed.sequence, first.committed.sequence);
     assert_ne!(retry.committed.digest, first.committed.digest);
-    assert_eq!(owner.peer.document("dev.qos.chat", "").unwrap(), doc);
+    assert_eq!(owner.peer.document("so.tilo.chat", "").unwrap(), doc);
 }
 
 pub(super) fn authenticated_session(
@@ -715,7 +715,7 @@ fn delivery_authenticated_replay_requires_actual_native_coverage_not_response_me
     );
     assert!(replica.covers(&original));
     let coverage = replica
-        .durable_coverage("dev.qos.chat", "")
+        .durable_coverage("so.tilo.chat", "")
         .unwrap()
         .unwrap();
     assert_eq!(coverage.generation, checkpoint.sequence);
@@ -761,7 +761,7 @@ fn delivery_cursor_native_scope_checks_and_restore_reset_survive_content_mutatio
         .clone();
     committed
         .with_owner(&mut owner, |owner| {
-            mutate_owned_record_for_test(owner, "dev.qos.chat", "", |doc| {
+            mutate_owned_record_for_test(owner, "so.tilo.chat", "", |doc| {
                 doc.put(ROOT, "content-only", "retains policy").unwrap();
             })
         })
@@ -1150,7 +1150,7 @@ fn delivery_policy_denies_fine_or_malformed_visibility_and_expired_sessions() {
                     Subject::User(collab_types::Ed25519PublicKey::from_bytes(
                         owner.identity.native_cert.user_public_key,
                     )),
-                    Scope::App("dev.qos.chat".into()),
+                    Scope::App("so.tilo.chat".into()),
                     Effect::Grant,
                     Verb::Read,
                 );

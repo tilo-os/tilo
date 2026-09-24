@@ -15,6 +15,7 @@ use ui::{application::ApplicationDefinition, automerge::AutoCommit, record::Reco
 use web_time::SystemTime;
 
 /// A finite installed entry. Remote labels cannot supply an initializer.
+#[derive(Clone, Copy)]
 pub struct CheckedCanonicalApplication {
     app_id: &'static str,
     definition: fn() -> &'static ApplicationDefinition,
@@ -23,22 +24,22 @@ pub struct CheckedCanonicalApplication {
 
 static INSTALLED: [CheckedCanonicalApplication; 4] = [
     CheckedCanonicalApplication {
-        app_id: "dev.qos.word-processor",
+        app_id: "so.tilo.word-processor",
         definition: word_processor::definition,
         initialize: word_processor::initialize_empty_document,
     },
     CheckedCanonicalApplication {
-        app_id: "dev.qos.notes",
+        app_id: "so.tilo.notes",
         definition: notes::definition,
         initialize: notes::notebook::initialize_empty,
     },
     CheckedCanonicalApplication {
-        app_id: "dev.qos.calculator",
+        app_id: "so.tilo.calculator",
         definition: calculator::definition,
         initialize: calculator::doc::initialize_empty,
     },
     CheckedCanonicalApplication {
-        app_id: "dev.qos.chat",
+        app_id: "so.tilo.chat",
         definition: chat::definition,
         initialize: initialize_chat,
     },
@@ -53,8 +54,21 @@ pub fn installed() -> impl ExactSizeIterator<Item = &'static CheckedCanonicalApp
     INSTALLED.iter()
 }
 
-pub fn resolve(app: &str) -> Option<&'static CheckedCanonicalApplication> {
-    installed().find(|entry| entry.app_id == app)
+/// Resolve an app id to its installed factory, keeping the caller's spelling.
+///
+/// New records are created under the current `so.tilo.*` id. A workspace
+/// written before the rename keeps its tabs, rows and record routes under the
+/// retired id, so the returned entry carries that exact persisted spelling and
+/// only the factory lookup goes through the shared first-party rename table.
+pub fn resolve(app: &str) -> Option<CheckedCanonicalApplication> {
+    installed().find_map(|entry| {
+        std::iter::once(entry.app_id)
+            .chain(ui::application::first_party_app_id_lookup_candidates(
+                entry.app_id,
+            ))
+            .find(|candidate| *candidate == app)
+            .map(|app_id| CheckedCanonicalApplication { app_id, ..*entry })
+    })
 }
 
 /// Result of a current factory decision, not a committed creation result.

@@ -46,7 +46,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -80,7 +80,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let group = tree.workspaces[0].strips[0].window_groups.last().unwrap();
     let tab = group.tabs[0].id;
     let record = ui::record::RecordId::for_tab(tab).to_string();
-    let data = owner.peer().document("dev.qos.notes", &record).unwrap();
+    let data = owner.peer().document("so.tilo.notes", &record).unwrap();
     let close = request(
         &owner,
         DesktopCommand::CloseTab {
@@ -103,7 +103,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
         Some(&qos_peer_state::transport::Retention::Delta)
     );
     assert_eq!(
-        owner.peer().document("dev.qos.notes", &record).unwrap(),
+        owner.peer().document("so.tilo.notes", &record).unwrap(),
         data
     );
     let status = owner.status();
@@ -111,7 +111,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let mut restored = SessionOwner::open(&path).unwrap();
     assert_eq!(restored.status(), status);
     assert_eq!(
-        restored.peer().document("dev.qos.notes", &record).unwrap(),
+        restored.peer().document("so.tilo.notes", &record).unwrap(),
         data
     );
     assert!(
@@ -197,7 +197,7 @@ async fn restart_and_unrelated_room_receipts_do_not_invalidate_open_or_close() {
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -324,7 +324,7 @@ fn notes(owner: &SessionOwner) -> TabLocation {
     for strip in &tree.workspaces[0].strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                if matches!(&tab.tile, qos_desktop::TileContent::AppPlaceholder { kind: qos_desktop::AppKind::Other(app), .. } if app == "dev.qos.notes")
+                if matches!(&tab.tile, qos_desktop::TileContent::AppPlaceholder { kind: qos_desktop::AppKind::Other(app), .. } if app == "so.tilo.notes")
                 {
                     return TabLocation {
                         strip: strip.id.0,
@@ -351,7 +351,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     .unwrap_or_else(|| ui::record::RecordId::for_tab(original.tab).to_string());
     let original_data = owner
         .peer()
-        .document("dev.qos.notes", &original_record)
+        .document("so.tilo.notes", &original_record)
         .unwrap();
     execute(
         &mut owner,
@@ -372,7 +372,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert!(
         owner
             .peer()
-            .document("dev.qos.notes", &copy_record)
+            .document("so.tilo.notes", &copy_record)
             .is_some()
     );
     let copy_location = TabLocation {
@@ -510,7 +510,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert_eq!(
         owner
             .peer()
-            .document("dev.qos.notes", &original_record)
+            .document("so.tilo.notes", &original_record)
             .unwrap(),
         original_data
     );
@@ -550,7 +550,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert!(
         owner
             .peer()
-            .document("dev.qos.notes", &copy_record)
+            .document("so.tilo.notes", &copy_record)
             .is_some(),
         "closed data retained"
     );
@@ -702,7 +702,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -751,7 +751,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
         .rows()
         .into_iter()
         .find(|r| {
-            r.app_id == "dev.qos.notes"
+            r.app_id == "so.tilo.notes"
                 && !browser
                     .rows()
                     .iter()
@@ -873,7 +873,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     let first = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -904,7 +904,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     let second = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.calculator".into(),
+            app: "so.tilo.calculator".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -998,7 +998,7 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );

@@ -23,7 +23,7 @@ impl Fixture {
             .peer()
             .rows()
             .iter()
-            .any(|row| row.app_id == "dev.qos.notes")
+            .any(|row| row.app_id == "so.tilo.notes")
         {
             use qos_peer_state::{
                 desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
@@ -50,7 +50,7 @@ impl Fixture {
                                     .collect(),
                             },
                             command: DesktopCommand::OpenTab {
-                                app: "dev.qos.notes".into(),
+                                app: "so.tilo.notes".into(),
                                 placement: TabPlacement::NewGroup { strip, after: None },
                             },
                         },
@@ -62,7 +62,7 @@ impl Fixture {
             .peer()
             .rows()
             .into_iter()
-            .find(|row| row.app_id == "dev.qos.notes")
+            .find(|row| row.app_id == "so.tilo.notes")
             .unwrap()
             .record_id;
         let authority = Authority::new(CommittedAuthority::new(&owner));
@@ -98,7 +98,7 @@ impl Fixture {
         let stream = host
             .broker
             .connect_local_worker(
-                CrdtRoute::record("dev.qos.notes", room.to_string(), record),
+                CrdtRoute::record("so.tilo.notes", room.to_string(), record),
                 &owner.identity.native_cert,
             )
             .unwrap();
@@ -118,7 +118,7 @@ impl Fixture {
         .unwrap();
         CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
-            "dev.qos.notes",
+            "so.tilo.notes",
             room,
             Some(record.into()),
             None,
@@ -168,7 +168,7 @@ impl Fixture {
                 .iter()
                 .filter(|surface| {
                     surface.live
-                        && surface.app_id == "dev.qos.notes"
+                        && surface.app_id == "so.tilo.notes"
                         && surface.route.record_id == self.record
                 })
                 .find_map(|surface| {
@@ -418,7 +418,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
     let records = fixture
         .host
         .owners
-        .open("dev.qos.notes", fixture.owner.peer().room())
+        .open("so.tilo.notes", fixture.owner.peer().room())
         .unwrap();
     let id = if fixture.record.is_empty() {
         RecordId::package_primary()

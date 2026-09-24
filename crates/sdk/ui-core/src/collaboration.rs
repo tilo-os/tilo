@@ -7459,7 +7459,7 @@ mod tests {
             scrollback_response: None,
         });
         let mut manager =
-            CollaborationManager::from_sdk_fd_for_test(fd, "dev.qos.chat", Uuid::new_v4());
+            CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
         assert!(manager.send(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(b"wedged document".to_vec()),
             authorization: None,
@@ -7536,7 +7536,7 @@ mod tests {
             scrollback_response: None,
         });
         let mut manager =
-            CollaborationManager::from_sdk_fd_for_test(fd, "dev.qos.chat", Uuid::new_v4());
+            CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", Uuid::new_v4());
         assert!(manager.send(CollabRequest::NativeMediaCommand {
             request_id: 1,
             command: Request::new(Command::Join {
@@ -7589,10 +7589,10 @@ mod tests {
         });
         let cluster_id = Uuid::new_v4();
         let mut manager =
-            CollaborationManager::from_sdk_fd_for_test(fd, "dev.qos.chat", cluster_id);
+            CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", cluster_id);
         let routes = (0..8)
             .map(|index| RouteSpec {
-                app_id: "dev.qos.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 cluster_id,
                 record: (index != 0).then(|| format!("record-{index}")),
             })

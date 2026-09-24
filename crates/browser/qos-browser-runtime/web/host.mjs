@@ -1,3 +1,4 @@
+import {firstPartyApp} from './first-party-app.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createNavigationFocus} from './desktop-navigation-focus.mjs';
 import {bindActionPalette} from './action-palette-bridge.mjs';
@@ -217,7 +218,7 @@ export async function mountDesktop(target,options={}) {
     const [assets,entries]=await Promise.all([fonts(),storage.hydrate()]);
     if(!registry.current(token))throw Error('mount disposed');
     if(config.app==='writer'&&!config.record&&!config.newDocument){
-      const found=entries.map(e=>JSON.parse(e.key)).find(k=>k.type==='record'&&k.package==='dev.qos.word-processor'&&k.workspace===config.room);
+      const found=entries.map(e=>JSON.parse(e.key)).find(k=>k.type==='record'&&firstPartyApp(k.package,'so.tilo.word-processor')&&k.workspace===config.room);
       config.record=found?.record;
     }
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));

@@ -1209,7 +1209,7 @@ fn initial_state(room: &str, cert: &DeviceCert, key: &SigningKey) -> Result<Seed
     let mut owners = RecordOwners::portable(cache);
     let mut documents = vec![];
     for definition in [word_processor::definition(), chat::definition()] {
-        let primary = definition.app_id == "dev.qos.chat";
+        let primary = definition.app_id == "so.tilo.chat";
         let checkout = if primary {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
@@ -1250,7 +1250,12 @@ fn initial_state(room: &str, cert: &DeviceCert, key: &SigningKey) -> Result<Seed
             .map_err(anyhow::Error::msg)?,
     )
     .map_err(anyhow::Error::msg)?;
-    install_desktop_topology(&mut room_doc, key)?;
+    install_desktop_topology(
+        &mut room_doc,
+        key,
+        word_processor::definition().app_id,
+        chat::definition().app_id,
+    )?;
     Ok(SeedState {
         room_changes: room_doc
             .get_changes(&[])
@@ -1261,7 +1266,12 @@ fn initial_state(room: &str, cert: &DeviceCert, key: &SigningKey) -> Result<Seed
     })
 }
 
-fn install_desktop_topology(doc: &mut automerge::AutoCommit, key: &SigningKey) -> Result<bool> {
+fn install_desktop_topology(
+    doc: &mut automerge::AutoCommit,
+    key: &SigningKey,
+    writer_app: &str,
+    chat_app: &str,
+) -> Result<bool> {
     use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
     use qos_desktop::{
         AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
@@ -1312,14 +1322,14 @@ fn install_desktop_topology(doc: &mut automerge::AutoCommit, key: &SigningKey) -
         window_groups: vec![
             WindowGroup {
                 id: writer_group,
-                tabs: vec![tile(writer, "Writer", "dev.qos.word-processor")],
+                tabs: vec![tile(writer, "Writer", writer_app)],
                 active_tab: writer,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
             WindowGroup {
                 id: chat_group,
-                tabs: vec![tile(chat, "Chat", "dev.qos.chat")],
+                tabs: vec![tile(chat, "Chat", chat_app)],
                 active_tab: chat,
                 width: WindowWidth::Normal,
                 maximized: false,
@@ -1340,6 +1350,24 @@ fn install_desktop_topology(doc: &mut automerge::AutoCommit, key: &SigningKey) -
     Ok(true)
 }
 
+/// Record id of the seeded Writer document.
+pub(crate) const WRITER_RECORD: &str = "tab:0000000000000001";
+
+/// Persisted spelling of a seeded first-party record.
+///
+/// New workspaces are seeded under the current `so.tilo.*` id. Workspaces
+/// created before the rename keep their record routes under the retired id,
+/// so the existing route is found through the shared first-party rename table
+/// and used exactly as stored.
+pub(crate) fn seeded_app_id(peer: &StatePeer, current: &'static str, record: &str) -> &'static str {
+    std::iter::once(current)
+        .chain(ui::application::first_party_app_id_lookup_candidates(
+            current,
+        ))
+        .find(|app| peer.document(app, record).is_some())
+        .unwrap_or(current)
+}
+
 fn bootstrap_desktop(peer: &mut StatePeer, key: &SigningKey) -> Result<bool> {
     use automerge::{ROOT, ReadDoc};
     if key.verifying_key().to_bytes() != peer.authority().device_public_key {
@@ -1352,14 +1380,12 @@ fn bootstrap_desktop(peer: &mut StatePeer, key: &SigningKey) -> Result<bool> {
     if room.get(ROOT, "contents")?.is_some() {
         return Ok(false);
     }
-    if peer
-        .document("dev.qos.word-processor", "tab:0000000000000001")
-        .is_none()
-        || peer.document("dev.qos.chat", "").is_none()
-    {
+    let writer_app = seeded_app_id(peer, word_processor::definition().app_id, WRITER_RECORD);
+    let chat_app = seeded_app_id(peer, chat::definition().app_id, "");
+    if peer.document(writer_app, WRITER_RECORD).is_none() || peer.document(chat_app, "").is_none() {
         bail!("canonical records missing; desktop migration cannot replace them")
     }
-    install_desktop_topology(&mut room, key)?;
+    install_desktop_topology(&mut room, key, writer_app, chat_app)?;
     let seed = SeedState {
         room_changes: room
             .get_changes(&[])

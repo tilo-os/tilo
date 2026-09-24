@@ -310,10 +310,10 @@ fn expiring_fixture(host_expires: bool) -> (StatePeer, [u8; 32], SystemTime) {
             room_changes: crate::seed_room(old.room(), &host, &[host.clone(), participant.clone()])
                 .unwrap(),
             documents: vec![SeedDocument {
-                app_id: "dev.qos.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 record_id: "".into(),
                 kind: "chat".into(),
-                bytes: old.document("dev.qos.chat", "").unwrap(),
+                bytes: old.document("so.tilo.chat", "").unwrap(),
             }],
         },
         &key,

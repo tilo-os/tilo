@@ -462,12 +462,22 @@ impl ActionHost {
             {
                 continue;
             }
-            let definition = match row.app_id.as_str() {
-                "dev.qos.word-processor" => word_processor::definition(),
-                "dev.qos.chat" => chat::definition(),
-                "dev.qos.notes" => notes::definition(),
-                "dev.qos.calculator" => calculator::definition(),
-                _ => continue,
+            // Rows keep the id they were created under; resolve the installed
+            // definition through the shared first-party rename table.
+            let Some(definition) = [
+                word_processor::definition(),
+                chat::definition(),
+                notes::definition(),
+                calculator::definition(),
+            ]
+            .into_iter()
+            .find(|definition| {
+                ui::application::lookup_compatible_first_party_app_ids(
+                    &row.app_id,
+                    definition.app_id,
+                )
+            }) else {
+                continue;
             };
             #[cfg(all(test, feature = "test-support"))]
             let definition = if self.scoped_fixture {
@@ -1032,7 +1042,7 @@ mod tests {
                                     .collect(),
                             },
                             command: DesktopCommand::OpenTab {
-                                app: "dev.qos.notes".into(),
+                                app: "so.tilo.notes".into(),
                                 placement: TabPlacement::NewGroup { strip, after: None },
                             },
                         },
@@ -1219,7 +1229,7 @@ mod tests {
             "a repeated committed notification must not fan out history again"
         );
         let mut candidate = owner.peer().clone();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut doc =
             ui::automerge::AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -1345,7 +1355,7 @@ mod tests {
         let (_root, owner, mut runtime) = runtime();
         let records = runtime
             .owners
-            .open("dev.qos.word-processor", owner.peer().room())
+            .open("so.tilo.word-processor", owner.peer().room())
             .unwrap();
         let record = RecordId::for_tab(1);
         records
@@ -1419,8 +1429,8 @@ mod tests {
         let expected_surface =
             |surface: &qos_action_broker::collab_broker_capnp::PublishedSurface| {
                 surface.live
-                    && surface.app_id == "dev.qos.word-processor"
-                    && surface.route.app_id == "dev.qos.word-processor"
+                    && surface.app_id == "so.tilo.word-processor"
+                    && surface.route.app_id == "so.tilo.word-processor"
                     && surface.route.record_id == "tab:0000000000000001"
                     && surface.route.cluster_id == room
             };
@@ -1454,7 +1464,7 @@ mod tests {
         }
         let before = owner
             .peer()
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap();
         let (surface, action) = runtime
             .broker
@@ -1544,7 +1554,7 @@ mod tests {
             ActionHost::start(&owner, authority.clone(), signing.clone(), sender.clone()).unwrap();
         let records = runtime
             .owners
-            .open("dev.qos.word-processor", owner.peer().room())
+            .open("so.tilo.word-processor", owner.peer().room())
             .unwrap();
         let record = RecordId::for_tab(1);
         records
@@ -1571,7 +1581,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["key"]["app"] == "dev.qos.word-processor")
+            .find(|entry| entry["key"]["app"] == "so.tilo.word-processor")
             .unwrap();
         assert_eq!(
             serde_json::from_value::<Vec<u8>>(entry["bytes"].clone()).unwrap(),

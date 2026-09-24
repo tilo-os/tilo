@@ -456,7 +456,7 @@ mod tests {
         let first = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.notes".into(),
+                app: "so.tilo.notes".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -483,7 +483,7 @@ mod tests {
         let second = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.calculator".into(),
+                app: "so.tilo.calculator".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -504,7 +504,7 @@ mod tests {
             .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())
             .collect::<Vec<_>>();
         assert!(messages.iter().any(
-            |message| matches!(message, NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.calculator")
+            |message| matches!(message, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.calculator")
         ));
         assert!(!messages.iter().any(
             |message| matches!(message, NeighbourMsg::AppDocument { app_id, record_id, .. } if (app_id, record_id) == (&stale_route.0, &stale_route.1))
@@ -544,7 +544,7 @@ mod tests {
         let first = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.notes".into(),
+                app: "so.tilo.notes".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -561,7 +561,7 @@ mod tests {
             .find(|bytes| {
                 matches!(
                     postcard::from_bytes::<NeighbourMsg>(bytes).unwrap(),
-                    NeighbourMsg::AppDocument { ref app_id, .. } if app_id == "dev.qos.notes"
+                    NeighbourMsg::AppDocument { ref app_id, .. } if app_id == "so.tilo.notes"
                 )
             })
             .cloned()
@@ -571,7 +571,7 @@ mod tests {
         let second = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.calculator".into(),
+                app: "so.tilo.calculator".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -619,7 +619,7 @@ mod tests {
         let first = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.notes".into(),
+                app: "so.tilo.notes".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -633,7 +633,7 @@ mod tests {
             .find_map(|bytes| match postcard::from_bytes(bytes).unwrap() {
                 NeighbourMsg::AppDocument {
                     app_id, record_id, ..
-                } if app_id == "dev.qos.notes" => Some((app_id, record_id)),
+                } if app_id == "so.tilo.notes" => Some((app_id, record_id)),
                 _ => None,
             })
             .expect("opening Notes publishes its owned record");
@@ -687,7 +687,7 @@ mod tests {
         let second = request(
             &owner,
             DesktopCommand::OpenTab {
-                app: "dev.qos.calculator".into(),
+                app: "so.tilo.calculator".into(),
                 placement: TabPlacement::NewGroup {
                     strip: strip(&owner),
                     after: None,
@@ -707,7 +707,7 @@ mod tests {
             .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())
             .collect::<Vec<_>>();
         assert!(messages.iter().any(
-            |message| matches!(message, NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.calculator")
+            |message| matches!(message, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.calculator")
         ));
         assert!(!messages.iter().any(
             |message| matches!(message, NeighbourMsg::AppDocument { app_id, record_id, .. } if (app_id, record_id) == (&notes_route.0, &notes_route.1))

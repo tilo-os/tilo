@@ -298,7 +298,7 @@ mod tests {
                 id: id + 1,
                 title: "Tab".into(),
                 tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other("dev.qos.notes".into()),
+                    kind: AppKind::Other("so.tilo.notes".into()),
                     label: "Notes".into(),
                 },
             };

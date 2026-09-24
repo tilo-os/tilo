@@ -45,7 +45,7 @@ export async function runActionStorageReopen({bundle,enrollmentBaseUrl,target,lo
     mounted=await mount(peer);
     log('baseline actual WASM desktop mounted');
     const catalogue=await peer.actionsV1.catalogue();
-    const route=catalogue.catalogue.surfaces.find(row=>row.app_id==='dev.qos.word-processor'&&row.actions.some(action=>action.action==='insert-table'));
+    const route=catalogue.catalogue.surfaces.find(row=>row.app_id==='so.tilo.word-processor'&&row.actions.some(action=>action.action==='insert-table'));
     assert(route,'real Writer action catalogue missing');
     const descriptor=route.actions.find(action=>action.action==='insert-table');
     await peer.actionsV1.invoke({invocation,app_peer:String(route.peer_id),app_id:route.app_id,record_id:route.record_id,

@@ -16,7 +16,7 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
                         invocation_id: "media-before-revocation".into(),
                         operation: NativeOperation::MediaCreate(
                             qos_action_broker::collaboration_admin::MediaCreateInput {
-                                app_id: "dev.qos.chat".into(),
+                                app_id: "so.tilo.chat".into(),
                                 record_id: "".into(),
                                 channel_id: "cloud_voice".into(),
                                 expected_authorization_revision: None,
@@ -82,9 +82,9 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
 fn delivery_security_document_change_without_publication_is_not_metadata() {
     let (dir, mut store, _) = crate::actions::media_tests::voice_store();
     let mut peer = store.peer().unwrap();
-    let document = peer.document("dev.qos.chat", "").unwrap();
+    let document = peer.document("so.tilo.chat", "").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         document,
         &store.key(),
@@ -105,9 +105,9 @@ fn delivery_security_proof_cannot_authorize_an_added_document_effect() {
     let before = store.peer_at(now).unwrap();
     let mut clean = before.clone();
     let mut tampered = before.clone();
-    let document = tampered.document("dev.qos.chat", "").unwrap();
+    let document = tampered.document("so.tilo.chat", "").unwrap();
     tampered
-        .publish_document("dev.qos.chat", "", document, &store.key(), now_time(now))
+        .publish_document("so.tilo.chat", "", document, &store.key(), now_time(now))
         .unwrap();
     let mut entry = RevocationEntry {
         user_public_key: caller.user_public_key,

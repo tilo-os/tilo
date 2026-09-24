@@ -17,7 +17,7 @@ async fn actual_actor_custody_opens_only_pinned_discovery_and_fences_late_reply(
     };
     let target = CallTarget {
         workspace: room.to_string(),
-        app: "dev.qos.chat".into(),
+        app: "so.tilo.chat".into(),
         record: "".into(),
         channel: "voice".into(),
     };
@@ -77,7 +77,7 @@ async fn open_actual(
                 owner,
                 target: CallTarget {
                     workspace: room.to_string(),
-                    app: "dev.qos.chat".into(),
+                    app: "so.tilo.chat".into(),
                     record: "".into(),
                     channel: "voice".into(),
                 },
@@ -164,7 +164,7 @@ async fn revoked_owner_or_wrong_actual_key_cannot_finish_pending_bootstrap() {
                 owner: owner.clone(),
                 target: CallTarget {
                     workspace: room.to_string(),
-                    app: "dev.qos.chat".into(),
+                    app: "so.tilo.chat".into(),
                     record: "".into(),
                     channel: "voice".into(),
                 },

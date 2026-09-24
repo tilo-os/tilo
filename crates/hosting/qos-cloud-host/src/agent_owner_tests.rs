@@ -39,7 +39,7 @@ pub(super) fn prepare(
             invocation: invocation.into(),
             request,
             grants: vec![GrantAction {
-                app_id: "dev.qos.word-processor".into(),
+                app_id: "so.tilo.word-processor".into(),
                 record_id: "tab:0000000000000001".into(),
                 resource: "document".into(),
                 action: "insert".into(),
@@ -246,7 +246,7 @@ fn agent_owner_controller_concurrent_prepare_and_reopen_return_original_business
     );
     let caller = authority.caller(device).unwrap();
     let catalogue = authority.grant_catalogue(vec![GrantAction {
-        app_id: "dev.qos.word-processor".into(),
+        app_id: "so.tilo.word-processor".into(),
         record_id: "tab:0000000000000001".into(),
         resource: "document".into(),
         action: "insert".into(),

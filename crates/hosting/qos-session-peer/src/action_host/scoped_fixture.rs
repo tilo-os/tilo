@@ -654,7 +654,7 @@ fn admit_caller(
 }
 #[tokio::test(flavor = "current_thread")]
 async fn scoped_app_fixture_reaches_real_writer_published_action() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.word-processor");
+    let mut fixture = ScopedAppFixture::new("so.tilo.word-processor");
     // Read-only diagnostic: compare actual mounted bytes with retained signed
     // publication bytes. This creates no receipt and authorizes no replay.
     let id = fixture.record_id();

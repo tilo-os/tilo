@@ -8,8 +8,8 @@ fn fixture() -> (tempfile::TempDir, Store, Vec<u8>, u64) {
     let now = qos_relay::clock::now_ns();
     store.activate_delivery_storage(now).unwrap();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
-    let document = peer.document("dev.qos.chat", "").unwrap();
-    peer.publish_document("dev.qos.chat", "", document, &store.key(), now_time(now))
+    let document = peer.document("so.tilo.chat", "").unwrap();
+    peer.publish_document("so.tilo.chat", "", document, &store.key(), now_time(now))
         .unwrap();
     let mut next = store.state.clone();
     next.outbox.extend(

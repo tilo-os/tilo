@@ -54,7 +54,7 @@ fn staged_bytes(owner: &SessionOwner, large: bool) -> Vec<u8> {
     use ui::automerge::{ROOT, transaction::Transactable};
     let mut author = owner.peer.clone();
     let mut doc =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = doc.get_heads();
     let mut value = vec![0; if large { 1152 * 1024 } else { 1024 }];
     blake3::Hasher::new()
@@ -70,7 +70,7 @@ fn staged_bytes(owner: &SessionOwner, large: bool) -> Vec<u8> {
     doc.commit();
     let message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             doc.save_after(&heads),
             &owner.identity.native,

@@ -36,11 +36,11 @@ fn stored(
 #[test]
 fn media_binding_retains_exact_native_object_strings_after_document_drop() {
     let mut doc = fixture();
-    let expected = historical_resolve("dev.qos.chat", "tab:voice", "voice", &doc).unwrap();
+    let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
     let (allowance, mut registry, turn) = context();
     let native = stored(&mut doc, &mut registry, &turn);
     let binding = assert_precharged(&allowance, || {
-        resolve_native("dev.qos.chat", "tab:voice", "voice", &native, &turn)
+        resolve_native("so.tilo.chat", "tab:voice", "voice", &native, &turn)
     })
     .unwrap();
     assert!(binding.matches(&expected));
@@ -89,7 +89,7 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
         let app = if mode == 6 {
             "wrong.app"
         } else {
-            "dev.qos.chat"
+            "so.tilo.chat"
         };
         let expected = historical_resolve(app, "", "voice", &doc);
         let (allowance, mut registry, turn) = context();
@@ -106,7 +106,7 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
 #[test]
 fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_unrelated_calls() {
     let mut doc = fixture();
-    let binding = historical_resolve("dev.qos.chat", "", "voice", &doc).unwrap();
+    let binding = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
     let mut policy = RoomMediaV1 {
         version: 1,
         room: [1; 16],
@@ -136,7 +136,7 @@ fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_un
     assert_eq!(
         assert_precharged(&allowance, || validate_native(
             &policy,
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             &native,
             &turn
@@ -146,7 +146,7 @@ fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_un
     assert_eq!(
         assert_precharged(&allowance, || validate_native(
             &policy,
-            "dev.qos.chat",
+            "so.tilo.chat",
             "other",
             &native,
             &turn
@@ -157,7 +157,7 @@ fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_un
     assert_eq!(
         assert_precharged(&allowance, || validate_native(
             &policy,
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             &native,
             &turn
@@ -178,7 +178,7 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
     orphan.load_incremental(&child).unwrap();
     assert!(!orphan.get_missing_deps(&[]).is_empty());
     assert_eq!(
-        historical_resolve("dev.qos.chat", "", "voice", &orphan),
+        historical_resolve("so.tilo.chat", "", "voice", &orphan),
         Err(MediaPolicyError::Binding)
     );
     let (allowance, mut registry, turn) = context();
@@ -186,7 +186,7 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
     assert!(native.has_missing_dependencies());
     assert!(matches!(
         assert_precharged(&allowance, || resolve_native(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             "voice",
             &native,
@@ -209,11 +209,11 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
             doc.put(&voice, "workspace", "main").unwrap();
         }
         doc.commit();
-        let expected = historical_resolve("dev.qos.chat", "", "voice", &doc);
+        let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
         let (allowance, mut registry, turn) = context();
         let native = stored(&mut doc, &mut registry, &turn);
         let actual = assert_precharged(&allowance, || {
-            resolve_native("dev.qos.chat", "", "voice", &native, &turn)
+            resolve_native("so.tilo.chat", "", "voice", &native, &turn)
         });
         match expected {
             Ok(expected) => {
@@ -244,12 +244,12 @@ fn media_binding_new_turn_quota_refuses_without_spending_document_residence_cred
     let current_turn = registry.work_turn(current.clone()).unwrap();
     let before = current.available_bytes();
     let result = assert_precharged(&current, || {
-        resolve_native("dev.qos.chat", "", "voice", &native, &current_turn)
+        resolve_native("so.tilo.chat", "", "voice", &native, &current_turn)
     });
     assert!(matches!(result, Err(Error::Resource(_))));
     assert_eq!(residence.available_bytes(), residence_before);
     assert_eq!(current.available_bytes(), before);
-    assert!(resolve_native("dev.qos.chat", "", "voice", &native, &turn).is_ok());
+    assert!(resolve_native("so.tilo.chat", "", "voice", &native, &turn).is_ok());
 }
 
 // Original public resolver retained as independent identity/shape oracle.

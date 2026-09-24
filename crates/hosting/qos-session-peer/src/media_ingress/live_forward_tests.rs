@@ -142,7 +142,7 @@ async fn verified_items_are_forwarded_before_the_durable_barrier_inline_chat_and
     assert_eq!(
         record,
         LiveRecord {
-            app: "dev.qos.chat".into(),
+            app: "so.tilo.chat".into(),
             record: PACKAGE_PRIMARY_RECORD.into(),
         }
     );
@@ -214,7 +214,7 @@ async fn items_that_fail_admission_or_are_duplicates_are_never_forwarded() {
     let mut author = h.f.owner.peer().clone();
     let first = {
         let mut document =
-            ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+            ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
         let heads = document.get_heads();
         ui::automerge::transaction::Transactable::put(
             &mut document,
@@ -226,7 +226,7 @@ async fn items_that_fail_admission_or_are_duplicates_are_never_forwarded() {
         document.commit();
         author
             .publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 document.save_after(&heads),
                 &h.f.owner.identity.native,
@@ -236,7 +236,7 @@ async fn items_that_fail_admission_or_are_duplicates_are_never_forwarded() {
     };
     let second = {
         let mut document =
-            ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+            ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
         let heads = document.get_heads();
         ui::automerge::transaction::Transactable::put(
             &mut document,
@@ -248,7 +248,7 @@ async fn items_that_fail_admission_or_are_duplicates_are_never_forwarded() {
         document.commit();
         author
             .publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 document.save_after(&heads),
                 &h.f.owner.identity.native,
@@ -430,7 +430,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
         .unwrap_or(5);
     let mut h = Harness::start().await;
     let record = LiveRecord {
-        app: "dev.qos.chat".into(),
+        app: "so.tilo.chat".into(),
         record: PACKAGE_PRIMARY_RECORD.into(),
     };
     // Latest durable boundary: held polls wait for the next group.

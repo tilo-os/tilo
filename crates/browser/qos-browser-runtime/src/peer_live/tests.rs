@@ -277,7 +277,7 @@ fn digest_window_deduplicates_and_is_bounded() {
 
 #[test]
 fn presence_json_round_trips_canonically() {
-    let json = r#"{"seq":42,"sentAtMs":1700000000123,"focus":{"app":"dev.qos.notes","record":"n1"},"pointer":[10.5,-3.25],"selection":{"anchor":"0a0b","head":"0c"},"drag":{"object":{"record":null,"id":"77696e"},"phase":"move","position":[1.0,2.0],"size":[300.0,200.0]}}"#;
+    let json = r#"{"seq":42,"sentAtMs":1700000000123,"focus":{"app":"so.tilo.notes","record":"n1"},"pointer":[10.5,-3.25],"selection":{"anchor":"0a0b","head":"0c"},"drag":{"object":{"record":null,"id":"77696e"},"phase":"move","position":[1.0,2.0],"size":[300.0,200.0]}}"#;
     let bytes = encode_presence(json).unwrap();
     assert!(bytes.len() <= live_wire::MAX_DATAGRAM_FRAME_BYTES);
     let back = decode_presence(&bytes).unwrap();
@@ -318,7 +318,7 @@ fn presence_json_rejects_invalid_fields() {
 
 #[test]
 fn preview_and_ops_projection() {
-    let json = r#"{"seq":3,"record":{"app":"dev.qos.word-processor","record":"doc-1"},"ops":[{"kind":"insert","at":"01","text":"hi"},{"kind":"delete","at":"02","len":2}]}"#;
+    let json = r#"{"seq":3,"record":{"app":"so.tilo.word-processor","record":"doc-1"},"ops":[{"kind":"insert","at":"01","text":"hi"},{"kind":"delete","at":"02","len":2}]}"#;
     let bytes = encode_preview(json).unwrap();
     let decoded: serde_json::Value = serde_json::from_str(&decode_ops(&bytes).unwrap()).unwrap();
     assert_eq!(decoded["kind"], "preview");
@@ -327,7 +327,7 @@ fn preview_and_ops_projection() {
     assert_eq!(decoded["ops"][1]["len"], 2);
     assert_eq!(
         decoded["track"],
-        ops_track("dev.qos.word-processor", "doc-1").unwrap()
+        ops_track("so.tilo.word-processor", "doc-1").unwrap()
     );
     assert!(signed_change(&bytes).is_err());
     assert!(encode_preview(r#"{"seq":3,"record":{"app":"a","record":"r"},"ops":[]}"#).is_err());
@@ -337,7 +337,7 @@ fn preview_and_ops_projection() {
 #[test]
 fn signed_change_projection_hides_canonical_bytes() {
     let record = LiveRecord {
-        app: "dev.qos.notes".into(),
+        app: "so.tilo.notes".into(),
         record: "n1".into(),
     };
     let canonical = vec![1, 2, 3, 4];
@@ -358,7 +358,7 @@ fn signed_change_projection_hides_canonical_bytes() {
 
 #[test]
 fn ops_track_matches_wire_contract() {
-    let name = ops_track("dev.qos.notes", "n1").unwrap();
+    let name = ops_track("so.tilo.notes", "n1").unwrap();
     assert!(name.starts_with("ops/") && name.len() == 4 + 64);
     assert!(ops_track("", "n1").is_err());
 }

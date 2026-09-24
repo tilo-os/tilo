@@ -269,7 +269,7 @@ fn cap(restrict: bool) -> collab_types::caps::CapOverride {
     use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
     CapOverride::new(
         Subject::Role(collab_types::Role::Owner),
-        Scope::App("dev.qos.word-processor".into()),
+        Scope::App("so.tilo.word-processor".into()),
         if restrict {
             Effect::Restrict
         } else {
@@ -293,7 +293,7 @@ fn write_allowed(source: &CloudStoreSource) -> bool {
         decide_capability(
             &actor,
             &ResourceRef::Action {
-                app: "dev.qos.word-processor".into(),
+                app: "so.tilo.word-processor".into(),
                 action: "replace-text".into(),
             },
             Verb::Write,

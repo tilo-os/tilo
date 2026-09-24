@@ -3,7 +3,7 @@ use ed25519_dalek::SigningKey;
 
 fn record() -> LiveRecord {
     LiveRecord {
-        app: "dev.qos.word-processor".into(),
+        app: "so.tilo.word-processor".into(),
         record: "doc-1".into(),
     }
 }

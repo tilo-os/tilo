@@ -96,12 +96,12 @@ fn canonical_creation_denied_action_leaves_real_owner_and_topology_unchanged() {
     restrict(
         &mut owner,
         Scope::Action {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             action: "document.create".into(),
         },
         "deny-create",
     );
-    let request = opening(&owner, "dev.qos.notes");
+    let request = opening(&owner, "so.tilo.notes");
     let before = owner.status();
     let bytes = std::fs::read(path.join("session.bin")).unwrap();
     assert!(
@@ -121,7 +121,7 @@ fn canonical_creation_denied_exact_artifact_write_preserves_read_and_has_no_effe
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize_workspace(&path, "Artifact policy").unwrap();
-    let artifact = collab_types::document_artifact_id("dev.qos.chat", owner.peer().room(), "");
+    let artifact = collab_types::document_artifact_id("so.tilo.chat", owner.peer().room(), "");
     restrict(
         &mut owner,
         Scope::ResourceInstance(artifact),
@@ -131,7 +131,7 @@ fn canonical_creation_denied_exact_artifact_write_preserves_read_and_has_no_effe
         .peer()
         .check_document_read(
             owner.peer().authority().device_public_key,
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             web_time::SystemTime::now(),
         )
@@ -140,7 +140,7 @@ fn canonical_creation_denied_exact_artifact_write_preserves_read_and_has_no_effe
     let bytes = std::fs::read(path.join("session.bin")).unwrap();
     assert!(
         matches!(
-            owner.commit_desktop_command(&opening(&owner, "dev.qos.chat")),
+            owner.commit_desktop_command(&opening(&owner, "so.tilo.chat")),
             Err(DesktopCommandError::Rejected(_))
         ),
         "Read must not substitute for exact Artifact Write"
@@ -154,10 +154,10 @@ fn canonical_creation_existing_primary_opens_with_read_after_create_and_write_re
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize_workspace(&path, "Existing primary").unwrap();
-    let first = opening(&owner, "dev.qos.chat");
+    let first = opening(&owner, "so.tilo.chat");
     owner.commit_desktop_command(&first).unwrap();
-    let document = owner.peer().document("dev.qos.chat", "").unwrap();
-    let artifact = collab_types::document_artifact_id("dev.qos.chat", owner.peer().room(), "");
+    let document = owner.peer().document("so.tilo.chat", "").unwrap();
+    let artifact = collab_types::document_artifact_id("so.tilo.chat", owner.peer().room(), "");
     restrict(
         &mut owner,
         Scope::ResourceInstance(artifact),
@@ -166,23 +166,23 @@ fn canonical_creation_existing_primary_opens_with_read_after_create_and_write_re
     restrict(
         &mut owner,
         Scope::Action {
-            app: "dev.qos.chat".into(),
+            app: "so.tilo.chat".into(),
             action: "document.create".into(),
         },
         "deny-create",
     );
-    let second = opening(&owner, "dev.qos.chat");
+    let second = opening(&owner, "so.tilo.chat");
     owner
         .commit_desktop_command(&second)
         .unwrap()
         .validate_for(&second)
         .unwrap();
-    assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), document);
+    assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), document);
     assert_eq!(owner.status().records.len(), 1);
     drop(owner);
     let restored = SessionOwner::open(&path).unwrap();
     assert_eq!(
-        restored.peer().document("dev.qos.chat", "").unwrap(),
+        restored.peer().document("so.tilo.chat", "").unwrap(),
         document
     );
 }
@@ -252,7 +252,7 @@ fn canonical_creation_original_guest_write_is_checked_before_governor_factory_pu
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize_workspace(&path, "Original caller").unwrap();
     let caller = admitted_guest(&mut owner);
-    let artifact = collab_types::document_artifact_id("dev.qos.chat", owner.peer().room(), "");
+    let artifact = collab_types::document_artifact_id("so.tilo.chat", owner.peer().room(), "");
     restrict_subject(
         &mut owner,
         Subject::person(hex::encode(caller.user_public_key)),
@@ -263,12 +263,12 @@ fn canonical_creation_original_guest_write_is_checked_before_governor_factory_pu
         .peer()
         .check_document_read(
             caller.device_public_key,
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             web_time::SystemTime::now(),
         )
         .unwrap();
-    let mut request = opening(&owner, "dev.qos.chat");
+    let mut request = opening(&owner, "so.tilo.chat");
     let CommitOperation::DesktopCommand { caller: actual, .. } = &mut request.operation else {
         unreachable!()
     };

@@ -239,7 +239,9 @@ pub(super) fn validate_fields(
     object: &str,
     workspace: &str,
 ) -> Result<(), MediaPolicyError> {
-    if app != "dev.qos.chat"
+    // A binding names an existing Chat record, whose route keeps the id it was
+    // created under; pre-rename workspaces still hold `dev.qos.chat`.
+    if !collab_types::first_party_app_ids::is_any_first_party_app(app, &["so.tilo.chat"])
         || !super::text_valid(record, super::MAX_RECORD_BYTES, true)
         || !super::text_valid(channel, super::MAX_CHANNEL_BYTES, false)
         || !super::text_valid(workspace, super::MAX_CHANNEL_BYTES, false)

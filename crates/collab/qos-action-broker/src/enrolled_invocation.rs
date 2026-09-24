@@ -663,21 +663,21 @@ mod tests {
     #[test]
     fn enrolled_catalogue_primary_grant_preserves_raw_route_and_rejects_alias() {
         let json = serde_json::json!({"version":1,"surfaces":[
-            {"app_id":"dev.qos.chat","record_id":"","live":true,"actions":[{"resource":"category","action":"collapse"}]},
-            {"app_id":"dev.qos.chat","record_id":"other","live":true,"actions":[{"resource":"category","action":"collapse"}]},
-            {"app_id":"dev.qos.chat","record_id":"@qos:package-primary","live":true,"actions":[{"resource":"category","action":"collapse"}]}
+            {"app_id":"so.tilo.chat","record_id":"","live":true,"actions":[{"resource":"category","action":"collapse"}]},
+            {"app_id":"so.tilo.chat","record_id":"other","live":true,"actions":[{"resource":"category","action":"collapse"}]},
+            {"app_id":"so.tilo.chat","record_id":"@qos:package-primary","live":true,"actions":[{"resource":"category","action":"collapse"}]}
         ]});
         let grant = qos_agent_control_protocol::GrantAction {
-            app_id: "dev.qos.chat".into(),
+            app_id: "so.tilo.chat".into(),
             record_id: "@qos:package-primary".into(),
             resource: "category".into(),
             action: "collapse".into(),
         };
-        let remembered = enrolled_action_grant("dev.qos.chat", "", "category", "collapse").unwrap();
+        let remembered = enrolled_action_grant("so.tilo.chat", "", "category", "collapse").unwrap();
         assert_eq!(remembered, grant);
         assert!(
             enrolled_action_grant(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "@qos:package-primary",
                 "category",
                 "collapse"
@@ -685,7 +685,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            enrolled_action_grant("dev.qos.chat", "other", "category", "collapse")
+            enrolled_action_grant("so.tilo.chat", "other", "category", "collapse")
                 .unwrap()
                 .record_id,
             "other"

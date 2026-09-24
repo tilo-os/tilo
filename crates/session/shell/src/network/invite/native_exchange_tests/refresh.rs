@@ -21,7 +21,7 @@ pub(super) async fn restart_after_offline_snapshot(
     let (request, original, expected_heads) = owner
         .with_current(room, |view| {
             let mut doc =
-                AutoCommit::load(&view.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             doc.set_actor(automerge::ActorId::from(
                 identity
                     .device_signing_key
@@ -35,7 +35,7 @@ pub(super) async fn restart_after_offline_snapshot(
             doc.commit();
             let expected = doc.get_heads();
             let mut message = view.peer().clone().publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
                 &identity.device_signing_key,
@@ -194,7 +194,7 @@ pub(super) async fn restart_after_offline_snapshot(
                     .receive(qos_peer_state::TransportOrigin::RelayDelta(author), message)
                     .unwrap();
                 let mut doc =
-                    AutoCommit::load(&governor.peer().document("dev.qos.chat", "").unwrap())
+                    AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
                         .unwrap();
                 if doc.get(ROOT, "real-clock-offline-edit").unwrap().is_some() {
                     for head in &expected_heads {

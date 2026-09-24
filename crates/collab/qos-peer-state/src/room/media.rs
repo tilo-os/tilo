@@ -686,7 +686,7 @@ mod room_media_tests {
                 [7; 32],
                 CallV1 {
                     binding: ChatCallBindingV1 {
-                        app_id: "dev.qos.chat".into(),
+                        app_id: "so.tilo.chat".into(),
                         record_id: String::new(),
                         channel_id: "voice".into(),
                         channel_object: "1@01".into(),
@@ -875,7 +875,7 @@ mod room_media_tests {
             .unwrap();
         assert_eq!(parse(&doc), Ok(Some(value.clone())));
         for changed in [
-            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.chat".into()),
+            edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.app_id = "so.tilo.notes".into()),
             edited(|v| v.room = [2; 16]),
             edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.channel_object = "_root".into()),
         ] {
@@ -1170,7 +1170,7 @@ mod room_media_tests {
         };
         let mut expected = vec![1];
         expected.extend([7; 32]);
-        expected.extend(b"\x0cdev.qos.chat\x00\x05voice\x041@01\x04main\x02\x03\x01");
+        expected.extend(b"\x0cso.tilo.chat\x00\x05voice\x041@01\x04main\x02\x03\x01");
         assert_eq!(result.encode().unwrap(), expected);
         assert_eq!(MediaCallResultV1::decode(&expected), Ok(result));
         let mut extra = expected;
@@ -1198,7 +1198,7 @@ mod room_media_tests {
                 1 => invalid.call_id = [0; 32],
                 2 => invalid.epoch = 0,
                 3 => invalid.authorization_revision = 0,
-                _ => invalid.binding.app_id = "so.tilo.chat".into(),
+                _ => invalid.binding.app_id = "so.tilo.notes".into(),
             }
             assert!(invalid.validate().is_err());
             assert!(MediaCallResultV1::decode(&postcard::to_allocvec(&invalid).unwrap()).is_err());
@@ -1324,7 +1324,7 @@ mod room_media_tests {
     #[test]
     fn excessive_wire_string_lengths_are_capacity_before_text_allocation() {
         let fields = [
-            ("dev.qos.chat", 64usize),
+            ("so.tilo.chat", 64usize),
             ("", 1024),
             ("voice", 128),
             ("1@01", 256),

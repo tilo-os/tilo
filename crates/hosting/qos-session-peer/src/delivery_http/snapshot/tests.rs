@@ -21,7 +21,7 @@ fn real_pin(
     if large {
         let mut author = owner.peer().clone();
         let mut doc =
-            ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+            ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
         let heads = doc.get_heads();
         let mut value = vec![0; 600 * 1024];
         blake3::Hasher::new()
@@ -37,7 +37,7 @@ fn real_pin(
         doc.commit();
         let message = author
             .publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
                 &owner.identity.native,

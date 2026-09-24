@@ -477,10 +477,10 @@ async fn ordinary_host_restart_restores_bound_local_views() {
                 )
                 .unwrap()
             })
-            .find(|saved| saved.app_id == "dev.qos.notes")
+            .find(|saved| saved.app_id == "so.tilo.notes")
             .expect("ordinary Notes worker must persist its view");
         assert_eq!(notes.workspace_id, before.room);
-        assert_eq!(notes.application.as_ref().unwrap().app_id, "dev.qos.notes");
+        assert_eq!(notes.application.as_ref().unwrap().app_id, "so.tilo.notes");
         if let Some(previous) = &saved_notes {
             assert_eq!(notes.device_id, previous.device_id);
             assert_eq!(notes.instance_id, previous.instance_id);
@@ -966,7 +966,7 @@ fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
     let messages = source
         .bootstrap_messages(&key, web_time::SystemTime::now())
         .unwrap();
-    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="dev.qos.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
+    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="so.tilo.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     assert!(
         owner.receive(origin, snapshot).unwrap().is_none(),
@@ -1043,14 +1043,14 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
     let owner = qos_session_peer::SessionOwner::initialize(&root).unwrap();
     let before = owner.status();
     assert!(
-        before.records.iter().any(|r| r.app_id == "dev.qos.notes"),
+        before.records.iter().any(|r| r.app_id == "so.tilo.notes"),
         "desktop must include a real initialized Notes record"
     );
     let writer = owner
         .peer()
-        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .document("so.tilo.word-processor", "tab:0000000000000001")
         .unwrap();
-    let chat = owner.peer().document("dev.qos.chat", "").unwrap();
+    let chat = owner.peer().document("so.tilo.chat", "").unwrap();
     let message = owner.peer().room_message();
     let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = message else {
         panic!("room state")
@@ -1077,11 +1077,11 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
             writer
         );
-        assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), chat);
+        assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), chat);
         let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = owner.peer().room_message()
         else {
             panic!("room state")

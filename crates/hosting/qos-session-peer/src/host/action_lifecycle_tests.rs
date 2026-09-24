@@ -4,7 +4,7 @@ use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
 fn mutation(owner: &SessionOwner, key: &str) -> collab_types::DocumentMutation {
     let mut document =
-        AutoCommit::load(&owner.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+        AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
     document.put(ROOT, key, true).unwrap();
     document.commit();
     collab_types::DocumentMutation::Snapshot(document.save())
@@ -42,7 +42,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
     assert!(action_error.is_none());
     let old_time = committed.read().unwrap().view().policy_time().unwrap();
     let route =
-        ui::collaboration::RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        ui::collaboration::RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
     let old_signing = runtime.signing.clone();
     let old_signer = old_signing.bind(route.clone(), owner.identity.native_cert.clone());
     let old_mutation = mutation(&owner, "must-not-commit-retired-runtime");
@@ -124,7 +124,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
             .commit(OwnerCommitRequest {
                 room: owner.peer().room().into(),
                 operation: CommitOperation::Document {
-                    app: "dev.qos.chat".into(),
+                    app: "so.tilo.chat".into(),
                     record: String::new(),
                     envelope: Box::new(envelope.clone()),
                 },
@@ -149,7 +149,7 @@ async fn action_lifecycle_recovery_rejects_old_queue_and_advances_fresh_runtime(
         "fresh runtime retained the retired source"
     );
     cleanup.unwrap();
-    let document = AutoCommit::load(&owner.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+    let document = AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
     use ui::automerge::ReadDoc;
     assert!(
         document
@@ -203,7 +203,7 @@ async fn action_lifecycle_retirement_refuses_every_queue_despite_terminal_health
     let mut runtime = ActionRuntime::new(committed.clone());
     runtime.start_current(&mut owner, None, None).unwrap();
     let route =
-        ui::collaboration::RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        ui::collaboration::RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
     let signer = runtime
         .signing
         .bind(route.clone(), owner.identity.native_cert.clone());
@@ -270,7 +270,7 @@ async fn action_lifecycle_recovery_retains_exact_postcommit_receipt_custody() {
     let mut runtime = ActionRuntime::new(committed.clone());
     runtime.start_current(&mut owner, None, None).unwrap();
     let route =
-        ui::collaboration::RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        ui::collaboration::RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
     let signer = runtime
         .signing
         .bind(route.clone(), owner.identity.native_cert.clone());

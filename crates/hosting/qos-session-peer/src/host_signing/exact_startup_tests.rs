@@ -3,7 +3,7 @@ use crate::action_host::scoped_fixture::ScopedAppFixture;
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_startup_replay_uses_actual_signed_baseline_without_any_store_write() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.word-processor");
+    let mut fixture = ScopedAppFixture::new("so.tilo.word-processor");
     let pending = fixture.next_startup_signature().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
@@ -70,7 +70,7 @@ async fn exact_startup_replay_uses_actual_signed_baseline_without_any_store_writ
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_startup_replay_refuses_the_retired_original_owner_origin() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.word-processor");
+    let mut fixture = ScopedAppFixture::new("so.tilo.word-processor");
     let pending = fixture.next_startup_signature().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
@@ -106,7 +106,7 @@ async fn exact_startup_replay_refuses_the_retired_original_owner_origin() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_startup_replay_refuses_actual_original_invocation_contributors() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::new("so.tilo.notes");
     fixture.wait_action("new-page").await;
     for _ in 0..10 {
         fixture.pump().await.unwrap();
@@ -183,7 +183,7 @@ async fn exact_startup_replay_refuses_actual_original_invocation_contributors() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn exact_startup_replay_refuses_uncommitted_factory_body_with_genuine_sdk_binding() {
-    let mut fixture = ScopedAppFixture::with_uncommitted_factory_data("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::with_uncommitted_factory_data("so.tilo.notes");
     let pending = fixture.next_signature_for_selected_record().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();

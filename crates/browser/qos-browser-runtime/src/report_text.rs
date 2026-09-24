@@ -102,17 +102,17 @@ mod report_benchmark {
         };
         let rows = |seed: u8| {
             serde_json::json!([
-                {"app_id":"dev.qos.word-processor","record_id":"tab:1","heads":heads(seed)},
-                {"app_id":"dev.qos.chat","record_id":"primary","heads":heads(seed.wrapping_add(1))},
-                {"app_id":"dev.qos.notes","record_id":"tab:3","heads":heads(seed.wrapping_add(2))}
+                {"app_id":"so.tilo.word-processor","record_id":"tab:1","heads":heads(seed)},
+                {"app_id":"so.tilo.chat","record_id":"primary","heads":heads(seed.wrapping_add(1))},
+                {"app_id":"so.tilo.notes","record_id":"tab:3","heads":heads(seed.wrapping_add(2))}
             ])
         };
         serde_json::json!({
             "phase":"ready","desktop":{"version":1,"mode":"session"},"room":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","deviceId":hex(5),
             "records":rows(11),"pendingPrerequisites":0,"persistenceNeeded":false,"outgoingPending":3,"outgoingBlocked":0,"synchronization":"acknowledged","error":null,
             "health":{"version":1,"transport":{"phase":"connected","authenticated":true,"lastRelayContactAtMs":committed_at,"lastSessionPeerContactAtMs":committed_at},
-                "admission":{"phase":"ready","requiredRecords":[{"roomId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","appId":"dev.qos.word-processor","recordId":"tab:1"},{"roomId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","appId":"dev.qos.chat","recordId":"primary"}],"pendingPrerequisites":0,"deadlineAtMs":null},
-                "records":[record("dev.qos.word-processor","tab:1",11),record("dev.qos.chat","primary",12),record("dev.qos.notes","tab:3",13)],
+                "admission":{"phase":"ready","requiredRecords":[{"roomId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","appId":"so.tilo.word-processor","recordId":"tab:1"},{"roomId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","appId":"so.tilo.chat","recordId":"primary"}],"pendingPrerequisites":0,"deadlineAtMs":null},
+                "records":[record("so.tilo.word-processor","tab:1",11),record("so.tilo.chat","primary",12),record("so.tilo.notes","tab:3",13)],
                 "capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":[]}
         })
     }

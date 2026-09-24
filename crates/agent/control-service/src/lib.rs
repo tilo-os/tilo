@@ -109,9 +109,9 @@ impl AgentAdmission {
             } else {
                 &grant.record_id
             };
-            if !matches!(
-                grant.app_id.as_str(),
-                "dev.qos.word-processor" | "dev.qos.chat"
+            if !collab_types::first_party_app_ids::is_any_first_party_app(
+                &grant.app_id,
+                &["so.tilo.word-processor", "so.tilo.chat"],
             ) || !workspace.allows(
                 &actor,
                 &ResourceRef::Action {

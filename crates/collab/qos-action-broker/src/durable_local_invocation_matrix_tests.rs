@@ -187,7 +187,7 @@ mod durable_local_matrix {
                 .map(|cap| cap.with_expiry(start / 1_000_000_000 + 50))
                 .collect();
             let route = CrdtRoute::record(
-                "dev.qos.word-processor",
+                "so.tilo.word-processor",
                 workspace.room.to_string(),
                 "document-1",
             );
@@ -383,7 +383,7 @@ mod durable_local_matrix {
         }));
         handle
             .publish_action_directory(
-                "dev.qos.word-processor",
+                "so.tilo.word-processor",
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),

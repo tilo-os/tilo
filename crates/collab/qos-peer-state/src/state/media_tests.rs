@@ -4,7 +4,7 @@ use automerge::{ObjType, transaction::Transactable};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "dev.qos.chat";
+const APP: &str = "so.tilo.chat";
 fn fixture() -> (StatePeer, SigningKey, SystemTime) {
     let root = SigningKey::from_bytes(&[101; 32]);
     let key = SigningKey::from_bytes(&[102; 32]);
@@ -542,7 +542,7 @@ fn room_media_exact_record_foreign_room_and_alias_are_not_substitutes() {
     let bad = edited_chat(&peer, 0).0;
     peer.publish_document(APP, "second", bad.clone(), &key, now)
         .unwrap();
-    peer.publish_document("so.tilo.chat", "", bad, &key, now)
+    peer.publish_document("dev.qos.chat", "", bad, &key, now)
         .unwrap();
     assert_eq!(peer.validated_media_policy().unwrap(), Some(value.clone()));
     let mut wrong = value;

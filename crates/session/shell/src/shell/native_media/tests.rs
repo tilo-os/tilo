@@ -61,7 +61,7 @@ impl MediaSession for BackendFixture {
 struct Factory(Arc<Device>);
 impl MediaFactory for Factory {
     fn prepare(&self, target: CallTarget) -> Prepare {
-        assert_eq!(target.app, "dev.qos.chat");
+        assert_eq!(target.app, "so.tilo.chat");
         assert_eq!(target.record, ""); // Primary record remains an exact binding.
         assert_eq!(target.channel, "voice");
         let backend = BackendFixture(Arc::clone(&self.0));
@@ -120,7 +120,7 @@ impl Fixture {
         assert!(service.install_factory(Arc::new(Factory(Arc::clone(&device)))));
         let caller = Caller {
             peer: 11,
-            app: "dev.qos.chat".into(),
+            app: "so.tilo.chat".into(),
             workspace: room,
             record: String::new(),
             current: Arc::new(|| Ok(())),

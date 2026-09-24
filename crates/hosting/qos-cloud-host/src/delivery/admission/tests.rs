@@ -2,7 +2,7 @@ use crate::{Store, now_time};
 use ed25519_dalek::SigningKey;
 use qos_actions::Action;
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 
 /// Canonical browser-authored incremental delta from the enrolled [8; 32] device.

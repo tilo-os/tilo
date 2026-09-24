@@ -864,9 +864,9 @@ impl qos_action_broker::peer_actions::CertificateAuthority for RuntimeOwner {
             || !peer.certificates().contains(certificate)
             || peer.incomplete_reason().is_some()
             || route.cluster_id != peer.room()
-            || !matches!(
-                route.app_id.as_str(),
-                "dev.qos.word-processor" | "dev.qos.chat"
+            || !collab_types::first_party_app_ids::is_any_first_party_app(
+                &route.app_id,
+                &["so.tilo.word-processor", "so.tilo.chat"],
             )
             || peer.document(&route.app_id, &route.record_id).is_none()
         {

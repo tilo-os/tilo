@@ -10,7 +10,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             .with_current(room, |view| Ok(view.peer().clone()))
             .unwrap();
         let mut doc =
-            automerge::AutoCommit::load(&signing.document("dev.qos.chat", "").unwrap()).unwrap();
+            automerge::AutoCommit::load(&signing.document("so.tilo.chat", "").unwrap()).unwrap();
         let before_heads = doc.get_heads();
         doc.put(automerge::ROOT, "native_owner_commit_test", true)
             .unwrap();
@@ -22,7 +22,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             .collect();
         let message = signing
             .signed_mutation(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 collab_types::DocumentMutation::Incremental(changes),
                 &key,
@@ -83,7 +83,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                     .unwrap();
             owner
                 .with_current(room, |view| {
-                    let bytes = view.peer().document("dev.qos.chat", "").unwrap();
+                    let bytes = view.peer().document("so.tilo.chat", "").unwrap();
                     let doc = automerge::AutoCommit::load(&bytes).unwrap();
                     use automerge::ReadDoc;
                     assert_eq!(

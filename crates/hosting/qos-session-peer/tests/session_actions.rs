@@ -250,7 +250,7 @@ async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actio
                     command: BoundCommand {
                         source,
                         command: DesktopCommand::OpenTab {
-                            app: "dev.qos.calculator".into(),
+                            app: "so.tilo.calculator".into(),
                             placement: TabPlacement::NewGroup { strip, after: None },
                         },
                     },
@@ -282,7 +282,7 @@ async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actio
     assert_eq!(
         expected
             .keys()
-            .filter(|(app, _)| app == "dev.qos.calculator")
+            .filter(|(app, _)| app == "so.tilo.calculator")
             .count(),
         CALCULATOR_RECORDS
     );
@@ -1072,7 +1072,7 @@ async fn checked_application_catalogue(
                         .collect(),
                 },
                 command: DesktopCommand::OpenTab {
-                    app: "dev.qos.word-processor".into(),
+                    app: "so.tilo.word-processor".into(),
                     placement: TabPlacement::NewGroup { strip, after: None },
                 },
             };
@@ -1098,7 +1098,7 @@ async fn checked_application_catalogue(
     )
     .unwrap();
     let mut candidate = owner.peer().clone();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut envelope = collab_types::SignedOp::new_unsigned(
         collab_types::DocumentMutation::Snapshot(candidate.document(app, record).unwrap())
@@ -1230,7 +1230,7 @@ async fn checked_application_catalogue(
         {
             if catalogue["surfaces"].as_array().is_some_and(|s| {
                 s.iter()
-                    .filter(|s| s["app_id"] == "dev.qos.word-processor")
+                    .filter(|s| s["app_id"] == "so.tilo.word-processor")
                     .count()
                     >= if multiple_writers { 5 } else { 1 }
             }) {
@@ -1252,7 +1252,7 @@ async fn checked_application_catalogue(
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|s| s["app_id"] == "dev.qos.word-processor")
+                .filter(|s| s["app_id"] == "so.tilo.word-processor")
                 .count()
                 >= 5
         );
@@ -1269,7 +1269,7 @@ async fn checked_application_catalogue(
         client.close().await;
         return;
     }
-    for app in ["dev.qos.word-processor", "dev.qos.chat", "dev.qos.notes"] {
+    for app in ["so.tilo.word-processor", "so.tilo.chat", "so.tilo.notes"] {
         assert!(
             catalogue["surfaces"]
                 .as_array()
@@ -1283,7 +1283,7 @@ async fn checked_application_catalogue(
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["app_id"] == "dev.qos.word-processor")
+        .find(|s| s["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -1450,7 +1450,7 @@ async fn checked_application_catalogue(
     let heads = remote
         .rows()
         .into_iter()
-        .find(|r| r.app_id == "dev.qos.word-processor")
+        .find(|r| r.app_id == "so.tilo.word-processor")
         .unwrap()
         .heads;
     invoke_and_observe(
@@ -1512,7 +1512,7 @@ async fn checked_application_catalogue(
             .peer()
             .rows()
             .into_iter()
-            .find(|r| r.app_id == "dev.qos.word-processor")
+            .find(|r| r.app_id == "so.tilo.word-processor")
             .unwrap()
             .heads,
         heads
@@ -1679,7 +1679,7 @@ async fn checked_application_catalogue(
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["app_id"] == "dev.qos.word-processor")
+        .find(|s| s["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -1800,7 +1800,7 @@ fn apply_state(peer: &mut qos_peer_state::StatePeer, event: tilo_relay::transpor
 fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
     let doc = ui::automerge::AutoCommit::load(
         &peer
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap(),
     )
     .unwrap();
@@ -1943,7 +1943,7 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
         None,
     )
     .unwrap();
-    let snapshot_message = messages.iter().find(|msg| matches!(msg, NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.notes")).unwrap();
+    let snapshot_message = messages.iter().find(|msg| matches!(msg, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.notes")).unwrap();
     let snapshot = verify_snapshot(
         &room,
         source,
@@ -2203,14 +2203,14 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
                     panic!("expected the initial checkpoint basis");
                 };
             if matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&body).unwrap(),
-                qos_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.chat") {
+                qos_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat") {
                 omitted_chat = true;
             } else {
                 apply_state(&mut remote, event);
             }
         }
         assert!(omitted_chat);
-        assert!(remote.document("dev.qos.chat", "").is_none());
+        assert!(remote.document("so.tilo.chat", "").is_none());
     })
     .await
     .unwrap();
@@ -2218,7 +2218,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     let row = remote
         .rows()
         .into_iter()
-        .find(|r| r.app_id == "dev.qos.notes")
+        .find(|r| r.app_id == "so.tilo.notes")
         .unwrap();
     let mut doc = AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap()).unwrap();
     doc.set_actor(ui::automerge::ActorId::from(
@@ -2284,10 +2284,10 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         expected_rows,
         "replay must fill Chat and preserve the local Notes mutation"
     );
-    assert!(remote.document("dev.qos.chat", "").is_some());
+    assert!(remote.document("so.tilo.chat", "").is_some());
     assert_eq!(
-        remote.durable_coverage("dev.qos.chat", "").unwrap(),
-        owner.peer().durable_coverage("dev.qos.chat", "").unwrap()
+        remote.durable_coverage("so.tilo.chat", "").unwrap(),
+        owner.peer().durable_coverage("so.tilo.chat", "").unwrap()
     );
     assert_eq!(remote.certificates(), certificates);
     assert_ne!(
@@ -2338,7 +2338,7 @@ async fn active_replacement(
     use ui::automerge::transaction::Transactable;
     writeln!(
         host.0.stdin.as_mut().unwrap(),
-        "qualification hold dev.qos.word-processor tab:0000000000000001"
+        "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2392,7 +2392,7 @@ async fn active_replacement(
     let row = remote
         .rows()
         .into_iter()
-        .find(|row| row.app_id == "dev.qos.notes")
+        .find(|row| row.app_id == "so.tilo.notes")
         .unwrap();
     let mut doc =
         ui::automerge::AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap())
@@ -2796,7 +2796,7 @@ async fn selective_publication_failure_after_commit(
         .as_array()
         .unwrap()
         .iter()
-        .find(|surface| surface["app_id"] == "dev.qos.word-processor")
+        .find(|surface| surface["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -2984,7 +2984,7 @@ async fn desktop_open_through_broker(
                 .collect(),
         },
         command: DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     };

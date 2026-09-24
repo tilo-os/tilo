@@ -9,7 +9,7 @@ async fn mount_refresh_commits_before_normal_worker_factory() {
     let directory = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&directory.path().join("owner")).unwrap();
     let original_generation = owner.committed_generation();
-    let original_document = owner.peer().document("dev.qos.chat", "").unwrap();
+    let original_document = owner.peer().document("so.tilo.chat", "").unwrap();
     let original_publication = owner
         .outgoing()
         .iter()
@@ -50,7 +50,7 @@ async fn mount_refresh_commits_before_normal_worker_factory() {
         .collect::<Vec<_>>()
         != original_publication;
     let published_generation = committed.read().unwrap().generation();
-    let document = owner.peer().document("dev.qos.chat", "").unwrap();
+    let document = owner.peer().document("so.tilo.chat", "").unwrap();
     assert!(action_error.is_none(), "{action_error:?}");
     assert!(runtime.actions.is_some());
     assert!(

@@ -36,7 +36,7 @@ fn committed_authority_fences_updates_and_publishes_only_after_durability() {
     assert!(matches!(committed.observe(), Observation::Updating));
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
     let mut candidate = owner.peer().clone();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
     document
@@ -364,7 +364,7 @@ fn committed_owner_view_borrows_prior_generation_and_publishes_real_mutation() {
     let mut owner = SessionOwner::initialize(&root).unwrap();
     let committed = CommittedAuthority::new(&owner);
     let generation = owner.committed_generation();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let receipt = committed
         .with_owner_view(&mut owner, |view, owner| {

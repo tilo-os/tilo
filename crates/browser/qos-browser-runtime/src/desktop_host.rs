@@ -2113,7 +2113,7 @@ mod tests {
         }
         let (calculator_app, calculator_definition) = desktop::installed_applications()
             .into_iter()
-            .find(|(app, _)| *app == "dev.qos.calculator")
+            .find(|(app, _)| *app == "so.tilo.calculator")
             .expect("Calculator is installed in the production desktop catalogue");
         for extra in 0..extra_calculators {
             let id = (5 << 48) | (14 + extra as u64);
@@ -2255,7 +2255,7 @@ mod tests {
         let owners = handle.records.borrow();
         let writer = owners
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap();
         let required = vec![desktop::Requirement {
             app_id: writer.app.clone(),
@@ -2460,7 +2460,7 @@ mod tests {
         );
         let writer = requirements
             .into_iter()
-            .find(|r| r.app_id == "dev.qos.word-processor")
+            .find(|r| r.app_id == "so.tilo.word-processor")
             .unwrap();
         let mut source = root.admitted_room.clone();
         source
@@ -2516,7 +2516,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         let target = ui::HistoryResourceTarget {
@@ -2527,7 +2527,7 @@ mod tests {
             label: "untrusted label".into(),
         };
         root.activity.as_mut().unwrap().open_target = Some(ui::HistoryResourceTarget {
-            app_id: Some("dev.qos.notes".into()),
+            app_id: Some("so.tilo.notes".into()),
             ..target.clone()
         });
         root.refresh_activity(false);
@@ -2605,7 +2605,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.chat")
+            .find(|record| record.app == "so.tilo.chat")
             .unwrap()
             .clone();
         // A pane outcome is processed during update, after outgoing focus capture.
@@ -3366,7 +3366,7 @@ mod tests {
             .borrow()
             .values()
             .find(|record| {
-                record.app == "dev.qos.notes"
+                record.app == "so.tilo.notes"
                     && record.checkout.id == ui::record::RecordId::for_tab(hidden_notes_instance)
             })
             .unwrap()
@@ -4465,7 +4465,7 @@ mod tests {
         assert!(!requests[0].0.is_nil());
         assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
         assert!(
-            matches!(&requests[0].1.command, qos_desktop::session_commands::DesktopCommand::OpenTab { app, .. } if app == "dev.qos.notes")
+            matches!(&requests[0].1.command, qos_desktop::session_commands::DesktopCommand::OpenTab { app, .. } if app == "so.tilo.notes")
         );
         assert!(
             frame.take_caller_operation().is_none(),
@@ -4505,7 +4505,7 @@ mod tests {
             qos_desktop::session_commands::DesktopCommand::OpenTab {
                 app,
                 placement: qos_desktop::session_commands::TabPlacement::EmptyWorkspace,
-            } if app == "dev.qos.notes"
+            } if app == "so.tilo.notes"
         ));
     }
     fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
@@ -4777,7 +4777,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.calculator")
+            .find(|record| record.app == "so.tilo.calculator")
             .unwrap()
             .clone();
         let history = calculator
@@ -4979,7 +4979,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .filter(|record| record.app == "dev.qos.calculator")
+            .filter(|record| record.app == "so.tilo.calculator")
             .map(|record| {
                 (
                     record.checkout.id.clone(),
@@ -5007,7 +5007,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .filter(|record| record.app == "dev.qos.calculator")
+            .filter(|record| record.app == "so.tilo.calculator")
         {
             let (heads, history) = record
                 .store
@@ -5199,7 +5199,7 @@ mod tests {
                 .records
                 .borrow()
                 .values()
-                .filter(|record| record.app != "dev.qos.chat")
+                .filter(|record| record.app != "so.tilo.chat")
                 .map(|record| {
                     (
                         record.clone(),
@@ -5498,7 +5498,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.chat")
+            .find(|record| record.app == "so.tilo.chat")
             .unwrap()
             .clone();
         assert!(
@@ -5511,7 +5511,7 @@ mod tests {
                 .contains("Chat pointer draft")
         );
         for (record, bytes) in &before {
-            if record.app != "dev.qos.chat" {
+            if record.app != "so.tilo.chat" {
                 assert_eq!(
                     record
                         .store
@@ -5699,7 +5699,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.chat")
+            .find(|record| record.app == "so.tilo.chat")
             .unwrap()
             .clone();
         let chat_before = chat
@@ -5737,7 +5737,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.word-processor")
+            .find(|record| record.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         assert!(
@@ -5837,7 +5837,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         assert_eq!(writer.checkout.id.as_str(), "tab:0000000000000001");
@@ -5929,7 +5929,7 @@ mod tests {
             frame.focus_presence_payload(),
         );
         assert_eq!(
-            snapshot["focus"]["app"], "dev.qos.word-processor",
+            snapshot["focus"]["app"], "so.tilo.word-processor",
             "{snapshot}"
         );
         assert_eq!(snapshot["focus"]["record"], "tab:0000000000000001");
@@ -6033,7 +6033,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         assert!(
@@ -6210,7 +6210,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         topology.workspaces[0].strips[0].window_groups[0]
@@ -6349,10 +6349,10 @@ mod tests {
                 .map(|a| a.app_id.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "dev.qos.word-processor",
-                "dev.qos.chat",
-                "dev.qos.notes",
-                "dev.qos.calculator",
+                "so.tilo.word-processor",
+                "so.tilo.chat",
+                "so.tilo.notes",
+                "so.tilo.calculator",
             ]
         );
         assert_eq!(data.tabs.len(), 4);
@@ -6392,7 +6392,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
         assert!(
-            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="dev.qos.notes")
+            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="so.tilo.notes")
         );
         assert_eq!(
             serde_json::to_value(&handle.tree.borrow().workspaces).unwrap(),
@@ -6432,7 +6432,7 @@ mod tests {
         });
         for record in handle.records.borrow().values() {
             record.store.with(&record.checkout.id, |doc| {
-                if record.app == "dev.qos.notes" {
+                if record.app == "so.tilo.notes" {
                     let page = uuid::Uuid::new_v4();
                     NotesDoc::upsert_page_meta(
                         doc,
@@ -6455,7 +6455,7 @@ mod tests {
                     )
                     .unwrap();
                     notes::notebook::validate(doc).unwrap();
-                } else if record.app == "dev.qos.chat" {
+                } else if record.app == "so.tilo.chat" {
                     chat::doc::ChatDoc::push_message(
                         doc,
                         "c_general",
@@ -6478,8 +6478,8 @@ mod tests {
             ui::permissions::UserId("author".into()),
         );
         for (app, query) in [
-            ("dev.qos.notes", "quasar-notes-body-only"),
-            ("dev.qos.chat", "nebula-chat-body-only"),
+            ("so.tilo.notes", "quasar-notes-body-only"),
+            ("so.tilo.chat", "nebula-chat-body-only"),
         ] {
             handle
                 .open_global_search(&mut frame, &handle.generation, query)
@@ -6563,7 +6563,7 @@ mod tests {
         let tab = old
             .tabs
             .iter()
-            .find(|t| t.app_id == "dev.qos.notes")
+            .find(|t| t.app_id == "so.tilo.notes")
             .unwrap();
         let row = frame.inspection().root.semantics.unwrap().children[1].children[0]
             .action_target
@@ -6580,7 +6580,7 @@ mod tests {
         let routes = BTreeMap::from([(
             old.tabs
                 .iter()
-                .find(|t| t.app_id == "dev.qos.word-processor")
+                .find(|t| t.app_id == "so.tilo.word-processor")
                 .unwrap()
                 .instance_id,
             "tab:1".into(),
@@ -6682,7 +6682,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         let writer_before = writer
@@ -6920,7 +6920,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.chat")
+            .find(|record| record.app == "so.tilo.chat")
             .unwrap()
             .clone();
         let chat_before = chat
@@ -7672,7 +7672,7 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == "dev.qos.chat")
+            .find(|record| record.app == "so.tilo.chat")
             .unwrap()
             .clone();
         let chat_before = chat
@@ -7859,7 +7859,7 @@ mod tests {
             .data
             .tabs
             .iter()
-            .find(|tab| tab.app_id == "dev.qos.calculator")
+            .find(|tab| tab.app_id == "so.tilo.calculator")
             .unwrap()
             .instance_id;
         let (owner, filter) = browser_semantic_route(&frame, "Filter: Records");
@@ -8247,7 +8247,7 @@ mod layout_benchmark {
             .records
             .borrow()
             .values()
-            .find(|r| r.app == "dev.qos.word-processor")
+            .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
         let body: String = std::iter::repeat("The quick brown fox jumps over the lazy dog. ")

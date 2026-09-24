@@ -321,10 +321,10 @@ mod tests {
         service
             .register_policy_time(origin.capture().unwrap())
             .unwrap();
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = signatures.recv().await.unwrap();
         let (complete, outcome) = crate::owner::policy_fence::with_before_check(
@@ -351,10 +351,10 @@ mod tests {
         service
             .register_policy_time(origin.capture().unwrap())
             .unwrap();
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = signatures.recv().await.unwrap();
         let (complete, outcome) = crate::store::test_fault::with_fault(
@@ -393,10 +393,10 @@ mod tests {
             service
                 .register_policy_time(origin.capture().unwrap())
                 .unwrap();
-            let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+            let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
             let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
             let mutation =
-                DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+                DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
             let mut queued = Vec::new();
             let mut replies = Vec::new();
             for _ in 0..LIMIT {
@@ -465,10 +465,10 @@ mod tests {
         let before = owner.status();
         let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
         let (service, mut signatures) = HostSigning::new(ordinary);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation.clone()));
         signatures
             .recv()
@@ -498,10 +498,10 @@ mod tests {
         let mut owner = SessionOwner::initialize(&path).unwrap();
         let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
         let (service, mut pending) = HostDocuments::new(Arc::new(ordinary));
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let request = pending.recv().await.unwrap();
         let before = owner.status().generation;
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(owner.status().generation, before + 1);
         complete();
         let op = waiting.await.unwrap().unwrap();
-        let request = super::tests::request(&owner, "dev.qos.chat", "", op);
+        let request = super::tests::request(&owner, "so.tilo.chat", "", op);
         let receipt = service.commit(request.clone()).await.unwrap();
         assert_eq!(receipt.generation, before + 1);
         let committed = owner.status();
@@ -603,13 +603,13 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
         let (service, mut signatures) = HostSigning::new(ordinary);
-        let envelope = precommit(&service, &mut signatures, &mut owner, "dev.qos.chat", "").await;
+        let envelope = precommit(&service, &mut signatures, &mut owner, "so.tilo.chat", "").await;
         let committed = owner.status();
         assert!(!service.retirement_ready().unwrap());
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         signatures
             .recv()
@@ -622,7 +622,7 @@ mod tests {
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         assert!(!service.retirement_ready().unwrap());
         service
-            .commit(request(&owner, "dev.qos.chat", "", envelope))
+            .commit(request(&owner, "so.tilo.chat", "", envelope))
             .await
             .unwrap();
         assert!(service.retirement_ready().unwrap());
@@ -634,12 +634,12 @@ mod tests {
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
         let baseline = outgoing_bytes(&owner).to_vec();
-        let chat_receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+        let chat_receipt = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
         let writer = precommit(
             &service,
             &mut receiver,
             &mut owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             "tab:0000000000000001",
         )
         .await;
@@ -650,7 +650,7 @@ mod tests {
             "signer path publishes only its touched route"
         );
         assert_eq!(
-            owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+            owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
             chat_receipt
         );
         assert_eq!(
@@ -662,19 +662,19 @@ mod tests {
         );
         let request_writer = request(
             &owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             "tab:0000000000000001",
             writer.clone(),
         );
         let first_generation = owner.status().generation;
-        let chat = precommit(&service, &mut receiver, &mut owner, "dev.qos.chat", "").await;
+        let chat = precommit(&service, &mut receiver, &mut owner, "so.tilo.chat", "").await;
         owner.refresh_checkpoint().unwrap();
         let current = owner.status();
         assert!(
             current
                 .replay_floors
                 .iter()
-                .any(|(app, _, author, floor)| app == "dev.qos.word-processor"
+                .any(|(app, _, author, floor)| app == "so.tilo.word-processor"
                     && author == writer.author.as_bytes()
                     && *floor > writer.seq)
         );
@@ -687,7 +687,7 @@ mod tests {
             "receipt handoff cannot recommit or allocate another sequence"
         );
         service
-            .commit(request(&owner, "dev.qos.chat", "", chat))
+            .commit(request(&owner, "so.tilo.chat", "", chat))
             .await
             .unwrap();
         assert_eq!(LIMIT - service.shared.outstanding_handoffs(), LIMIT);
@@ -703,14 +703,14 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let mut op = precommit(&service, &mut receiver, &mut owner, "dev.qos.chat", "").await;
+        let mut op = precommit(&service, &mut receiver, &mut owner, "so.tilo.chat", "").await;
         let generation = owner.status().generation;
         op.seq += 1;
         let outgoing = outgoing_bytes(&owner).to_vec();
         let status = owner.status();
         assert!(
             service
-                .commit(request(&owner, "dev.qos.chat", "", op))
+                .commit(request(&owner, "so.tilo.chat", "", op))
                 .await
                 .is_err()
         );
@@ -731,11 +731,11 @@ mod tests {
         let mut owner = SessionOwner::initialize(&state).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let waiting = tokio::spawn(signer.commit(
             &route,
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap()),
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap()),
         ));
         let pending = receiver.recv().await.unwrap();
         waiting.abort();
@@ -768,10 +768,10 @@ mod tests {
         let before = owner.status();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         // A disconnected/replaying host cannot enter PendingSignature::apply.
         // Holding the real queued request models that ready-gated owner turn.
@@ -787,7 +787,7 @@ mod tests {
         result.unwrap();
         complete();
         let signed = waiting.await.unwrap().unwrap();
-        let request = request(&owner, "dev.qos.chat", "", signed);
+        let request = request(&owner, "so.tilo.chat", "", signed);
         let committed = owner.status();
         assert_eq!(committed.generation, before.generation + 1);
         let receipt = service.commit(request.clone()).await.unwrap();
@@ -806,10 +806,10 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         let before = owner.status().generation;
@@ -836,10 +836,10 @@ mod tests {
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         drop(pending);
@@ -860,10 +860,10 @@ mod tests {
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         // Deliver an owner deadline already elapsed, representing late observation.
@@ -888,9 +888,9 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
 
         let mut waiting = Vec::with_capacity(LIMIT);
         for _ in 0..LIMIT {
@@ -948,7 +948,7 @@ mod tests {
         }
         assert_eq!(LIMIT - service.shared.outstanding_handoffs(), 0);
 
-        let first = request(&owner, "dev.qos.chat", "", signed.remove(0));
+        let first = request(&owner, "so.tilo.chat", "", signed.remove(0));
         service
             .commit(first)
             .await
@@ -968,12 +968,12 @@ mod tests {
 
         for op in signed {
             service
-                .commit(request(&owner, "dev.qos.chat", "", op))
+                .commit(request(&owner, "so.tilo.chat", "", op))
                 .await
                 .expect("remaining exact receipt");
         }
         service
-            .commit(request(&owner, "dev.qos.chat", "", overflow_op))
+            .commit(request(&owner, "so.tilo.chat", "", overflow_op))
             .await
             .expect("advanced exact receipt");
         assert_eq!(LIMIT - service.shared.outstanding_handoffs(), LIMIT);
@@ -986,9 +986,9 @@ mod tests {
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let mut held = Vec::new();
         let mut queued = Vec::new();
         for _ in 0..LIMIT {
@@ -1021,10 +1021,10 @@ mod tests {
         let mut owner = SessionOwner::initialize(&state).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         waiting.abort();

@@ -1700,7 +1700,7 @@ mod compaction_transition_tests {
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut candidate = owner.peer().clone();
         let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -1943,7 +1943,7 @@ mod enrollment_migration_tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("legacy-owner");
         let mut owner = SessionOwner::initialize(&path).unwrap();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         retain_qos_v1_route(&mut owner, app, record);
         drop(owner);
@@ -2343,8 +2343,8 @@ mod desktop_migration_tests {
                 })
                 .unwrap()
         };
-        let (writer_group, _) = location("dev.qos.word-processor");
-        let (notes_group, notes_tab) = location("dev.qos.notes");
+        let (writer_group, _) = location("so.tilo.word-processor");
+        let (notes_group, notes_tab) = location("so.tilo.notes");
         if writer_group != notes_group {
             let mut group = strip.window_groups.remove(notes_group);
             let notes = group.tabs.remove(notes_tab);
@@ -2412,7 +2412,7 @@ mod desktop_migration_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             apps,
-            ["dev.qos.word-processor", "dev.qos.notes", "dev.qos.chat"]
+            ["so.tilo.word-processor", "so.tilo.notes", "so.tilo.chat"]
         );
     }
 
@@ -2433,19 +2433,19 @@ mod desktop_migration_tests {
                 .unwrap()
                 .id
         };
-        let writer_tab = tab("dev.qos.word-processor");
-        let notes_tab = tab("dev.qos.notes");
-        let chat_tab = tab("dev.qos.chat");
+        let writer_tab = tab("so.tilo.word-processor");
+        let notes_tab = tab("so.tilo.notes");
+        let chat_tab = tab("so.tilo.chat");
         let writer_group = initial[0]
             .groups
             .iter()
-            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.word-processor"))
+            .find(|group| app_id(&group.tabs[0]) == Some("so.tilo.word-processor"))
             .unwrap()
             .id;
         let chat_group = initial[0]
             .groups
             .iter()
-            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.chat"))
+            .find(|group| app_id(&group.tabs[0]) == Some("so.tilo.chat"))
             .unwrap()
             .id;
         let routes = RoomProjection::record_routes(owner.peer().admitted_room().unwrap());
@@ -2455,7 +2455,7 @@ mod desktop_migration_tests {
             .clone();
         let notes_bytes = owner
             .peer()
-            .document("dev.qos.notes", &notes_record)
+            .document("so.tilo.notes", &notes_record)
             .unwrap();
         persist_legacy_shared_writer_notes(&mut owner);
         assert_eq!(topology(&owner)[0].groups.len(), 2);
@@ -2475,16 +2475,16 @@ mod desktop_migration_tests {
                 .unwrap()
                 .id
         };
-        assert_eq!(migrated_tab("dev.qos.word-processor"), writer_tab);
-        assert_eq!(migrated_tab("dev.qos.chat"), chat_tab);
-        let migrated_notes_tab = migrated_tab("dev.qos.notes");
+        assert_eq!(migrated_tab("so.tilo.word-processor"), writer_tab);
+        assert_eq!(migrated_tab("so.tilo.chat"), chat_tab);
+        let migrated_notes_tab = migrated_tab("so.tilo.notes");
         assert_ne!(migrated_notes_tab, notes_tab);
         assert!(qos_desktop::identity::counter_of(migrated_notes_tab) >= 50_000);
         assert_eq!(
             migrated[0]
                 .groups
                 .iter()
-                .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.word-processor"))
+                .find(|group| app_id(&group.tabs[0]) == Some("so.tilo.word-processor"))
                 .unwrap()
                 .id,
             writer_group
@@ -2493,7 +2493,7 @@ mod desktop_migration_tests {
             migrated[0]
                 .groups
                 .iter()
-                .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.chat"))
+                .find(|group| app_id(&group.tabs[0]) == Some("so.tilo.chat"))
                 .unwrap()
                 .id,
             chat_group
@@ -2501,7 +2501,7 @@ mod desktop_migration_tests {
         let migrated_notes_group = migrated[0]
             .groups
             .iter()
-            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.notes"))
+            .find(|group| app_id(&group.tabs[0]) == Some("so.tilo.notes"))
             .unwrap()
             .id;
         assert!(qos_desktop::identity::counter_of(migrated_notes_group) >= 50_000);
@@ -2516,7 +2516,7 @@ mod desktop_migration_tests {
         assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.notes", &notes_record)
+                .document("so.tilo.notes", &notes_record)
                 .unwrap(),
             notes_bytes
         );
@@ -2627,9 +2627,9 @@ mod desktop_migration_tests {
                 .unwrap();
         }
         let writer = legacy
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap();
-        let chat = legacy.document("dev.qos.chat", "").unwrap();
+        let chat = legacy.document("so.tilo.chat", "").unwrap();
         owner.aggregate.pending.push(PendingOperation {
             invocation_id: "retained-intent".into(),
             encoded_request: vec![1, 2, 3],
@@ -2701,17 +2701,17 @@ mod desktop_migration_tests {
         assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
             writer
         );
-        assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), chat);
+        assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), chat);
         assert!(
             owner
                 .status()
                 .records
                 .iter()
-                .any(|r| r.app_id == "dev.qos.notes")
+                .any(|r| r.app_id == "so.tilo.notes")
         );
         let state = owner.peer().durable().unwrap();
         drop(owner);

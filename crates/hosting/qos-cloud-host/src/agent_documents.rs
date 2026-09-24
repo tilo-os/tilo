@@ -168,9 +168,9 @@ impl Store {
                 || certificate != candidate.authority()
                 || certificate.device_public_key != self.key().verifying_key().to_bytes()
                 || !candidate.certificates().contains(certificate)
-                || !matches!(
-                    route.app_id.as_str(),
-                    "dev.qos.word-processor" | "dev.qos.chat"
+                || !collab_types::first_party_app_ids::is_any_first_party_app(
+                    &route.app_id,
+                    &["so.tilo.word-processor", "so.tilo.chat"],
                 )
                 || candidate.document(&route.app_id, record).is_none()
             {
@@ -408,7 +408,7 @@ mod tests {
         let mut state = store.state.clone();
         state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
         store.commit(state).unwrap();
-        let route = RouteSpec::app("dev.qos.chat", store.state.room.parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", store.state.room.parse().unwrap());
         let cert = store.state.bound.as_ref().unwrap().authority.clone();
         (dir, store, route, cert)
     }
@@ -417,7 +417,7 @@ mod tests {
     fn cloud_policy_clock_retired_source_cannot_commit_pending_document() {
         let (dir, mut store, route, cert) = selected();
         let mutation =
-            DocumentMutation::Snapshot(store.peer().unwrap().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
         let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
         let origin = clock.new_origin();
         store.bind_policy_time(origin.capture().unwrap()).unwrap();
@@ -581,7 +581,7 @@ mod tests {
         let before = store
             .peer()
             .unwrap()
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap();
         let mut action = ActionRequest {
             version: 1,
@@ -602,7 +602,7 @@ mod tests {
             store
                 .peer()
                 .unwrap()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
             before
         );
@@ -620,7 +620,7 @@ mod tests {
     async fn cloud_policy_clock_actual_document_queue_retirement() {
         let (dir, store, route, cert) = selected();
         let mutation =
-            DocumentMutation::Snapshot(store.peer().unwrap().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
         let bytes = std::fs::read(dir.path().join("state.json")).unwrap();
         drop(store);
         let owner = Arc::new(
@@ -654,10 +654,10 @@ mod tests {
     #[test]
     fn agent_runtime_document_refuses_unselected_writer_and_wrong_host_without_write() {
         let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
-        let route = RouteSpec::app("dev.qos.chat", store.state.room.parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", store.state.room.parse().unwrap());
         let cert = store.state.bound.as_ref().unwrap().authority.clone();
         let mutation =
-            DocumentMutation::Snapshot(store.peer().unwrap().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
         let before = std::fs::read(dir.path().join("state.json")).unwrap();
         assert!(
             store
@@ -672,7 +672,7 @@ mod tests {
         let (dir, mut store, route, _) = selected();
         let caller = store.agent_caller(device).unwrap().certificate().clone();
         let mutation =
-            DocumentMutation::Snapshot(store.peer().unwrap().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
         let before = std::fs::read(dir.path().join("state.json")).unwrap();
         assert!(
             store
@@ -691,7 +691,7 @@ mod tests {
         for checkpoint in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
             let (dir, mut store, route, cert) = selected();
             let mutation = DocumentMutation::Snapshot(
-                store.peer().unwrap().document("dev.qos.chat", "").unwrap(),
+                store.peer().unwrap().document("so.tilo.chat", "").unwrap(),
             );
             let result =
                 crate::storage::test_support::with_save_failure(dir.path(), checkpoint, || {
@@ -706,7 +706,7 @@ mod tests {
     async fn agent_runtime_document_real_store_barrier_and_shared_handoff() {
         let (dir, store, route, cert) = selected();
         let mutation =
-            DocumentMutation::Snapshot(store.peer().unwrap().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(store.peer().unwrap().document("so.tilo.chat", "").unwrap());
         let before = store.state.generation;
         drop(store);
         let ordinary =

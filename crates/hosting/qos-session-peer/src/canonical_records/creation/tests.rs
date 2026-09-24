@@ -17,7 +17,7 @@ fn row() -> CreationRowV1 {
         version: 1,
         key: key.clone(),
         original_caller_certificate_digest: certificate_digest(&certificate).unwrap(),
-        app: "dev.qos.chat".into(),
+        app: "so.tilo.chat".into(),
         registry_revision: [4; 32],
         source: CreationSourceV1::PublicAction {
             original_action_digest: [5; 32],
@@ -78,7 +78,7 @@ fn creation_ledger_rejects_hash_scope_and_source_bound_tampering() {
             2 => row
                 .original_request
                 .resize(MAX_CREATION_SOURCE_BYTES + 1, 0),
-            _ => row.result.body.route.app = "dev.qos.notes".into(),
+            _ => row.result.body.route.app = "so.tilo.notes".into(),
         }
         let mut ledger = CreationLedgerV1::default();
         assert!(ledger.admit(row).is_err());

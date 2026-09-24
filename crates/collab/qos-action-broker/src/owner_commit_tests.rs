@@ -106,7 +106,7 @@ mod owner_commit_tests {
                 );
                 workspace.set_owner(&principal);
                 let route = CrdtRoute::record(
-                    "dev.qos.word-processor",
+                    "so.tilo.word-processor",
                     workspace.room.to_string(),
                     "tab:0000000000000001",
                 );
@@ -1318,7 +1318,7 @@ mod owner_commit_tests {
             );
             workspace.set_owner(&principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
-                "dev.qos.word-processor",
+                "so.tilo.word-processor",
                 workspace.room.to_string(),
                 "document-1",
             );
@@ -1538,7 +1538,7 @@ mod owner_commit_tests {
                 "read waits for the next actual catalogue publication"
             );
             for wrong in [
-                CrdtRoute::record("dev.qos.chat", &route.cluster_id, &route.record_id),
+                CrdtRoute::record("so.tilo.chat", &route.cluster_id, &route.record_id),
                 route.clone().on_record("other-record"),
                 CrdtRoute::record(
                     &route.app_id,
@@ -2010,7 +2010,7 @@ async fn original_invocation_worker_rpc_retains_exact_request_and_connection() {
             .map(|cap| cap.with_expiry(100))
             .collect();
         let route = CrdtRoute::record(
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             workspace.room.to_string(),
             "document-1",
         );

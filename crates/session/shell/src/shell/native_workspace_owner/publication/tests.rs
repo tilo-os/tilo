@@ -12,7 +12,7 @@ fn edit(
     let message = owner
         .with_current(room, |view| {
             let mut doc =
-                AutoCommit::load(&view.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             doc.set_actor(automerge::ActorId::from(
                 key.verifying_key().to_bytes().to_vec(),
             ));
@@ -20,7 +20,7 @@ fn edit(
             doc.put(ROOT, "offline-edit", value).unwrap();
             doc.commit();
             view.peer().clone().publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
                 key,
@@ -241,7 +241,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
             "send/duplicate is not an ACK"
         );
         assert_eq!(owner.outgoing_status(room, later).unwrap().pending, 2);
-        let expected = remote.document_heads("dev.qos.chat", "");
+        let expected = remote.document_heads("so.tilo.chat", "");
         let governor_key = SigningKey::from_bytes(&[61; 32]);
         let acknowledgement = remote
             .durable_bootstrap_messages(&governor_key, later, 102)
@@ -278,7 +278,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
         assert_eq!(owner.outgoing_status(room, later).unwrap().pending, 0);
         owner
             .with_current(room, |view| {
-                assert_eq!(view.peer().document_heads("dev.qos.chat", ""), expected);
+                assert_eq!(view.peer().document_heads("so.tilo.chat", ""), expected);
                 let original: NeighbourMsg = postcard::from_bytes(&original).unwrap();
                 assert!(
                     view.peer()
@@ -512,7 +512,7 @@ fn native_outgoing_full_offline_queue_must_recover_after_expiry() {
     assert!(accepted > 0);
     let expected = owner
         .with_current(room, |view| {
-            Ok(view.peer().document_heads("dev.qos.chat", ""))
+            Ok(view.peer().document_heads("so.tilo.chat", ""))
         })
         .unwrap();
     let later = now + std::time::Duration::from_secs(301);
@@ -545,7 +545,7 @@ fn native_outgoing_full_offline_queue_must_recover_after_expiry() {
         owner.reconcile_outgoing(room, &key, later).unwrap();
     }
     assert_eq!(owner.outgoing_status(room, later).unwrap().pending, 0);
-    assert_eq!(remote.document_heads("dev.qos.chat", ""), expected);
+    assert_eq!(remote.document_heads("so.tilo.chat", ""), expected);
 }
 
 fn visible(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
@@ -751,11 +751,11 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
             }
         }
         assert_eq!(
-            receiver.document_heads("dev.qos.chat", ""),
+            receiver.document_heads("so.tilo.chat", ""),
             owner
                 .with_current(room, |view| Ok(view
                     .peer
-                    .document_heads("dev.qos.chat", "")))
+                    .document_heads("so.tilo.chat", "")))
                 .unwrap()
         );
     }
@@ -945,12 +945,12 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     let message = owner
         .with_current(room, |view| {
             let mut doc =
-                AutoCommit::load(&view.peer.document("dev.qos.chat", "").unwrap()).unwrap();
+                AutoCommit::load(&view.peer.document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
             doc.commit();
             view.peer.clone().publish_incremental(
-                "dev.qos.chat",
+                "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
                 &key,

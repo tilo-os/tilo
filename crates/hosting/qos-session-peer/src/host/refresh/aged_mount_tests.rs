@@ -17,7 +17,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
         .unwrap();
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
-    for app in ["dev.qos.notes", "dev.qos.word-processor"] {
+    for app in ["so.tilo.notes", "so.tilo.word-processor"] {
         if owner.peer().rows().iter().any(|row| row.app_id == app) {
             continue;
         }
@@ -57,7 +57,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
             })
             .unwrap();
     }
-    let records = ["dev.qos.notes", "dev.qos.word-processor"].map(|app| {
+    let records = ["so.tilo.notes", "so.tilo.word-processor"].map(|app| {
         let record = owner
             .peer()
             .rows()

@@ -507,13 +507,13 @@ fn initial_records_pass_the_real_browser_owner_admission() {
         .iter()
         .find(|tab| {
             qos_desktop::resolver::canonical_app_id(&tab.tile).as_deref()
-                == Some("dev.qos.word-processor")
+                == Some("so.tilo.word-processor")
         })
         .unwrap();
     let chat = tabs
         .iter()
         .find(|tab| {
-            qos_desktop::resolver::canonical_app_id(&tab.tile).as_deref() == Some("dev.qos.chat")
+            qos_desktop::resolver::canonical_app_id(&tab.tile).as_deref() == Some("so.tilo.chat")
         })
         .unwrap();
     assert_eq!(
@@ -524,7 +524,7 @@ fn initial_records_pass_the_real_browser_owner_admission() {
     let cache = PortableStorage::new("record-validation", peer.room()).unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
     for row in peer.rows() {
-        let definition = if row.app_id == "dev.qos.chat" {
+        let definition = if row.app_id == "so.tilo.chat" {
             chat::definition()
         } else {
             word_processor::definition()
@@ -601,7 +601,7 @@ fn legacy_enrolled_workspace_gains_desktop_topology_once_without_replacing_state
                 .unwrap()
                 .clone();
             SeedDocument {
-                kind: if row.app_id == "dev.qos.chat" {
+                kind: if row.app_id == "so.tilo.chat" {
                     chat::definition().record_kind.as_str().into()
                 } else {
                     word_processor::definition().record_kind.as_str().into()
@@ -718,7 +718,7 @@ fn addressed_actions_honor_native_artifact_restrictions() {
             root.verifying_key().to_bytes(),
         )),
         Scope::ResourceInstance(collab_types::document_artifact_id(
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             peer.room(),
             "tab:0000000000000001",
         )),
@@ -866,7 +866,7 @@ fn compact_enrollment_imports_existing_history_after_prior_browser_expires() {
     // Preserve a real document change signed by the device before it expires.
     use automerge::{ReadDoc, transaction::Transactable};
     let mut existing = store.peer_at(now + 1).unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut authored =
         automerge::AutoCommit::load(&existing.document(app, record).unwrap()).unwrap();
@@ -1081,7 +1081,7 @@ fn expiry_cleanup_publishes_room_delta_while_preserving_encrypted_metadata() {
     let stable_request = approved(store.inspect(now + 1).unwrap(), &root, &stable);
     store.apply(&stable_request, now + 1).unwrap();
     let mut live_receiver = store.peer_at(now + 1).unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let room = store.state.room.clone();
     let mut authoring = store.peer_at(now + 1).unwrap();
@@ -1565,7 +1565,7 @@ fn browser_writer_incremental_survives_host_restart_and_fresh_checkpoints() {
     let request = approved(store.inspect(10).unwrap(), &root, &device);
     store.apply(&request, 11).unwrap();
     let mut browser = store.peer_at(11).unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = automerge::AutoCommit::load(&browser.document(app, record).unwrap()).unwrap();
     let before = doc.get_heads();
@@ -1701,7 +1701,7 @@ fn existing_client_admits_new_browser_from_governor_without_identity_presence() 
             now_time(14),
         )
         .unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = automerge::AutoCommit::load(&newcomer.document(app, record).unwrap()).unwrap();
     let heads = doc.get_heads();
@@ -1820,7 +1820,7 @@ fn reordered_browser_writer_deltas_survive_restart_and_late_predecessor() {
     let request = approved(store.inspect(10).unwrap(), &root, &device);
     store.apply(&request, 11).unwrap();
     let mut browser = store.peer_at(11).unwrap();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = automerge::AutoCommit::load(&browser.document(app, record).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
@@ -2320,7 +2320,7 @@ async fn accepted_guest_document_logs_exact_durable_route_transition() {
         )
         .unwrap();
 
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut guest = store.peer_at(14).unwrap();
     let mut doc = automerge::AutoCommit::load(&guest.document(app, record).unwrap()).unwrap();

@@ -10,7 +10,7 @@ use tilo_relay::delivery_v3::{
 use tokio::time::timeout;
 use ui::automerge::{ROOT, transaction::Transactable};
 
-const WP: &str = "dev.qos.word-processor";
+const WP: &str = "so.tilo.word-processor";
 const TAB: &str = "tab:0000000000000001";
 
 pub(super) fn request(h: &Harness, participation: u8, publish: bool) -> LiveGrantRequest {

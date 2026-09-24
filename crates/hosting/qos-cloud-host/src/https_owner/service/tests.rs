@@ -1857,7 +1857,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         let now = qos_relay::clock::now_ns();
         let (before, mut peer) = store.peer_transition_at(now).unwrap();
         let mut chat =
-            automerge::AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+            automerge::AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
         let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
         let channel = chat
             .put_object(&channels, "cloud_voice", ObjType::Map)
@@ -1865,7 +1865,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         chat.put(&channel, "kind", "voice").unwrap();
         chat.put(&channel, "workspace", "cloud").unwrap();
         peer.publish_document(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             chat.save(),
             &store.key(),
@@ -1894,7 +1894,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
                     invocation_id: "loopback-media-create".into(),
                     operation: crate::NativeOperation::MediaCreate(
                         qos_action_broker::collaboration_admin::MediaCreateInput {
-                            app_id: "dev.qos.chat".into(),
+                            app_id: "so.tilo.chat".into(),
                             record_id: "".into(),
                             channel_id: "cloud_voice".into(),
                             expected_authorization_revision: None,

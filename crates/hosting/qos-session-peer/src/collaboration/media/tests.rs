@@ -12,13 +12,13 @@ fn fixture() -> (tempfile::TempDir, SessionOwner) {
 }
 fn add_channel(owner: &mut SessionOwner, channel: &str) {
     let mut peer = owner.peer().clone();
-    let mut chat = AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let object = chat.put_object(&channels, channel, ObjType::Map).unwrap();
     chat.put(&object, "kind", "voice").unwrap();
     chat.put(&object, "workspace", "home").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         chat.save(),
         &owner.identity.native,
@@ -41,7 +41,7 @@ fn create(owner: &SessionOwner) -> CollaborationAdminRequest {
     request(
         owner,
         Operation::MediaCreate(MediaCreateInput {
-            app_id: "dev.qos.chat".into(),
+            app_id: "so.tilo.chat".into(),
             record_id: "".into(),
             channel_id: "voice".into(),
             expected_authorization_revision: None,
@@ -315,9 +315,9 @@ fn room_media_owner_capacity_and_epoch_exhaustion_do_not_delete_tombstones() {
 fn room_media_owner_exact_record_binding_and_end_before_archive() {
     let (_dir, mut owner) = fixture();
     let mut peer = owner.peer().clone();
-    let bytes = peer.document("dev.qos.chat", "").unwrap();
+    let bytes = peer.document("so.tilo.chat", "").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "second",
         bytes,
         &owner.identity.native,
@@ -338,14 +338,14 @@ fn room_media_owner_exact_record_binding_and_end_before_archive() {
     assert_ne!(first.call_id, second.call_id);
     assert_ne!(first.binding.record_id, second.binding.record_id);
     let mut peer = owner.peer().clone();
-    let mut chat = AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let object = chat.get(&channels, "voice").unwrap().unwrap().1;
     chat.put(&object, "archived", true).unwrap();
     let bytes = chat.save();
     assert!(
         peer.publish_document(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             bytes.clone(),
             &owner.identity.native,
@@ -357,7 +357,7 @@ fn room_media_owner_exact_record_binding_and_end_before_archive() {
     let ended = run(&mut owner, &r).unwrap();
     let mut peer = owner.peer().clone();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         bytes,
         &owner.identity.native,

@@ -54,7 +54,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
     // its durable barrier and before the SDK's exact receipt handoff.
     writeln!(
         host.0.stdin.as_mut().unwrap(),
-        "qualification hold dev.qos.word-processor tab:0000000000000001"
+        "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -139,7 +139,7 @@ async fn reconnect_preserves_precommitted_local_document_receipt() {
     assert!(
         reopened
             .peer()
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .is_some()
     );
     assert!(

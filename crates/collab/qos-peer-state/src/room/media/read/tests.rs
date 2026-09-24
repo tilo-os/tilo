@@ -17,7 +17,7 @@ fn policy() -> RoomMediaV1 {
             [7; 32],
             CallV1 {
                 binding: ChatCallBindingV1 {
-                    app_id: "dev.qos.chat".into(),
+                    app_id: "so.tilo.chat".into(),
                     record_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "1@01".into(),
@@ -468,7 +468,7 @@ fn historical_validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
 }
 
 fn historical_binding(value: &ChatCallBindingV1) -> Result<(), MediaPolicyError> {
-    if value.app_id != "dev.qos.chat"
+    if value.app_id != "so.tilo.chat"
         || !text_valid(&value.record_id, MAX_RECORD_BYTES, true)
         || !text_valid(&value.channel_id, MAX_CHANNEL_BYTES, false)
         || !text_valid(&value.chat_workspace_id, MAX_CHANNEL_BYTES, false)

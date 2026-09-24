@@ -26,7 +26,7 @@ fn publish_edits(h: &mut Harness, count: usize, bytes_each: usize) {
             .with_owner(&mut h.f.owner, |owner| -> anyhow::Result<()> {
                 let mut candidate = owner.peer().clone();
                 let saved = candidate
-                    .document("dev.qos.chat", "")
+                    .document("so.tilo.chat", "")
                     .ok_or_else(|| anyhow::anyhow!("chat record missing"))?;
                 let mut document = ui::automerge::AutoCommit::load(&saved)?;
                 let before = document.get_heads();
@@ -39,7 +39,7 @@ fn publish_edits(h: &mut Harness, count: usize, bytes_each: usize) {
                 let delta = document.save_after(&before);
                 candidate
                     .publish_incremental(
-                        "dev.qos.chat",
+                        "so.tilo.chat",
                         "",
                         delta,
                         &owner.identity.native,

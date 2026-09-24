@@ -34,7 +34,8 @@ pub(crate) fn install(
         let Some(definition) = crate::desktop::definition(&row.app_id) else {
             continue;
         };
-        let checkout = if row.app_id == "dev.qos.chat" && row.record_id.is_empty() {
+        let chat = crate::desktop::is_chat(&row.app_id);
+        let checkout = if chat && row.record_id.is_empty() {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
             RecordCheckout::new(
@@ -42,7 +43,7 @@ pub(crate) fn install(
                 definition.record_kind.clone(),
             )
         };
-        if row.app_id == "dev.qos.chat" && !checkout.id.is_package_primary() {
+        if chat && !checkout.id.is_package_primary() {
             return Err("Chat requires its package-primary route".into());
         }
         let bytes = state
@@ -240,7 +241,7 @@ mod tests {
         let record = RecordId::for_tab(1);
         let mut writer = automerge::AutoCommit::load(
             &state
-                .document("dev.qos.word-processor", record.as_str())
+                .document("so.tilo.word-processor", record.as_str())
                 .unwrap(),
         )
         .unwrap();
@@ -250,7 +251,7 @@ mod tests {
         writer.commit();
         state
             .publish_document(
-                "dev.qos.word-processor",
+                "so.tilo.word-processor",
                 record.as_str(),
                 writer.save(),
                 &key,

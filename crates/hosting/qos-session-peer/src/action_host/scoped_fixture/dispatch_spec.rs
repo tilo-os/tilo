@@ -16,7 +16,7 @@ struct Probe {
 }
 thread_local! { static FACTORY: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    if app != "dev.qos.notes" || !FACTORY.with(|slot| slot.borrow().is_some()) {
+    if app != "so.tilo.notes" || !FACTORY.with(|slot| slot.borrow().is_some()) {
         return None;
     }
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
@@ -39,7 +39,7 @@ pub(crate) fn observe_authorizer(
 ) -> ui::invocation_scope::PublishedInvocationAuthorizer {
     let probe = FACTORY
         .with(|slot| slot.borrow().clone())
-        .filter(|_| app == "dev.qos.notes");
+        .filter(|_| app == "so.tilo.notes");
     let Some(probe) = probe else {
         return actual;
     };
@@ -217,7 +217,7 @@ async fn run(changed: bool) {
     }
     FACTORY.with(|slot| slot.replace(Some(probe.clone())));
     let _restore = Restore;
-    let mut fixture = ScopedAppFixture::new("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::new("so.tilo.notes");
     let (peer, resource) = fixture.wait_action("run").await;
     fixture.request += 1;
     assert!(fixture.caller.send(CollabRequest::InvokePublishedAction {
@@ -316,7 +316,7 @@ async fn resolved_run(changed: bool) {
     }
     FACTORY.with(|slot| slot.replace(Some(probe.clone())));
     let _restore = Restore;
-    let mut fixture = ScopedAppFixture::new("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::new("so.tilo.notes");
     let (peer, resource) = fixture.wait_action("run").await;
     let page = fixture
         .query_directory(runtime_collab::ActionDirectoryQuery {

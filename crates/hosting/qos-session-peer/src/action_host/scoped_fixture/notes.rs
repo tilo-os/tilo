@@ -47,7 +47,7 @@ async fn closed_final_publication(fixture: &mut ScopedAppFixture) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn notes_scoped_import_live_caller_mutates_actual_record() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::new("so.tilo.notes");
     fixture.wait_action("import-markdown").await;
     let path = fixture.root.path().join("scoped-import.md");
     std::fs::write(&path, "# Imported with scope\n\nOriginal caller body.\n").unwrap();
@@ -85,7 +85,7 @@ async fn notes_scoped_import_live_caller_mutates_actual_record() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn notes_scoped_import_expired_after_chooser_admission_cannot_mutate() {
-    let mut fixture = ScopedAppFixture::new("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::new("so.tilo.notes");
     fixture.wait_action("import-markdown").await;
     let path = fixture.root.path().join("expired-import.md");
     std::fs::write(&path, "# Expired import\n\nMust never enter the record.\n").unwrap();
@@ -154,7 +154,7 @@ const LINK_URL: &str = "https://example.com/scoped-notes";
 const EXPORT_SENTINEL: &[u8] = b"existing selected destination";
 
 fn seeded_notes() -> ScopedAppFixture {
-    ScopedAppFixture::with_record_seed("dev.qos.notes", |doc| {
+    ScopedAppFixture::with_record_seed("so.tilo.notes", |doc| {
         ::notes::notebook::validate(doc).unwrap();
         let meta = ::notes::PageMeta {
             id: SEEDED_PAGE,

@@ -33,7 +33,7 @@ async fn cloud_workers_start_real_certified_broker() {
     workers.close().unwrap();
 }
 
-const WRITER: &str = "dev.qos.word-processor";
+const WRITER: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 
 fn current_document(owner: &RuntimeOwner) -> Vec<u8> {
@@ -855,7 +855,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
             .iter()
             .any(|surface| {
                 surface.live
-                    && surface.app_id == "dev.qos.chat"
+                    && surface.app_id == "so.tilo.chat"
                     && surface.route.record_id.is_empty()
                     && surface
                         .actions
@@ -868,12 +868,12 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
         publications
             .grants
             .iter()
-            .any(|grant| grant.app_id == "dev.qos.chat")
+            .any(|grant| grant.app_id == "so.tilo.chat")
     );
     let chat_grant = publications
         .grants
         .iter()
-        .find(|grant| grant.app_id == "dev.qos.chat" && grant.action == "collapse")
+        .find(|grant| grant.app_id == "so.tilo.chat" && grant.action == "collapse")
         .cloned()
         .expect("real seeded Chat category action");
     let invocation = uuid::Uuid::new_v4().to_string();
@@ -964,7 +964,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
             intent
                 .grants
                 .iter()
-                .filter(|grant| grant.app_id == "dev.qos.chat")
+                .filter(|grant| grant.app_id == "so.tilo.chat")
                 .all(|grant| grant.record_id == "@qos:package-primary")
         );
     }
@@ -987,7 +987,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
         .unwrap()
         .peer()
         .unwrap()
-        .document("dev.qos.chat", "")
+        .document("so.tilo.chat", "")
         .unwrap();
     let (broker, job) = certified_start(
         &mut workers,
@@ -1027,7 +1027,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
             .unwrap()
             .peer()
             .unwrap()
-            .document("dev.qos.chat", "")
+            .document("so.tilo.chat", "")
             .unwrap(),
         before
     );

@@ -40,7 +40,7 @@ pub(super) fn intent(store: &Store, caller: &VerifiedAgentCaller) -> AgentIntent
         )
         .unwrap(),
         grants: vec![GrantAction {
-            app_id: "dev.qos.word-processor".into(),
+            app_id: "so.tilo.word-processor".into(),
             record_id: "tab:0000000000000001".into(),
             resource: "document".into(),
             action: "insert".into(),

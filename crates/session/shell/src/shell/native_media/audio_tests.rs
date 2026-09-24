@@ -205,7 +205,7 @@ impl MediaFactory for AudioFactory {
     fn prepare(&self, target: CallTarget) -> Prepare {
         assert_eq!(
             (target.app.as_str(), target.channel.as_str()),
-            ("dev.qos.chat", "voice")
+            ("so.tilo.chat", "voice")
         );
         let backend = AudioBackend {
             client: Arc::new(connect(&self.relay, 'a', 'b', b"shell-caller")),
@@ -274,7 +274,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     })));
     let caller = Caller {
         peer: 21,
-        app: "dev.qos.chat".into(),
+        app: "so.tilo.chat".into(),
         workspace: room,
         record: String::new(),
         current: Arc::new(|| Ok(())),

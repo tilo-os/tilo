@@ -295,7 +295,7 @@ async fn first_presence(
     .await
     .expect("presence delivery deadline")
 }
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "tab:0000000000000001";
 /// Canonical incremental word-processor delta authored by `author`'s device.
 fn delta_by(root: &Path, author: &SigningKey, text: &str) -> Vec<u8> {

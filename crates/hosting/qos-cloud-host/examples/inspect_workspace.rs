@@ -7,7 +7,7 @@ fn main() -> Result<()> {
     let store = qos_cloud_host::Store::open(std::path::Path::new(&root), &machine)?;
     let peer = store.peer()?;
     let bytes = peer
-        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .document("so.tilo.word-processor", "tab:0000000000000001")
         .context("Writer record missing")?;
     let doc = automerge::AutoCommit::load(&bytes)?;
     let model = qdoc::model::open(&doc, &automerge::ROOT)?;

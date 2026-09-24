@@ -73,7 +73,7 @@ fn deferred_input(owner: &SessionOwner) -> ([u8; 32], NeighbourMsg, Vec<u8>) {
     use ui::automerge::{ROOT, transaction::Transactable};
     let mut author = owner.peer.clone();
     let mut document =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = document.get_heads();
     document
         .put(ROOT, "scope-deferred", "original authenticated input")
@@ -81,7 +81,7 @@ fn deferred_input(owner: &SessionOwner) -> ([u8; 32], NeighbourMsg, Vec<u8>) {
     document.commit();
     let mut message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             document.save_after(&heads),
             &owner.identity.native,
@@ -287,7 +287,7 @@ fn owner_scope_media_preparation_refuses_before_cloning_attached_peer() {
     owner.activate_delivery().unwrap();
     let mut peer = owner.peer.clone();
     let mut document =
-        ui::automerge::AutoCommit::load(&peer.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = document.get(ROOT, "channels").unwrap().unwrap().1;
     let channel = document
         .put_object(&channels, "scope-voice", ObjType::Map)
@@ -295,7 +295,7 @@ fn owner_scope_media_preparation_refuses_before_cloning_attached_peer() {
     document.put(&channel, "kind", "voice").unwrap();
     document.put(&channel, "workspace", "home").unwrap();
     peer.publish_document(
-        "dev.qos.chat",
+        "so.tilo.chat",
         "",
         document.save(),
         &owner.identity.native,
@@ -309,7 +309,7 @@ fn owner_scope_media_preparation_refuses_before_cloning_attached_peer() {
     let pool = ingress.host_bytes();
     owner.attach_data_resources(&pool).unwrap();
     let operation = CollaborationAdminOperation::MediaCreate(MediaCreateInput {
-        app_id: "dev.qos.chat".into(),
+        app_id: "so.tilo.chat".into(),
         record_id: String::new(),
         channel_id: "scope-voice".into(),
         expected_authorization_revision: None,

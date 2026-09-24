@@ -325,7 +325,7 @@ pub(super) fn frame(kind: MessageType, payload: &[u8]) -> Vec<u8> {
 pub(super) fn native_edit(owner: &SessionOwner, key: &str, value: Vec<u8>) -> Vec<u8> {
     let mut author = owner.peer().clone();
     let mut document =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = document.get_heads();
     document
         .put(ROOT, key, ui::automerge::ScalarValue::Bytes(value))
@@ -333,7 +333,7 @@ pub(super) fn native_edit(owner: &SessionOwner, key: &str, value: Vec<u8>) -> Ve
     document.commit();
     let message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             document.save_after(&heads),
             &owner.identity.native,
@@ -532,7 +532,7 @@ async fn installed_https_data_upload_poll_ack_and_owner_reopen() {
     drop(f.owner);
     let reopened = SessionOwner::open(&path).unwrap();
     let document =
-        ui::automerge::AutoCommit::load(&reopened.peer().document("dev.qos.chat", "").unwrap())
+        ui::automerge::AutoCommit::load(&reopened.peer().document("so.tilo.chat", "").unwrap())
             .unwrap();
     for key in ["small", "large", "third"] {
         assert!(
@@ -1257,7 +1257,7 @@ async fn installed_https_private_status_cancel_invoke_and_read_over_actual_actio
                 host: room,
                 invocation: tilo_actions::InvocationId(uuid::Uuid::new_v4()),
                 app_peer: h.f.owner.workspace_id().to_string(),
-                app_id: "dev.qos.word-processor".into(),
+                app_id: "so.tilo.word-processor".into(),
                 record_id: "tab:0000000000000001".into(),
                 resource: "document".into(),
                 action: "read-text".into(),
@@ -1336,7 +1336,7 @@ async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
         let text = hex::encode(input);
         h.f.current
             .with_owner(&mut h.f.owner, |owner| {
-                crate::owner::mutate_owned_record_for_test(owner, "dev.qos.chat", "", |doc| {
+                crate::owner::mutate_owned_record_for_test(owner, "so.tilo.chat", "", |doc| {
                     doc.put(ROOT, "installed_handoff_fixture", text).unwrap();
                 })
             })

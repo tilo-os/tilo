@@ -159,7 +159,7 @@ fn permitted(
 }
 
 /// Live record id of an application's record-less (package-primary)
-/// document, e.g. Chat's `("dev.qos.chat", "")`; identical to the native host
+/// document, e.g. Chat's `("so.tilo.chat", "")`; identical to the native host
 /// and to the UI's `RecordId::package_primary()`, and never a valid durable
 /// record id, so the mapping is injective.
 pub(crate) const PACKAGE_PRIMARY_RECORD: &str = "@qos:package-primary";
@@ -569,14 +569,14 @@ mod tests {
 
     #[test]
     fn record_less_documents_map_to_the_stable_package_primary_live_record() {
-        let chat = live_record("dev.qos.chat".into(), String::new()).unwrap();
+        let chat = live_record("so.tilo.chat".into(), String::new()).unwrap();
         assert_eq!(chat.record, PACKAGE_PRIMARY_RECORD);
-        assert_eq!(chat.app, "dev.qos.chat");
-        let named = live_record("dev.qos.notes".into(), "tab:0000000000000001".into()).unwrap();
+        assert_eq!(chat.app, "so.tilo.chat");
+        let named = live_record("so.tilo.notes".into(), "tab:0000000000000001".into()).unwrap();
         assert_eq!(named.record, "tab:0000000000000001");
         assert_ne!(chat.digest(), named.digest());
         // Injective and inside the frozen 1..=128 byte bounds.
-        assert!(live_record("dev.qos.chat".into(), PACKAGE_PRIMARY_RECORD.into()).is_none());
+        assert!(live_record("so.tilo.chat".into(), PACKAGE_PRIMARY_RECORD.into()).is_none());
         assert!(live_record("a".into(), "r".repeat(129)).is_none());
         assert!(live_record(String::new(), "r".into()).is_none());
         assert!(live_record("a".repeat(128), "r".repeat(128)).is_some());

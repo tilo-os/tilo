@@ -37,7 +37,7 @@ fn send(owner: &mut SessionOwner, n: u32, bytes: &[u8]) -> AdmissionRecord {
 /// One author edit carrying `len` incompressible bytes.
 fn large_upload(owner: &SessionOwner, author: &mut StatePeer, name: &str, len: usize) -> Vec<u8> {
     let mut doc =
-        ui::automerge::AutoCommit::load(&author.document("dev.qos.chat", "").unwrap()).unwrap();
+        ui::automerge::AutoCommit::load(&author.document("so.tilo.chat", "").unwrap()).unwrap();
     let heads = doc.get_heads();
     let mut bytes = vec![0; len];
     let mut generator = blake3::Hasher::new();
@@ -48,7 +48,7 @@ fn large_upload(owner: &SessionOwner, author: &mut StatePeer, name: &str, len: u
     doc.commit();
     let message = author
         .publish_incremental(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             doc.save_after(&heads),
             &owner.identity.native,
@@ -136,8 +136,8 @@ fn upload_commits_publish_the_authors_original_bytes_and_consumers_converge() {
     }
     assert_eq!(replica.rows(), owner.peer.rows());
     assert_eq!(
-        replica.document("dev.qos.chat", "").unwrap(),
-        owner.peer.document("dev.qos.chat", "").unwrap()
+        replica.document("so.tilo.chat", "").unwrap(),
+        owner.peer.document("so.tilo.chat", "").unwrap()
     );
     // Coverage (outbox retirement) still comes only from a certified checkpoint.
     let original: NeighbourMsg = postcard::from_bytes(uploaded.last().unwrap()).unwrap();
@@ -160,7 +160,7 @@ fn upload_commits_publish_the_authors_original_bytes_and_consumers_converge() {
     assert!(replica.outbox_message_retired(&original));
     assert_eq!(
         replica
-            .durable_coverage("dev.qos.chat", "")
+            .durable_coverage("so.tilo.chat", "")
             .unwrap()
             .unwrap()
             .generation,

@@ -12,14 +12,14 @@ fn fixture() -> (tempfile::TempDir, SessionOwner) {
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     owner.activate_delivery().unwrap();
     let mut candidate = owner.peer().clone();
-    let mut chat = AutoCommit::load(&candidate.document("dev.qos.chat", "").unwrap()).unwrap();
+    let mut chat = AutoCommit::load(&candidate.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     let voice = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
     chat.put(&voice, "kind", "voice").unwrap();
     chat.put(&voice, "workspace", "home").unwrap();
     candidate
         .publish_document(
-            "dev.qos.chat",
+            "so.tilo.chat",
             "",
             chat.save(),
             &owner.identity.native,
@@ -33,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, SessionOwner) {
 }
 fn create(revision: Option<u64>) -> Operation {
     Operation::MediaCreate(MediaCreateInput {
-        app_id: "dev.qos.chat".into(),
+        app_id: "so.tilo.chat".into(),
         record_id: String::new(),
         channel_id: "voice".into(),
         expected_authorization_revision: revision,

@@ -1,3 +1,4 @@
+import {firstPartyApp} from './first-party-app.mjs';
 import {createActionStorage} from './action-storage.mjs';
 import {createPeerDelivery} from './peer-delivery.mjs';
 import {createPeerMedia} from './peer-media.mjs';
@@ -639,7 +640,7 @@ return async function connectPeer(options={}){
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');
         const sessionDesktop=snapshot.desktop?.version===1&&snapshot.desktop.mode==='session'&&!mountOptions.app;
         const app=sessionDesktop?'desktop':(mountOptions.app??'writer');
-        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
+        const record=sessionDesktop?undefined:snapshot.records.find(row=>firstPartyApp(row.app_id,app==='writer'?'so.tilo.word-processor':'so.tilo.chat'));
         if(!sessionDesktop&&!record)throw Error('Canonical record missing');
         surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);

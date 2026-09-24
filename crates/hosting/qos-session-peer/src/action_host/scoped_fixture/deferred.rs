@@ -35,7 +35,7 @@ impl Drop for Registration {
     }
 }
 pub(super) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    if app != "dev.qos.notes" || !FACTORY.with(|slot| slot.borrow().is_some()) {
+    if app != "so.tilo.notes" || !FACTORY.with(|slot| slot.borrow().is_some()) {
         return None;
     }
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
@@ -58,7 +58,7 @@ pub(super) fn observe_authorizer(
 ) -> ui::invocation_scope::PublishedInvocationAuthorizer {
     let probe = FACTORY
         .with(|slot| slot.borrow().clone())
-        .filter(|_| app == "dev.qos.notes");
+        .filter(|_| app == "so.tilo.notes");
     let Some(probe) = probe else {
         return actual;
     };
@@ -251,7 +251,7 @@ impl AppWidget for Probe {
 }
 
 fn fixture() -> ScopedAppFixture {
-    ScopedAppFixture::with_record_seed("dev.qos.notes", |doc| {
+    ScopedAppFixture::with_record_seed("so.tilo.notes", |doc| {
         doc.put(ROOT, "deferred-owner", OWNER).unwrap();
         doc.commit();
     })

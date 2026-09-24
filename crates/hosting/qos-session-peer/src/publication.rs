@@ -98,7 +98,7 @@ mod tests {
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut candidate = owner.peer().clone();
         let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();

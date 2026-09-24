@@ -66,21 +66,21 @@ async fn upload_then_republish(app: &str) -> ScopedAppFixture {
 
 #[tokio::test(flavor = "current_thread")]
 async fn browser_upload_then_worker_republication_keeps_native_signing_healthy() {
-    let mut fixture = upload_then_republish("dev.qos.word-processor").await;
+    let mut fixture = upload_then_republish("so.tilo.word-processor").await;
     // Orderly close settles every worker write against committed history.
     fixture.host.close(&fixture.owner).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn browser_chat_upload_then_worker_republication_closes_cleanly() {
-    let mut fixture = upload_then_republish("dev.qos.chat").await;
+    let mut fixture = upload_then_republish("so.tilo.chat").await;
     fixture.host.close(&fixture.owner).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn committed_echo_parses_the_exact_body_change_set() {
     use ui::automerge::transaction::Transactable;
-    let fixture = ScopedAppFixture::with_delivery("dev.qos.word-processor");
+    let fixture = ScopedAppFixture::with_delivery("so.tilo.word-processor");
     let owner = &fixture.owner;
     let bytes = owner
         .peer()
@@ -113,7 +113,7 @@ async fn committed_echo_parses_the_exact_body_change_set() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn committed_echo_refuses_uncommitted_factory_body_through_the_signing_door() {
-    let mut fixture = ScopedAppFixture::with_uncommitted_factory_data("dev.qos.notes");
+    let mut fixture = ScopedAppFixture::with_uncommitted_factory_data("so.tilo.notes");
     let pending = fixture.next_signature_for_selected_record().await;
     let generation = fixture.owner.committed_generation();
     let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
@@ -152,7 +152,7 @@ async fn committed_echo_refuses_uncommitted_factory_body_through_the_signing_doo
 // viewport, so it must not author viewer read receipts.
 #[tokio::test(flavor = "current_thread")]
 async fn browser_chat_message_then_worker_republication_settles_every_write() {
-    let mut fixture = ScopedAppFixture::with_delivery("dev.qos.chat");
+    let mut fixture = ScopedAppFixture::with_delivery("so.tilo.chat");
     for _ in 0..40 {
         fixture.pump().await.unwrap();
     }

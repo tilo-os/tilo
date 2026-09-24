@@ -186,6 +186,8 @@ fn media_result() -> qos_peer_state::room::media::MediaCallResultV1 {
         authorization_revision: 2,
         phase: CallPhaseV1::Ended,
         binding: ChatCallBindingV1 {
+            // Frozen V5 literal written before the rename: the retired Chat id
+            // must stay readable in persisted media results.
             app_id: "dev.qos.chat".into(),
             record_id: "".into(),
             channel_id: "channel".into(),

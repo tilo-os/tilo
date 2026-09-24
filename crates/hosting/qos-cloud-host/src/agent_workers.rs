@@ -323,13 +323,19 @@ impl AgentWorkers {
         let mut validators = RecordOwners::portable(validation.clone());
         let mut plans = vec![];
         for row in snapshot.peer.rows() {
-            let definition = match row.app_id.as_str() {
-                "dev.qos.word-processor" => word_processor::definition(),
-                "dev.qos.chat" => chat::definition(),
-                _ => continue,
+            let Some(definition) = [word_processor::definition(), chat::definition()]
+                .into_iter()
+                .find(|definition| {
+                    ui::application::lookup_compatible_first_party_app_ids(
+                        &row.app_id,
+                        definition.app_id,
+                    )
+                })
+            else {
+                continue;
             };
             let checkout = checkout(definition, &row.record_id)?;
-            if row.app_id == "dev.qos.chat" && !checkout.id.is_package_primary() {
+            if definition.app_id == chat::definition().app_id && !checkout.id.is_package_primary() {
                 return Err("Chat requires its canonical primary route".into());
             }
             let bytes = snapshot
