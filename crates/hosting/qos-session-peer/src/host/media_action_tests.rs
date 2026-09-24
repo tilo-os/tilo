@@ -251,6 +251,7 @@ async fn room_media_broker_certified_literals_persist_retry_and_reject() {
         let runtime = ActionHost::start_with_collaboration(&owner, authority, signing, network_sender, Some(admin_handle)).unwrap();
         let broker = runtime.broker.app_action_broker().unwrap();
         let (queue, durable_host) = broker.peer_action_attachment().unwrap();
+        let queue = queue.with_policy_time(runtime.policy_time());
         let (ready, mut readiness) = tokio::sync::watch::channel(false);
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve_with_readiness(server_session, room, durable_host, ready).await });

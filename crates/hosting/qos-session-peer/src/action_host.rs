@@ -677,6 +677,10 @@ impl ActionHost {
             serde_json::json!({"app": worker.app_id, "record": worker.record_id, "heads": heads})
         }).collect())
     }
+    /// The owner policy time this runtime registered with its broker.
+    pub(crate) fn policy_time(&self) -> PolicyTime {
+        self.policy_time.clone()
+    }
     pub fn ready(&self) -> bool {
         use qos_peer_state::desktop_command;
         let room = self

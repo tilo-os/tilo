@@ -477,6 +477,9 @@ impl NativeSubscription {
             .context("broker unavailable")?
             .peer_action_attachment()
             .map_err(anyhow::Error::msg)?;
+        // Relay-delivered actions reach a broker that registered this owner's
+        // policy clock, which refuses requests without that time origin.
+        let queue = queue.with_policy_time(actions.policy_time());
         let session = self.session.clone();
         let (acknowledged, readiness) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {

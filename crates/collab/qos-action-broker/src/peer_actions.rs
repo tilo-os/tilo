@@ -118,12 +118,24 @@ impl RequestFailure {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
     permits: Arc<Semaphore>,
     transitions:
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
+    /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
+    policy_time: Option<PolicyTime>,
+}
+impl std::fmt::Debug for PeerActionQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerActionQueue")
+            .field("sender", &self.sender)
+            .field("permits", &self.permits)
+            .field("transitions", &self.transitions)
+            .field("policy_time", &self.policy_time.is_some())
+            .finish()
+    }
 }
 pub struct Request {
     policy_time: Option<PolicyTime>,
@@ -156,9 +168,19 @@ impl PeerActionQueue {
                 sender,
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
+                policy_time: None,
             },
             receiver,
         )
+    }
+    /// Serve relay-delivered requests under the owner's registered policy
+    /// time. A broker whose runtime registered an owner clock refuses requests
+    /// without the same time origin, so an attachment served for such an owner
+    /// must carry it; each request still samples the clock at admission.
+    #[must_use]
+    pub fn with_policy_time(mut self, time: PolicyTime) -> Self {
+        self.policy_time = Some(time);
+        self
     }
     async fn request(
         &self,
@@ -180,7 +202,7 @@ impl PeerActionQueue {
             let (reply, rx) = oneshot::channel();
             self.sender
                 .try_send(Request {
-                    policy_time: None,
+                    policy_time: self.policy_time.clone(),
                     deadline,
                     evidence,
                     poll,
