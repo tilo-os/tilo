@@ -148,16 +148,12 @@ impl CloudService {
     /// Bring the mounts in line with the account store.
     pub fn reconcile(&mut self) {
         let store = self.store();
-        let wanted: Vec<(MountSpec, String)> = store
+        let wanted: Vec<MountSpec> = store.all().iter().filter_map(providers::spec_for).collect();
+        let labels: Vec<(&str, &str)> = store
             .all()
             .iter()
-            .filter_map(|account| {
-                providers::spec_for(account).map(|spec| (spec, account.display_name.clone()))
-            })
-            .collect();
-        let labels: Vec<(&str, &str)> = wanted
-            .iter()
-            .map(|(spec, label)| (spec.account_id.as_str(), label.as_str()))
+            .filter(|account| providers::is_file_account(account))
+            .map(|account| (account.id.as_str(), account.display_name.as_str()))
             .collect();
         let names: HashMap<String, String> = cloud_source::tree::mount_names(&labels)
             .into_iter()
@@ -167,7 +163,7 @@ impl CloudService {
             .mounts
             .iter()
             .filter(|(id, mounted)| {
-                !wanted.iter().any(|(spec, _)| {
+                !wanted.iter().any(|spec| {
                     &spec.account_id == *id
                         && *spec == mounted.spec
                         && names.get(*id) == Some(&mounted.dir_name)
@@ -180,7 +176,7 @@ impl CloudService {
             self.unmount(&id, removed);
         }
 
-        for (spec, _) in &wanted {
+        for spec in &wanted {
             if self.mounts.contains_key(&spec.account_id) {
                 continue;
             }

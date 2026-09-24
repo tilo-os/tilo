@@ -26,6 +26,25 @@ pub struct MountSpec {
     pub cache_budget: u64,
 }
 
+/// Whether `account` is a file account, enabled or not. Folder names are
+/// assigned over this set (Files names them the same way), so disabling an
+/// account never renames another account's folder.
+pub fn is_file_account(account: &accounts::Account) -> bool {
+    let text = |key: &str| account.config.get(key).and_then(serde_json::Value::as_str);
+    match account.type_id.as_str() {
+        cloud_source_dav::account::WEBDAV_TYPE => text("server_url").is_some(),
+        cloud_source_dav::account::NEXTCLOUD_TYPE => {
+            text("server_url").is_some()
+                && account
+                    .config
+                    .get("use_files")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
 /// The mount specification of a Settings account, or `None` when it is
 /// not a file account this build can mount (or is disabled).
 pub fn spec_for(account: &accounts::Account) -> Option<MountSpec> {
