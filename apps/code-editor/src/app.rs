@@ -5425,7 +5425,10 @@ mod local_layout_tests {
             .unwrap();
         let from_spec = match &spec.input {
             tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("new-file is an immediate action")
+            }
         };
 
         app.apply_command(Command::NewFile, &mut doc);

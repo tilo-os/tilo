@@ -3078,7 +3078,8 @@ mod tests {
                 .unwrap();
             let start = match &start.input {
                 tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("start takes no argument"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => panic!("start takes no argument"),
             };
             invoke_encoded_setup(&mut app, &start).unwrap();
             assert!(matches!(
@@ -3136,7 +3137,8 @@ mod tests {
 
             let release = match &release.input {
                 tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("release takes no argument"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => panic!("release takes no argument"),
             };
             invoke_encoded_setup(&mut app, &release).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -4695,11 +4697,15 @@ imager-setup-detail-root = FR root { $page } { $folder_count }
             .clone();
         let remove_a = match &remove_a.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("remove must be immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("remove must be immediate"),
         };
         let set_b = match &set_b.input {
             tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
-            tilo_actions::ActionInput::Immediate(_) => panic!("set-mode must prompt for one mode"),
+            tilo_actions::ActionInput::Immediate(_)
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("set-mode must prompt for one mode")
+            }
         };
         assert_ne!(set_b.type_id, "tilo.invalid_arguments");
 
@@ -4750,7 +4756,8 @@ imager-setup-detail-root = FR root { $page } { $folder_count }
         assert!(add.contract.availability.is_available());
         let encoded = match &add.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
                 panic!("a child suggestion fixes identity and takes no argument")
             }
         };
@@ -4782,7 +4789,8 @@ imager-setup-detail-root = FR root { $page } { $folder_count }
         assert_eq!(action.label, "Choose another folder");
         let encoded = match &action.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
                 panic!("the native picker action takes no argument")
             }
         };
@@ -4836,7 +4844,8 @@ imager-setup-detail-root = FR root { $page } { $folder_count }
         assert!(install.contract.availability.is_available());
         let encoded = match &install.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("install takes no argument"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("install takes no argument"),
         };
 
         invoke_encoded_setup(&mut app, &encoded).unwrap();

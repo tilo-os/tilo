@@ -38,7 +38,7 @@ use ui::widget::{
 };
 
 use crate::actions::{self, ChatAction};
-use crate::call::{CallState, SoundEngine};
+use crate::call::CallState;
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
 use crate::media::MediaEngine;
@@ -510,6 +510,10 @@ mod call_chrome_motion_tests {
     reason = "the bools split across unrelated concerns (attachment-picker/emoji-popover open flags, layout/render bookkeeping, and --shots-only staging), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ChatApp {
+    /// Last resource tree with the exact inputs it was built from (committed
+    /// heads and resource context). The framework rediscovers resources on
+    /// every relayout, including frames that only moved the pointer.
+    pub(crate) resource_memo: std::cell::RefCell<Option<(String, Vec<tilo_actions::Resource>)>>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
@@ -561,6 +565,14 @@ pub struct ChatApp {
     /// see the newest edge. This flag is local presentation state, refreshed
     /// from the measured timeline during paint.
     pub(crate) timeline_at_end: bool,
+    /// A person is looking at this instance: a runner laid it out in a real
+    /// viewport. A hosted/headless worker only pumps the model and never lays
+    /// out, so it must not author read receipts under the host identity —
+    /// read state belongs to the person's own device.
+    pub(crate) presented: bool,
+    /// The first layout just happened; request one more model frame so the
+    /// channel already in view is marked read without waiting for input.
+    pub(crate) read_on_present: bool,
     /// Last measured timeline height. Keeps a reader's visual anchor stable if
     /// new messages arrive while they are reading older messages.
     pub(crate) timeline_total_height: f64,
@@ -611,6 +623,7 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
+    pub(crate) native_voice: crate::local_voice::LocalVoice,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
     pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
@@ -652,7 +665,6 @@ pub struct ChatApp {
     pub(crate) former_ids: Vec<Id>,
 
     // Engines (call sounds + media transport).
-    pub(crate) sound: SoundEngine,
     pub(crate) media: MediaEngine,
 
     // The OS permission gate: routes channel participation + file-embed
@@ -733,10 +745,6 @@ pub struct ChatApp {
     // and only while in a call. All `None`/empty until the call opens a device;
     // torn down when the call ends or a device is unavailable (honest silence).
     #[cfg(feature = "live-media")]
-    mic: Option<crate::audio::MicCapture>,
-    #[cfg(feature = "live-media")]
-    speaker: Option<crate::audio::SpeakerPlayback>,
-    #[cfg(feature = "live-media")]
     camera: Option<crate::video::CameraCapture>,
     // Camera encode reuses the shared Tilo video stack's bare H.264 encoder
     // (raw NALUs: the local self-preview feeds them to `ui`'s VideoPlayer,
@@ -814,9 +822,6 @@ impl ChatApp {
         app.media_error = (!app.external_services).then(|| {
             "Calls and screen sharing are unsupported until a media transport is connected".into()
         });
-        if app.external_services {
-            app.media = MediaEngine::new();
-        }
         app.reload(doc);
         if app.ensure_selection() {
             app.reload(doc);
@@ -832,10 +837,7 @@ impl ChatApp {
         let mut app = Self::bare();
         app.is_live = true;
         app.me = LocalIdentity::resolve();
-        // The live binary uses the real transport (a bound iroh endpoint on a
-        // real session; the simulator otherwise). Tests/`--shots` keep the
-        // deterministic local bus from `bare`.
-        app.media = MediaEngine::new();
+        // The admitted shell channel owns native voice transport and devices.
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.
         app.active_ws.clear();
@@ -864,6 +866,7 @@ impl ChatApp {
         let (attachment_picker_result_tx, attachment_picker_result_rx) =
             std::sync::mpsc::sync_channel(1);
         Self {
+            resource_memo: std::cell::RefCell::new(None),
             workspaces: Vec::new(),
             channels: Vec::new(),
             categories: Vec::new(),
@@ -883,6 +886,8 @@ impl ChatApp {
             focus: Focus::Main,
             scroll: 0.0,
             timeline_at_end: true,
+            presented: false,
+            read_on_present: false,
             timeline_total_height: 0.0,
             scroll_content: 0.0,
             scroll_viewport: 0.0,
@@ -913,6 +918,7 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
+            native_voice: crate::local_voice::LocalVoice::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
@@ -928,7 +934,6 @@ impl ChatApp {
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
             former_ids: Vec::new(),
-            sound: SoundEngine::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
@@ -953,10 +958,6 @@ impl ChatApp {
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             portal: Box::new(crate::call::SystemPortal),
-            #[cfg(feature = "live-media")]
-            mic: None,
-            #[cfg(feature = "live-media")]
-            speaker: None,
             #[cfg(feature = "live-media")]
             camera: None,
             #[cfg(feature = "live-media")]
@@ -989,7 +990,11 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.external_services && self.perms.allows(action)
+        match action {
+            crate::call::CallAction::Leave => true,
+            crate::call::CallAction::Camera | crate::call::CallAction::ShareScreen => false,
+            _ => self.external_services && self.perms.allows(action),
+        }
     }
 
     /// Whether the local peer may post / react / start a call in the active
@@ -1406,7 +1411,6 @@ impl ChatApp {
             return;
         }
         let me = self.me.id.clone();
-        self.pump_mic(&me);
         self.pump_camera(&me);
         self.pump_screen(&me);
         self.pump_receive(&me);
@@ -1415,8 +1419,6 @@ impl ChatApp {
     /// Release all devices + remote state between calls.
     #[cfg(feature = "live-media")]
     fn pump_media_reset(&mut self) {
-        self.mic = None;
-        self.speaker = None;
         self.camera = None;
         self.cam_encoder = None;
         self.screen = None;
@@ -1430,35 +1432,6 @@ impl ChatApp {
         // first seq=0/pts=0 object as the corresponding stream reset.
         self.media_seq = 0;
         self.media_error = None;
-    }
-
-    /// Microphone → Opus → publish (only while transmitting).
-    #[cfg(feature = "live-media")]
-    fn pump_mic(&mut self, me: &str) {
-        use crate::call::CallAction;
-        use crate::media::TrackKind;
-        use ui::clock::Duration;
-
-        let transmit =
-            !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
-        if !transmit {
-            self.mic = None;
-            return;
-        }
-        if self.mic.is_none() {
-            self.mic = crate::audio::MicCapture::new();
-        }
-        let packets = self
-            .mic
-            .as_mut()
-            .map(super::audio::MicCapture::poll)
-            .unwrap_or_default();
-        for pkt in packets {
-            let pts = Duration::from_millis(self.media_seq.saturating_mul(20));
-            if !self.send_media_frame(me, TrackKind::Audio, pts, pkt) {
-                return;
-            }
-        }
     }
 
     /// Camera → H.264 → local preview + publish (only with camera on).
@@ -1578,7 +1551,7 @@ impl ChatApp {
         ));
         self.media.transport_mut().unpublish(kind);
         match kind {
-            crate::media::TrackKind::Audio => self.mic = None,
+            crate::media::TrackKind::Audio => {}
             crate::media::TrackKind::Video => {
                 self.camera = None;
                 self.cam_encoder = None;
@@ -1624,16 +1597,8 @@ impl ChatApp {
             }
             self.remote_media_seq.insert(sequence_key, o.seq);
             match o.kind {
-                TrackKind::Audio => {
-                    if !self.call.deafened {
-                        if self.speaker.is_none() {
-                            self.speaker = crate::audio::SpeakerPlayback::new();
-                        }
-                        if let Some(sp) = self.speaker.as_mut() {
-                            sp.play(&o.payload);
-                        }
-                    }
-                }
+                // Legacy custom-Iroh audio is never connected to speakers.
+                TrackKind::Audio => {}
                 TrackKind::Video => {
                     // Remote camera: a raw-NALU H.264 stream decoded through
                     // the shared stack's decoder → the peer's filmstrip cell.
@@ -1691,71 +1656,7 @@ impl ChatApp {
         Some(s)
     }
 
-    /// Acquire a screen-share source through the portal seam: check the
-    /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
-    /// (the real xdg-desktop-portal `ScreenCast` picker behind `live-media`; an
-    /// honest `None` in the default build; an injected fake in tests). On a
-    /// grant, open the `PipeWire` capture + a shared-stack video sender and
-    /// publish the screen track (behind `live-media`) and return `true`.
-    /// Returns `false` — never fabricating a share — when permission is denied
-    /// or the portal grants nothing. The caller flips `call.sharing` + the
-    /// shared voice membership.
-    ///
-    /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
-    /// the encode + framing route through [`tilo_callstream::VideoStreamSender`]
-    /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
-    /// `SharedFlatpakSession` performs — instead of a second in-app codec.
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::needless_pass_by_ref_mut,
-            reason = "live-media mutates capture state; the default build keeps the same call API"
-        )
-    )]
-    pub(crate) fn acquire_screen(&mut self) -> bool {
-        if !self.call_allows(crate::call::CallAction::ShareScreen) {
-            return false;
-        }
-        let Some(src) = self.portal.request() else {
-            return false;
-        };
-        #[cfg(all(feature = "live-media", not(test)))]
-        {
-            if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
-                self.screen = Some(scr);
-                self.screen_session = tilo_callstream::VideoStreamSender::new(
-                    src.width,
-                    src.height,
-                    crate::video::DEFAULT_FPS,
-                )
-                .ok();
-                self.media
-                    .transport_mut()
-                    .publish(crate::media::TrackKind::Screen);
-            }
-        }
-        #[cfg(all(feature = "live-media", test))]
-        {
-            // A fake portal source has no real PipeWire node. Tests still use
-            // the production sender/transport contract, but must never block
-            // opening a host device merely to verify the shared call state.
-            self.screen_session = tilo_callstream::VideoStreamSender::new(
-                src.width,
-                src.height,
-                crate::video::DEFAULT_FPS,
-            )
-            .ok();
-            self.media
-                .transport_mut()
-                .publish(crate::media::TrackKind::Screen);
-        }
-        let _ = src;
-        true
-    }
-
-    /// Whether this peer is currently sharing its screen — the shared-truth
-    /// flag used by the featured tile and transport tests. True only after the
-    /// portal granted a source (see [`Self::acquire_screen`]).
+    /// Legacy visual/transport test state; native voice has no screen track.
     #[allow(
         dead_code,
         reason = "queried by transport tests while the production capture control is hidden"
@@ -1904,6 +1805,15 @@ impl ChatApp {
     /// participant and an honest placeholder for someone the room has not
     /// named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
+        if self
+            .native_voice
+            .snapshot
+            .publishers
+            .iter()
+            .any(|namespace| namespace == id)
+        {
+            return format!("Audio stream {}", &id[id.len().saturating_sub(6)..]);
+        }
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
@@ -2031,13 +1941,6 @@ impl ChatApp {
             .map_or(&[], std::vec::Vec::as_slice)
     }
 
-    /// The media routing for the current call, chosen from the live participant
-    /// count: peer-to-peer below the mesh threshold, host-relay above it. A
-    /// call transparently promotes from P2P to host-based as people join.
-    pub(crate) fn call_session(&self) -> crate::model::CallSession {
-        crate::model::CallSession::select(self.voice_in(&self.call.channel).len().max(1))
-    }
-
     /// Channels in `category` within the active workspace, ordered. Archived
     /// channels are hidden from the sidebar.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
@@ -2115,6 +2018,46 @@ impl ChatApp {
         );
     }
 
+    /// Presence scope of a shared composer draft (`drafts[draft_key]`), so
+    /// collaborators' carets/selections in the same draft are drawn where
+    /// they type. Offsets are UTF-8 byte offsets into the draft text.
+    pub(crate) fn draft_presence_key(draft_key: &str) -> ui::presence::PresenceKey {
+        ui::presence::PresenceKey::Widget {
+            path: vec![
+                ui::presence::PathSegment::Field("chat_draft".into()),
+                ui::presence::PathSegment::Field(draft_key.to_owned()),
+            ],
+        }
+    }
+
+    /// The focused composer's draft scope and caret/selection, when the
+    /// person is typing in a composer (not an inline edit or rename).
+    pub(crate) fn composer_presence(
+        &self,
+    ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
+        if !self.host_focused
+            || self.editing.is_some()
+            || self.rename.is_some()
+            || !self.can_participate()
+        {
+            return None;
+        }
+        let (composer, key) = match self.focus {
+            Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
+            _ => (&self.composer_main, self.active_channel.clone()),
+        };
+        if key.is_empty() {
+            return None;
+        }
+        let payload = match composer.selection_range_public() {
+            Some((start, end)) if start != end => ui::PresencePayload::Selection { start, end },
+            _ => ui::PresencePayload::Caret {
+                pos: composer.cursor_pos(),
+            },
+        };
+        Some((Self::draft_presence_key(&key), payload))
+    }
+
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
         self.thread_open
             .as_ref()
@@ -2160,29 +2103,30 @@ impl ChatApp {
                 ChatDoc::unread_count(doc, &c.id, &self.me.id)
             };
         }
-        self.messages = ChatDoc::list_messages(doc, &self.active_channel);
-        self.search_messages = self
+        // Read every channel's messages once per reload: the open channel,
+        // search and the workspace people directory all project from them
+        // (reading them three times dominated typing with a long history).
+        let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()
-            .flat_map(|channel| ChatDoc::list_messages(doc, &channel.id))
+            .map(|channel| (channel.id.clone(), ChatDoc::list_messages(doc, &channel.id)))
+            .collect();
+        self.messages = per_channel
+            .iter()
+            .find(|(id, _)| *id == self.active_channel)
+            .map_or_else(
+                || ChatDoc::list_messages(doc, &self.active_channel),
+                |(_, messages)| messages.clone(),
+            );
+        self.search_messages = per_channel
+            .iter()
+            .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = ChatDoc::list_users(doc);
-        // Cache voice membership for this workspace only. The document's
-        // channel list is global, so filtering here is as important as it is
-        // for the People projection below: a huddle elsewhere is not a huddle
-        // in the workspace currently on screen.
-        self.voice_members.clear();
-        for ch in self
-            .channels
-            .iter()
-            .filter(|c| c.workspace == self.active_ws && c.kind == model::ChannelKind::Voice)
-        {
-            let members = ChatDoc::list_voice_members(doc, &ch.id);
-            if !members.is_empty() {
-                self.voice_members.insert(ch.id.clone(), members);
-            }
-        }
-        self.users = self.workspace_people(doc);
+        // Durable voice rows are legacy history. Current stream inventory is
+        // projected only from the authenticated local service response.
+        self.refresh_native_streams();
+        self.users = self.workspace_people_from(doc, &per_channel);
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
         // the caret/selection while typing (the draft we just wrote back equals
@@ -2223,7 +2167,11 @@ impl ChatApp {
     /// workspace would be dishonest. Channel activity and voice membership
     /// are durable, workspace-owned evidence; the local identity is included
     /// so a brand-new workspace remains a valid one-person surface.
-    fn workspace_people(&self, doc: &AutoCommit) -> Vec<User> {
+    fn workspace_people_from(
+        &self,
+        doc: &AutoCommit,
+        per_channel: &[(Id, Vec<Message>)],
+    ) -> Vec<User> {
         let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
         ids.extend(self.former_ids.iter().cloned());
 
@@ -2232,16 +2180,17 @@ impl ChatApp {
             .iter()
             .filter(|channel| channel.workspace == self.active_ws)
         {
-            for message in ChatDoc::list_messages(doc, &channel.id) {
-                ids.insert(message.author);
-                for reaction in message.reactions {
-                    ids.extend(reaction.users);
+            let messages = per_channel
+                .iter()
+                .find(|(id, _)| *id == channel.id)
+                .map(|(_, messages)| messages);
+            for message in messages.into_iter().flatten() {
+                ids.insert(message.author.clone());
+                for reaction in &message.reactions {
+                    ids.extend(reaction.users.iter().cloned());
                 }
-                ids.extend(message.mentions.into_iter().map(|mention| mention.user));
+                ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
             }
-        }
-        for members in self.voice_members.values() {
-            ids.extend(members.iter().map(|member| member.user.clone()));
         }
 
         let mut people: Vec<_> = ChatDoc::list_users(doc)
@@ -2923,14 +2872,25 @@ impl Collaborative for ChatApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
         if self.realtime.target_media_ready {
-            self.realtime.target_media_ready = false;
-            let _ = self.realtime_target_media_ready();
+            if self.realtime_target_media_ready() {
+                self.realtime.target_media_ready = false;
+            }
         }
-        std::mem::take(&mut self.realtime.requests)
+        let mut requests = std::mem::take(&mut self.realtime.requests);
+        let before = self.native_voice.snapshot.state;
+        requests.extend(self.native_voice.take_requests(ui::clock::Instant::now()));
+        if before != self.native_voice.snapshot.state {
+            self.project_native_voice();
+        }
+        requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
+            ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
+                self.native_voice.complete(*request_id, result);
+                self.project_native_voice();
+            }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
                     self.realtime.registration_pending = false;
@@ -3117,6 +3077,14 @@ impl FloatingSurfaceProvider for ChatApp {
 }
 
 impl Widget for ChatApp {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::semantic_read::action::READERS
+    }
+
+    fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
+        self.composer_presence()
+    }
+
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         Some(self)
     }
@@ -3274,17 +3242,14 @@ impl Widget for ChatApp {
             self.reload(doc);
         }
         // The channel in view is read: advance its watermark (no-op when
-        // nothing new arrived) so its unread badge stays cleared.
-        self.mark_active_read(doc);
-        // While in a call, keep the media signalling handshake current: dial
-        // any peer that has joined since the last frame (idempotent).
-        if self.call.active {
-            self.connect_call_peers(doc);
+        // nothing new arrived) so its unread badge stays cleared. Only a
+        // presented instance has a viewer; a headless host worker never
+        // authors read receipts.
+        if self.presented {
+            self.mark_active_read(doc);
         }
-        // Move real media: capture mic/camera/screen → encode → publish, and
-        // decode/play whatever arrived from peers. No-op without `live-media`.
-        #[cfg(feature = "live-media")]
-        self.pump_media();
+        // Native capture/transport belongs to the shell's lease-bound service.
+        // Durable voice rows never start the legacy Iroh media pump.
     }
 
     fn build_layout(
@@ -3379,6 +3344,10 @@ impl Widget for ChatApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
+        if !self.presented {
+            self.presented = true;
+            self.read_on_present = true;
+        }
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3803,7 +3772,12 @@ impl Widget for ChatApp {
                         {
                             return false;
                         }
-                        ChatDoc::set_draft(state, &self.active_channel, self.composer_main.value());
+                        ChatDoc::set_draft_from(
+                            state,
+                            &self.active_channel,
+                            &self.draft_main,
+                            self.composer_main.value(),
+                        );
                         self.reload(state);
                     }
                     Hit::FocusThread => {
@@ -3819,7 +3793,12 @@ impl Widget for ChatApp {
                         ) {
                             return false;
                         }
-                        ChatDoc::set_draft(state, &key, self.composer_thread.value());
+                        ChatDoc::set_draft_from(
+                            state,
+                            &key,
+                            &self.draft_thread,
+                            self.composer_thread.value(),
+                        );
                         self.reload(state);
                     }
                     Hit::FocusRename => {
@@ -3900,6 +3879,14 @@ impl Widget for ChatApp {
             return Ok(false);
         };
         match &operation {
+            crate::actions::ChatOperation::NativeVoice { request, .. } => {
+                if kind != tilo_actions::OperationKind::Effect
+                    || !request.valid()
+                    || request.intent != 0
+                {
+                    return Err("Call controls require a valid local Effect".into());
+                }
+            }
             crate::actions::ChatOperation::ImportAttachment { .. } => {
                 if !self.external_services {
                     return Err("attachment import unsupported: no host asset transport".into());
@@ -3912,6 +3899,9 @@ impl Widget for ChatApp {
             _ => {}
         }
         match operation {
+            crate::actions::ChatOperation::NativeVoice { channel, request } => {
+                self.native_voice_command(&channel, request.command)?;
+            }
             crate::actions::ChatOperation::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
             }
@@ -4048,8 +4038,15 @@ impl Widget for ChatApp {
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
+    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Re-run `sync` once after the first layout so the channel already in
+        // view acquires its read receipt on open.
+        std::mem::take(&mut self.read_on_present)
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        self.flap_animating
+        self.read_on_present
+            || self.flap_animating
             || self.call_chrome_motion.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
@@ -4355,5 +4352,91 @@ mod identity_on_screen {
         let app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         assert_eq!(app.user_name(&me), "You");
+    }
+}
+
+#[cfg(test)]
+mod live_draft_presence {
+    use super::*;
+    use ui::PresencePayload;
+    use ui::permissions::UserId;
+    use ui::presence::SelectionRange;
+
+    fn focused_app(text: &str) -> ChatApp {
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
+        app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
+        Widget::set_focus(&mut app, true);
+        app.composer_main.set_text(text);
+        app
+    }
+
+    fn composer_paths(app: &mut ChatApp, presence: &PresenceCtx) -> usize {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let mut hits = Vec::new();
+        app.draw_composer(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            presence,
+            &mut hits,
+        );
+        scene.encoding().path_tags.len()
+    }
+
+    /// The composer publishes its caret/selection in the shared draft's scope,
+    /// and only while the person is typing there.
+    #[test]
+    fn focused_composer_publishes_caret_and_selection_in_the_draft_scope() {
+        let mut app = focused_app("hello team");
+        let key = ChatApp::draft_presence_key(&app.active_channel);
+        app.composer_main.set_cursor_pos(5);
+        assert_eq!(
+            app.presence_payload(),
+            Some((key.clone(), PresencePayload::Caret { pos: 5 }))
+        );
+        app.composer_main.set_selection(0, 5);
+        assert_eq!(
+            app.presence_payload(),
+            Some((key, PresencePayload::Selection { start: 0, end: 5 }))
+        );
+        Widget::set_focus(&mut app, false);
+        assert_eq!(app.presence_payload(), None);
+    }
+
+    /// A collaborator's caret and selection in the same draft are drawn in
+    /// the composer; one in another channel's draft is not.
+    #[test]
+    fn remote_caret_and_selection_are_drawn_in_the_shared_draft() {
+        let mut app = focused_app("hello team");
+        let empty = composer_paths(&mut app, &PresenceCtx::empty());
+        let key = ChatApp::draft_presence_key(&app.active_channel);
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("ada".into()), "Ada");
+        presence.set_caret(&key, UserId("ada".into()), 4);
+        let caret = composer_paths(&mut app, &presence);
+        assert!(caret > empty, "remote caret drawn ({empty} -> {caret})");
+        presence.set_selection(
+            &key,
+            UserId("ada".into()),
+            SelectionRange { start: 0, end: 4 },
+        );
+        assert!(
+            composer_paths(&mut app, &presence) > caret,
+            "remote selection drawn"
+        );
+        let mut elsewhere = PresenceCtx::empty();
+        elsewhere.set_caret(
+            &ChatApp::draft_presence_key("other"),
+            UserId("ada".into()),
+            4,
+        );
+        assert_eq!(composer_paths(&mut app, &elsewhere), empty);
+        // An offset past the local draft (not converged yet) is clamped.
+        let mut ahead = PresenceCtx::empty();
+        ahead.set_caret(&key, UserId("ada".into()), 400);
+        assert!(composer_paths(&mut app, &ahead) > empty);
     }
 }

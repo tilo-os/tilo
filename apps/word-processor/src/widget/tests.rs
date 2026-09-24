@@ -754,7 +754,9 @@ fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::Encoded
         .unwrap_or_else(|| panic!("spec {id}"));
     match &spec.input {
         tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("{id} is immediate")
+        }
     }
 }
 
@@ -3939,6 +3941,9 @@ fn menu_ux_host_undo_cannot_edit_behind_an_open_menu() {
             _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
         }
         let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+        // Ctrl+Z is the host undo binding under these conventions; on a macOS
+        // build host the default conventions bind undo to Cmd instead.
+        driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
         driver.set_modifiers(&["ctrl".into()]);
         driver.key("z");
         assert_eq!(

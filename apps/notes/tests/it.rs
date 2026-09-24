@@ -18,6 +18,8 @@ mod e2e_smoke;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
+#[path = "live_block_anchor.rs"]
+mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
 mod main_panel_scroll;
 #[path = "markdown_marks_roundtrip.rs"]
@@ -101,3 +103,6 @@ mod hosting;
 
 #[path = "capture_runtime.rs"]
 mod capture_runtime;
+
+#[path = "continuation_discovery.rs"]
+mod continuation_discovery;

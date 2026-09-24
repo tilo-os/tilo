@@ -512,7 +512,8 @@ fn drive_photo_peer(
                         })
                         .and_then(|spec| match &spec.input {
                             tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            tilo_actions::ActionInput::Prompted { .. } => None,
+                            tilo_actions::ActionInput::Prompted { .. }
+                            | tilo_actions::ActionInput::Deferred { .. } => None,
                         })
                         .expect("the published export has one immediate operation payload");
                     let result =

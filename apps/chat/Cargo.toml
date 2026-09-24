@@ -23,6 +23,7 @@ default = ["live-media"]
 # the shipped app; disable default features only for explicitly media-free
 # builds and hermetic tests.
 live-media = [
+    "media/voice",
     "dep:gstreamer",
     "dep:gstreamer-app",
     "dep:iroh",
@@ -82,4 +83,5 @@ serial_test.workspace = true
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+media = { path = "../../crates/media/core", default-features = false }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }

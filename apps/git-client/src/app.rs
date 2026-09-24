@@ -3858,7 +3858,8 @@ mod tests {
             .unwrap();
         let palette_action = match &spec.input {
             tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
                 panic!("diff-layout is an immediate action")
             }
         };

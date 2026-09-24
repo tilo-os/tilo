@@ -295,7 +295,8 @@ fn invoke_published_operation(
         .into_iter()
         .filter_map(|entry| match &entry.action.input {
             tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-            tilo_actions::ActionInput::Prompted { .. } => None,
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => None,
         })
         .find(|encoded| {
             crate::actions::decode_operation(&encoded.type_id, &encoded.payload)

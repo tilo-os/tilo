@@ -21,7 +21,7 @@ use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::{
     PaintContext, band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label,
-    legible_on, palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
+    legible_on, palette_color, push_clip, stroke_round, text, truncate_to,
 };
 
 /// Body text size for a message. Shared by the measure and the draw so a
@@ -1049,7 +1049,7 @@ impl ChatApp {
         );
     }
 
-    /// The deafen + mute toggle buttons on the right of the identity bar,
+    /// The native microphone control on the right of the identity bar,
     /// shown only while a call is active.
     fn draw_call_controls(
         &self,
@@ -1070,35 +1070,6 @@ impl ChatApp {
         let cy = bar.center().y;
         let mute_x1 = bar.x1 - f64::from(sp.s3);
         let mute = Rect::new(mute_x1 - ctl, cy - ctl / 2.0, mute_x1, cy + ctl / 2.0);
-        let deaf_x1 = mute.x0 - f64::from(sp.s1);
-        let deaf = Rect::new(deaf_x1 - ctl, cy - ctl / 2.0, deaf_x1, cy + ctl / 2.0);
-        fill_round(
-            scene,
-            tf,
-            deaf,
-            8.0,
-            if self.call.deafened {
-                c.semantic.danger
-            } else {
-                c.lift(0.72)
-            },
-        );
-        let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
-        let (dw, dh) = tr.measure(dglyph, IDENTITY_CTL_GLYPH, None);
-        text(
-            scene,
-            tr,
-            tf,
-            dglyph,
-            IDENTITY_CTL_GLYPH,
-            c.text_primary,
-            deaf.center().x - f64::from(dw) / 2.0,
-            deaf.center().y - f64::from(dh) / 2.0,
-            TextWeight::Regular,
-            None,
-        );
-        ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
-
         fill_round(
             scene,
             tf,
@@ -1439,62 +1410,35 @@ impl ChatApp {
         } = paint;
         let c = &theme.tokens.colors;
         let row_h = voice_row_h(tr, theme);
-        for m in self.voice_in(channel_id) {
-            if let Some(u) = self.user(&m.user) {
-                let mrow = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + row_h);
-                let radius = 9.0;
-                let cc = Point::new(mrow.x0 + radius + 2.0, mrow.center().y);
-                if m.talking && !m.muted {
-                    stroke_circle(scene, tf, cc, radius + 2.5, c.semantic.success, 2.0);
-                }
-                draw_avatar(
-                    PaintContext::new(scene, tf, tr, theme),
-                    cc,
-                    radius,
-                    &u.initials,
-                    u.color_idx,
-                    None,
-                );
-                let nm = truncate_to(tr, &u.name, VOICE_NAME_SIZE, mrow.width() - 60.0);
-                let ncol = if m.talking && !m.muted {
-                    c.text_primary
-                } else {
-                    c.text_dim
-                };
-                let (_, nh) = tr.measure(&nm, VOICE_NAME_SIZE, None);
-                label(
-                    scene,
-                    tr,
-                    tf,
-                    &nm,
-                    VOICE_NAME_SIZE,
-                    ncol,
-                    mrow.x0 + 2.0 * radius + 8.0,
-                    line_top(mrow.center().y, f64::from(nh)),
-                );
-                // mic / audio-only state glyphs on the right.
-                let state_glyph = if m.muted {
-                    Some(("🔇", c.semantic.danger))
-                } else if m.audio_only {
-                    Some(("🎧", c.text_dim))
-                } else {
-                    None
-                };
-                if let Some((glyph, col)) = state_glyph {
-                    let (_, gh) = tr.measure(glyph, UNREAD_BADGE_TEXT, None);
-                    label(
-                        scene,
-                        tr,
-                        tf,
-                        glyph,
-                        UNREAD_BADGE_TEXT,
-                        col,
-                        mrow.x1 - 18.0,
-                        line_top(mrow.center().y, f64::from(gh)),
-                    );
-                }
-                y += row_h + CHANNEL_ROW_GAP;
-            }
+        for stream in self.voice_in(channel_id) {
+            let row = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + row_h);
+            let radius = 9.0;
+            draw_avatar(
+                PaintContext::new(scene, tf, tr, theme),
+                Point::new(row.x0 + radius + 2.0, row.center().y),
+                radius,
+                "♫",
+                0,
+                None,
+            );
+            let name = truncate_to(
+                tr,
+                &self.user_name(&stream.user),
+                VOICE_NAME_SIZE,
+                row.width() - 40.0,
+            );
+            let (_, height) = tr.measure(&name, VOICE_NAME_SIZE, None);
+            label(
+                scene,
+                tr,
+                tf,
+                &name,
+                VOICE_NAME_SIZE,
+                c.text_dim,
+                row.x0 + 2.0 * radius + 8.0,
+                line_top(row.center().y, f64::from(height)),
+            );
+            y += row_h + CHANNEL_ROW_GAP;
         }
         y
     }
@@ -3140,6 +3084,44 @@ impl ChatApp {
         self.composer_main.apply_layout_external(inner);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
+        let key = ChatApp::draft_presence_key(&self.active_channel);
+        Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
+    }
+
+    /// Collaborators' carets and selections in a shared draft, drawn with the
+    /// composer's own caret/selection geometry (pixel-identical, recoloured).
+    fn draw_draft_presence(
+        composer: &ui::widget::TextInput,
+        key: &ui::presence::PresenceKey,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let len = composer.value().len();
+        if let Some(list) = presence.selections.get(key) {
+            for (user, range) in list {
+                let (start, end) = (range.start.min(len), range.end.min(len));
+                for rect in composer.selection_rects(theme, start, end) {
+                    presence.draw_peer_selection(scene, theme, tf, user, rect);
+                }
+            }
+        }
+        if let Some(list) = presence.carets.get(key) {
+            for (user, caret) in list {
+                let name = presence.display_name(user);
+                presence.draw_peer_caret_labeled(
+                    scene,
+                    theme,
+                    tr,
+                    tf,
+                    user,
+                    &name,
+                    composer.caret_rect(theme, (*caret).min(len)),
+                );
+            }
+        }
     }
 
     /// A viewer must never be handed an editable-looking field that silently
@@ -3353,6 +3335,10 @@ impl ChatApp {
         self.composer_thread.apply_layout_external(inner);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
+        if let Some(draft) = self.thread_draft_key() {
+            let key = ChatApp::draft_presence_key(&draft);
+            Self::draw_draft_presence(&self.composer_thread, &key, scene, tf, tr, theme, presence);
+        }
     }
 
     /// The thread panel header: title, active channel name, and the close

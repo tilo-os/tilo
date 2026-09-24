@@ -166,28 +166,24 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 /// app via `virtual-keyboard-v1` (or a no-op when that protocol is absent). This
 /// is the path when there is no input method to drive auto-show.
 fn run_always_visible(args: &LaunchArgs, purpose: Option<InputPurpose>) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    let mut injector = default_injector();
-    tracing::info!("osk: text-injection backend = {}", injector.backend_name());
-    let widget = OskWidget::new().on_key(move |action| {
-        injector.key_action(&action);
-    });
-    // Production uses a wlr-layer-shell overlay; this launch path uses a plain
-    // `ui::App` window. The prepared builder applies the initial purpose.
-    // Deliberately no `--headless-drive` hook. Every key this widget commits
-    // is forwarded to `injector`, which types into whatever application holds
-    // focus in the live session — driving it from a test harness would inject
-    // keystrokes into the user's desktop.
-
-    let app = build_always_visible_app(
-        launch_spec(),
-        args,
-        wake_scope,
-        widget,
-        purpose,
-        LaunchSpec::build_prepared_root,
-    )?;
+    let prepared = launch_spec().prepare_native(args)?;
+    let mut app = prepared
+        .build_root_with_history(|| {
+            let mut injector = default_injector();
+            tracing::info!("osk: text-injection backend = {}", injector.backend_name());
+            let mut widget = OskWidget::new().on_key(move |action| {
+                injector.key_action(&action);
+            });
+            if let Some(purpose) = purpose {
+                widget.set_purpose(purpose);
+            }
+            let definition = widget.document_history_definition().ok_or_else(|| {
+                LaunchError::Operation("OSK preferences History is unavailable".into())
+            })?;
+            Ok((Box::new(widget), definition))
+        })?
+        .with_window_app_id(osk::KEYBOARD_APP_ID);
+    osk::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -271,46 +267,39 @@ fn run_auto_show(
     im: InputMethodClient,
     purpose: Option<InputPurpose>,
 ) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    // The IM client is shared: the winit thread's `on_key` callback commits
-    // typed text through it, while the background thread reads focus events.
+    let prepared = launch_spec().prepare_native(args)?;
     let im = Arc::new(Mutex::new(im));
-
     let im_for_keys = Arc::clone(&im);
-    // `text-input-v3` in winit intentionally does not implement
-    // delete_surrounding_text yet. Keep the compositor-gated virtual keyboard
-    // only for non-inserting editing keys such as Backspace; printable text
-    // stays on the input-method commit path.
-    let mut editing_keys = default_injector();
-    let widget = OskWidget::new().on_key(move |action| {
-        if matches!(action, osk::KeyAction::Backspace) {
-            editing_keys.key_action(&action);
-            return;
-        }
-        // Turn the committed action into text and send it via the input method.
-        // State-only actions (shift/symbols/layout) and Backspace produce no
-        // commit string; the guarded virtual keyboard path above handles the
-        // latter until winit consumes delete_surrounding_text.
-        if let Some(text) = osk::inject::action_symbols(&action)
-            .into_iter()
-            .map(symbol_to_commit_text)
-            .collect::<Option<String>>()
-            && !text.is_empty()
-            && let Ok(mut im) = im_for_keys.lock()
-        {
-            im.commit_text(&text);
-        }
-    });
-    // Initial purpose is still replaced by the next current IM focus event.
-    let app = build_auto_show_app(
-        launch_spec(),
-        args,
-        wake_scope,
-        widget,
-        purpose,
-        LaunchSpec::build_prepared_root,
-    )?;
+    let mut app = prepared
+        .build_root_with_history(|| {
+            let mut editing_keys = default_injector();
+            let mut widget = OskWidget::new()
+                .on_key(move |action| {
+                    if matches!(action, osk::KeyAction::Backspace) {
+                        editing_keys.key_action(&action);
+                        return;
+                    }
+                    if let Some(text) = osk::inject::action_symbols(&action)
+                        .into_iter()
+                        .map(symbol_to_commit_text)
+                        .collect::<Option<String>>()
+                        && !text.is_empty()
+                        && let Ok(mut im) = im_for_keys.lock()
+                    {
+                        im.commit_text(&text);
+                    }
+                })
+                .hidden();
+            if let Some(purpose) = purpose {
+                widget.set_purpose(purpose);
+            }
+            let definition = widget.document_history_definition().ok_or_else(|| {
+                LaunchError::Operation("OSK preferences History is unavailable".into())
+            })?;
+            Ok((Box::new(widget), definition))
+        })?
+        .with_window_app_id(osk::KEYBOARD_APP_ID);
+    osk::actions::register(app.action_registry_mut());
 
     // Spawn the input-method reader once the event loop proxy exists, so it can
     // push show/hide/purpose commands into the loop.

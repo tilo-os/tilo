@@ -83,6 +83,12 @@ pub const CHAT_OPERATION_TYPE: &str = "chat.operation";
 /// document or its undo/history stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatOperation {
+    /// Local host service command. Neither authority nor capture consent is
+    /// carried in this replay-free effect.
+    NativeVoice {
+        channel: String,
+        request: ui::native_media::Request,
+    },
     OpenWorkspace {
         workspace: String,
     },
@@ -1454,6 +1460,7 @@ fn build_channel_resource(
         "chat.channel",
         channel_label(ch),
     )
+    .with_action(crate::semantic_read::action::spec(&ch.id))
     .with_action(view_operation(
         "open",
         "Open conversation",
@@ -1561,10 +1568,8 @@ fn build_channel_resource(
         &delete_channel_action(&ch.id),
     ));
 
-    // A voice channel owns one durable call resource. The call's capture and
-    // transport remain local effects, but every shared membership/control fact
-    // lives beneath this same canonical address for history, collaboration, and
-    // palette invocation.
+    // A stable channel address exposes local call effects. Durable history
+    // remains separate from current call authority, presence, and consent.
     if ch.kind == ChannelKind::Voice {
         channel = channel.with_child(build_call_resource(ctx, doc, workspace_id, ch));
     }
@@ -1577,19 +1582,15 @@ fn build_channel_resource(
     channel
 }
 
-/// The shared-state half of a voice call. The ticket and screen-capture source
-/// deliberately have no prompted action: both are opaque local transport
-/// outputs, not values a caller can safely invent. Join/leave and each visible
-/// call preference are ordinary replayable document actions.
+/// Governed call controls are local effects. Durable legacy membership rows
+/// never establish a live session or microphone permission.
 fn build_call_resource(
-    ctx: &ChatResourceCtx,
-    doc: &AutoCommit,
+    _ctx: &ChatResourceCtx,
+    _doc: &AutoCommit,
     workspace_id: &str,
     ch: &ChannelResource,
 ) -> Resource {
-    let member = ChatDoc::list_voice_members(doc, &ch.id)
-        .into_iter()
-        .find(|member| member.user == ctx.me);
+    use ui::native_media::Command;
     let mut call = Resource::new(
         format!("chat.call:{}", ch.id),
         "chat.call",
@@ -1599,73 +1600,75 @@ fn build_call_resource(
         "open",
         "Open call conversation",
         &ChatOperation::OpenChannel {
-            workspace: workspace_id.to_string(),
+            workspace: workspace_id.into(),
             channel: ch.id.clone(),
         },
     ));
-    if let Some(member) = member {
-        call = call.with_action(immediate_spec(
-            "leave",
-            "Leave call",
-            &leave_call_action(&ch.id, &ctx.me),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.muted { "unmute" } else { "mute" },
-            if member.muted { "Unmute" } else { "Mute" },
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                !member.muted,
-                member.deafened,
-                member.audio_only,
-            ),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.deafened {
-                "undeafen"
-            } else {
-                "deafen"
-            },
-            if member.deafened {
-                "Undeafen"
-            } else {
-                "Deafen"
-            },
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                member.muted,
-                !member.deafened,
-                member.audio_only,
-            ),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.audio_only {
-                "enable-camera"
-            } else {
-                "audio-only"
-            },
-            if member.audio_only {
-                "Enable camera"
-            } else {
-                "Audio only"
-            },
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                member.muted,
-                member.deafened,
-                !member.audio_only,
-            ),
-        ));
-    } else {
-        call = call.with_action(immediate_spec(
+    for (id, label, command) in [
+        (
             "join",
-            "Join call",
-            &join_call_action(&ch.id, &ctx.me),
-        ));
+            "Join muted",
+            Command::Join {
+                channel_id: ch.id.clone(),
+            },
+        ),
+        ("leave", "Leave call", Command::Leave),
+        ("mute", "Mute microphone", Command::SetMuted { muted: true }),
+        (
+            "unmute",
+            "Request microphone",
+            Command::SetMuted { muted: false },
+        ),
+        ("status", "Call status", Command::Status),
+    ] {
+        call = call.with_action(voice_operation(id, label, &ch.id, command));
     }
-    call
+    call.with_action(ActionSpec::prompted_operation(
+        "select-input",
+        "Select microphone",
+        "Input",
+        "Input from call status",
+        OperationKind::Effect,
+        CHAT_OPERATION_TYPE,
+        {
+            let channel = ch.id.clone();
+            move |input: &str| {
+                EncodedAction::encode_operation(
+                    CHAT_OPERATION_TYPE,
+                    &ChatOperation::NativeVoice {
+                        channel: channel.clone(),
+                        request: ui::native_media::Request::new(Command::SelectInput {
+                            input_id: input.trim().into(),
+                        }),
+                    },
+                )
+                .expect("native call request is serializable")
+            }
+        },
+    ))
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "native call commands contain only serializable bounded values"
+)]
+pub(crate) fn voice_operation(
+    id: &str,
+    label: &str,
+    channel: &str,
+    command: ui::native_media::Command,
+) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::Effect,
+        CHAT_OPERATION_TYPE,
+        &ChatOperation::NativeVoice {
+            channel: channel.into(),
+            request: ui::native_media::Request::new(command),
+        },
+    )
+    .expect("native call request is serializable")
 }
 
 /// A message resource: edit/react (prompted), pin-or-unpin, and delete.
@@ -1880,7 +1883,25 @@ fn now_secs() -> i64 {
 
 impl ResourceProvider for crate::app::ChatApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.chat_resource_ctx(), doc)
+        let ctx = self.chat_resource_ctx();
+        // Heads identify the committed document exactly; frames with pending
+        // (uncommitted) operations rebuild.
+        if automerge::transaction::Transactable::pending_ops(doc) != 0 {
+            return provide_resources(&ctx, doc);
+        }
+        let heads: Vec<String> = automerge::transaction::Transactable::base_heads(doc)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let key = format!("{heads:?}|{ctx:?}");
+        if let Some((cached, resources)) = self.resource_memo.borrow().as_ref()
+            && *cached == key
+        {
+            return resources.clone();
+        }
+        let resources = provide_resources(&ctx, doc);
+        *self.resource_memo.borrow_mut() = Some((key, resources.clone()));
+        resources
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1908,14 +1929,18 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -1932,6 +1957,23 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    #[test]
+    fn native_voice_resources_are_local_effects_despite_legacy_membership() {
+        let mut doc = seeded();
+        ChatDoc::voice_join(&mut doc, "c_standup", model::ME);
+        let call = resolve_resource(&ctx_from(&doc), &doc, "chat.call:c_standup").unwrap();
+        let leave = call.actions.iter().find(|a| a.id == "leave").unwrap();
+        assert_eq!(leave.kind, OperationKind::Effect);
+        assert_eq!(leave.operation_type.as_deref(), Some(CHAT_OPERATION_TYPE));
+        assert!(
+            call.actions.iter().any(|a| a.id == "join"),
+            "durable rows cannot claim a local session"
+        );
+        assert!(!call.actions.iter().any(|a| a.id == "enable-camera"));
+        assert!(call.actions.iter().any(|a| a.id == "status"));
+        assert!(call.actions.iter().any(|a| a.id == "select-input"));
     }
 
     fn ctx_from(doc: &AutoCommit) -> ChatResourceCtx {
@@ -1993,7 +2035,7 @@ mod tests {
         reason = "the resource covenant is intentionally asserted as one end-to-end inventory"
     )]
     fn ctrl_k_publishes_workspace_channel_and_message_tree() {
-        let mut doc = seeded();
+        let doc = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
         let ws = resources
             .iter()
@@ -2082,28 +2124,23 @@ mod tests {
             .iter()
             .find(|action| action.id == "join")
             .expect("join action");
-        let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
-        let joined = registry().decode(&immediate_encode(join)).unwrap();
-        let mut transport = LocalTransport::new();
-        tilo_actions::dispatch(
-            &mut call_doc,
-            joined.as_ref(),
-            immediate_encode(join),
-            &mut transport,
-        )
-        .unwrap();
-        let joined_call = resolve_resource(&ctx, &call_doc, "chat.call:c_huddle").unwrap();
-        let joined_actions: Vec<_> = joined_call
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for want in ["leave", "mute", "deafen", "audio-only"] {
-            assert!(
-                joined_actions.contains(&want),
-                "call missing {want}: {joined_actions:?}"
-            );
+        assert_eq!(join.kind, OperationKind::Effect);
+        let operation: ChatOperation =
+            serde_json::from_slice(&immediate_encode(join).payload).unwrap();
+        assert!(matches!(
+            operation,
+            ChatOperation::NativeVoice {
+                request: ui::native_media::Request {
+                    command: ui::native_media::Command::Join { .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        for want in ["leave", "mute", "unmute", "status"] {
+            assert!(call_actions.contains(&want));
         }
+        assert!(!call_actions.contains(&"deafen") && !call_actions.contains(&"audio-only"));
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.

@@ -2318,7 +2318,8 @@ mod tests {
         assert_eq!(retry.kind, OperationKind::Effect);
         let encoded = match &retry.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("retry is immediate"),
         };
         assert!(
             app.invoke_resource_operation(

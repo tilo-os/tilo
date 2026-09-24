@@ -120,22 +120,18 @@ fn build_prepared_terminal_app(
 }
 
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    let widget = TerminalWidget::spawn_default()
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    // Arm the PTY-reader waker so the event loop idles between output instead of
-    // polling at ~60 Hz: grab the handle before moving the widget into the App,
-    // then store the loop's proxy once it exists.
-    let waker = widget.waker_handle();
     let spec = launch_spec();
-    let app = build_prepared_terminal_app(
-        &spec,
-        args,
-        wake_scope,
-        Box::new(widget),
-        LaunchSpec::build_prepared_root,
-    )?;
+    let prepared = spec.prepare_native(args)?;
+    let mut waker = None;
+    let app = prepared.build_root(|| {
+        let widget = TerminalWidget::spawn_default()
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        waker = Some(widget.waker_handle());
+        Ok(Box::new(widget))
+    })?;
+    let waker = waker.ok_or_else(|| {
+        LaunchError::Operation("terminal factory did not retain its PTY waker".into())
+    })?;
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
             *g = Some(proxy);

@@ -38,6 +38,7 @@ mod block_order;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod capture;
 pub mod component;
+mod continuation;
 pub mod framework_history;
 pub mod production;
 pub use component::definition;

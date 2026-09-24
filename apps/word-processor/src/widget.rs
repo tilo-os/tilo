@@ -4,6 +4,9 @@
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
 //! pointer + keyboard onto the editing model (selection, formatting, save).
 
+mod native_file_choice;
+mod resource_file_jobs;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -1293,6 +1296,11 @@ pub struct WordProcessorWidget {
     /// A materialized snapshot supplied only by the headless visual scenario.
     /// Interactive threads always resolve their current value from `review`.
     thread_snapshot: Option<qdoc::snapshot::CommentView>,
+    /// Last published resource tree with the exact inputs it was built from
+    /// (committed heads, resource context, file context). The framework
+    /// rediscovers resources on every relayout (pointer, scroll, echoed
+    /// remote state), and building them materializes the whole document.
+    pub(crate) resource_memo: std::cell::RefCell<Option<(String, Vec<tilo_actions::Resource>)>>,
     thread_reply: TextInput,
     thread_panel: Rect,
     thread_submit: Rect,
@@ -1330,7 +1338,15 @@ pub struct WordProcessorWidget {
     portal_purpose: Option<PortalPurpose>,
     resource_file_invocation: Option<tilo_actions::InvocationId>,
     resource_file_result: Option<tilo_actions::InvocationUpdate>,
+    file_job_scopes:
+        HashMap<tilo_actions::InvocationId, ui::invocation_scope::ResourceInvocationScope>,
+    scoped_file_results: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, std::path::PathBuf)>,
+    file_history: Option<ui::record::FileHistoryReader>,
+    file_choice: Option<native_file_choice::FileChoice>,
+    file_choice_generation: u64,
+    file_choice_domain: Option<ui::ControlDomain>,
+    pending_file_choice: Option<(tilo_actions::InvocationId, u64, bool)>,
     /// A resource-invoked revision to focus after the next mutable sync has
     /// refreshed the history model. `invoke_resource_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
@@ -1472,6 +1488,7 @@ impl WordProcessorWidget {
             review: ReviewOverlay::default(),
             thread_comment: None,
             thread_snapshot: None,
+            resource_memo: std::cell::RefCell::new(None),
             thread_reply: TextInput::local()
                 .with_kind(TextInputKind::Prose)
                 .with_id("word_processor_comment_reply")
@@ -1495,7 +1512,14 @@ impl WordProcessorWidget {
             portal_purpose: None,
             resource_file_invocation: None,
             resource_file_result: None,
+            file_job_scopes: HashMap::new(),
+            scoped_file_results: HashMap::new(),
             pending_resource_open: None,
+            file_history: None,
+            file_choice: None,
+            file_choice_generation: 0,
+            file_choice_domain: None,
+            pending_file_choice: None,
             pending_history_revision: None,
             style_menu: StyleMenu::default(),
             toast: None,
@@ -1898,6 +1922,14 @@ impl WordProcessorWidget {
             );
         }
         self.inner.clear_anchor();
+    }
+
+    pub(crate) fn file_continuation_context(&self) -> crate::actions::continuation::FileContext {
+        crate::actions::continuation::FileContext {
+            path: self.path.clone(),
+            format: self.format,
+            canonical: self.canonical,
+        }
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
@@ -2497,31 +2529,40 @@ impl WordProcessorWidget {
     /// becomes the document's path. Also the fallback first-save path for an
     /// untitled document (no more silent `~/Untitled.md`).
     fn request_save_as(&mut self) {
+        let _ = self.request_save_as_for_job(None);
+    }
+
+    fn request_save_as_for_job(
+        &mut self,
+        scope: Option<&ui::invocation_scope::ResourceInvocationScope>,
+    ) -> Result<(), String> {
         if self.portal_rx.is_some() {
-            return;
+            return Ok(());
         }
         // Pre-fill the current file name, or a sensible untitled default.
         let suggested = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
             || "Untitled.md".to_string(),
             |f| f.to_string_lossy().into_owned(),
         );
-        self.portal_rx = Some(
-            portal::PickRequest::save("Save as", "Save", &suggested)
-                .filter(portal::FileFilter::new("Word document").glob("*.docx"))
-                .filter(portal::FileFilter::new("OpenDocument text").glob("*.odt"))
-                .filter(
-                    portal::FileFilter::new("Markdown")
-                        .glob("*.md")
-                        .glob("*.markdown"),
-                )
-                .filter(portal::FileFilter::new("Rich Text").glob("*.rtf"))
-                .filter(portal::FileFilter::new("HTML").glob("*.html").glob("*.htm"))
-                .filter(portal::FileFilter::new("PDF").glob("*.pdf"))
-                .filter(portal::FileFilter::new("EPUB").glob("*.epub"))
-                .thread_name("wp-portal-save")
-                .send(),
-        );
+        let request = portal::PickRequest::save("Save as", "Save", &suggested)
+            .filter(portal::FileFilter::new("Word document").glob("*.docx"))
+            .filter(portal::FileFilter::new("OpenDocument text").glob("*.odt"))
+            .filter(
+                portal::FileFilter::new("Markdown")
+                    .glob("*.md")
+                    .glob("*.markdown"),
+            )
+            .filter(portal::FileFilter::new("Rich Text").glob("*.rtf"))
+            .filter(portal::FileFilter::new("HTML").glob("*.html").glob("*.htm"))
+            .filter(portal::FileFilter::new("PDF").glob("*.pdf"))
+            .filter(portal::FileFilter::new("EPUB").glob("*.epub"))
+            .thread_name("wp-portal-save");
+        self.portal_rx = Some(match scope {
+            Some(scope) => request.send_scoped(scope.effect_scope()?),
+            None => request.send(),
+        });
         self.portal_purpose = Some(PortalPurpose::SaveAs);
+        Ok(())
     }
 
     /// Drain a completed portal request, if any, and route the chosen file by the
@@ -2554,7 +2595,11 @@ impl WordProcessorWidget {
                         }
                         Some(PortalPurpose::SaveAs) => {
                             let format = WpFormat::from_path(&path);
-                            self.try_write_to_path(state, &path, format)
+                            let scope = self
+                                .resource_file_invocation
+                                .and_then(|id| self.file_job_scopes.get(&id))
+                                .cloned();
+                            self.try_write_to_path_for_job(state, &path, format, scope.as_ref())
                         }
                         None => Ok(()),
                     }
@@ -2576,27 +2621,30 @@ impl WordProcessorWidget {
                     return;
                 }
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    self.resource_file_result = Some(match result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Err(message) if message == "file picker was cancelled" => {
-                            tilo_actions::InvocationUpdate::Cancelled {
+                    {
+                        let update = match result {
+                            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                message: Some(message),
-                            }
-                        }
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "word_processor.file_operation_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
+                                output: tilo_actions::ActionOutput::default(),
                             },
-                        },
-                    });
+                            Err(message) if message == "file picker was cancelled" => {
+                                tilo_actions::InvocationUpdate::Cancelled {
+                                    invocation,
+                                    message: Some(message),
+                                }
+                            }
+                            Err(message) => tilo_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: tilo_actions::ActionFailure {
+                                    code: "word_processor.file_operation_failed".into(),
+                                    message,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            },
+                        };
+                        self.finish_file_operation(update);
+                    };
                 }
             }
             // Still open (Empty) — leave the channel in place; a hangup
@@ -2613,15 +2661,18 @@ impl WordProcessorWidget {
                     return;
                 }
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    self.resource_file_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "word_processor.portal_worker_lost".into(),
-                            message: "file picker stopped without returning a result".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    });
+                    {
+                        let update = tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "word_processor.portal_worker_lost".into(),
+                                message: "file picker stopped without returning a result".into(),
+                                details: None,
+                                retryable: false,
+                            },
+                        };
+                        self.finish_file_operation(update);
+                    };
                 }
             }
         }
@@ -2635,6 +2686,10 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         path: &std::path::Path,
     ) -> Result<(), String> {
+        if self.file_choice.is_some() {
+            return Err("Resolve the selected file choice before opening another file".into());
+        }
+        let history = self.read_existing_file(path)?;
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -2644,6 +2699,25 @@ impl WordProcessorWidget {
             }
         };
         let format = WpFormat::from_path(path);
+        if let Some(history) = history {
+            let mut admitted = AutoCommit::new();
+            history.install_into(&mut admitted)?;
+            // Validate both graphs before changing the outgoing document.
+            qdoc::model::open(&admitted, &automerge::ROOT).map_err(|error| error.to_string())?;
+            native_file_choice::same_file_content(&admitted, &bytes, format)?;
+            admitted.set_actor(state.get_actor().clone());
+            *state = admitted;
+            self.inner = WordProcessor::new();
+            self.inner.bind(state, &automerge::ROOT);
+            self.adopt_existing_file(state, path.to_path_buf(), bytes, format)?;
+            self.refresh_blocks(state);
+            self.layout_cache.clear();
+            self.recent_layout_cache.clear();
+            self.spell_cache.clear();
+            self.lifecycle.needs_commit = true;
+            self.lifecycle.dirty = true;
+            return Ok(());
+        }
         if !self.inner.replace_with_format(state, &bytes, format) {
             self.toast = Some((t("toast-open-failed"), ToastKind::Error));
             self.lifecycle.dirty = true;
@@ -2698,11 +2772,24 @@ impl WordProcessorWidget {
         path: &std::path::Path,
         format: WpFormat,
     ) -> Result<(), String> {
+        self.try_write_to_path_for_job(state, path, format, None)
+    }
+
+    fn try_write_to_path_for_job(
+        &mut self,
+        state: &AutoCommit,
+        path: &std::path::Path,
+        format: WpFormat,
+        scope: Option<&ui::invocation_scope::ResourceInvocationScope>,
+    ) -> Result<(), String> {
         self.lifecycle.dirty = true;
         if let Some(c) = self.inner.containers.as_ref() {
             let dr = qdoc::DocRef { doc: state, c };
             match format.export(dr) {
                 Ok(bytes) => {
+                    if let Some(scope) = scope {
+                        scope.check()?;
+                    }
                     atomic_file::write_preserving_target(path, &bytes).map_err(|e| {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
                         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
@@ -2721,8 +2808,14 @@ impl WordProcessorWidget {
         }
         if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
             // Clear the old identity's recovery before adopting the new path.
+            if let Some(scope) = scope {
+                scope.check()?;
+            }
             self.clear_recovery();
             self.set_file(path.to_path_buf(), format);
+            if let Some(scope) = scope {
+                scope.check()?;
+            }
             self.clear_recovery();
             self.save_status = DocumentSaveStatus::Clean;
             self.remember_saved_document(state);
@@ -5557,6 +5650,9 @@ impl WordProcessorWidget {
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if let Some(offer) = &self.file_choice {
+            return A11yTreeNode::leaf(offer.accessibility());
+        }
         if let Some(dialog) = self.unsaved_changes.accessibility() {
             return A11yTreeNode::leaf(dialog);
         }
@@ -5619,6 +5715,30 @@ impl WordProcessorWidget {
 /// [`WordProcessorWidget::draw_frame_chrome`] and threaded through `draw`'s
 /// other per-pass helpers below — split out so `draw` itself stays under the
 /// line-count limit.
+/// The canvas clip as a vertical band in the coordinates of a laid text item
+/// whose top is at `ly` (before the canvas transform), with a margin for
+/// decorations drawn just outside their line box. Decorations of lines outside
+/// the band cannot reach the clip. A degenerate transform yields NaN bounds,
+/// which cull nothing.
+fn layout_clip_band(fg: &FrameGeometry, ly: f64) -> (f32, f32) {
+    let local = fg.ctf.inverse().transform_rect_bbox(fg.canvas_clip);
+    ((local.y0 - ly - 8.0) as f32, (local.y1 - ly + 8.0) as f32)
+}
+
+/// The spans that can intersect the visible source range (see
+/// `RichTextLayout::source_range_within`); the others have no rectangle in
+/// the band. Order is preserved.
+fn spans_within(spans: &[(usize, usize)], visible: Option<(usize, usize)>) -> Vec<(usize, usize)> {
+    match visible {
+        Some((start, end)) => spans
+            .iter()
+            .copied()
+            .filter(|&(span_start, span_end)| span_end >= start && span_start <= end)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
 struct FrameGeometry {
     canvas: Rect,
     /// Conservative bounds of the actual canvas clip in final scene space.
@@ -6657,9 +6777,12 @@ impl WordProcessorWidget {
                 self.dbg_layout_hits += 1;
                 lay
             }
-            _ => {
+            previous => {
                 self.dbg_layout_misses += 1;
-                RichTextLayout::shape(
+                // An edited block keeps the shaped lines it did not change
+                // (its other paragraphs, or the untouched chunks of a huge
+                // paragraph); any style or width change reshapes it all.
+                RichTextLayout::shape_reusing(
                     &mut text_renderer.font_system,
                     &runs,
                     base_bold,
@@ -6670,6 +6793,7 @@ impl WordProcessorWidget {
                     underlines,
                     strikes,
                     line_mult,
+                    previous.map(|(_, layout)| layout),
                 )
             }
         };
@@ -7496,19 +7620,24 @@ impl WordProcessorWidget {
 
         // Find-match highlights (under the text).
         if self.find.is_open() {
-            for (bid, cs, ce) in self.find.matches() {
-                if bid == &l.id {
-                    let bs = char_to_byte(&l.text, *cs);
-                    let be = char_to_byte(&l.text, *ce);
-                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
-                        let r = Rect::new(
-                            l.text_x + f64::from(rx0),
-                            ly + f64::from(ry0),
-                            l.text_x + f64::from(rx1),
-                            ly + f64::from(ry1),
-                        );
-                        scene.fill(Fill::NonZero, fg.ctf, FIND_HL, None, &r);
-                    }
+            let ranges: Vec<(usize, usize)> = self
+                .find
+                .matches()
+                .iter()
+                .filter(|(bid, _, _)| bid == &l.id)
+                .map(|(_, cs, ce)| (char_to_byte(&l.text, *cs), char_to_byte(&l.text, *ce)))
+                .collect();
+            let (top, bottom) = layout_clip_band(fg, ly);
+            let ranges = spans_within(&ranges, layout.source_range_within(top, bottom));
+            for rects in layout.selection_rects_many_within(&ranges, top, bottom) {
+                for (rx0, ry0, rx1, ry1) in rects {
+                    let r = Rect::new(
+                        l.text_x + f64::from(rx0),
+                        ly + f64::from(ry0),
+                        l.text_x + f64::from(rx1),
+                        ly + f64::from(ry1),
+                    );
+                    scene.fill(Fill::NonZero, fg.ctf, FIND_HL, None, &r);
                 }
             }
         }
@@ -7629,8 +7758,12 @@ impl WordProcessorWidget {
         // `selection_rects` geometry the selection highlight uses (so it tracks
         // wrapping). The squiggle hugs just under each rect's bottom.
         if let Some(spans) = spell_by_block.get(&l.id) {
-            for &(b0, b1) in spans {
-                for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+            // One pass over the paragraph's runs for all of its spans (a
+            // pasted page can carry thousands of squiggles).
+            let (top, bottom) = layout_clip_band(fg, ly);
+            let ranges = spans_within(spans, layout.source_range_within(top, bottom));
+            for rects in layout.selection_rects_many_within(&ranges, top, bottom) {
+                for (rx0, _ry0, rx1, ry1) in rects {
                     let y = ly + f64::from(ry1) - 1.0;
                     draw_squiggle(
                         scene,
@@ -9258,6 +9391,63 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // A file-choice-only surface has one immutable, privately retained offer.
+        // Ordinary Writer also offers place-image; its replaceable process blob
+        // resolver has no inert identity yet, so the whole domain stays unknown.
+        self.file_choice.as_ref().map_or(
+            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
+            |offer| offer.continuation_domain,
+        )
+    }
+
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::semantic_read::action::READERS
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.file_choice_domain = Some(domain.clone());
+        if let Some(offer) = &mut self.file_choice {
+            offer.install_custody(domain, attachment);
+        }
+        for child in self.children_mut() {
+            child.install_control_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(offer) = &mut self.file_choice {
+            return offer.take();
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(offer) = &mut self.file_choice {
+            offer.refresh(allowed);
+        }
+        for child in self.children_mut() {
+            child.refresh_control_action_availability(allowed);
+        }
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if let Some(offer) = &self.file_choice {
+            return offer.bindings();
+        }
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
+        bindings
+    }
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
         if self.canonical {
             return Vec::new();
@@ -9373,7 +9563,8 @@ impl Widget for WordProcessorWidget {
             return Ok(false);
         };
         match operation {
-            WordProcessorOperation::Open { .. }
+            WordProcessorOperation::ResolveFileChoice { .. }
+            | WordProcessorOperation::Open { .. }
             | WordProcessorOperation::Save { .. }
             | WordProcessorOperation::SaveAs { .. } => {
                 return Err("file operations require the lifecycle-capable operation host".into());
@@ -9419,68 +9610,29 @@ impl Widget for WordProcessorWidget {
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
-        widget_path: &ObjId,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::WordProcessorOperation;
-        if cfg!(target_arch = "wasm32") && kind == tilo_actions::OperationKind::Effect {
-            return Err("file operation unsupported: no browser file/asset transport".into());
-        }
+        self.start_file_operation(invocation, kind, type_id, payload, doc, path, None)
+    }
 
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        let (destination, force_picker) = match operation {
-            WordProcessorOperation::Open { path } => {
-                if self.portal_rx.is_some()
-                    || self.pending_resource_open.is_some()
-                    || self.pending_replacement.is_some()
-                {
-                    return Err("another file operation is already running".into());
-                }
-                if let Some(path) = path {
-                    self.pending_resource_open = Some((invocation, std::path::PathBuf::from(path)));
-                } else {
-                    self.request_open_document();
-                    self.resource_file_invocation = Some(invocation);
-                }
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            WordProcessorOperation::Save { path } => (path, false),
-            WordProcessorOperation::SaveAs { path } => (path, true),
-            other => {
-                let encoded = serde_json::to_vec(&other).map_err(|error| error.to_string())?;
-                return self
-                    .invoke_resource_operation_v2(kind, type_id, &encoded, doc, widget_path)
-                    .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
-            }
-        };
-
-        if self.portal_rx.is_some()
-            || self.pending_resource_open.is_some()
-            || self.pending_replacement.is_some()
-        {
-            return Err("another file operation is already running".into());
-        }
-        if let Some(destination) = destination {
-            let destination = std::path::PathBuf::from(destination);
-            let format = WpFormat::from_path(&destination);
-            self.try_write_to_path(doc, &destination, format)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        } else if self.path.is_some() && !force_picker {
-            self.try_write_to_current_path(doc)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        } else {
-            self.request_save_as();
-            self.resource_file_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        }
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &ui::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.start_file_operation(
+            scope.invocation(),
+            kind,
+            type_id,
+            payload,
+            doc,
+            path,
+            Some(scope),
+        )
     }
 
     fn poll_resource_operation(
@@ -9490,6 +9642,23 @@ impl Widget for WordProcessorWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        self.expire_file_jobs();
+        if cancellation_requested && self.file_job_scopes.contains_key(&invocation) {
+            if let Some(scope) = self.file_job_scopes.get(&invocation) {
+                scope.cancel();
+            }
+            self.expire_file_jobs();
+            self.scoped_file_results.insert(
+                invocation,
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("file operation cancelled".into()),
+                },
+            );
+        }
+        if let Some(update) = self.scoped_file_results.remove(&invocation) {
+            return Some(update);
+        }
         if cancellation_requested
             && self.resource_file_invocation == Some(invocation)
             && self.pending_replacement.is_some()
@@ -9530,6 +9699,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.file_choice.is_some() {
+            return Err("Resolve the selected file choice before switching documents".into());
+        }
         if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
             return Err(
                 "Finish or cancel the active document edit before switching documents".into(),
@@ -9543,10 +9715,16 @@ impl Widget for WordProcessorWidget {
         self.unsaved_changes.close();
         self.resource_file_invocation = None;
         self.resource_file_result = None;
+        for scope in self.file_job_scopes.values() {
+            scope.cancel();
+        }
+        self.file_job_scopes.clear();
+        self.scoped_file_results.clear();
         Ok(())
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.expire_file_jobs();
         if self.canonical {
             self.inner.reconcile(state);
         } else {
@@ -9567,13 +9745,34 @@ impl Widget for WordProcessorWidget {
                 self.remember_saved_document(state);
             }
         }
+        if let Some((invocation, generation, use_selected)) = self.pending_file_choice.take() {
+            {
+                let update =
+                    match self.resolve_file_job(state, invocation, generation, use_selected) {
+                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "word_processor.file_choice_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    };
+                self.finish_file_operation(update);
+            };
+        }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             if self.save_status == DocumentSaveStatus::Modified {
                 self.resource_file_invocation = Some(invocation);
                 self.stage_replacement(PendingReplacement::Open(open_path));
             } else {
-                self.resource_file_result =
-                    Some(match self.try_open_document_in_place(state, &open_path) {
+                {
+                    let update = match self.try_open_document_in_place(state, &open_path) {
                         Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
                             output: tilo_actions::ActionOutput::default(),
@@ -9587,7 +9786,9 @@ impl Widget for WordProcessorWidget {
                                 retryable: false,
                             },
                         },
-                    });
+                    };
+                    self.finish_file_operation(update);
+                };
             }
         }
         // Fold in a completed host portal request (open / save / image insert),
@@ -9678,11 +9879,13 @@ impl Widget for WordProcessorWidget {
     }
 
     fn wants_tab_input(&self) -> bool {
-        self.unsaved_changes.is_open()
+        self.file_choice.is_some() || self.unsaved_changes.is_open()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.pending_replacement.is_some() {
+        if self.file_choice.is_some() {
+            Some(self.rect)
+        } else if self.pending_replacement.is_some() {
             Some(self.unsaved_changes.rect().unwrap_or(self.rect))
         } else if self.context_menu.is_open()
             || self.style_menu.is_open()
@@ -9867,6 +10070,12 @@ impl Widget for WordProcessorWidget {
     ) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        if let Some(offer) = &mut self.file_choice {
+            offer.event(event, scale_factor);
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return;
+        }
         if self.unsaved_changes.is_open() {
             if let Some(choice) = self
                 .unsaved_changes
@@ -10187,6 +10396,9 @@ impl Widget for WordProcessorWidget {
         );
         self.unsaved_changes
             .draw(scene, transform, text_renderer, theme, self.rect);
+        if let Some(offer) = &mut self.file_choice {
+            offer.draw(scene, transform, text_renderer, theme, self.rect);
+        }
         if self.unsaved_changes.is_open() {
             self.draw_toast(scene, transform, text_renderer, theme);
         }
@@ -10256,6 +10468,11 @@ impl Widget for WordProcessorWidget {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if let Some(offer) = &mut self.file_choice {
+            offer.accessible_action(action, key_path);
+            self.lifecycle.dirty = true;
+            return true;
+        }
         if self.replace_after_save {
             return true;
         }
@@ -12045,21 +12262,24 @@ impl WordProcessorWidget {
             None => return,
         };
         if let Some(invocation) = self.resource_file_invocation.take() {
-            self.resource_file_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "word_processor.open_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
+            {
+                let update = match result {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
                     },
-                },
-            });
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "word_processor.open_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                };
+                self.finish_file_operation(update);
+            };
         }
         self.lifecycle.dirty = true;
     }
@@ -12070,10 +12290,13 @@ impl WordProcessorWidget {
                 self.unsaved_changes.close();
                 self.pending_replacement = None;
                 if let Some(invocation) = self.resource_file_invocation.take() {
-                    self.resource_file_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some(t("unsaved-cancel")),
-                    });
+                    {
+                        let update = tilo_actions::InvocationUpdate::Cancelled {
+                            invocation,
+                            message: Some(t("unsaved-cancel")),
+                        };
+                        self.finish_file_operation(update);
+                    };
                 }
             }
             UnsavedChoice::Discard => self.finish_replacement(state),

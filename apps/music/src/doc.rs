@@ -165,6 +165,42 @@ pub fn is_seeded(doc: &AutoCommit) -> bool {
     get_map(doc, &ROOT, "library").is_some()
 }
 
+/// The actor of the shared empty-library change. Nobody edits as it.
+const EMPTY_SEED_ACTOR: &[u8] = b"so.tilo.music.library.empty-seed.v1";
+
+/// The canonical empty-library seed, built once per process: [`seed`] of an
+/// empty library under a fixed actor at time 0, so the same bytes everywhere.
+fn empty_seed_genesis() -> &'static [u8] {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(EMPTY_SEED_ACTOR));
+        seed(&mut doc, &Library::default(), &Playback::default());
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.save()
+    })
+}
+
+/// Seed an unseeded document with the empty library that every replica
+/// shares. Must run outside an open transaction (it applies a change).
+///
+/// [`seed`] mints `library`, `playlists`, `liked`, … under the current actor,
+/// so two replicas that each open the same unseeded record seed twice and a
+/// merge keeps one set of containers: every like, playlist or track added
+/// under the other disappears. Adopting one canonical change (fixed actor,
+/// no dependencies, time 0) makes both replicas hold the *same* containers.
+pub fn seed_empty_shared(doc: &mut AutoCommit) {
+    let untouched = doc
+        .get_all(&ROOT, "library")
+        .is_ok_and(|values| values.is_empty());
+    if untouched {
+        let _ = doc.load_incremental(empty_seed_genesis());
+    }
+    if !is_seeded(doc) {
+        seed(doc, &Library::default(), &Playback::default());
+    }
+}
+
 /// Write the full library + playback into a fresh document. A failure to
 /// create one of the top-level containers aborts the rest of that container's
 /// seeding (an existing document from a corrupt or pathological state); a
@@ -775,6 +811,32 @@ mod tests {
         let loaded = load_library(&doc);
         let pl = loaded.playlist("pl_morning").unwrap();
         assert_eq!(pl.track_ids.iter().filter(|t| *t == "tk_h1").count(), 1);
+    }
+
+    /// Two replicas open the same unseeded record and each act before
+    /// syncing: both replicas' likes and playlists must survive the merge.
+    #[test]
+    fn concurrent_first_opens_on_two_replicas_keep_both_libraries() {
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            seed_empty_shared(&mut a);
+            seed_empty_shared(&mut b);
+            set_liked(&mut a, "tk_a", true);
+            set_liked(&mut b, "tk_b", true);
+            create_playlist_with_id(&mut a, "pl_a", "A");
+            create_playlist_with_id(&mut b, "pl_b", "B");
+            a.merge(&mut b).unwrap();
+            let lib = load_library(&a);
+            assert!(
+                lib.liked.contains("tk_a") && lib.liked.contains("tk_b"),
+                "both likes survive; got {:?}",
+                lib.liked
+            );
+            assert!(has_playlist(&a, "pl_a") && has_playlist(&a, "pl_b"));
+        }
     }
 
     fn seeded_doc() -> AutoCommit {

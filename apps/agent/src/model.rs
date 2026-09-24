@@ -875,3 +875,64 @@ mod tests {
         );
     }
 }
+
+/// Decode only the launcher's explicit nonsecret profile/model/protocol tuple.
+/// Endpoint, bearer credentials and vault references never enter this contract.
+pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, String> {
+    let object = value
+        .as_object()
+        .ok_or("managed provider must be an object")?;
+    if object.len() != 3
+        || !object
+            .keys()
+            .all(|key| matches!(key.as_str(), "profile_id" | "model_id" | "protocol"))
+    {
+        return Err("unsupported managed provider fields".into());
+    }
+    let field = |name: &str| -> Result<String, String> {
+        let value = object
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or("missing managed provider field")?;
+        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+            return Err("invalid managed provider field".into());
+        }
+        Ok(value.into())
+    };
+    let protocol = match field("protocol")?.as_str() {
+        "anthropic" => agent_provider_config::ProviderProtocol::Anthropic,
+        "open_ai_compatible" => agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        _ => return Err("unsupported managed provider protocol".into()),
+    };
+    let profile_id = field("profile_id")?;
+    Ok(ProviderSelection {
+        profile_label: profile_id.clone(),
+        profile_id,
+        endpoint: String::new(),
+        protocol,
+        model: agent_provider_config::ModelDescriptor::new(field("model_id")?),
+        credential: None,
+    })
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    #[test]
+    fn managed_selection_requires_explicit_nonsecret_gateway_binding() {
+        let value = serde_json::json!({"profile_id":"profile-1","model_id":"claude-1","protocol":"anthropic"});
+        let selected = managed_provider_selection(&value).unwrap();
+        assert_eq!(selected.profile_id, "profile-1");
+        assert_eq!(selected.model.id, "claude-1");
+        assert!(selected.credential.is_none());
+        assert!(selected.endpoint.is_empty());
+        for extra in ["api_key", "endpoint", "credential"] {
+            let mut changed = value.clone();
+            changed[extra] = serde_json::json!("disallowed");
+            assert!(managed_provider_selection(&changed).is_err());
+        }
+        let mut missing = value;
+        missing.as_object_mut().unwrap().remove("model_id");
+        assert!(managed_provider_selection(&missing).is_err());
+    }
+}

@@ -36,7 +36,7 @@
 // cosmic-text, automerge, taffy and fluent -- so with `-C
 // prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
 // of baking ~18 MB of `.text` into this binary. The thin-app wrapper also
-// size-optimizes, merges, and folds repeated app-local code so the tapp meets its
+// size-optimizes, merges, and folds repeated app-local code so the qpkg meets its
 // 5 MiB wire contract without slowing the shared runtime. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
@@ -347,47 +347,38 @@ fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, L
 fn prepare_launch_inputs(
     args: &LaunchArgs,
 ) -> Result<ui::launch::LegacyLaunchInputs, Box<dyn Error>> {
-    let (mut state, widget) = build(file_arg(args))?;
-    {
-        // Give this instance a distinct CRDT actor so two editors are
-        // distinguishable authors. Nothing else is wired here: the `App`
-        // owns a `CollaborationManager`, announces itself in the workspace
-        // it was launched into, pumps remote ops into `State`, broadcasts
-        // local deltas and caret/selection presence, and feeds the
-        // resulting `PresenceCtx` into the widget's draw — all of it
-        // without an app saying so. `QUICK_APP_ID`/`TILO_USER_ID` name a
-        // known replica; a sandboxed launch has neither, so the fallback has
-        // to be sound on its own — see [`distinct_actor`].
-        let app_id =
-            named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
-        ui::diag!("word-processor: automerge actor {app_id}");
-        state
-            .doc
-            .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-
-        // The document is a record identified by its path; installing the
-        // record set routes its deltas onto that record's own channel instead
-        // of one shared by every word-processor window in the room (which
-        // would merge unrelated documents together).
-        //
-        // The set is in-memory: this app's durable form is the file on disk,
-        // not a per-record automerge store. What the set gives it is
-        // identity, routing, and the room's index of which documents it holds.
-        let room_id = std::env::var("TILO_WORKSPACE_ID")
-            .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
-            .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
-        let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
-        let records = ui::RecordSet::in_memory().with_home(room_id);
-        let mut registry = tilo_actions::ActionRegistry::new();
-        // Register the word processor's action decoder so the Ctrl+K palette and
-        // remote replay can reconstruct every document-mutating operation.
-        word_processor::actions::register(&mut registry);
-        Ok(
-            ui::launch::LegacyLaunchInputs::new(state, widget, room_autosave)
-                .with_records(records, room.doc)
-                .with_registry(registry),
-        )
-    }
+    let room_id = std::env::var("TILO_WORKSPACE_ID")
+        .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
+        .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
+    // Resolve the actual room and retained file scope before file import or
+    // untitled defaults. The index and file keep their original distinct writers.
+    let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
+    let records = ui::RecordSet::for_local_files("so.tilo.word-processor")?.with_home(room_id);
+    let (mut state, widget): (State, Box<dyn Widget>) = match file_arg(args) {
+        Some(path) => {
+            let (state, widget, _) = word_processor::open_document_with_records(path, &records)?;
+            (state, Box::new(widget))
+        }
+        None => {
+            let reader = records.file_history_reader()?;
+            reader.require_local_creation()?;
+            let mut widget = WordProcessorWidget::new();
+            widget.retain_file_history(reader);
+            (State::new(), Box::new(widget))
+        }
+    };
+    let app_id = named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
+    ui::diag!("word-processor: automerge actor {app_id}");
+    state
+        .doc
+        .set_actor(automerge::ActorId::from(app_id.as_bytes()));
+    let mut registry = tilo_actions::ActionRegistry::new();
+    word_processor::actions::register(&mut registry);
+    Ok(
+        ui::launch::LegacyLaunchInputs::new(state, widget, room_autosave)
+            .with_records(records, room.doc)
+            .with_registry(registry),
+    )
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has

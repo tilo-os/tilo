@@ -256,7 +256,8 @@ mod tests {
             .expect("search address resolves against the live resource tree");
         let encoded = match &spec.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded,
-            tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => panic!("open takes no argument"),
         };
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         assert!(

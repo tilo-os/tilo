@@ -76,13 +76,13 @@ impl ChatPermissions {
         self.ctx.check(&PermissionScope::workspace(Verb::Write))
     }
 
-    /// The call-action seam, backed by the real context. Join / Speak / Camera
-    /// / `ShareScreen` all require Write on the room (you can't transmit into a
-    /// room you can't write to); Leave is always allowed so a downgraded peer
-    /// can always drop out.
+    /// Join/listen requires Read; publication requires Write. This UI check
+    /// complements native authority and local consent, never replaces them.
+    /// Leave is always available after a permission downgrade.
     pub fn allows(&self, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
+            CallAction::Join => self.ctx.check(&PermissionScope::workspace(Verb::Read)),
             _ => self.can_participate(),
         }
     }
@@ -118,7 +118,7 @@ mod tests {
         assert!(!p.can_embed("/var/workspace/secret.png"));
         // No workspace-admin → can't post / react / start a call…
         assert!(!p.can_participate());
-        assert!(!p.allows(CallAction::Join));
+        assert!(p.allows(CallAction::Join), "room readers may listen");
         assert!(!p.allows(CallAction::Speak));
         // …but a View-only member can still read the room, and leaving a call
         // is never blocked.

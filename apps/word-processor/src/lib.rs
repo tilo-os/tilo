@@ -45,6 +45,7 @@ mod paint_context;
 mod recovery_banner;
 mod review_overlay;
 mod ruler;
+pub mod semantic_read;
 mod style_color_picker;
 mod style_menu;
 mod template_picker;
@@ -229,25 +230,50 @@ fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
 /// Fails if `path` cannot be read, or if the codec for its format rejects the
 /// bytes (a corrupt archive, or an export-only format such as PDF or EPUB).
 pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+    let records = ui::RecordSet::for_local_files("so.tilo.word-processor").map_err(invalid_data)?;
+    open_document_with_records(path, &records)
+}
+
+/// Open through the launch owner's retained file scope. Required history is
+/// consumed before importing the selected file; the file remains its sole
+/// local writer.
+pub fn open_document_with_records(
+    path: &Path,
+    records: &ui::RecordSet,
+) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+    let reader = records.file_history_reader().map_err(invalid_data)?;
+    let want = ui::RecordCheckout::new(
+        ui::RecordId::for_file(path),
+        ui::RecordKind::new("document"),
+    );
+    let history = reader.read(&want).map_err(invalid_data)?;
     let bytes = std::fs::read(path)?;
     let format = WpFormat::from_path(path);
     let mut state = ui::State::new();
-    let containers = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-    {
-        let mut dm = qdoc::DocMut {
-            doc: &mut state.doc,
-            c: &containers,
-            ids: &mut ids,
-        };
-        format.import(&bytes, &mut dm).map_err(invalid_data)?;
-    }
     let mut widget = WordProcessorWidget::new();
-    widget.set_file(path.to_path_buf(), format);
-    widget.remember_open_document(&state.doc);
-    // If a previous session crashed before saving this document, a recovery copy
-    // is still on disk — surface the crash-recovery banner (Restore / Discard).
-    widget.check_for_recovery();
+    widget.retain_file_history(reader);
+    if let Some(history) = history {
+        history.install_into(&mut state.doc).map_err(invalid_data)?;
+        widget
+            .adopt_existing_file(&state.doc, path.to_path_buf(), bytes, format)
+            .map_err(invalid_data)?;
+    } else {
+        let containers = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        format
+            .import(
+                &bytes,
+                &mut qdoc::DocMut {
+                    doc: &mut state.doc,
+                    c: &containers,
+                    ids: &mut ids,
+                },
+            )
+            .map_err(invalid_data)?;
+        widget.set_file(path.to_path_buf(), format);
+        widget.remember_open_document(&state.doc);
+        widget.check_for_recovery();
+    }
     Ok((state, widget, format))
 }
 

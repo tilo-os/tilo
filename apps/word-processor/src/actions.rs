@@ -16,8 +16,10 @@
 //! action with stale or hostile arguments is atomically refused before it can
 //! write, so callers can surface a useful error without leaving a partial edit.
 
+pub(crate) mod continuation;
+
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ReadDoc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -38,6 +40,10 @@ pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WordProcessorOperation {
+    ResolveFileChoice {
+        generation: u64,
+        use_selected: bool,
+    },
     Open {
         path: Option<String>,
     },
@@ -105,6 +111,15 @@ fn operation(
         return None;
     };
     match value {
+        WordProcessorOperation::ResolveFileChoice { use_selected, .. } => Some(
+            spec.with_contract(if *use_selected {
+                ActionContract::default()
+            } else {
+                ActionContract::view()
+            })
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        ),
         WordProcessorOperation::Open { .. }
         | WordProcessorOperation::Save { .. }
         | WordProcessorOperation::SaveAs { .. } => Some(
@@ -473,31 +488,19 @@ fn splice_target_len(
     region: RegionKind,
     id: &str,
 ) -> Option<usize> {
-    use automerge::{ObjType, ScalarValue, Value};
-    use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+    use automerge::{ScalarValue, Value};
+    use qdoc::schema::BLOCK_ORDER;
 
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
-    let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
-    };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
-        return None;
-    };
+    // qdoc's own resolution, so a header/footer block that lives in a
+    // concurrently created legacy container validates like it writes.
+    let block = qdoc::model::region_block_obj(doc, c, region.to_region(), id)?;
     match doc.get(&block, BLOCK_ORDER) {
         Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
         _ => return None,
     }
-    let text = match doc.get(&block, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
-        _ => String::new(),
-    };
+    // Same projection as `materialize_block` (including a legacy scalar or
+    // conflicted `text` value), so validation and the write agree on offsets.
+    let text = qdoc::model::block_text_on(doc, &block).unwrap_or_default();
     Some(text.chars().count())
 }
 
@@ -1037,29 +1040,6 @@ impl<'a> ActionValidator<'a> {
 // writes marks the same way the live editor does across body / header / footer.
 // ---------------------------------------------------------------------------
 
-fn region_map_obj(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(root, key) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-fn region_block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-/// Resolve a region's block-container map object live from the document root.
-fn region_container_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
-    match region {
-        Region::Body => Some(c.blocks.clone()),
-        Region::Header => region_map_obj(doc, &c.root, qdoc::schema::KEY_HEADER),
-        Region::Footer => region_map_obj(doc, &c.root, qdoc::schema::KEY_FOOTER),
-    }
-}
-
 fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, value: &MarkVal) {
     match region {
         Region::Body => match value {
@@ -1085,10 +1065,8 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
     // Header/Footer: no `remove_mark_in` op — clear the mark directly on the
     // region block's Text object (mirrors the body `remove_mark`'s
     // `unmark(.., ExpandMark::After)`).
-    if let Some(container) = region_container_obj(dm.doc, c, region)
-        && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
-        && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-            dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
+    if let Some(obj) = qdoc::model::region_block_obj(dm.doc, c, region, &span.block)
+        && let Some(tid) = qdoc::model::ensure_block_text(dm.doc, &obj)
     {
         let _ = dm.doc.unmark(
             &tid,
@@ -1120,9 +1098,7 @@ fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, valu
 fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
     if region == Region::Body {
         dm.set_kind(block, kind);
-    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region)
-        && let Some(block_obj) = region_block_obj(dm.doc, &container, block)
-    {
+    } else if let Some(block_obj) = qdoc::model::region_block_obj(dm.doc, dm.c, region, block) {
         let _ = dm.doc.put(&block_obj, qdoc::schema::BLOCK_KIND, kind);
     }
 }
@@ -2590,15 +2566,16 @@ fn document_resource() -> Resource {
         "word_processor.document",
         "Document",
     )
+    .with_action(crate::semantic_read::action::spec())
 }
 
-fn add_file_operations(root: &mut Resource) {
+fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root.actions.push(
+        root.actions.push(continuation::file(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -2630,7 +2607,9 @@ fn add_file_operations(root: &mut Resource) {
             .destructive()
             .execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
-        );
+            variant,
+            file,
+        ));
     }
 }
 
@@ -2688,26 +2667,31 @@ fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     }
     let spans = ctx.format_spans.clone();
     let region = ctx.region;
-    root.actions.push(ActionSpec::typed(
-        "set-hyperlink",
-        "Add or change hyperlink",
-        "Web URL (https://… or mailto:…) or #bookmark",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            "target",
-            ParamType::Text,
-            "A safe external URL, mail address, or document-local #bookmark target",
-        )],
-        move |args: &ActionArgs| {
-            let target = args.text("target").unwrap_or_default().trim();
-            if !valid_hyperlink_target(target) {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"hyperlink target must use https:, mailto:, or #bookmark".to_vec(),
-                };
-            }
-            encode(&set_hyperlink_action(region, spans.clone(), target))
-        },
+    root.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "set-hyperlink",
+            "Add or change hyperlink",
+            "Web URL (https://… or mailto:…) or #bookmark",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "target",
+                ParamType::Text,
+                "A safe external URL, mail address, or document-local #bookmark target",
+            )],
+            move |args: &ActionArgs| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if !valid_hyperlink_target(target) {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"hyperlink target must use https:, mailto:, or #bookmark"
+                            .to_vec(),
+                    };
+                }
+                encode(&set_hyperlink_action(region, spans.clone(), target))
+            },
+        ),
+        "set-hyperlink.v1",
+        continuation::spans(region, &ctx.format_spans),
     ));
 }
 
@@ -2718,51 +2702,17 @@ fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
     let selection = selection.clone();
     let root_selection = selection.clone();
     let region = ctx.region;
-    root.actions.push(ActionSpec::typed(
-        "replace-selection",
-        "Replace selection",
-        "Replacement text for the selected document range",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required_owned(
-            "text",
-            ParamType::Text,
-            "Text that replaces the current selection (empty deletes it)",
-        )],
-        move |args: &ActionArgs| {
-            let Some(text) = args.text("text") else {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"replacement text is required".to_vec(),
-                };
-            };
-            encode(&replace_selection_action(
-                region,
-                &root_selection.start_block,
-                root_selection.start,
-                &root_selection.end_block,
-                root_selection.end,
-                text,
-            ))
-        },
-    ));
-    root.children.push(
-        Resource::new(
-            format!(
-                "word-processor.selection:{}:{}:{}:{}",
-                selection.start_block, selection.start, selection.end_block, selection.end
-            ),
-            "word_processor.selection",
-            "Current selection",
-        )
-        .with_action(ActionSpec::typed(
-            "replace",
+    let domain = continuation::selection(region, &selection);
+    root.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "replace-selection",
             "Replace selection",
-            "Replacement text for this exact selection",
+            "Replacement text for the selected document range",
             ExecutionLocus::ClientLocal,
             vec![ActionParam::required_owned(
                 "text",
                 ParamType::Text,
-                "Replacement text",
+                "Text that replaces the current selection (empty deletes it)",
             )],
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
@@ -2773,13 +2723,56 @@ fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
                 };
                 encode(&replace_selection_action(
                     region,
-                    &selection.start_block,
-                    selection.start,
-                    &selection.end_block,
-                    selection.end,
+                    &root_selection.start_block,
+                    root_selection.start,
+                    &root_selection.end_block,
+                    root_selection.end,
                     text,
                 ))
             },
+        ),
+        "replace-selection.v1",
+        domain.clone(),
+    ));
+    root.children.push(
+        Resource::new(
+            format!(
+                "word-processor.selection:{}:{}:{}:{}",
+                selection.start_block, selection.start, selection.end_block, selection.end
+            ),
+            "word_processor.selection",
+            "Current selection",
+        )
+        .with_action(continuation::pure(
+            ActionSpec::typed(
+                "replace",
+                "Replace selection",
+                "Replacement text for this exact selection",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "Replacement text",
+                )],
+                move |args: &ActionArgs| {
+                    let Some(text) = args.text("text") else {
+                        return EncodedAction {
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: b"replacement text is required".to_vec(),
+                        };
+                    };
+                    encode(&replace_selection_action(
+                        region,
+                        &selection.start_block,
+                        selection.start,
+                        &selection.end_block,
+                        selection.end,
+                        text,
+                    ))
+                },
+            ),
+            "replace-selection.v1",
+            domain,
         )),
     );
 }
@@ -2795,34 +2788,40 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
         return;
     }
     let target = selection.clone();
-    root.actions.push(ActionSpec::typed(
-        "add-comment",
-        "Add comment",
-        "Comment text and author for the selected text",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned("author", ParamType::Text, "Comment author"),
-            ActionParam::required_owned("text", ParamType::Text, "Comment text"),
-            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
-        ],
-        move |args: &ActionArgs| {
-            let author = args.text("author").unwrap_or_default().trim();
-            let text = args.text("text").unwrap_or_default();
-            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"comment author is required and comment text is too long".to_vec(),
-                };
-            }
-            encode(&add_comment_action(
-                &target.start_block,
-                target.start,
-                target.end,
-                author,
-                args.text("date").unwrap_or_default(),
-                text,
-            ))
-        },
+    let domain = continuation::selection(RegionKind::Body, &target);
+    root.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "add-comment",
+            "Add comment",
+            "Comment text and author for the selected text",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
+                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
+                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
+            ],
+            move |args: &ActionArgs| {
+                let author = args.text("author").unwrap_or_default().trim();
+                let text = args.text("text").unwrap_or_default();
+                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"comment author is required and comment text is too long"
+                            .to_vec(),
+                    };
+                }
+                encode(&add_comment_action(
+                    &target.start_block,
+                    target.start,
+                    target.end,
+                    author,
+                    args.text("date").unwrap_or_default(),
+                    text,
+                ))
+            },
+        ),
+        "add-comment.v1",
+        domain,
     ));
 }
 
@@ -2983,32 +2982,37 @@ fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
         ));
     }
     let parent = comment.id.clone();
-    resource.actions.push(ActionSpec::typed(
-        "reply",
-        "Reply to comment",
-        "Reply text and author, stored in the shared comment thread",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned("author", ParamType::Text, "Reply author"),
-            ActionParam::required_owned("text", ParamType::Text, "Reply text"),
-            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
-        ],
-        move |args: &ActionArgs| {
-            let author = args.text("author").unwrap_or_default().trim();
-            let text = args.text("text").unwrap_or_default();
-            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                return EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: b"reply author is required and reply text is too long".to_vec(),
-                };
-            }
-            encode(&reply_to_comment_action(
-                &parent,
-                author,
-                args.text("date").unwrap_or_default(),
-                text,
-            ))
-        },
+    let domain = vec![parent.as_bytes().to_vec()];
+    resource.actions.push(continuation::pure(
+        ActionSpec::typed(
+            "reply",
+            "Reply to comment",
+            "Reply text and author, stored in the shared comment thread",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("author", ParamType::Text, "Reply author"),
+                ActionParam::required_owned("text", ParamType::Text, "Reply text"),
+                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
+            ],
+            move |args: &ActionArgs| {
+                let author = args.text("author").unwrap_or_default().trim();
+                let text = args.text("text").unwrap_or_default();
+                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                    return EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"reply author is required and reply text is too long".to_vec(),
+                    };
+                }
+                encode(&reply_to_comment_action(
+                    &parent,
+                    author,
+                    args.text("date").unwrap_or_default(),
+                    text,
+                ))
+            },
+        ),
+        "reply-to-comment.v1",
+        domain,
     ));
     resource
 }
@@ -3357,8 +3361,16 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
 
 /// Build the resource tree the word processor currently has open.
 pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    provide_resources_with_file(ctx, doc, None)
+}
+
+fn provide_resources_with_file(
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    file: Option<&continuation::FileContext>,
+) -> Vec<Resource> {
     let mut root = document_resource();
-    add_file_operations(&mut root);
+    add_file_operations(&mut root, file);
     add_view_operations(&mut root);
     add_caret_actions(&mut root, ctx);
     add_selection_resources(&mut root, ctx);
@@ -3378,12 +3390,71 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     vec![root]
 }
 
+pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> {
+    let mut resource = Resource::new(
+        format!("word-processor.file-choice:{generation}"),
+        "word_processor.file_choice",
+        crate::i18n::t("file-choice-title"),
+    );
+    for (id, label, use_selected) in [
+        ("keep-workspace", "file-choice-keep", false),
+        ("use-selected", "file-choice-use", true),
+    ] {
+        resource.actions.push(
+            operation(
+                id,
+                &crate::i18n::t(label),
+                OperationKind::Effect,
+                &WordProcessorOperation::ResolveFileChoice {
+                    generation,
+                    use_selected,
+                },
+            )
+            .ok_or("file choice operation could not be encoded")?,
+        );
+    }
+    Ok(resource)
+}
+
+/// Exact inputs of `provide_resources_with_file` for a committed document.
+fn resource_memo_key(
+    doc: &AutoCommit,
+    ctx: &WpResourceCtx,
+    file: &continuation::FileContext,
+) -> String {
+    let heads: Vec<String> = doc.base_heads().iter().map(ToString::to_string).collect();
+    format!(
+        "{heads:?}|{ctx:?}|{:?}|{:?}|{}|{}",
+        file.path,
+        file.format,
+        file.canonical,
+        crate::i18n::t("file-choice-title"),
+    )
+}
+
 impl ResourceProvider for crate::widget::WordProcessorWidget {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.wp_resource_ctx(doc) {
-            Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
+        if let Some(resource) = self.file_choice_resource() {
+            return vec![resource];
         }
+        let Some(ctx) = self.wp_resource_ctx(doc) else {
+            return Vec::new();
+        };
+        let file = self.file_continuation_context();
+        // Heads identify the committed document exactly; pending (uncommitted)
+        // operations are not covered by them, so those frames rebuild.
+        if doc.pending_ops() != 0 {
+            return provide_resources_with_file(&ctx, doc, Some(&file));
+        }
+        let key = resource_memo_key(doc, &ctx, &file);
+        if let Some((cached, resources)) = self.resource_memo.borrow().as_ref()
+            && *cached == key
+        {
+            return resources.clone();
+        }
+        let resources = provide_resources_with_file(&ctx, doc, Some(&file));
+        *self.resource_memo.borrow_mut() = Some((key, resources.clone()));
+        resources
     }
 }
 
@@ -3402,7 +3473,9 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 

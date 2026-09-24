@@ -3242,14 +3242,18 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -3593,8 +3597,14 @@ mod tests {
                 Widget::invoke_resource_operation(
                     &mut app,
                     operation.kind,
-                    &operation.encoded.type_id,
-                    &operation.encoded.payload,
+                    &operation
+                        .encoded()
+                        .expect("test requires prepared encoding")
+                        .type_id,
+                    &operation
+                        .encoded()
+                        .expect("test requires prepared encoding")
+                        .payload,
                     &doc,
                     &ROOT,
                 )

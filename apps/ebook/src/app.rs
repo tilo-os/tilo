@@ -5064,6 +5064,10 @@ impl Widget for BooksApp {
                         encoded.type_id.hash(&mut action_hasher);
                         encoded.payload.hash(&mut action_hasher);
                     }
+                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
+                        2_u8.hash(&mut action_hasher);
+                        type_id.hash(&mut action_hasher);
+                    }
                     tilo_actions::ActionInput::Prompted {
                         prompt,
                         placeholder,
@@ -14977,7 +14981,10 @@ mod local_interaction_tests {
                 .expect("delete-comment spec");
             match &spec.input {
                 tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => panic!("delete-comment is immediate"),
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
+                    panic!("delete-comment is immediate")
+                }
             }
         };
 
@@ -15056,7 +15063,8 @@ mod local_interaction_tests {
                 .expect("a highlight-selection spec while a selection exists");
             match &spec.input {
                 tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("highlight-selection is immediate")
                 }
             }

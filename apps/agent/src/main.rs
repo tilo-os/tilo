@@ -107,7 +107,14 @@ fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some() {
+        anyhow::ensure!(
+            cli.task_runs && !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
+            "managed agent requires task mode and inherited services"
+        );
+        cli.app = "so.tilo.agent".into();
+    }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
