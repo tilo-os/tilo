@@ -47,12 +47,12 @@ taffy.workspace = true
 [target.'cfg(unix)'.dependencies]
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [[test]]
 name = "it"
 path = "tests/it.rs"
-
-[dev-dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

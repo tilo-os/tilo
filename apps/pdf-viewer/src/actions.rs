@@ -2034,13 +2034,6 @@ mod tests {
         }
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     /// The sample reader, synced once so its demonstration markup (two
     /// highlights, a sticky note with a two-reply thread, a highlight comment,
     /// and a free resolved comment) is in the shared document.
@@ -2049,6 +2042,70 @@ mod tests {
         let mut state = ui::State::new();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         (app, state)
+    }
+
+    thread_local! {
+        /// The sample reader a contract seed was synced from; its page plan
+        /// and resource context belong to that very document.
+        static SEEDED: std::cell::RefCell<Option<PdfApp>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn markup_seed() -> AutoCommit {
+        let (app, state) = open_with_markup();
+        SEEDED.set(Some(app));
+        state.doc
+    }
+
+    fn markup_resources(doc: &AutoCommit) -> Vec<Resource> {
+        SEEDED.with_borrow(|app| {
+            ResourceProvider::resources(app.as_ref().expect("the contract seed ran first"), doc)
+        })
+    }
+
+    fn resource_key<'a>(res: &'a Resource, prefix: &str) -> &'a str {
+        res.id
+            .as_str()
+            .strip_prefix(prefix)
+            .expect("a keyed resource")
+    }
+
+    ui::action_contract_tests! {
+        seed: markup_seed(),
+        registry: registry(),
+        resources: |doc| markup_resources(doc),
+        palette: ["Add note", "Delete annotation", "Delete comment"],
+        replay: [
+            add_ink_annotation => |_| encode(&add_annotation_action(&Annotation {
+                id: Annotation::new_id(),
+                page: 2,
+                kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
+                color: Swatch::Blue,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            })),
+        ],
+        undo: [
+            add_highlight => |_| encode(&add_annotation_action(&Annotation {
+                id: Annotation::new_id(),
+                page: 1,
+                kind: AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
+                color: Swatch::Green,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            })),
+        ],
+        encodes: [
+            delete_annotation => ("pdf.annotation", "delete", |_, res| {
+                encode(&delete_annotation_action(resource_key(res, "pdf.annotation:")))
+            }),
+            edit_comment => ("pdf.comment", "edit", arg: "revised", |_, res| {
+                encode(&set_comment_body_action(resource_key(res, "pdf.comment:"), "revised"))
+            }),
+        ],
     }
 
     /// Ctrl+K on the reader yields the full nested tree: the open document →
@@ -2082,7 +2139,11 @@ mod tests {
         assert_eq!(duplicate.kind, OperationKind::Document);
         assert!(duplicate.contract.reversible);
         assert!(
-            registry().decode(&immediate_encode(duplicate)).is_ok(),
+            registry()
+                .decode(&ui::testing::action_contract::spec_encoding(
+                    duplicate, None
+                ))
+                .is_ok(),
             "page-plan actions use the same registry as all other shared PDF mutations"
         );
         assert!(
@@ -2135,26 +2196,6 @@ mod tests {
         assert!(
             document.children.iter().any(|r| r.kind == "pdf.comment"),
             "a free-comment resource hangs off the document"
-        );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Add note");
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Add note")), "{labels:?}");
-        palette.set_query("Delete annotation");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete annotation")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete comment");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete comment")),
-            "{labels:?}"
         );
     }
 
@@ -2253,12 +2294,11 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action via the real affordance path:
-    /// dispatched through [`PdfApp::perform_action`] it mutates the doc and
-    /// stashes exactly one undo boundary, which the host records — and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
+    /// The affordance path: dispatched through [`PdfApp::perform_action`] an
+    /// action stashes its undo boundary, which the host's recorder attributes
+    /// to the local user — so their author-scoped Ctrl+Z reverts it.
     #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
+    fn perform_action_undo_is_attributed_to_the_local_author() {
         let (mut app, mut state) = open_with_markup();
         let before_len = PdfDoc::list_annotations(&state.doc).len();
         let before_heads = state.doc.get_heads();
@@ -2317,51 +2357,6 @@ mod tests {
             PdfDoc::list_annotations(&state.doc).len(),
             before_len,
             "undo reverted the added highlight and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, state) = open_with_markup();
-        // Two replicas sharing history.
-        let mut a = state.doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let anno = Annotation {
-            id: Annotation::new_id(),
-            page: 2,
-            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
-            color: Swatch::Blue,
-            author: "You".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let action = add_annotation_action(&anno);
-        let encoded = encode(&action);
-
-        // A applies locally, producing the envelope; B replays it.
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            PdfDoc::list_annotations(&a).len(),
-            PdfDoc::list_annotations(&b).len(),
         );
     }
 
@@ -2426,42 +2421,6 @@ mod tests {
             Some(bytes.as_slice())
         );
         blobstore::set_store(Arc::new(MemoryBlobStore::default()));
-    }
-
-    /// Single source of truth: a palette "Edit comment" spec and a directly built
-    /// edit action encode byte-identically, as do the immediate delete specs.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, state) = open_with_markup();
-        let resources = Widget::resources(&app, &state.doc);
-        let document = &resources[0];
-        let anno = document
-            .children
-            .iter()
-            .find(|r| r.kind == "pdf.annotation" && !r.children.is_empty())
-            .unwrap();
-
-        // The annotation's delete spec == the delete builder for its id.
-        let anno_id = anno.id.as_str().trim_start_matches("pdf.annotation:");
-        let spec = anno.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&delete_annotation_action(anno_id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth"
-        );
-
-        // And a comment's edit spec matches the edit builder for the same text.
-        let comment = &anno.children[0];
-        let cid = comment.id.as_str().trim_start_matches("pdf.comment:");
-        let edit_spec = comment.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "revised");
-        let from_builder = encode(&set_comment_body_action(cid, "revised"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "edit is one source of truth"
-        );
     }
 
     #[test]

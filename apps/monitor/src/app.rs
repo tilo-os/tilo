@@ -441,11 +441,10 @@ fn monitor_process_resource(process: &ProcessInfo) -> Resource {
                 } else {
                     RiskLevel::Privileged
                 },
-                confirmation: if signal == MonitorSignal::Kill {
-                    ConfirmationPolicy::Confirm
-                } else {
-                    ConfirmationPolicy::None
-                },
+                // Signalling another process is consequential either way; the
+                // protocol (and the broker) refuse a privileged action that
+                // skips confirmation.
+                confirmation: ConfirmationPolicy::Confirm,
                 retry: RetryPolicy::AtMostOnce,
                 ..ActionContract::default()
             }));
@@ -8765,5 +8764,14 @@ mod tests {
         Widget::set_motion_reduced(&mut a, true);
         assert_eq!(a.proc_push.slide(), 1.0);
         assert!(!a.proc_push.is_animating());
+    }
+
+    // Monitor publishes only view and effect operations on live processes, so
+    // its registry is empty: the sweep checks the surface and the protocol.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| Widget::resources(&app(), doc),
+        palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
     }
 }
