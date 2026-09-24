@@ -314,4 +314,14 @@ mod tests {
                 .any(|action| action.id == "set-search")
         );
     }
+
+    // The journal is a local observation: Logs publishes only view and effect
+    // operations, never a document action, so the registry is empty and the
+    // sweep checks the surface and its protocol.
+    ui::action_contract_tests! {
+        seed: automerge::AutoCommit::new(),
+        registry: ActionRegistry::new(),
+        resources: |_| resources(&sample_entries(), &Filter::default(), false, true),
+        palette: ["Refresh journal", "Search journal", "Clear filters", "Show entry details"],
+    }
 }

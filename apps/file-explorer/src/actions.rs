@@ -127,4 +127,26 @@ mod tests {
         );
         assert!(files.take_committed_action().is_none());
     }
+
+    /// What Files publishes while showing a real folder holding a file, synced
+    /// against `document` exactly as the host drives it.
+    fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
+        let mut files = FileExplorerWidget::new();
+        files.navigate(directory.path().to_path_buf());
+        let mut synced = document.clone();
+        files.sync(&mut synced, &ROOT);
+        Widget::resources(&files, &synced)
+    }
+
+    // Files has no replayable CRDT actions (see the module docs): its surface
+    // is typed local operations only, so the registry is empty and the sweep
+    // checks the surface and its protocol.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |document| folder_resources(document),
+        palette: ["Refresh folder", "New folder", "Sort by name"],
+    }
 }
