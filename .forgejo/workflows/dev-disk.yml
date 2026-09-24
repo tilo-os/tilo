@@ -147,7 +147,6 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
-    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DEV_TAG: ${{ needs.plan.outputs.tag }}
@@ -394,12 +393,14 @@ jobs:
 
       - name: Publish the immutable disks
         env:
-          DISK_AUDIENCE: ${{ vars.TILO_VM_DISK_RELEASE_AUDIENCE }}
+          # Dev disks are development artifacts, never release-signed; the CI
+          # account's package token (as build-kernel.yml uses) writes them.
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          [[ -n ${DISK_AUDIENCE:-} ]] || {
-            echo '::error::TILO_VM_DISK_RELEASE_AUDIENCE is required to publish dev disks'
+          [[ -n ${TILO_PACKAGE_TOKEN:-} ]] || {
+            echo '::error::REGISTRY_TOKEN is required to publish dev disks'
             exit 1
           }
           # Large-disk runners do not resolve the in-cluster Forgejo service,
@@ -409,10 +410,6 @@ jobs:
             echo "::error::TILO_PACKAGE_PUBLIC_BASE_URL must be a public HTTPS generic-package base"
             exit 1
           }
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DISK_AUDIENCE" | jq -er .value)
-          echo "::add-mask::$jwt"
           out=/var/tmp/tilo-vm-publish
           uploads="$RUNNER_TEMP/tilo-vm-disk-uploads.tsv"
           : > "$uploads"
@@ -420,8 +417,7 @@ jobs:
             printf '%s\t%s\n' "$out/$file" "$package_api/tilo-vm-disk/$DEV_TAG/$file" >> "$uploads"
             printf '%s\t%s\n' "$out/$file.sha256" "$package_api/tilo-vm-disk/$DEV_TAG/$file.sha256" >> "$uploads"
           done < <(jq -r '.disks[].file' "dev-disk-fragment/$ARCH.json")
-          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=2 \
-            tools/upload_immutable_packages.sh "$uploads"
+          TILO_PACKAGE_UPLOAD_WORKERS=2 tools/upload_immutable_packages.sh "$uploads"
           jq --arg base "$package_api/tilo-vm-disk/$DEV_TAG" \
             '.disks |= map(. + {url: ($base + "/" + .file)})' \
             "dev-disk-fragment/$ARCH.json" > "dev-disk-fragment/$ARCH.json.tmp"
@@ -437,7 +433,6 @@ jobs:
     needs: [plan, build]
     runs-on: runner
     timeout-minutes: 60
-    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DEV_TAG: ${{ needs.plan.outputs.tag }}
@@ -561,12 +556,14 @@ jobs:
       # after every disk and the durable image tag exist.
       - name: Publish the disk manifest
         env:
-          DISK_AUDIENCE: ${{ vars.TILO_VM_DISK_RELEASE_AUDIENCE }}
+          # Dev disks are development artifacts, never release-signed; the CI
+          # account's package token (as build-kernel.yml uses) writes them.
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          [[ -n ${DISK_AUDIENCE:-} ]] || {
-            echo '::error::TILO_VM_DISK_RELEASE_AUDIENCE is required to publish dev disks'
+          [[ -n ${TILO_PACKAGE_TOKEN:-} ]] || {
+            echo '::error::REGISTRY_TOKEN is required to publish dev disks'
             exit 1
           }
           package_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
@@ -574,17 +571,13 @@ jobs:
             echo "::error::TILO_PACKAGE_PUBLIC_BASE_URL must be a public HTTPS generic-package base"
             exit 1
           }
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$DISK_AUDIENCE" | jq -er .value)
-          echo "::add-mask::$jwt"
           sha256sum tilo-vm-disk.json > tilo-vm-disk.json.sha256
           uploads="$RUNNER_TEMP/tilo-vm-manifest-uploads.tsv"
           printf '%s\t%s\n' \
             tilo-vm-disk.json "$package_api/tilo-vm-disk/$DEV_TAG/tilo-vm-disk.json" \
             tilo-vm-disk.json.sha256 "$package_api/tilo-vm-disk/$DEV_TAG/tilo-vm-disk.json.sha256" \
             > "$uploads"
-          TILO_PACKAGE_TOKEN="$jwt" tools/upload_immutable_packages.sh "$uploads"
+          tools/upload_immutable_packages.sh "$uploads"
           {
             echo "### tilo-vm:$DEV_TAG"
             echo
