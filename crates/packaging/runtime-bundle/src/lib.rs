@@ -23,6 +23,7 @@
     )
 )]
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
@@ -241,7 +242,19 @@ pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 /// Returns [`BundleError::NoDataDir`] if [`RUNTIME_DIR_ENV`] is unset
 /// and the platform data directory can't be resolved (`XDG_DATA_HOME`/`HOME` unset).
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
-    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
+    bundle_root_from(std::env::var_os(RUNTIME_DIR_ENV))
+}
+
+/// [`bundle_root`] with the override supplied by the caller instead of read
+/// from [`RUNTIME_DIR_ENV`]. The launcher passes only an override its own
+/// build policy allows; `None` (or empty) means the platform data directory.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] if `root_override` is unset and the
+/// platform data directory can't be resolved.
+pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<PathBuf, BundleError> {
+    if let Some(dir) = root_override
         && !dir.is_empty()
     {
         return Ok(PathBuf::from(dir));
@@ -259,6 +272,20 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
 /// Returns [`BundleError::NoDataDir`] under the same condition as [`bundle_root`].
 pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
+}
+
+/// [`default_bundle_path`] under [`bundle_root_from`]'s caller-supplied
+/// override.
+///
+/// # Errors
+///
+/// Returns [`BundleError::NoDataDir`] under the same condition as
+/// [`bundle_root_from`].
+pub fn default_bundle_path_from(
+    root_override: Option<std::ffi::OsString>,
+    version: &str,
+) -> Result<PathBuf, BundleError> {
+    Ok(bundle_root_from(root_override)?.join(version))
 }
 
 /// System-wide fallback: `/usr/lib/tilo-runtime/<v>/`.
@@ -348,7 +375,7 @@ impl Identity {
 
     /// Generate a fresh random identity; used by tests and the CLI's `key generate`.
     pub fn generate() -> Self {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         Self {
             signing_key: ed25519_dalek::SigningKey::generate(&mut rng),
         }
@@ -1401,10 +1428,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn default_bundle_path_uses_data_dir() {
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(RUNTIME_DIR_ENV);
         if let Ok(p) = default_bundle_path("v") {
             assert!(p.ends_with("tilo-runtime/v"));
         }
@@ -1414,19 +1440,14 @@ mod tests {
     /// still reach the machine's runtime bundles, or every app in that
     /// session fails to launch on a missing bundle.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_env_override_names_the_bundle_root() {
         let shared = tempfile::tempdir().expect("tempdir");
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", "/nonexistent/session/data");
-            std::env::set_var(RUNTIME_DIR_ENV, shared.path());
-        }
-        let resolved = default_bundle_path("2026.07");
-        unsafe {
-            std::env::remove_var(RUNTIME_DIR_ENV);
-            std::env::remove_var("XDG_DATA_HOME");
-        }
+        let resolved = {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", "/nonexistent/session/data")
+                .set(RUNTIME_DIR_ENV, shared.path());
+            default_bundle_path("2026.07")
+        };
         assert_eq!(
             resolved.expect("the override needs no data dir"),
             shared.path().join("2026.07"),
@@ -1438,12 +1459,12 @@ mod tests {
     /// `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
     /// into "no app on this machine launches".
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_empty_override_falls_back_to_the_data_dir() {
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var(RUNTIME_DIR_ENV, "") };
-        let resolved = default_bundle_path("v");
-        unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
+        let resolved = {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(RUNTIME_DIR_ENV, "");
+            default_bundle_path("v")
+        };
         if let Ok(p) = resolved {
             assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
         }

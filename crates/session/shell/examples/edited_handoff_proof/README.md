@@ -2,8 +2,8 @@
 
 The opt-in `--edited-handoff` mode of `shared-runtime-proof` launches real Photos
 and Writer windows through `Session::launch`. An additional SDK participant sends
-`CollabRequest::InvokePublishedAction` with typed JSON arguments and observes
-`PublishedInvocationStatus`. No model or external service participates.
+a remote-action `Invoke` request with typed JSON arguments and observes the
+invocation with `Observe`. No model or external service participates.
 
 Build and run from the repository root, outside performance collection windows:
 

@@ -2221,9 +2221,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp app registry");
         install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
         install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
-        // SAFETY: `serial_test::serial` keeps the other tests that
-        // repoint this variable from running concurrently.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2281,7 +2280,7 @@ mod tests {
             );
             assert_eq!(first.id, "so.tilo.calculator");
         }
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 
@@ -2293,7 +2292,8 @@ mod tests {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
         install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2367,7 +2367,7 @@ mod tests {
             "the app landed at row {app_row}, past the visible list: {:?}",
             flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
         );
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 

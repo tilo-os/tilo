@@ -275,15 +275,15 @@ if grep -Eq '^CONFIG_(X86_|DEVPORT=|IA32_EMULATION=|USELIB=|LEGACY_VSYSCALL_|RAN
   bad 'x86-only settings leaked into shared or ARM64 kernel fragments'
 fi
 grep -Fq 'CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y' \
-  "$repo/os/kernel/Containerfile" \
+  "$repo/os/kernel/build-support.sh" \
   || bad 'x86 kernel build does not verify both address-randomization layers'
 grep -Fq "'# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set'" \
-  "$repo/os/kernel/Containerfile" \
-  && grep -Fq "'# CONFIG_X86_CPUID is not set'" "$repo/os/kernel/Containerfile" \
+  "$repo/os/kernel/build-support.sh" \
+  && grep -Fq "'# CONFIG_X86_CPUID is not set'" "$repo/os/kernel/build-support.sh" \
   || bad 'x86 kernel build does not verify removal of raw CPU and I/O devices'
 grep -Fq "CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set'" \
-  "$repo/os/kernel/Containerfile" \
-  && grep -Fq "'# CONFIG_USELIB is not set'" "$repo/os/kernel/Containerfile" \
+  "$repo/os/kernel/build-support.sh" \
+  && grep -Fq "'# CONFIG_USELIB is not set'" "$repo/os/kernel/build-support.sh" \
   || bad 'x86 kernel does not preserve i686 while rejecting obsolete ABIs'
 
 for live_absence in DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
@@ -312,8 +312,8 @@ for required in \
   grep -Fqx "$required" "$arm64_kernel_config" || arm64_missing=1
 done
 if [ "$arm64_missing" -eq 0 ] \
-   && grep -Fq '"/work/kernel-config/$ARCH.config" > /work/tilo-effective.config' \
-        "$repo/os/kernel/Containerfile"; then
+   && grep -Fq '"/work/kernel-config/$arch.config" > /work/tilo-effective.config' \
+        "$repo/os/kernel/build-support.sh"; then
   ok 'ARM64 kernel enables pointer authentication and KASLR hardening'
 else
   bad 'ARM64 kernel control-flow or address-randomization hardening is incomplete'
@@ -321,7 +321,7 @@ fi
 
 grep -Fqx '# CONFIG_MODULE_SIG_ALL is not set' "$kernel_config" \
   || bad 'upstream libcrypto module signing is enabled'
-grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
+grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/build-support.sh" \
   || bad 'kernel build does not verify pure-Rust module signatures'
 
 for required in \
@@ -454,8 +454,8 @@ for removed in CONFIG_PARPORT=n CONFIG_BLK_DEV_FD=n CONFIG_PCCARD=n; do
   grep -Fqx "$removed" "$x86_kernel_config" \
     || bad "obsolete x86 hardware surface is not disabled: $removed"
 done
-grep -Fq '"/work/kernel-config/$ARCH.config" > /work/tilo-effective.config' \
-  "$repo/os/kernel/Containerfile" \
+grep -Fq '"/work/kernel-config/$arch.config" > /work/tilo-effective.config' \
+  "$repo/os/kernel/build-support.sh" \
   || bad 'kernel merge does not select the native architecture fragment'
 
 io_scheduler_rule="$repo/os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules"
@@ -469,7 +469,7 @@ if grep -Eq 'KERNEL=="(vd|loop|dm-)' "$io_scheduler_rule"; then
   bad 'BFQ policy changes virtual, loop, or device-mapper release paths'
 fi
 
-grep -Fq 'python3 /work/check-config.py .config --fragment /work/tilo-effective.config' "$repo/os/kernel/Containerfile" \
+grep -Fq 'python3 /work/check-config.py .config --fragment /work/tilo-effective.config' "$repo/os/kernel/build-support.sh" \
   || bad 'kernel build does not reject silently dropped fragment settings'
 
 grep -Fqx 'compression-algorithm = lz4' "$repo/os/etc/systemd/zram-generator.conf" \

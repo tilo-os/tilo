@@ -242,16 +242,7 @@ mod live_probe {
         reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the probe can degrade to"
     )]
     fn tls_config() -> Arc<rustls::ClientConfig> {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("rustls default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        Arc::new(cfg)
+        Arc::new(tilo_net::client_config().expect("rustls default protocol versions"))
     }
 
     /// The access token / password to present. Mirrors the engine's resolution:

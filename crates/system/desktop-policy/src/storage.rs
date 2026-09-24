@@ -19,14 +19,8 @@ pub struct StorageRoots {
 
 impl StorageRoots {
     pub fn discover() -> Self {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| dirs::home_dir().map(|p| p.join(".local/share")));
-        let cache = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| dirs::home_dir().map(|p| p.join(".cache")));
+        let data = xdg_paths::xdg::data_home();
+        let cache = xdg_paths::xdg::cache_home();
         let payload_root = std::env::var_os("TILO_APPS_DATA_DIR")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())

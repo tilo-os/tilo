@@ -273,7 +273,7 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
     "$repo/apps/imager/src/write.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
@@ -426,8 +426,14 @@ fi
 cycle="$repo/os/dev/test-installer-cycle.sh"
 release_vars="$repo/os/dev/prepare-release-secureboot-vars.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
+image_tools_line="$(grep -nF 'name: Install native image-build and full-cycle VM dependencies' "$workflow" | cut -d: -f1 || true)"
+image_auth_line="$(grep -nF 'name: Authenticate the native image builder' "$workflow" | cut -d: -f1 || true)"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'needs: plan' "$workflow" \
+  && [ -n "$image_tools_line" ] && [ -n "$image_auth_line" ] \
+  && [ "$image_tools_line" -lt "$image_auth_line" ] \
+  && grep -Fq 'ntfs-3g podman' "$workflow" \
+  && grep -Fq 'mtype ntfscp podman qemu-img' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -476,10 +482,14 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb' "$cycle" \
-  && grep -Fq "wait_private_screen 'Tilo" "$cycle" \
-  && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
+  && grep -Fq 'python3 "$dev_dir/installer-console.py" --socket "$console"' "$cycle" \
+  && grep -Fq 'ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}"' "$cycle" \
+  && grep -Fq 'installer began an install confirmed with the wrong device' "$cycle" \
+  && grep -Fq -- '--secret passphrase=TILO_PASS --secret confirmation=TILO_PASS' "$cycle" \
+  && grep -Fq 'confirm-saved@installer.recovery' "$cycle" \
+  && grep -Fq 'power-off@installer.power' "$cycle" \
+  && ! grep -Fq 'finish-recovery' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
-  && grep -Fq 'rm -f -- "$run/private-observe.png"' "$cycle" \
   && grep -Fq '::tilo-recovery-key::' "$cycle" \
   && grep -Fq '.artifact-secret-canary.txt' "$cycle" \
   && grep -Fq 'test ! -s "$out/.artifact-secret-canary.txt"' "$cycle" \

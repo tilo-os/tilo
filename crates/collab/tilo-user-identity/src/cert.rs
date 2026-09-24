@@ -533,7 +533,7 @@ mod tests {
         use ed25519_dalek::SigningKey;
 
         // Fixed-seed keypair for the vector. This is the ONLY test
-        // that uses a fixed seed; production always uses OsRng.
+        // that uses a fixed seed; production always uses UnwrapErr(SysRng).
         let seed = [1u8; 32];
         let root_sk = SigningKey::from_bytes(&seed);
         let root_pk = root_sk.verifying_key().to_bytes();

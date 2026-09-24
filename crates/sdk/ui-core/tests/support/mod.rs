@@ -9,6 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod evidence;
 pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]
@@ -210,10 +211,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }
-            | CollabRequest::InvokePublishedAction { .. }
-            | CollabRequest::PublishedInvocationStatus { .. }
-            | CollabRequest::CancelPublishedInvocation { .. }
-            | CollabRequest::LaunchPublishedApplication { .. }
+            | CollabRequest::RemoteAction { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
             | CollabRequest::TaskRunCancellation { .. } => {

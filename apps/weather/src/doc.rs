@@ -17,7 +17,8 @@
 //! JSON records.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_f64_coerced, read_str};
 
 use crate::model::{SavedLocation, WeatherModel};
 
@@ -88,20 +89,21 @@ impl WeatherDoc {
     }
 
     fn location_from_map(doc: &AutoCommit, m: &ObjId, fallback_id: &str) -> Option<SavedLocation> {
-        let id = Self::str_field(doc, m, "id")
+        let id = read_str(doc, m, "id")
+            .unwrap_or_default()
             .parse()
             .or_else(|_| fallback_id.parse())
             .ok()?;
         Some(SavedLocation {
             id,
-            order_rank: Self::f64_field(doc, m, "order_rank"),
-            name: Self::str_field(doc, m, "name"),
-            region: Self::str_field(doc, m, "region"),
-            country: Self::str_field(doc, m, "country"),
-            country_code: Self::str_field(doc, m, "country_code"),
-            latitude: Self::f64_field(doc, m, "lat"),
-            longitude: Self::f64_field(doc, m, "lon"),
-            timezone: Self::str_field(doc, m, "tz"),
+            order_rank: read_f64_coerced(doc, m, "order_rank").unwrap_or(0.0),
+            name: read_str(doc, m, "name").unwrap_or_default(),
+            region: read_str(doc, m, "region").unwrap_or_default(),
+            country: read_str(doc, m, "country").unwrap_or_default(),
+            country_code: read_str(doc, m, "country_code").unwrap_or_default(),
+            latitude: read_f64_coerced(doc, m, "lat").unwrap_or(0.0),
+            longitude: read_f64_coerced(doc, m, "lon").unwrap_or(0.0),
+            timezone: read_str(doc, m, "tz").unwrap_or_default(),
         })
     }
 
@@ -135,7 +137,7 @@ impl WeatherDoc {
         }
         let selected = match doc.get(&ROOT, "selected") {
             Ok(Some((Value::Scalar(value), _))) => {
-                legacy.get(value.to_i64().unwrap_or(0).max(0) as usize)
+                legacy.get(value.as_i64().unwrap_or(0).max(0) as usize)
             }
             _ => legacy.first(),
         };
@@ -219,7 +221,7 @@ impl WeatherDoc {
         }
         if let Ok(Some((Value::Object(ObjType::List), order))) = doc.get(&ROOT, "location_order") {
             for index in (0..doc.length(&order)).rev() {
-                if Self::str_at(doc, &order, index).as_deref() == Some(key.as_str()) {
+                if read_str(doc, &order, index).as_deref() == Some(key.as_str()) {
                     let _ = doc.delete(&order, index);
                 }
             }
@@ -256,7 +258,7 @@ impl WeatherDoc {
         doc.keys(&locations)
             .filter_map(|id| match doc.get(&locations, id).ok().flatten() {
                 Some((Value::Object(ObjType::Map), location)) => {
-                    Some(Self::f64_field(doc, &location, "order_rank"))
+                    Some(read_f64_coerced(doc, &location, "order_rank").unwrap_or(0.0))
                 }
                 _ => None,
             })
@@ -265,21 +267,11 @@ impl WeatherDoc {
             + 1024.0
     }
 
-    fn str_at(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<String> {
-        match doc.get(list, index).ok().flatten().map(|(value, _)| value) {
-            Some(Value::Scalar(value)) => match value.as_ref() {
-                ScalarValue::Str(value) => Some(value.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn append_location_order(doc: &mut AutoCommit, id: crate::model::LocationId) {
         let order = Self::list_field(doc, "location_order");
         let id = id.to_string();
         if !(0..doc.length(&order))
-            .any(|index| Self::str_at(doc, &order, index).as_deref() == Some(id.as_str()))
+            .any(|index| read_str(doc, &order, index).as_deref() == Some(id.as_str()))
         {
             let _ = doc.insert(&order, doc.length(&order), id);
         }
@@ -329,23 +321,6 @@ impl WeatherDoc {
         }
     }
 
-    fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
-    }
-
-    fn f64_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> f64 {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_f64().unwrap_or(0.0),
-            _ => 0.0,
-        }
-    }
-
     fn read_legacy_locations(doc: &AutoCommit) -> Vec<SavedLocation> {
         let mut locations = Vec::new();
         if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "locations") {
@@ -374,7 +349,7 @@ impl WeatherDoc {
                 doc.get(&ROOT, "location_order")
             {
                 for index in 0..doc.length(&order) {
-                    let Some(id) = Self::str_at(doc, &order, index) else {
+                    let Some(id) = read_str(doc, &order, index) else {
                         continue;
                     };
                     if Self::is_tombstoned(doc, &id) {
@@ -419,7 +394,8 @@ impl WeatherDoc {
         }
 
         let selected_id: Option<crate::model::LocationId> =
-            Self::str_field(doc, &ROOT, "selected_location")
+            read_str(doc, &ROOT, "selected_location")
+                .unwrap_or_default()
                 .parse()
                 .ok();
         model.selected = selected_id
@@ -431,7 +407,7 @@ impl WeatherDoc {
             })
             .or_else(|| match doc.get(&ROOT, "selected") {
                 Ok(Some((Value::Scalar(value), _))) => {
-                    Some(value.to_i64().unwrap_or(0).max(0) as usize)
+                    Some(value.as_i64().unwrap_or(0).max(0) as usize)
                 }
                 _ => None,
             })

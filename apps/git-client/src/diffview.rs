@@ -10,11 +10,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonFace;
+use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
 
-use crate::diff::{TokenClass, tokenize};
 use crate::draw;
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
@@ -475,7 +475,11 @@ impl DiffView {
         match line.kind {
             DiffLineKind::Hunk => {
                 let header = match text_limit {
-                    Some(limit) => draw::elide_mono(tr, &line.content, FONT, limit - content_x),
+                    Some(limit) => tr.elide_to_width_style(
+                        &line.content,
+                        ui::num::f32_of_f64(limit - content_x),
+                        &TextStyle::new(FONT).with_family(FontChoice::Monospace),
+                    ),
                     None => line.content.clone(),
                 };
                 draw::mono(scene, tr, t, &header, FONT, c.semantic.info, content_x, ty);
@@ -693,11 +697,19 @@ impl DiffView {
             draw::mono(scene, tr, t, content, FONT, c.text_primary, x, y);
             return;
         }
+        // Diff rows are discontiguous slices of the file, so each line is
+        // tokenized on its own.
         let mut cx = x;
-        for tok in tokenize(content, language) {
-            let color = token_color(theme, tok.class);
-            draw::mono(scene, tr, t, &tok.text, FONT, color, cx, y);
-            cx += f64::from(draw::mono_width(tr, &tok.text, FONT));
+        let spans = SyntaxHighlighter::for_token_or_plain(language)
+            .start()
+            .highlight_line(content);
+        for span in spans {
+            let Some(text) = content.get(span.range) else {
+                continue;
+            };
+            let color = token_color(theme, span.kind);
+            draw::mono(scene, tr, t, text, FONT, color, cx, y);
+            cx += f64::from(draw::mono_width(tr, text, FONT));
         }
     }
 
@@ -758,16 +770,17 @@ impl DiffView {
     }
 }
 
-fn token_color(theme: &Theme, class: TokenClass) -> Color {
+fn token_color(theme: &Theme, kind: TokenKind) -> Color {
     let c = &theme.tokens.colors;
-    match class {
-        TokenClass::Plain => c.text_primary,
-        TokenClass::Keyword => c.accent[6],
-        TokenClass::Str => c.semantic.success,
-        TokenClass::Comment => c.text_dim,
-        TokenClass::Number => c.semantic.warning,
-        TokenClass::Type => c.semantic.info,
-        TokenClass::Punct => c.neutral[7],
+    match kind {
+        TokenKind::Keyword => c.accent[6],
+        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
+        TokenKind::Comment => c.text_dim,
+        TokenKind::Number | TokenKind::Constant => c.semantic.warning,
+        TokenKind::Type | TokenKind::Function => c.semantic.info,
+        TokenKind::Operator | TokenKind::Punctuation => c.neutral[7],
+        TokenKind::Attribute | TokenKind::Preprocessor => c.semantic.danger,
+        _ => c.text_primary,
     }
 }
 
@@ -976,7 +989,11 @@ mod tests {
         let content_x = viewport.x0 + m.gutter_w;
         let limit = toggle.rect.x0 - f64::from(theme.tokens.spacing.s2);
         let header = &d.lines[0].content;
-        let elided = draw::elide_mono(&mut tr, header, FONT, limit - content_x);
+        let elided = tr.elide_to_width_style(
+            header,
+            ui::num::f32_of_f64(limit - content_x),
+            &TextStyle::new(FONT).with_family(FontChoice::Monospace),
+        );
         assert!(
             elided.ends_with('\u{2026}'),
             "header {header:?} should elide at 390px"

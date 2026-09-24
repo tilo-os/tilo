@@ -1989,10 +1989,10 @@ mod tests {
         assert_eq!(missing[0].0, "clip");
 
         let out = std::env::temp_dir().join(format!("tilo-ve-missing-{}.mp4", std::process::id()));
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_VE_EXPORT_OUT", &out);
         let status = begin_export(&p, &ExportSettings::default());
-        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
+        drop(env);
 
         match status {
             ExportStatus::Failed { reason } => {
@@ -2134,15 +2134,15 @@ mod tests {
         p.clip_mut(cid).unwrap().out_point = 0.2;
 
         let out = std::env::temp_dir().join(format!("tilo-ve-export-{}.mp4", std::process::id()));
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", &out) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_VE_EXPORT_OUT", &out);
         let s = ExportSettings {
             resolution: Resolution::P720,
             container: Container::Mp4,
             frame_rate: FrameRate::F24,
         };
         let status = begin_export(&p, &s);
-        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
+        drop(env);
 
         match status {
             ExportStatus::Done { path } => {
@@ -2286,17 +2286,14 @@ mod tests {
 
     #[cfg(feature = "gst")]
     fn export_to(project: &Project, out: &std::path::Path) -> ExportStatus {
-        // Safety: these gst tests run serially in one process and the env
-        // is restored immediately after the call.
-        unsafe { std::env::set_var("TILO_VE_EXPORT_OUT", out) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_VE_EXPORT_OUT", out);
         let settings = ExportSettings {
             resolution: Resolution::P720,
             container: Container::Mp4,
             frame_rate: FrameRate::F30,
         };
-        let status = begin_export(project, &settings);
-        unsafe { std::env::remove_var("TILO_VE_EXPORT_OUT") };
-        status
+        begin_export(project, &settings)
     }
 
     /// The bug this whole path exists to kill: the export used to encode a

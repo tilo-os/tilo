@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Release-grade live-medium -> encrypted target -> first-login cycle.
 #
-# The only guest inputs are QEMU keyboard events sent through vm.sh. Screen
-# transitions are observed from the real framebuffer with OCR; no debug socket,
-# SSH service, shot mode, backend invocation, or target-disk modification is
-# used. The default no-TPM path proves that the passphrase enrolled by the
-# graphical installer unlocks early userspace after a cold power cycle. The
-# opt-in software-TPM path additionally requires an enforcing variable store
-# that trusts the released UKI; it fails rather than calling setup-mode boot a
-# verified-boot test.
+# The live installer is driven through the actions it publishes — the same
+# addresses its own buttons invoke — over its console channel: a virtio-serial
+# port that only this VM's command line attaches (os/dev/vm.sh console;
+# crates/session/console-control), speaking the tilo-control action protocol.
+# Its state, never including the recovery key, is the completion oracle. The
+# installed target has no such channel yet, so its unlock prompt, first-login
+# OOBE and desktop are driven with QEMU keyboard events and observed from the
+# real framebuffer with OCR. No SSH service, shot mode, backend invocation, or
+# target-disk modification is used. The default no-TPM path proves that the
+# passphrase enrolled by the installer unlocks early userspace after a cold
+# power cycle. The opt-in software-TPM path additionally requires an enforcing
+# variable store that trusts the released UKI; it fails rather than calling
+# setup-mode boot a verified-boot test.
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -142,7 +147,6 @@ cleanup() {
     kill "$browser_fixture_server" >/dev/null 2>&1 || true
     wait "$browser_fixture_server" 2>/dev/null || true
   fi
-  rm -f -- "$run/private-observe.png" "$run/private-observe.ppm"
   copy_evidence "$phase" || true
   "$vm" stop >/dev/null 2>&1 || true
   if command -v qemu-img >/dev/null 2>&1 && [ -f "$TILO_TARGET_DISK" ]; then
@@ -332,32 +336,6 @@ wait_screen() {
   return 1
 }
 
-# Observe a screen which contains the recovery key without ever retaining its
-# framebuffer or OCR output. The data lives only in process memory and the
-# private VM runtime, and every path deletes it before returning.
-wait_private_screen() {
-  local pattern="$1" attempts="${2:-720}" delay="${3:-5}" image text i
-  for i in $(seq 1 "$attempts"); do
-    image="$run/private-observe.png"
-    if "$vm" shot private-observe >/dev/null 2>&1; then
-      text="$(tesseract "$image" stdout 2>/dev/null || true)"
-      rm -f -- "$image" "$run/private-observe.ppm"
-      if printf '%s\n' "$text" | grep -Eqi "$pattern"; then
-        text=""
-        printf 'finish_screen_wait_seconds=%s\n' "$((i * delay))" \
-          > "$out/install-timing.txt"
-        return 0
-      fi
-      text=""
-    else
-      rm -f -- "$image" "$run/private-observe.ppm"
-    fi
-    "$vm" status | grep -q '^running' || return 1
-    sleep "$delay"
-  done
-  return 1
-}
-
 die() { printf 'installer cycle: %s\n' "$*" >&2; exit 1; }
 
 # Prepared-alongside reuses the foreign ESP, so the production helper creates
@@ -489,61 +467,91 @@ if [ "$software_tpm" -eq 1 ]; then
 else
   "$vm" boot-installer "$display_arg" --no-tpm
 fi
-wait_screen 01-disk 'Install[[:space:]]+Tilo' 120 5 \
-  || die "profiled live installer did not start at Disk"
-grep -Eqi 'setup choices are ready' "$out/01-disk.txt" \
-  || die "live installer did not acknowledge the embedded setup profile"
+console="$("$vm" console)"
+ic() { python3 "$dev_dir/installer-console.py" --socket "$console" "$@"; }
+field() { python3 "$dev_dir/installer-console.py" field "$@"; }
 
-# Select Alongside when requested, then Refresh -> the only selectable row
-# (/dev/vdb). The live
-# /dev/vda row is disabled by the shipped disk identity rules.
-[ "$install_mode" = erase ] || "$vm" keys right
-"$vm" keys tab tab ret
-sleep 2
-"$vm" keys tab ret
-wait_screen 02-account 'Create[[:space:]]+your[[:space:]]+account' 60 3 \
+# The installer is driven through the actions it publishes: the same
+# addresses its buttons invoke, reached over the console channel that only
+# this VM's command line attaches (a virtio-serial port; see vm.sh console).
+ic wait installer --timeout 600 --save "$out/01-disk.json" \
+  || die "profiled live installer did not start at Disk"
+[ "$(field "$out/01-disk.json" /step)" = disk ] \
+  || die "profiled live installer did not start at Disk"
+field "$out/01-disk.json" /status | grep -Eqi 'setup choices are ready' \
+  || die "live installer did not acknowledge the embedded setup profile"
+"$vm" shot 01-disk >/dev/null && cp -f "$run/01-disk.png" "$out/01-disk.png" || true
+
+# Select the method, refresh, then the only selectable disk (/dev/vdb). The
+# live /dev/vda is refused by the shipped disk identity rules.
+method=erase
+[ "$install_mode" = erase ] || method=alongside
+ic invoke set-method@installer.storage "{\"method\":\"$method\"}" \
+  || die "installer refused the $method install method"
+ic invoke refresh@installer.storage || die "installer could not refresh disks"
+ic invoke select@installer.disk:/dev/vdb || die "installer did not offer the blank target"
+ic invoke next@installer || die "installer did not select the blank target"
+ic wait-step account --save "$out/02-account.json" \
   || die "installer did not select the blank target"
-grep -Fqi -- "$TILO_USER" "$out/02-account.txt" \
+[ "$(field "$out/02-account.json" /account/username)" = "$TILO_USER" ] \
   || die "embedded username did not reach the account screen"
 if [ "$software_tpm" -eq 1 ]; then
-  grep -Eqi 'TPM-protected[[:space:]]+startup[[:space:]]+PIN' "$out/02-account.txt" \
+  [ "$(field "$out/02-account.json" /account/secret_policy)" = tpm-pin ] \
     || die "software TPM was attached, but the live and target boot chain did not pass verified-boot preflight"
 fi
+"$vm" shot 02-account >/dev/null && cp -f "$run/02-account.png" "$out/02-account.png" || true
 
-"$vm" keys tab
-"$vm" type "$TILO_PASS"
-"$vm" keys tab
-"$vm" type "$TILO_PASS"
-"$vm" keys tab tab ret
-wait_screen 03-review 'Review[[:space:]]+your[[:space:]]+choices' 60 3 \
+# The startup secret travels from the environment to the console argument;
+# it is never on a command line and never in a reply.
+ic invoke set-passphrase@installer.account \
+  --secret passphrase=TILO_PASS --secret confirmation=TILO_PASS \
   || die "installer rejected the configured startup secret"
-grep -Eqi 'cycle.?tilo' "$out/03-review.txt" \
+ic invoke next@installer || die "installer rejected the configured startup secret"
+ic wait-step review --save "$out/03-review.json" \
+  || die "installer rejected the configured startup secret"
+field "$out/03-review.json" /options/hostname | grep -Eqi 'cycle.?tilo' \
   || die "Review did not show the configured hostname"
+"$vm" shot 03-review >/dev/null && cp -f "$run/03-review.png" "$out/03-review.png" || true
 
 # Exact destructive confirmation -> recovery-key promise -> Begin Install.
 # Prepared alongside formats only partition 4; guided alongside confirms the
 # reviewed free-space operation with the whole disk because it appends p4+p5.
+# `begin` is published with a typed-phrase confirmation contract: the phrase
+# is the object it formats, and anything else is refused before any work.
 confirmation=/dev/vdb
 [ "$install_mode" != prepared-alongside ] || confirmation=/dev/vdb4
-"$vm" type "$confirmation"
-"$vm" keys tab spc tab tab ret
+[ "$(field "$out/03-review.json" /storage/confirmation_target)" = "$confirmation" ] \
+  || die "Review names a different destructive target than this layout formats"
+ic invoke set-recovery-promise@installer.review '{"acknowledged":true}' \
+  || die "installer refused the recovery-key promise"
+if ic invoke begin@installer.review '{"confirmation_phrase":"/dev/vda"}' 2>/dev/null; then
+  die "installer began an install confirmed with the wrong device"
+fi
+ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}" \
+  || die "installer refused the confirmed install"
 
-# The production Finish title is the completion oracle. Its screen also holds
-# the one-time recovery key, so OCR is memory-only and its framebuffer is
-# deleted immediately rather than copied into the artifact directory.
+# Completion is read from the installer's own state. That state never holds
+# the one-time recovery key (only whether it exists and was saved), so the
+# installer phase keeps no screenshot of the Finish screen and no serial log.
 max_wait="${TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS:-3600}"
-wait_private_screen 'Tilo[[:space:]]+is[[:space:]]+installed|Installation[[:space:]]+complete' \
-  "$((max_wait / 5))" 5 || die "installer did not reach its Finish screen"
+install_seconds="$(ic wait-install --timeout "$max_wait" --save "$out/04-install.json")" \
+  || die "installer did not reach its Finish screen"
+printf 'finish_screen_wait=%s\n' "$install_seconds" > "$out/install-timing.txt"
+[ "$(field "$out/04-install.json" /recovery_key/available)" = true ] \
+  || die "installer finished without generating a recovery key"
 
-# Completion explicitly focuses the first recovery action. Copy the key into
-# the ephemeral live clipboard, acknowledge the disposable test target, then
-# choose Power off so the next boot contains only the produced target.
-"$vm" keys ret tab spc tab tab ret
+# Copy the key into the ephemeral live clipboard, acknowledge the disposable
+# test target, then Power off so the next boot contains only the produced
+# target. The reply to power-off may be cut off by the guest going down.
+ic invoke copy@installer.recovery || die "installer could not copy the recovery key"
+ic invoke confirm-saved@installer.recovery '{"saved":true}' \
+  || die "installer refused the saved-key acknowledgement"
+ic invoke power-off@installer.power || true
 for _ in $(seq 1 60); do
   "$vm" status | grep -q '^stopped' && break
   sleep 2
 done
-"$vm" status | grep -q '^stopped' || die "graphical Finish action did not power off"
+"$vm" status | grep -q '^stopped' || die "installer Finish action did not power off"
 copy_evidence installer
 "$vm" stop >/dev/null 2>&1 || true
 

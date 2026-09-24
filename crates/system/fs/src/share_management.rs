@@ -15,8 +15,8 @@ use collab_types::{
     Ed25519PublicKey, FileInviteError, FileInviteSpec, FileInviteSubject, FileInviteV1,
     FilePermission, FileRecordId, mint_bearer_file_invite, mint_file_invite,
 };
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh_base::EndpointAddr;
-use rand::rngs::OsRng;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -113,7 +113,7 @@ impl ShareManagement {
         if request.max_redemptions == 0 || request.max_redemptions > MAX_BEARER_REDEMPTIONS {
             return Err(ShareManagementError::InvalidRedemptionLimit);
         }
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let bearer = mint_bearer_file_invite(
             FileInviteSpec {
                 workspace_id: request.workspace_id,

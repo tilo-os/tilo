@@ -5,6 +5,7 @@
 //! painting, and exclusive event routing. The shell overlay host only decides
 //! where this modal sits in the global z-order.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -200,6 +201,7 @@ fn picker_scope_for(
         let state = chrome.borrow();
         let tree = state.tree();
         let Some(workspace) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.id == caller.workspace_id)
@@ -333,7 +335,11 @@ mod tests {
         std::fs::write(root.join("file.txt"), b"file").unwrap();
 
         let tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.active_workspace().expect("active workspace").id;
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .id;
         let chrome = ChromeState::new(tree);
         chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
             initial_dir: root.clone(),

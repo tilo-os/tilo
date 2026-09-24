@@ -18,6 +18,10 @@
 //! On `exiting`, the App sends `RenderRequest::Shutdown` and `join()`s the
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the GPU render worker is a dedicated thread"
+)]
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
@@ -131,6 +135,13 @@ pub enum FrameOutcome {
     SurfaceGone,
 }
 
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct RenderThreadHandle {
     pub render_tx: SyncSender<RenderRequest>,
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
@@ -140,6 +151,13 @@ pub struct RenderThreadHandle {
 }
 
 /// One atomic reservation preserves both buffers across an aborted redraw.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(crate) struct BufferPool<T> {
     receiver: Receiver<T>,
     prepared: Option<T>,
@@ -155,10 +173,12 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn redraw_deferred(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn prepare(&mut self) -> Result<bool, mpsc::TryRecvError> {
         if self.prepared.is_some() {
             return Ok(true);
@@ -177,6 +197,7 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Some(buffers) = self.prepared.take() {
             Ok(buffers)
@@ -185,6 +206,7 @@ impl<T> BufferPool<T> {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
         if self.prepare()? {
             self.prepared.take().ok_or(mpsc::TryRecvError::Empty)
@@ -195,10 +217,11 @@ impl<T> BufferPool<T> {
 }
 
 /// Do not consume a forced probe or dirty work until both pooled buffers exist.
+#[cfg(feature = "native")]
 pub(crate) fn prepare_frame<T>(
     retry: &mut retry::RenderRetryState,
     buffers: &mut BufferPool<T>,
-    now: std::time::Instant,
+    now: crate::time::Instant,
 ) -> Result<bool, mpsc::TryRecvError> {
     if !retry.allows(now) || !buffers.prepare()? {
         return Ok(false);
@@ -280,7 +303,7 @@ pub fn spawn_render_thread(
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
             let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
-            let present_origin = present_dbg.then(std::time::Instant::now);
+            let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env();
             let native_timing = presentation.as_ref().filter(|_| timing::enabled());
@@ -329,8 +352,7 @@ pub fn spawn_render_thread(
                     ),
                     RenderRequest::Shutdown => break,
                 };
-                let worker_timing =
-                    present_origin.map(|origin| (origin, std::time::Instant::now()));
+                let worker_timing = present_origin.map(|origin| (origin, crate::time::now()));
                 if let Some(observer) = native_timing {
                     timing::handoff::received(
                         &mut handoff,
@@ -387,7 +409,7 @@ pub fn spawn_render_thread(
                     }
                 }
 
-                let render_start = present_dbg.then(std::time::Instant::now);
+                let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
                     &render_cx,
@@ -490,13 +512,13 @@ fn log_render_outcome(
     cpu_frame_id: Option<u64>,
     dimensions: (u32, u32),
     outcome: FrameOutcome,
-    worker_timing: Option<(std::time::Instant, std::time::Instant)>,
-    render_duration: Option<std::time::Duration>,
+    worker_timing: Option<(crate::time::Instant, crate::time::Instant)>,
+    render_duration: Option<crate::time::Duration>,
 ) {
     let Some((origin, worker_start)) = worker_timing else {
         return;
     };
-    let worker_end = std::time::Instant::now();
+    let worker_end = crate::time::now();
     let row = render_outcome_row(
         frame_ix,
         cpu_frame_id,
@@ -930,7 +952,6 @@ fn render_one_frame(
     cpu_frame_id: Option<u64>,
     presentation: Option<&crate::presentation_feedback::Observer>,
 ) -> FrameOutcome {
-    use std::time::Instant;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
         return FrameOutcome::SurfaceGone;
@@ -939,7 +960,7 @@ fn render_one_frame(
     // Acquire before encoding. An occluded, timed-out, outdated, or destroyed
     // swapchain cannot consume the frame; discovering that only after Vello
     // packed and uploaded the scene wasted the entire GPU pass.
-    let t_acquire = present_dbg.then(Instant::now);
+    let t_acquire = present_dbg.then(crate::time::now);
     let surface_texture = match surface.surface.get_current_texture() {
         vello::wgpu::CurrentSurfaceTexture::Success(t) => t,
         vello::wgpu::CurrentSurfaceTexture::Outdated
@@ -978,7 +999,7 @@ fn render_one_frame(
 
     let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
-    let t_encode = present_dbg.then(Instant::now);
+    let t_encode = present_dbg.then(crate::time::now);
     let raster_pixels = match rasterize_damage(
         &device_handle.device,
         &device_handle.queue,
@@ -1019,7 +1040,7 @@ fn render_one_frame(
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
-    let t_submit = present_dbg.then(Instant::now);
+    let t_submit = present_dbg.then(crate::time::now);
     let mut encoder =
         device_handle
             .device
@@ -1038,7 +1059,7 @@ fn render_one_frame(
 
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
-    let t_present = present_dbg.then(Instant::now);
+    let t_present = present_dbg.then(crate::time::now);
     if let Some(observer) = presentation {
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
@@ -1182,7 +1203,7 @@ mod admission_tests {
         let mut doc = automerge::AutoCommit::new();
         root.update(&mut doc, &automerge::ROOT);
         root.sync(&mut doc, &automerge::ROOT);
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let mut retry = retry::RenderRetryState::default();
         for _ in 0..8 {
             retry.observe(FrameOutcome::Occluded, now);
@@ -1232,13 +1253,13 @@ mod admission_tests {
         retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
         assert_eq!(
             retry.deadline(),
-            Some(now + std::time::Duration::from_millis(250))
+            Some(now + crate::time::Duration::from_millis(250))
         );
     }
 
     #[test]
     fn occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return() {
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let mut retry = retry::RenderRetryState::default();
         for _ in 0..8 {
             retry.observe(FrameOutcome::Occluded, now);

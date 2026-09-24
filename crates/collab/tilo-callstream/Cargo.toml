@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # identical version keeps a single copy in the workspace lock.
 openh264 = { version = "0.9", features = ["source"] }
 serde = { version = "1.0", features = ["derive"] }
-thiserror = "2.0.18"
+thiserror.workspace = true
 tracing = "0.1"
 
 [lints]

@@ -2,9 +2,13 @@
 //!
 //! Call `spawn` only after the native window has first presented. Deadlines use
 //! one origin so slow handling cannot silently reduce the requested input rate.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: input timelines pace real window delivery"
+)]
 
+use crate::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
 
 #[path = "native_host_clock.rs"]
 pub(crate) mod host_clock;
@@ -91,7 +95,7 @@ impl Scenario {
             }
         }
         deadline(
-            Instant::now(),
+            crate::time::now(),
             self.interval_us,
             self.steps.len().saturating_sub(1),
         )?;
@@ -162,7 +166,7 @@ impl GateConfig {
 
     fn verify_source(&self, contents: &str) -> Result<(), String> {
         use sha2::{Digest, Sha256};
-        if format!("{:x}", Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
+        if hex::encode(Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
             return Err("native input gate scenario byte hash mismatch".into());
         }
         Ok(())
@@ -266,7 +270,7 @@ impl InputGate {
         #[cfg(unix)]
         {
             use std::io::{Read, Write};
-            let expires = Instant::now()
+            let expires = crate::time::now()
                 .checked_add(Duration::from_secs(3))
                 .ok_or("native gate deadline overflow")?;
             let request = GateRequest {
@@ -287,7 +291,7 @@ impl InputGate {
             let mut reply = Vec::new();
             loop {
                 let remaining = expires
-                    .checked_duration_since(Instant::now())
+                    .checked_duration_since(crate::time::now())
                     .filter(|duration| !duration.is_zero())
                     .ok_or("native gate permit timed out")?;
                 self.stream
@@ -314,7 +318,7 @@ impl InputGate {
             }
             let reply: GateReply =
                 serde_json::from_slice(&reply).map_err(|error| error.to_string())?;
-            if !reply.approved || reply.request != request || Instant::now() >= expires {
+            if !reply.approved || reply.request != request || crate::time::now() >= expires {
                 return Err("native gate permit denied, stale, or mismatched".into());
             }
             Ok(expires)
@@ -353,7 +357,7 @@ pub fn spawn(
 ) -> Result<std::thread::JoinHandle<()>, String> {
     scenario.validate()?;
     let mut gate = InputGate::from_env(&scenario)?;
-    let origin = Instant::now();
+    let origin = crate::time::now();
     // Resolve every checked deadline before starting: no partial timeline on error.
     let packets = scenario
         .steps
@@ -378,7 +382,7 @@ pub fn spawn(
                 // A late callback never shifts the remaining schedule. Checking
                 // again after sleep also guards against an early clock wakeup.
                 while let Some(remaining) =
-                    packet.scheduled_at.checked_duration_since(Instant::now())
+                    packet.scheduled_at.checked_duration_since(crate::time::now())
                 {
                     if remaining.is_zero() {
                         break;
@@ -399,7 +403,7 @@ pub fn spawn(
                 (packet.sent_at, packet.sent_host) = host_clock::sample();
                 // Recheck immediately before the callback, including time spent
                 // descheduled after receipt or sampling the diagnostic clock.
-                if expires.is_some_and(|expires| Instant::now() >= expires) {
+                if expires.is_some_and(|expires| crate::time::now() >= expires) {
                     log::emit_json("qos-native-gate", serde_json::json!({
                         "event":"denied", "step_id":packet.id, "reason":"permit expired before delivery" }));
                     break;
@@ -481,7 +485,7 @@ mod tests {
             } else {
                 inherited.as_raw_fd()
             };
-            let mut config = serde_json::json!({"fd":fd,"run_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenario_sha256":format!("{:x}", Sha256::digest(contents.as_bytes()))});
+            let mut config = serde_json::json!({"fd":fd,"run_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenario_sha256":hex::encode(Sha256::digest(contents.as_bytes()))});
             mutate(&mut config);
             let output = directory.path().join("output.log");
             let file = std::fs::File::create(&output).unwrap();
@@ -534,9 +538,9 @@ mod tests {
         }
 
         fn finish(&mut self) -> String {
-            let until = Instant::now() + Duration::from_secs(6);
+            let until = crate::time::now() + Duration::from_secs(6);
             while self.child.try_wait().unwrap().is_none() {
-                assert!(Instant::now() < until, "child must finish boundedly");
+                assert!(crate::time::now() < until, "child must finish boundedly");
                 std::thread::sleep(Duration::from_millis(10));
             }
             std::fs::read_to_string(&self.output).unwrap()
@@ -564,10 +568,10 @@ mod tests {
     #[test]
     fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
         let mut child = GateChild::start(12_000_000, |_| {});
-        let startup_deadline = Instant::now() + Duration::from_secs(5);
+        let startup_deadline = crate::time::now() + Duration::from_secs(5);
         while delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty() {
             assert!(
-                Instant::now() < startup_deadline,
+                crate::time::now() < startup_deadline,
                 "fixture must deliver its initial hover"
             );
             std::thread::sleep(Duration::from_millis(10));
@@ -735,7 +739,7 @@ mod tests {
         let output = observed.clone();
         spawn(scenario(), move |packet| {
             if packet.id == 0 {
-                std::thread::sleep(std::time::Duration::from_millis(8));
+                std::thread::sleep(crate::time::Duration::from_millis(8));
             }
             output.lock().unwrap().push(packet);
             true
@@ -839,7 +843,7 @@ mod tests {
 
     #[test]
     fn checked_timeline_rejects_overflow() {
-        let origin = std::time::Instant::now();
+        let origin = crate::time::now();
         assert!(deadline(origin, u64::MAX, 2).is_err());
         let mut invalid = scenario();
         invalid.interval_us = u64::MAX;

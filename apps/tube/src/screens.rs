@@ -3012,15 +3012,7 @@ mod search_screen_tests {
         for _ in 0..(w * h) {
             rgba.extend_from_slice(&[20, 200, 60, 255]);
         }
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            writer.write_image_data(&rgba).unwrap();
-        }
-        out
+        ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
     /// Search preserves query/result context after the top bar scrolls away,

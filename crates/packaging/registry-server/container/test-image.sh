@@ -13,7 +13,7 @@ source_revision=${2:?usage: test-image.sh IMAGE SOURCE_REVISION}
 # different distro path by default.
 trust_probe=$(docker create "$image")
 trust_file=$(mktemp)
-if ! docker cp "$trust_probe:/etc/pki/tls/certs/ca-bundle.crt" "$trust_file" >/dev/null \
+if ! docker cp "$trust_probe:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" "$trust_file" >/dev/null \
   || [[ ! -s $trust_file ]]
 then
   docker rm "$trust_probe" >/dev/null 2>&1 || true

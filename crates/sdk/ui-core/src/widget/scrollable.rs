@@ -1,6 +1,6 @@
+use crate::time::{Duration, Instant};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
@@ -477,7 +477,7 @@ impl Scrollable {
     }
 
     fn wake(&mut self) {
-        self.last_activity = Some(Instant::now());
+        self.last_activity = Some(crate::time::now());
         self.bar_dirty = true;
     }
     pub fn fling(&mut self, vx: f32, vy: f32) {
@@ -676,7 +676,7 @@ impl Scrollable {
     }
 
     fn bar_opacity(&self, theme: &Theme) -> f32 {
-        self.bar_opacity_at(Instant::now(), theme.reduce_motion)
+        self.bar_opacity_at(crate::time::now(), theme.reduce_motion)
     }
 
     fn fade_in_progress_at(&self, now: Instant) -> bool {
@@ -691,7 +691,7 @@ impl Scrollable {
     }
 
     fn fade_in_progress(&self) -> bool {
-        self.fade_in_progress_at(Instant::now())
+        self.fade_in_progress_at(crate::time::now())
     }
 
     fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
@@ -719,7 +719,7 @@ impl Scrollable {
     }
 
     fn needs_terminal_fade_frame(&self) -> bool {
-        self.needs_terminal_fade_frame_at(Instant::now())
+        self.needs_terminal_fade_frame_at(crate::time::now())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -898,7 +898,7 @@ impl Scrollable {
                             vertical: true,
                             dir,
                             anchor: cur,
-                            next_at: deadline_after(Instant::now(), HOLD_INITIAL_MS),
+                            next_at: deadline_after(crate::time::now(), HOLD_INITIAL_MS),
                         });
                     }
                     return true;
@@ -921,7 +921,7 @@ impl Scrollable {
                             vertical: false,
                             dir,
                             anchor: cur,
-                            next_at: deadline_after(Instant::now(), HOLD_INITIAL_MS),
+                            next_at: deadline_after(crate::time::now(), HOLD_INITIAL_MS),
                         });
                     }
                     return true;
@@ -1174,7 +1174,7 @@ impl Widget for Scrollable {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
-            self.advance_hold(Instant::now());
+            self.advance_hold(crate::time::now());
         }
         if let Some(c) = &mut self.child {
             c.sync(s, p);
@@ -1636,7 +1636,7 @@ impl Widget for Scrollable {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.fade_start_deadline_at(Instant::now())
+        self.fade_start_deadline_at(crate::time::now())
             .into_iter()
             .chain(
                 self.child
@@ -2842,7 +2842,7 @@ mod tests {
         s.last_activity = None; // as freshly constructed
         s.pointer_near_bar = false;
         assert_eq!(
-            s.bar_opacity_at(Instant::now(), false),
+            s.bar_opacity_at(crate::time::now(), false),
             0.0,
             "idle overlay is hidden"
         );
@@ -2878,7 +2878,7 @@ mod tests {
     fn terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb() {
         let mut s = vertical(1200.0);
         s.last_activity = Some(
-            Instant::now()
+            crate::time::now()
                 .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
                 .expect("the test duration is far shorter than the monotonic clock"),
         );
@@ -2926,7 +2926,7 @@ mod tests {
         let mut persistent = vertical(1200.0).always_visible();
         persistent.last_activity = None;
         assert_eq!(
-            persistent.bar_opacity_at(Instant::now(), false),
+            persistent.bar_opacity_at(crate::time::now(), false),
             1.0,
             "persistent bar always visible"
         );
@@ -2958,7 +2958,7 @@ mod tests {
     #[test]
     fn opaque_hold_boundaries_preserve_fade_and_terminal_clear() {
         let mut s = vertical(1200.0);
-        let start = Instant::now();
+        let start = crate::time::now();
         s.last_activity = Some(start);
         s.bar_visible_last_draw.set(true);
         let fade_start = start + Duration::from_millis(900);
@@ -2989,7 +2989,7 @@ mod tests {
 
     #[test]
     fn opaque_hold_preserves_earlier_child_deadline() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut child = vertical(1200.0);
         child.last_activity = Some(now - Duration::from_millis(100));
         let mut outer = vertical(1200.0);
@@ -3041,7 +3041,8 @@ mod tests {
             "persistent bar is static"
         );
         let mut fading = vertical(1200.0);
-        fading.last_activity = Some(Instant::now() - Duration::from_millis(VISIBLE_HOLD_MS + 1));
+        fading.last_activity =
+            Some(crate::time::now() - Duration::from_millis(VISIBLE_HOLD_MS + 1));
         assert!(
             Widget::needs_animation_frame(&fading),
             "a fading bar pumps frames"

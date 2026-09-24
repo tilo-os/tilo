@@ -50,8 +50,8 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let resolved = environment.resolve(definition.app_id, &author)?;
-        let host = ApplicationHost::new(
-            resolved.profile_root,
+        let host = ApplicationHost::with_store(
+            Rc::new(app_state::FsStore::new(resolved.profile_root)),
             resolved.device_id,
             &resolved.workspace_id,
             author,
@@ -323,19 +323,20 @@ impl ApplicationHost {
         lifetime: Rc<dyn std::any::Any>,
     ) -> Result<Self, LaunchError> {
         let mut host = Self::new(
-            profile_root.clone(),
+            profile_root,
             device_id,
             workspace_id,
             author,
             permissions,
             action_context,
         )?;
-        host.owners = RecordOwners::with_profile_lifetime(profile_root, lifetime.clone());
+        host.owners.retain_profile(lifetime.clone());
         let views = Rc::try_unwrap(host.views).map_err(|_| LaunchError::BindingMismatch)?;
         host.views = Rc::new(views.with_profile_lifetime(lifetime));
         Ok(host)
     }
 
+    /// A host persisting under a local profile directory.
     /// # Errors
     /// Rejects invalid explicit profile and identity inputs. No files are opened.
     pub fn new(
@@ -346,13 +347,39 @@ impl ApplicationHost {
         permissions: Rc<RefCell<PermissionContext>>,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
+        if !profile_root.is_absolute() {
+            return Err(LaunchError::Restore(crate::view::ThawError::InvalidView(
+                "profile root must be absolute".into(),
+            )));
+        }
+        Self::with_store(
+            Rc::new(app_state::FsStore::new(profile_root)),
+            device_id,
+            workspace_id,
+            author,
+            permissions,
+            action_context,
+        )
+    }
+
+    /// A host persisting records and local views through `store`.
+    /// # Errors
+    /// Rejects invalid identity inputs. Nothing is read or written.
+    pub fn with_store(
+        store: Rc<dyn durable_store::DurableStore>,
+        device_id: String,
+        workspace_id: &str,
+        author: UserId,
+        permissions: Rc<RefCell<PermissionContext>>,
+        action_context: tilo_actions::ActionContext,
+    ) -> Result<Self, LaunchError> {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         let views = Rc::new(
-            InstanceViewStore::new(profile_root.clone(), &device_id, workspace_id)
+            InstanceViewStore::with_store(Rc::clone(&store), &device_id, workspace_id)
                 .map_err(LaunchError::Restore)?,
         );
         Ok(Self {
-            owners: RecordOwners::new(profile_root),
+            owners: RecordOwners::with_store(store),
             views,
             device_id,
             permissions,

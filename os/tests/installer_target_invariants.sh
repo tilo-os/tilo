@@ -17,6 +17,7 @@ autologin_cleanup_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-auto
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
 installer_disks="$repo_root/crates/session/installer/src/disks.rs"
+block_devices_lsblk="$repo_root/crates/system/block-devices/src/lsblk.rs"
 installer_timezones="$repo_root/crates/session/installer/src/timezones.rs"
 media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
@@ -30,11 +31,12 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-if grep -Fq 'bounded_command::run(' "$installer_disks" \
+if grep -Fq 'use block_devices::' "$installer_disks" \
+   && grep -Fq 'bounded_command::run(' "$block_devices_lsblk" \
    && grep -Fq 'bounded_command::run(' "$installer_timezones" \
    && grep -Fq 'bounded_command::run(' "$installer_app" \
    && ! grep -Eq 'Command::new\("(lsblk|timedatectl|/usr/libexec/tilo-verified-boot-install-preflight)"\)' \
-      "$installer_disks" "$installer_timezones" "$installer_app"; then
+      "$installer_disks" "$block_devices_lsblk" "$installer_timezones" "$installer_app"; then
   ok "installer discovery and verified-boot preflight have bounded subprocesses"
 else
   bad "installer trusts an unbounded discovery or verified-boot subprocess"

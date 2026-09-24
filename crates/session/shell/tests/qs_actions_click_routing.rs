@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -140,18 +141,21 @@ fn minimal_tree() -> WorkspaceTree {
         // Everything else, including the workspace's durable collaboration room,
         // comes from the builder, so a field added to `Workspace` does not break
         // this fixture.
-        ..Workspace::test_default(ws_id, "W")
+        ..Workspace::new(ws_id, "W")
     };
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);
     let mut active_group = HashMap::new();
     active_group.insert(strip_id, group_id);
     WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -852,16 +856,16 @@ fn a_click_beside_the_invite_button_does_not_open_the_composer() {
 #[test]
 fn clicking_a_strip_ribbon_segment_moves_focus() {
     let mut tree = minimal_tree();
-    let ws_id = tree.workspaces[0].id;
+    let ws_id = tree.desktop.workspaces[0].id;
     for n in 0..2u64 {
-        tree.workspaces[0].strips.push(Strip {
+        tree.desktop.workspaces[0].strips.push(Strip {
             id: StripId(700 + n),
             name: format!("S{n}"),
             window_groups: vec![],
         });
     }
-    let first = tree.workspaces[0].strips[0].id;
-    tree.active_strip.insert(ws_id, first);
+    let first = tree.desktop.workspaces[0].strips[0].id;
+    tree.desktop.active_strip.insert(ws_id, first);
 
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = layout_host(&mut host);

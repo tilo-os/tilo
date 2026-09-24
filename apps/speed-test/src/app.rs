@@ -1073,7 +1073,7 @@ impl SpeedTestApp {
 }
 
 fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
-    let client = match reqwest::blocking::Client::builder()
+    let client = match tilo_net::http::blocking_client()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()

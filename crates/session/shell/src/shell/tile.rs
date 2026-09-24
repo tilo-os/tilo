@@ -7,6 +7,7 @@
 //! `AppWidget` for each placeholder. The two mirror each other's field
 //! layout so shell UI can treat them uniformly — only `tile` differs.
 
+use crate::shell::state::FreshId as _;
 use std::collections::HashMap;
 use ui::widget::{AppKind as UiAppKind, AppWidget};
 

@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use zeroize::Zeroizing;
 
 use crate::shell::device_fabric::{DeviceKind, PersonalFabricAction, PersonalFabricActionEnvelope};
@@ -240,7 +241,7 @@ impl TetheringHost for ProductionHost<'_> {
             .collect::<String>();
         let ssid = format!("Tilo {suffix}");
         let mut secret = [0_u8; 16];
-        OsRng.fill_bytes(&mut secret);
+        UnwrapErr(SysRng).fill_bytes(&mut secret);
         let password = Zeroizing::new(hex::encode(secret));
         let config = os_actions::HotspotConfiguration {
             ssid: ssid.clone(),
@@ -702,7 +703,7 @@ fn signal_expiry(signal: &TetheringSignal) -> u64 {
 fn random_id() -> [u8; 16] {
     let mut value = [0; 16];
     while value == [0; 16] {
-        OsRng.fill_bytes(&mut value);
+        UnwrapErr(SysRng).fill_bytes(&mut value);
     }
     value
 }

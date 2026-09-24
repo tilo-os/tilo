@@ -1,0 +1,510 @@
+# Tilo OS component manifest: which Tilo-built file goes where in the image.
+#
+# This file is the single source of truth for Tilo build outputs in the OS
+# image. It is consumed by:
+#   * os/scripts/install-components.py, which the production Containerfile's
+#     `component-files` stage runs to arrange every binary into /image/<layer>/,
+#     which os/Containerfile.dev runs with `--dev` to build and install the dev
+#     image's components, and which assembles development sysext layers
+#     (`--dest <layer>/`) from the same entries, so the image, the dev image and
+#     a dev layer cannot place a file differently;
+#   * tools/policy/check_component_manifest.py (part of tools/policy/run.sh),
+#     which fails when the Containerfile builds or copies a Tilo output that is
+#     not declared here, or when an entry names a cargo package, bin, feature or
+#     unit that does not exist;
+#   * tools/policy/check_dev_image_contract.py, which keeps dev-only components
+#     out of the production image and the dev image out of production tags;
+#   * tilo-vmd, which reads its copy at /usr/share/tilo/components.toml in the
+#     dev image to learn each component's scope and units;
+#   * os/tests/lib/containerfile.sh, which expands the manifest into the image's
+#     copy contract.
+#
+# Schema, one [[component]] table each:
+#   name        unique component name; the unit of a dev-VM swap
+#   kind        "userspace": takes effect when its session or units restart.
+#               "boot": only takes effect on a cold boot (kernel, UKI,
+#               bootloader, initramfs, installer media); dev tooling redirects a
+#               swap to `scenario` instead of restarting anything, unless the
+#               component declares `dev_swap`.
+#   scenario    boot components only: the os/dev/ driver script that
+#               cold-boots and exercises the component
+#   dev_swap    boot components only: "reboot" when `tilo-vm swap` can put a
+#               dev build of it into a dev VM, as the VM's next boot entry
+#               followed by a reboot (the kernel). Without it a swap is
+#               redirected to `scenario`.
+#   dev_build   with dev_swap: the os/ script that builds the component for a
+#               dev VM from the same sources as the image (os/kernel/dev-build.sh)
+#   scope       "session": per-overlay (compositor, user services, CLIs a user
+#               runs); a swap is a normal session restart.
+#               "vm": VM-wide (system services, greeter, boot tooling); a swap
+#               merges into the VM's /usr and restarts `units`.
+#   profile     cargo profile of the build, "release" (default) or "thin-app"
+#   packages    cargo package(s) built for this component
+#   bins        cargo bins those packages build for the image
+#   features    cargo features, package-qualified ("pkg/feature")
+#   dev_features  cargo features only dev builds enable, package-qualified.
+#               The dev image rebuilds every component that has them, with
+#               them (os/Containerfile.dev); the production image never does.
+#   units       system units whose ExecStart runs these files (restart on swap)
+#   user_units  user units whose ExecStart runs these files (restart on swap)
+#   optional    true when the image may legitimately omit the component
+#   layer       default image layer for its files (see below)
+#   files       list of { from, to, mode } entries (a boot component whose
+#               install is not driven by this manifest yet may omit packages
+#               and files):
+#     from      build output path. Relative paths are resolved against the
+#               build output directory (--from: /out in the Containerfile,
+#               target/<profile> for a dev build). Absolute paths are outputs
+#               the build writes at their final path, resolved under --build-root.
+#     to        absolute path in the image; a trailing '/' with `tree = true`
+#               copies a whole directory
+#     mode      octal mode for regular files, e.g. "0755"
+#     link      instead of `from`: install a relative symlink to this target
+#     layer     override the component's layer for this one file
+#   Image layers name the Containerfile scratch overlay a file is committed
+#   with (`COPY --from=component-files /image/<layer>/ /`). The layer `direct`
+#   means the Containerfile copies that path itself, straight from the builder
+#   stage, because the build writes it there (the baked runtime and app store).
+#   Layers named `dev-*` exist only in the dev image: a component whose files
+#   are all in such a layer is dev-only. The production image never builds or
+#   copies it, and `install-components.py --all` never selects it.
+#
+# Adding a component:
+#   1. Build it in the Containerfile builder stage (`-p <pkg> --bin <bin>`) and
+#      stage the output into /out.
+#   2. Add a [[component]] table below, for example:
+#
+#        [[component]]
+#        name = "example"
+#        kind = "userspace"
+#        scope = "session"
+#        packages = ["example"]
+#        bins = ["tilo-example"]
+#        user_units = ["tilo-example.service"]
+#        layer = "desktop-binaries"
+#        files = [
+#          { from = "tilo-example", to = "/usr/libexec/tilo-example", mode = "0755" },
+#        ]
+#
+#   3. Run `python3 tools/policy/check_component_manifest.py` (or the whole
+#      `tools/policy/run.sh`) and `python3 os/scripts/install-components.py
+#      --dry-run example` to see the plan.
+#
+# Not listed: /usr/libexec/tilo-local-model-service arrives with the
+# local-model system extension rather than from this image build.
+# `tilo-control` is listed, but as a dev-only component: production images do
+# not ship it.
+
+# Units provided by distribution packages rather than os/usr/lib/systemd.
+external_units = ["greetd.service"]
+
+# ---- Session: compositor and desktop ---------------------------------------
+
+[[component]]
+name = "shell"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["shell"]
+dev_features = ["shell/dev-overrides"]
+user_units = ["tilo-identity.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "shell", to = "/usr/bin/shell", mode = "0755" },
+]
+
+[[component]]
+name = "launcher"
+kind = "userspace"
+scope = "session"
+packages = ["launcher"]
+bins = ["tilo-launcher"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-launcher", to = "/usr/bin/tilo-launcher", mode = "0755" },
+]
+
+[[component]]
+name = "unlock-helper"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-unlock-helper"]
+bins = ["tilo-unlock-helper"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-unlock-helper", to = "/usr/libexec/tilo-unlock-helper", mode = "0755" },
+]
+
+[[component]]
+name = "projector"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-projector"]
+bins = ["tilo-projector"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-projector", to = "/usr/libexec/tilo-projector", mode = "0755" },
+]
+
+# Standalone release builds of the system apps that are also directly invoked
+# (Files doubles as a recovery surface). Their packaged thin builds belong to
+# apps+runtime below.
+[[component]]
+name = "system-apps"
+kind = "userspace"
+scope = "session"
+packages = ["terminal", "file-explorer", "settings"]
+bins = ["terminal", "file-explorer", "settings"]
+layer = "desktop-binaries"
+files = [
+  { from = "terminal", to = "/usr/bin/terminal", mode = "0755" },
+  { from = "file-explorer", to = "/usr/bin/file-explorer", mode = "0755" },
+  { from = "settings", to = "/usr/bin/settings", mode = "0755" },
+]
+
+# Omitted when the image is built with TILO_WITH_BROWSER=0.
+[[component]]
+name = "browser"
+kind = "userspace"
+scope = "session"
+packages = ["browser"]
+bins = ["browser"]
+features = ["browser/wpe"]
+optional = true
+layer = "desktop-binaries"
+files = [
+  { from = "browser", to = "/usr/bin/browser", mode = "0755" },
+]
+
+# ---- Session: package management and user services -------------------------
+
+[[component]]
+name = "install"
+kind = "userspace"
+scope = "session"
+packages = ["install"]
+bins = ["tilo-install"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-install", to = "/usr/bin/tilo-install", mode = "0755" },
+]
+
+[[component]]
+name = "app-package"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-app-package-cli"]
+bins = ["tilo-app-package"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-app-package", to = "/usr/bin/tilo-app-package", mode = "0755" },
+]
+
+[[component]]
+name = "app-cli"
+kind = "userspace"
+scope = "session"
+packages = ["app-cli"]
+bins = ["app"]
+layer = "desktop-binaries"
+files = [
+  { from = "app", to = "/usr/bin/app", mode = "0755" },
+  { link = "app", to = "/usr/bin/store" },
+]
+
+[[component]]
+name = "cli-shim"
+kind = "userspace"
+scope = "session"
+packages = ["cli-shim"]
+bins = ["tilo-cli-shim"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-cli-shim", to = "/usr/libexec/tilo-cli-shim", mode = "0755" },
+]
+
+[[component]]
+name = "runtime-bundle"
+kind = "userspace"
+scope = "session"
+packages = ["runtime-bundle"]
+bins = ["tilo-runtime-bundle"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-runtime-bundle", to = "/usr/bin/tilo-runtime-bundle", mode = "0755" },
+]
+
+[[component]]
+name = "app-host"
+kind = "userspace"
+scope = "session"
+packages = ["app-host"]
+bins = ["tilo-app-host"]
+user_units = ["tilo-app-host.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-app-host", to = "/usr/libexec/tilo-app-host", mode = "0755" },
+]
+
+[[component]]
+name = "ush"
+kind = "userspace"
+scope = "session"
+packages = ["ush"]
+bins = ["tilo-ush"]
+user_units = ["tilo-ush.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+]
+
+[[component]]
+name = "model-manager"
+kind = "userspace"
+scope = "session"
+packages = ["local-model-service"]
+bins = ["tilo-model-manager"]
+user_units = ["tilo-models.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-model-manager", to = "/usr/bin/tilo-model-manager", mode = "0755" },
+]
+
+[[component]]
+name = "model-gateway"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-model-gateway"]
+bins = ["tilo-model-gateway"]
+user_units = ["tilo-model-gateway.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
+]
+
+# The shared runtime and every packaged thin app. One component because Rust
+# dylib symbols carry crate hashes: a thin app only runs against the
+# libruntime_dylib.so built in the same Cargo graph (os/scripts/build-thin-apps.sh).
+# The app set is every apps/*/tilo-app.toml; the image bakes the signed bundle
+# and packs the read-only app store at their final paths in the builder stage.
+[[component]]
+name = "apps+runtime"
+kind = "userspace"
+scope = "session"
+profile = "thin-app"
+packages = ["runtime-dylib"]
+app_manifests = "apps/*/tilo-app.toml"
+features = [
+  "music/audio", "music/live", "video-player/decode", "video-player/portal",
+  "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
+  "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
+  "video-editor/gst",
+]
+layer = "direct"
+files = [
+  { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },
+  { from = "runtime-bundle-publisher.hex", to = "/usr/share/tilo/runtime-bundle-publisher.hex", mode = "0644" },
+  { from = "/usr/share/tilo-apps/", to = "/usr/share/tilo-apps/", tree = true },
+  { from = "app-publisher.hex", to = "/usr/share/tilo/app-publisher.hex", mode = "0644" },
+]
+
+# ---- VM-wide: system services, login and boot tooling ----------------------
+
+[[component]]
+name = "fs"
+kind = "userspace"
+scope = "vm"
+packages = ["fs"]
+bins = ["fs"]
+units = ["fs.service", "tilo-fs-replica.service"]
+user_units = ["tilo-fs-recipient.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "fs", to = "/usr/bin/fs", mode = "0755" },
+]
+
+[[component]]
+name = "greeter"
+kind = "userspace"
+scope = "vm"
+packages = ["greeter"]
+bins = ["tilo-greeter"]
+units = ["greetd.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-greeter", to = "/usr/bin/tilo-greeter", mode = "0755" },
+]
+
+[[component]]
+name = "installer"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-installer-cycle.sh"
+packages = ["installer"]
+bins = ["tilo-installer"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-installer", to = "/usr/bin/tilo-installer", mode = "0755" },
+]
+
+[[component]]
+name = "relay"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-relay"]
+bins = ["tilo-relay", "tilo-relay-admin", "tilo-enroll", "tilo-home-peer-control"]
+units = ["tilo-relay.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-relay", to = "/usr/bin/tilo-relay", mode = "0755" },
+  { from = "tilo-relay-admin", to = "/usr/bin/tilo-relay-admin", mode = "0755" },
+  { from = "tilo-enroll", to = "/usr/bin/tilo-enroll", mode = "0755" },
+  { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
+]
+
+[[component]]
+name = "system-extension"
+kind = "userspace"
+scope = "vm"
+packages = ["system-extension"]
+bins = ["tilo-system-extension-manager"]
+units = [
+  "tilo-system-extension-boot-pack-status.service",
+  "tilo-system-extension-boot-pack-stage.service",
+]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-system-extension-manager", to = "/usr/libexec/tilo-system-extension-manager", mode = "0755" },
+]
+
+[[component]]
+name = "crypto"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-crypto"]
+bins = ["tilo-crypto"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-crypto", to = "/usr/bin/tilo-crypto", mode = "0755" },
+]
+
+[[component]]
+name = "user-identity"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-user-identity"]
+bins = ["tilo-image-trust", "tilo-device-key-init"]
+units = ["tilo-device-key-init.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-image-trust", to = "/usr/bin/tilo-image-trust", mode = "0755" },
+  { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
+]
+
+[[component]]
+name = "tilo-cli"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-cli"]
+bins = ["tilo"]
+layer = "recovery-files"
+files = [
+  { from = "tilo", to = "/usr/bin/tilo", mode = "0755" },
+  { link = "tilo", to = "/usr/bin/system", layer = "desktop-binaries" },
+]
+
+[[component]]
+name = "rollback"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-encrypted-install.sh"
+packages = ["tilo-rollback"]
+bins = ["tilo-rollback"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-rollback", to = "/usr/bin/tilo-rollback", mode = "0755" },
+]
+
+[[component]]
+name = "windows"
+kind = "userspace"
+scope = "vm"
+packages = ["windows-vm", "compat-service"]
+bins = ["tilo-windows-vm-control", "tilo-windows-rail", "tilo-windows-runtime"]
+units = ["tilo-windows-vm-egress-reaper.service"]
+layer = "windows"
+files = [
+  { from = "tilo-windows-vm-control", to = "/usr/libexec/tilo-windows-vm-control", mode = "0755" },
+  { from = "tilo-windows-rail", to = "/usr/libexec/tilo-windows-rail", mode = "0755" },
+  { from = "tilo-windows-runtime", to = "/usr/libexec/tilo-windows-runtime", mode = "0755" },
+]
+
+# ---- Dev image only ----------------------------------------------------------
+# The `dev-tools` layer is installed by os/Containerfile.dev alone.
+# tools/policy/check_dev_image_contract.py fails if the production image builds
+# or copies any of it.
+
+# The compositor's control-socket CLI, the one way agents and scripts drive a
+# running desktop (AGENTS.md). tilo-vmd's `control` passes through to it.
+[[component]]
+name = "control"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["tilo-control"]
+dev_features = ["shell/dev-overrides"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
+]
+
+# The dev-VM guest daemon. It is not a service: `tilo-vm` runs
+# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
+[[component]]
+name = "vmd"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-vmd"]
+bins = ["tilo-vmd"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-vmd", to = "/usr/libexec/tilo-vmd", mode = "0755" },
+  { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
+]
+
+# ---- Boot: effective only after a cold boot ---------------------------------
+# Built and installed outside this manifest for now (the kernel RPM stage, the
+# `uki` stage via os/dev/uki.sh, dracut in the rootfs stage). Listed so dev
+# tooling knows what a swap of them means. The kernel is swappable in a dev VM
+# (`dev_swap = "reboot"`): tilo-vm builds it with `dev_build`, installs it
+# VM-wide as the next boot entry and reboots. The others stay scenario-only, and
+# a swap of them is redirected to the scenario that cold-boots them.
+# `installer` and `rollback` above are boot components too: the installer runs
+# from installer media, and tilo-rollback is copied into the initramfs by
+# os/usr/lib/dracut/modules.d/91tilo-rollback.
+
+[[component]]
+name = "kernel"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/vm.sh"
+dev_swap = "reboot"
+dev_build = "os/kernel/dev-build.sh"
+
+[[component]]
+name = "initramfs"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-encrypted-install.sh"
+
+[[component]]
+name = "uki"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-measured-boot.sh"
+
+[[component]]
+name = "bootloader"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-secureboot.sh"

@@ -28,13 +28,14 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     install_tapp(&store, &pinned_bytes, Pinning::Pinned).unwrap();
 
     let mut tried_ids = Vec::new();
-    for _ in 0..3 {
+    for last_used_unix in [1_000, 2_000, 3_000] {
         let (bytes, id) = common::build_tapp(8);
         install_tapp(&store, &bytes, Pinning::Tried).unwrap();
         tried_ids.push(id);
-        // Force distinct last_used timestamps for LRU ordering.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        store.mark_used(id).unwrap();
+        // Distinct last-used times give the LRU order a defined answer.
+        let mut entry = store.resolve(id).unwrap();
+        entry.last_used_unix = last_used_unix;
+        store.put_entry(entry).unwrap();
     }
 
     let before = store.total_bytes_for_gc().unwrap();
@@ -56,13 +57,13 @@ fn sweep_evicts_tried_and_preserves_pinned() {
         store.resolve(pinned_id).is_ok(),
         "Pinned package must survive gc"
     );
-    // All evicted ids must be Tried.
-    for evicted in &report.removed {
-        assert!(
-            tried_ids.contains(evicted),
-            "gc removed an id that wasn't Tried: {evicted}"
-        );
-    }
+    // Eviction runs least recently used first: whatever was removed is
+    // the oldest Tried packages, in order.
+    assert_eq!(
+        report.removed,
+        tried_ids[..report.removed.len()],
+        "gc must evict the least recently used Tried packages first"
+    );
     // Non-decreasing tally: freed_bytes > 0 since we actually removed
     // payload trees.
     assert!(report.freed_bytes > 0);

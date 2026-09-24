@@ -75,7 +75,7 @@ pub fn tile_hosts_app(tile: &TileContent, app: &str) -> bool {
 pub fn owns_tab_of(chrome: &ChromeState, tab_id: u64, app: &str) -> bool {
     let tree = chrome.tree();
     let found = 'search: {
-        for w in &tree.workspaces {
+        for w in &tree.desktop.workspaces {
             for s in &w.strips {
                 for g in &s.window_groups {
                     for t in &g.tabs {
@@ -102,7 +102,7 @@ pub fn proximity_of(
         return crate::shell::search::SearchProximity::Global;
     };
     let tree = chrome.tree();
-    let is_here = tree.active_workspace().is_some_and(|workspace| {
+    let is_here = tree.desktop.active_workspace().is_some_and(|workspace| {
         workspace.strips.iter().any(|strip| {
             strip
                 .window_groups
@@ -136,7 +136,7 @@ pub fn query_text_app(
     let needle_lower = ctx.needle.to_lowercase();
     let mut out = Vec::new();
     let tree = ctx.chrome.tree();
-    for w in &tree.workspaces {
+    for w in &tree.desktop.workspaces {
         for s in &w.strips {
             for g in &s.window_groups {
                 for t in &g.tabs {
@@ -282,7 +282,7 @@ fn build_snapshot(
 ) -> TextSnapshot {
     let mut entries = Vec::new();
     let tree = ctx.chrome.tree();
-    for workspace in &tree.workspaces {
+    for workspace in &tree.desktop.workspaces {
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {

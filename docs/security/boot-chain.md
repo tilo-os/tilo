@@ -270,7 +270,7 @@ gate: dependency-graph review alone does not prove a finished image or a boot.
 
 The workspace also patches `rustls-native-certs` with the small
 `tilo-native-certs` loader: on Tilo it reads only
-`/etc/pki/tls/certs/ca-bundle.crt`, ignores `SSL_CERT_FILE` and certificate
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, ignores `SSL_CERT_FILE` and certificate
 directory overrides, and therefore removes the final `openssl-probe` crate as
 well as its heuristic trust-path discovery.
 

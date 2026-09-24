@@ -13,7 +13,7 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -24,6 +24,7 @@ use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
 use ui::icons::Icon;
+use ui::paint::{fill_round, stroke_round};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -1517,25 +1518,6 @@ fn point_in(r: Rect, p: Point) -> bool {
 // ----------------------------------------------------------------------
 // Drawing primitives
 // ----------------------------------------------------------------------
-
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
 
 #[allow(
     clippy::too_many_arguments,
@@ -4414,7 +4396,8 @@ mod tests {
     #[test]
     #[serial_test::serial(vpn_env)]
     fn confirm_dialog_routes_through_modaldialog() {
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
         let work = app
@@ -4538,7 +4521,8 @@ mod tests {
     fn confirm_connect_without_exec_stays_disconnected() {
         // Honesty: with execution disabled (the default) confirming a connect
         // must NOT claim the tunnel is connected — the real command never ran.
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         let work = app
             .vault
@@ -4576,9 +4560,13 @@ mod tests {
         let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
 
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_import(ConnKind::WireGuard));
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Import WireGuard tunnel"
+        );
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);
@@ -4612,10 +4600,9 @@ mod tests {
         let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
         let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_local_provision(id));
         assert!(app.drain_import(&mut doc));
         assert_eq!(
             app.vault.connections.len(),
@@ -4639,8 +4626,9 @@ mod tests {
     fn cancelled_setup_cannot_capture_a_later_generic_import() {
         let (mut app, _doc) = demo_with_doc();
         let id = app.vault.selected.expect("demo selection");
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.request_local_provision(id));
         let mut doc = AutoCommit::new();
         assert!(!app.drain_import(&mut doc));
         assert_eq!(app.provision_target, None);

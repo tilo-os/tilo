@@ -327,51 +327,18 @@ impl<T: BlobStore + ?Sized> BlobStore for Arc<T> {
 
 /// Hex-encode a 32-byte hash. Lower-case, 64 chars.
 pub fn hex(hash: &[u8; 32]) -> String {
-    const CHARS: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(64);
-    for &b in hash {
-        let hi = CHARS.get((b >> 4) as usize).copied().unwrap_or(b'0');
-        let lo = CHARS.get((b & 0xf) as usize).copied().unwrap_or(b'0');
-        s.push(hi as char);
-        s.push(lo as char);
-    }
-    s
+    hex::encode(hash)
 }
 
-/// Decode a 64-char hex string back to a 32-byte hash; used by disk-store recovery/debugging, not the hot path.
+/// Decode a 64-char hex string (either case) back to a 32-byte hash; used by disk-store recovery/debugging, not the hot path.
 ///
 /// # Errors
 ///
 /// Returns [`BlobError::BadName`] if `s` isn't exactly 64 hex digits.
 pub fn from_hex(s: &str) -> Result<[u8; 32], BlobError> {
-    if s.len() != 64 {
-        return Err(BlobError::BadName(s.to_string()));
-    }
     let mut out = [0u8; 32];
-    for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
-        let hi_byte = *chunk
-            .first()
-            .ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        let lo_byte = *chunk
-            .get(1)
-            .ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        let hi = nibble(hi_byte).ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        let lo = nibble(lo_byte).ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        let Some(slot) = out.get_mut(i) else {
-            return Err(BlobError::BadName(s.to_string()));
-        };
-        *slot = (hi << 4) | lo;
-    }
+    hex::decode_to_slice(s, &mut out).map_err(|_| BlobError::BadName(s.to_string()))?;
     Ok(out)
-}
-
-fn nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => b.checked_sub(b'0'),
-        b'a'..=b'f' => b.checked_sub(b'a')?.checked_add(10),
-        b'A'..=b'F' => b.checked_sub(b'A')?.checked_add(10),
-        _ => None,
-    }
 }
 
 /// Convenience: read a whole blob via repeated `get_range` calls; not
@@ -479,5 +446,17 @@ mod tests {
     fn from_hex_rejects_bad_input() {
         assert!(from_hex("nope").is_err());
         assert!(from_hex(&"x".repeat(64)).is_err());
+        assert!(from_hex(&"a".repeat(63)).is_err());
+        assert!(from_hex(&"a".repeat(66)).is_err());
+    }
+
+    #[test]
+    fn hex_is_lowercase_and_from_hex_accepts_either_case() {
+        let mut h = [0u8; 32];
+        h[0] = 0xab;
+        h[31] = 0xcd;
+        let s = hex(&h);
+        assert_eq!(s, format!("ab{}cd", "0".repeat(60)));
+        assert_eq!(from_hex(&s.to_ascii_uppercase()).unwrap(), h);
     }
 }

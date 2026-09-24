@@ -261,7 +261,7 @@ pub struct FilePicker {
     /// for click resolution.
     last_cursor: Point,
     /// Last entry pressed + when, for double-click open/navigation detection.
-    last_click: Option<(usize, std::time::Instant)>,
+    last_click: Option<(usize, crate::time::Instant)>,
 
     hover_entry: Option<usize>,
     /// `0` = Cancel, `1` = the mode-specific confirmation action.
@@ -989,7 +989,7 @@ impl FilePicker {
             self.navigate_to(&entry.path);
             return;
         }
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let is_double = matches!(
             self.last_click,
             Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()

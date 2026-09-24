@@ -208,7 +208,7 @@ pub const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
     // Bounded so slow/down instances can't stall the resolve: a short
     // per-request timeout + an overall deadline.
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(Duration::from_millis(2500))
         .user_agent(BROWSER_UA)
         .build()
@@ -325,13 +325,12 @@ mod tests {
 
     #[test]
     fn instances_honours_env_override_first() {
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv");
         let list = instances();
         assert_eq!(list[0], "https://my.inv");
         assert_eq!(list[1], "https://two.inv");
         assert!(list.len() > 2, "defaults are appended after the override");
-        unsafe { std::env::remove_var("TILO_TUBE_INVIDIOUS") };
     }
 
     /// Integration check: resolve a real, widely-available video and prove the
@@ -352,7 +351,7 @@ mod tests {
             stream.url
         );
         assert!(stream.has_audio, "a muxed format carries audio");
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent(BROWSER_UA)
             .build()

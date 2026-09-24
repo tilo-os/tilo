@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "host-storage")]
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -321,6 +322,7 @@ impl PersonalDefaults {
         Ok(())
     }
 
+    #[cfg(feature = "host-storage")]
     pub fn load() -> Self {
         let Some(path) = personal_path() else {
             return Self::default();
@@ -328,6 +330,7 @@ impl PersonalDefaults {
         Self::load_at(&path)
     }
 
+    #[cfg(feature = "host-storage")]
     pub fn load_at(path: &Path) -> Self {
         std::fs::read(path)
             .ok()
@@ -335,6 +338,7 @@ impl PersonalDefaults {
             .unwrap_or_default()
     }
 
+    #[cfg(feature = "host-storage")]
     /// # Errors
     ///
     /// Returns [`DefaultAppError::Persist`] if no config directory is
@@ -345,6 +349,7 @@ impl PersonalDefaults {
         self.save_at(&path)
     }
 
+    #[cfg(feature = "host-storage")]
     /// # Errors
     ///
     /// Returns [`DefaultAppError::Persist`] if `self` can't be serialised
@@ -358,11 +363,9 @@ impl PersonalDefaults {
     }
 }
 
+#[cfg(feature = "host-storage")]
 fn personal_path() -> Option<PathBuf> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
-        .or_else(|| dirs::home_dir().map(|p| p.join(".config")))?;
+    let root = xdg_paths::xdg::config_home()?;
     Some(root.join("tilo/default-apps.json"))
 }
 

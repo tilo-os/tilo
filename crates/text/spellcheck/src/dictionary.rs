@@ -326,12 +326,7 @@ impl Dictionary {
 /// variable is set (e.g. a locked-down sandbox), in which case the user
 /// dictionary lives only in memory.
 fn user_dict_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
+    let base = xdg_paths::xdg::config_home()?;
     Some(base.join("tilo").join("userdict.txt"))
 }
 
