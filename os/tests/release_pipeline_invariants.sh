@@ -214,6 +214,13 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
 
+grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json")' "$os" \
+  && grep -Fq 'Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor)' "$os" \
+  && grep -Fq 'predates this commit'"'"'s desktop inputs; building the desktop from source' "$os" \
+  && grep -Fq '"source": sys.argv[3]' "$repo/dist/desktop/package-os-payload.sh" \
+  && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
+  || bad 'OS composition can ship a desktop payload older than its own compositor sources'
+
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
   && grep -Fq 'max-parallelism = 1' "$os" \
