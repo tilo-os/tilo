@@ -67,15 +67,16 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || accept_and_hang_up(&listener, &events_tx));
 
-    // Media keys: the blocking MPRIS client on its short-lived worker.
+    // Media keys: the MPRIS client runs on the session runtime; the caller
+    // only dispatches.
     assert!(
-        mpris::send(mpris::Command::PlayPause).is_none(),
-        "the scratch bus has no player"
+        mpris::send(mpris::Command::PlayPause, |_| {}),
+        "media-key dispatch reaches the session runtime"
     );
     expect_connection(&events, "MPRIS media-key dispatch");
 
     // Cross-device handoff: pausing one exact player.
-    assert!(!mpris::pause_named("org.mpris.MediaPlayer2.probe"));
+    assert!(mpris::pause_named("org.mpris.MediaPlayer2.probe"));
     expect_connection(&events, "MPRIS pause of a named player");
 
     // Handoff discovery: the periodic player scan.

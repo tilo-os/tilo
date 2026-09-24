@@ -6,21 +6,24 @@
 //! Music app (`apps/music/src/mpris.rs`) implements.
 //!
 //! Called from the compositor's input path, but a D-Bus round trip has no
-//! natural bound (tens of seconds) and `zbus::block_on` can't run inside
-//! the compositor's tokio runtime — so the bus work happens on a throwaway
-//! `std::thread`, and the caller waits on a channel with a short deadline:
-//! a healthy player answers in under a millisecond, an unhealthy one costs
-//! one dropped OSD instead of a frozen desktop.
+//! natural bound (tens of seconds). So every bus conversation runs as an
+//! async task on the session runtime (`crate::session_runtime`), over one
+//! shared session-bus connection, and nothing here waits for it: results
+//! reach the compositor loop through the caller's delivery (a transport
+//! key's OSD) or shared state it already samples (handoff reports and
+//! accepted resumes).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use media::handoff::{HandoffSource, PlaybackReport, PlaybackSession};
 use zbus::zvariant::OwnedValue;
 
-/// How long the caller waits for the player to answer before giving up.
+/// A transport command's outcome older than this is not shown: an OSD for a
+/// key pressed long ago would describe the wrong moment.
 const DEADLINE: Duration = Duration::from_millis(250);
 
 /// The MPRIS well-known name prefix. Every player owns one.
@@ -48,7 +51,7 @@ const CANCELLED_RESUME_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct ResumeState {
-    pending: BTreeMap<[u8; 16], Arc<Mutex<bool>>>,
+    pending: BTreeMap<[u8; 16], Arc<ResumeGate>>,
     accepted: VecDeque<AcceptedResume>,
     cancelled: BTreeMap<[u8; 16], Instant>,
 }
@@ -62,27 +65,48 @@ pub(crate) struct AcceptedResume {
 
 static RESUMES: LazyLock<Mutex<ResumeState>> = LazyLock::new(|| Mutex::new(ResumeState::default()));
 
+/// Whether one resume may still act on a player, and the lock its player
+/// mutations hold so that revocation is ordered after any in flight.
+struct ResumeGate {
+    active: AtomicBool,
+    mutation: tokio::sync::Mutex<()>,
+}
+
+impl ResumeGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active: AtomicBool::new(true),
+            mutation: tokio::sync::Mutex::new(()),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct ResumeAuthority {
     request_id: [u8; 16],
-    gate: Arc<Mutex<bool>>,
+    gate: Arc<ResumeGate>,
 }
 
 impl ResumeAuthority {
     fn is_active(&self) -> bool {
-        self.gate.lock().is_ok_and(|active| *active)
+        self.gate.active.load(AtomicOrdering::Acquire)
     }
 
-    fn mutate<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        let active = self.gate.lock().ok()?;
-        (*active).then(operation)
-    }
-
-    fn revoke(&self) {
-        match self.gate.lock() {
-            Ok(mut active) => *active = false,
-            Err(poisoned) => *poisoned.into_inner() = false,
+    /// Run `operation` (one player mutation) only while still authorized.
+    async fn mutate<F: Future>(&self, operation: F) -> Option<F::Output> {
+        let _mutation = self.gate.mutation.lock().await;
+        if !self.is_active() {
+            return None;
         }
+        Some(operation.await)
+    }
+
+    /// Stop every later mutation, after waiting out one already issued, so
+    /// that once this returns no mutation for the resume is in flight.
+    /// Called from synchronous code only, never on an async worker.
+    fn revoke(&self) {
+        self.gate.active.store(false, AtomicOrdering::Release);
+        drop(self.gate.mutation.blocking_lock());
     }
 }
 
@@ -113,7 +137,7 @@ impl ResumeState {
         {
             return None;
         }
-        let gate = Arc::new(Mutex::new(true));
+        let gate = ResumeGate::new();
         self.pending.insert(request_id, Arc::clone(&gate));
         Some(ResumeAuthority { request_id, gate })
     }
@@ -239,18 +263,82 @@ pub fn refresh_handoff_reports() {
     }
     refresh.running = true;
     refresh.last_started = Some(Instant::now());
-    if std::thread::Builder::new()
-        .name("tilo-mpris-discovery".to_string())
-        .spawn(|| {
-            media::handoff::replace_system_reports(discover_handoff_reports());
-            if let Ok(mut refresh) = REFRESH.lock() {
-                refresh.running = false;
-            }
-        })
-        .is_err()
-    {
+    let spawned = spawn_on_session(async {
+        // Clears `running` however the task ends, so one failed discovery
+        // never stops the next.
+        let _finished = RefreshFinished;
+        media::handoff::replace_system_reports(discover_handoff_reports().await);
+    });
+    if !spawned {
         refresh.running = false;
     }
+}
+
+struct RefreshFinished;
+
+impl Drop for RefreshFinished {
+    fn drop(&mut self) {
+        if let Ok(mut refresh) = REFRESH.lock() {
+            refresh.running = false;
+        }
+    }
+}
+
+/// Run `task` on the session runtime. `false` when that runtime is
+/// unavailable, so the caller can report the request as not made.
+fn spawn_on_session<F>(task: F) -> bool
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => {
+            drop(runtime.spawn(task));
+            true
+        }
+        Err(error) => {
+            tracing::warn!(target: "tilo::mpris", %error, "no session runtime for MPRIS");
+            false
+        }
+    }
+}
+
+/// The session bus, connected once on the session runtime and shared by
+/// every MPRIS conversation. `None` when there is no session bus; the next
+/// call tries again.
+async fn session_bus() -> Option<zbus::Connection> {
+    static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    BUS.get_or_try_init(zbus::Connection::session)
+        .await
+        .map_err(|error| {
+            tracing::debug!(target: "tilo::mpris", %error, "no session bus");
+        })
+        .ok()
+        .cloned()
+}
+
+/// A proxy for one player object. Properties are read fresh on every call:
+/// a player does not signal `Position` changes, so a cached value would go
+/// stale while a resume is being verified.
+async fn player_proxy(
+    connection: &zbus::Connection,
+    bus_name: &str,
+    interface: &'static str,
+) -> Option<zbus::Proxy<'static>> {
+    zbus::proxy::Builder::<zbus::Proxy<'static>>::new(connection)
+        .destination(bus_name.to_owned())
+        .ok()?
+        .path(MPRIS_PATH)
+        .ok()?
+        .interface(interface)
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()
+}
+
+async fn dbus_proxy(connection: &zbus::Connection) -> Option<zbus::fdo::DBusProxy<'static>> {
+    zbus::fdo::DBusProxy::new(connection).await.ok()
 }
 
 /// Ask a newly launched, launcher-verified player to assume an exact media
@@ -273,20 +361,18 @@ pub fn resume_after_launch(request: ResumeRequest) -> bool {
         return false;
     };
     let request_id = request.request_id;
-    if std::thread::Builder::new()
-        .name("tilo-mpris-resume".to_string())
-        .spawn(move || {
-            let accepted = run_resume(&request, &authority);
-            if let Ok(mut resumes) = RESUMES.lock() {
-                resumes.finish_with_player(&authority, accepted.map(Some));
-            }
-        })
-        .is_err()
-    {
-        resumes.cancel(request_id, Instant::now());
-        return false;
+    // The lock is released before spawning: the task takes it to finish.
+    drop(resumes);
+    let spawned = spawn_on_session(async move {
+        let accepted = run_resume(&request, &authority).await;
+        if let Ok(mut resumes) = RESUMES.lock() {
+            resumes.finish_with_player(&authority, accepted.map(Some));
+        }
+    });
+    if !spawned {
+        cancel_resume_after_launch(request_id);
     }
-    true
+    spawned
 }
 
 /// Revoke one exact destination resume request.
@@ -320,81 +406,97 @@ pub(crate) fn take_accepted_handoff_resumes() -> Vec<AcceptedResume> {
     )
 }
 
-fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> Option<(String, String)> {
-    let Some(expected_uri) = resume_uri(&request.source) else {
-        return None;
-    };
-    let Ok(connection) = zbus::blocking::Connection::session() else {
-        return None;
-    };
+async fn run_resume(
+    request: &ResumeRequest,
+    authority: &ResumeAuthority,
+) -> Option<(String, String)> {
+    let expected_uri = resume_uri(&request.source)?;
+    let connection = session_bus().await?;
     let started = Instant::now();
     let mut opened = BTreeSet::new();
     while started.elapsed() < RESUME_DEADLINE {
         if !authority.is_active() {
             return None;
         }
-        for bus_name in verified_player_names(&connection, &request.package_id) {
+        for bus_name in verified_player_names(&connection, &request.package_id).await {
             if !authority.is_active() {
                 return None;
             }
-            let Ok(player) = zbus::blocking::Proxy::new(
-                &connection,
-                bus_name.as_str(),
-                MPRIS_PATH,
-                PLAYER_IFACE,
-            ) else {
+            let Some(player) = player_proxy(&connection, &bus_name, PLAYER_IFACE).await else {
                 continue;
             };
-            if player_reports_uri(&player, &expected_uri) {
+            if player_reports_uri(&player, &expected_uri).await {
                 if drive_and_verify_player(&player, request.position_ms, request.playing, authority)
+                    .await
                 {
                     return (authority.is_active() && started.elapsed() <= RESUME_DEADLINE)
                         .then(|| (bus_name.clone(), expected_uri.clone()));
                 }
             } else if opened.insert(bus_name.clone()) {
-                let _ = open_uri_if_supported(&connection, &bus_name, &expected_uri, authority);
+                let _ =
+                    open_uri_if_supported(&connection, &bus_name, &expected_uri, authority).await;
             }
         }
         if authority.is_active() {
-            std::thread::sleep(RESUME_POLL);
+            // The player has no signal for "now at this source and
+            // position"; it is asked again until the deadline.
+            tokio::time::sleep(RESUME_POLL).await;
         }
     }
     None
 }
 
-fn verified_player_names(connection: &zbus::blocking::Connection, package_id: &str) -> Vec<String> {
-    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(connection) else {
+async fn verified_player_names(connection: &zbus::Connection, package_id: &str) -> Vec<String> {
+    let Some(dbus) = dbus_proxy(connection).await else {
         return Vec::new();
     };
-    let Ok(names) = dbus.list_names() else {
+    let Ok(names) = dbus.list_names().await else {
         return Vec::new();
     };
-    names
-        .into_iter()
-        .map(|name| name.as_str().to_string())
-        .filter(|name| name.starts_with(MPRIS_PREFIX))
-        .filter(|name| {
-            let Ok(name) = zbus::names::BusName::try_from(name.as_str()) else {
-                return false;
-            };
-            dbus.get_connection_unix_process_id(name)
-                .ok()
-                .and_then(crate::shell::launcher::verified_package_for_descendant)
-                .is_some_and(|verified| verified == package_id)
-        })
-        .collect()
+    let mut verified = Vec::new();
+    for name in names {
+        if !name.as_str().starts_with(MPRIS_PREFIX) {
+            continue;
+        }
+        if let Ok(pid) = dbus
+            .get_connection_unix_process_id(zbus::names::BusName::from(name.clone()))
+            .await
+            && crate::shell::launcher::verified_package_for_descendant(pid)
+                .is_some_and(|package| package == package_id)
+        {
+            verified.push(name.as_str().to_string());
+        }
+    }
+    verified
 }
 
-fn player_reports_uri(player: &zbus::blocking::Proxy<'_>, expected_uri: &str) -> bool {
+async fn player_reports_uri(player: &zbus::Proxy<'_>, expected_uri: &str) -> bool {
     player
         .get_property::<HashMap<String, OwnedValue>>("Metadata")
+        .await
         .ok()
         .and_then(|metadata| metadata_string(&metadata, "xesam:url"))
         .is_some_and(|uri| uri == expected_uri)
 }
 
-fn drive_and_verify_player(
-    player: &zbus::blocking::Proxy<'_>,
+/// Call `method` on `proxy` only while `authority` is still active.
+async fn call_authorized<B>(
+    authority: &ResumeAuthority,
+    proxy: &zbus::Proxy<'_>,
+    method: &'static str,
+    body: &B,
+) -> bool
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType + Sync,
+{
+    authority
+        .mutate(proxy.call_method(method, body))
+        .await
+        .is_some_and(|result| result.is_ok())
+}
+
+async fn drive_and_verify_player(
+    player: &zbus::Proxy<'_>,
     position_ms: u64,
     playing: bool,
     authority: &ResumeAuthority,
@@ -403,24 +505,22 @@ fn drive_and_verify_player(
         return false;
     }
     let target_us = i64::try_from(position_ms.saturating_mul(1_000)).unwrap_or(i64::MAX);
-    let can_seek = player.get_property::<bool>("CanSeek").unwrap_or(false);
-    let current_us = player.get_property::<i64>("Position").unwrap_or(-1);
+    let can_seek = player
+        .get_property::<bool>("CanSeek")
+        .await
+        .unwrap_or(false);
+    let current_us = player.get_property::<i64>("Position").await.unwrap_or(-1);
     if current_us < 0 {
         return false;
     }
     match required_seek(current_us, target_us, can_seek) {
         SeekDecision::Satisfied => {}
         SeekDecision::Offset(offset)
-            if authority
-                .mutate(|| player.call_method("Seek", &(offset,)))
-                .is_some_and(|result| result.is_ok()) => {}
+            if call_authorized(authority, player, "Seek", &(offset,)).await => {}
         SeekDecision::Offset(_) | SeekDecision::Impossible => return false,
     }
     let method = if playing { "Play" } else { "Pause" };
-    if !authority
-        .mutate(|| player.call_method(method, &()))
-        .is_some_and(|result| result.is_ok())
-    {
+    if !call_authorized(authority, player, method, &()).await {
         return false;
     }
     for _ in 0..5 {
@@ -429,14 +529,16 @@ fn drive_and_verify_player(
         }
         let status_matches = player
             .get_property::<String>("PlaybackStatus")
+            .await
             .is_ok_and(|status| status == if playing { "Playing" } else { "Paused" });
         let position_matches = player
             .get_property::<i64>("Position")
+            .await
             .is_ok_and(|position| position.abs_diff(target_us) <= RESUME_TOLERANCE_US as u64);
         if status_matches && position_matches {
             return true;
         }
-        std::thread::sleep(RESUME_POLL);
+        tokio::time::sleep(RESUME_POLL).await;
     }
     false
 }
@@ -462,25 +564,24 @@ fn required_seek(current_us: i64, target_us: i64, can_seek: bool) -> SeekDecisio
     }
 }
 
-fn open_uri_if_supported(
-    connection: &zbus::blocking::Connection,
+async fn open_uri_if_supported(
+    connection: &zbus::Connection,
     bus_name: &str,
     uri: &str,
     authority: &ResumeAuthority,
 ) -> bool {
-    let Ok(root) = zbus::blocking::Proxy::new(connection, bus_name, MPRIS_PATH, ROOT_IFACE) else {
+    let Some(root) = player_proxy(connection, bus_name, ROOT_IFACE).await else {
         return false;
     };
     let scheme = uri.split_once(':').map_or("", |(scheme, _)| scheme);
     if !root
         .get_property::<Vec<String>>("SupportedUriSchemes")
+        .await
         .is_ok_and(|schemes| schemes.iter().any(|supported| supported == scheme))
     {
         return false;
     }
-    authority
-        .mutate(|| root.call_method("OpenUri", &(uri,)))
-        .is_some_and(|result| result.is_ok())
+    call_authorized(authority, &root, "OpenUri", &(uri,)).await
 }
 
 fn resume_uri(source: &ResumeSource) -> Option<String> {
@@ -510,56 +611,67 @@ fn percent_encode_path(path: &str) -> String {
     encoded
 }
 
-fn discover_handoff_reports() -> Vec<PlaybackReport> {
-    let Ok(connection) = zbus::blocking::Connection::session() else {
+async fn discover_handoff_reports() -> Vec<PlaybackReport> {
+    let Some(connection) = session_bus().await else {
         return Vec::new();
     };
-    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+    let Some(dbus) = dbus_proxy(&connection).await else {
         return Vec::new();
     };
-    let Ok(names) = dbus.list_names() else {
+    let Ok(names) = dbus.list_names().await else {
         return Vec::new();
     };
-    let apps = crate::shell::launcher::installed_apps()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|app| app.has_gui)
-        .map(|app| InstalledMediaApp {
-            package_id: app.package_id,
-            uri_schemes: app.opens_uri_schemes,
-            extensions: app.opens_extensions,
-        })
-        .collect::<Vec<_>>();
-    names
-        .into_iter()
-        .map(|name| name.as_str().to_string())
-        .filter(|name| name.starts_with(MPRIS_PREFIX))
-        .filter_map(|bus_name| {
-            let name = zbus::names::BusName::try_from(bus_name.as_str()).ok()?;
-            let pid = dbus.get_connection_unix_process_id(name).ok()?;
-            let package_id = crate::shell::launcher::verified_package_for_descendant(pid)?;
-            observe_player(&connection, bus_name, package_id)
-        })
-        .filter_map(|observation| report_from_observation(&observation, &apps))
-        .take(media::handoff::MAX_PLAYBACK_REPORTS)
-        .collect()
+    // The package registry is read from disk; that happens on the I/O pool.
+    let apps =
+        tilo_rt::io::run(|| Ok(crate::shell::launcher::installed_apps().unwrap_or_default()))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|app| app.has_gui)
+            .map(|app| InstalledMediaApp {
+                package_id: app.package_id,
+                uri_schemes: app.opens_uri_schemes,
+                extensions: app.opens_extensions,
+            })
+            .collect::<Vec<_>>();
+    let mut reports = Vec::new();
+    for name in names {
+        if reports.len() >= media::handoff::MAX_PLAYBACK_REPORTS {
+            break;
+        }
+        if !name.as_str().starts_with(MPRIS_PREFIX) {
+            continue;
+        }
+        let Ok(pid) = dbus
+            .get_connection_unix_process_id(zbus::names::BusName::from(name.clone()))
+            .await
+        else {
+            continue;
+        };
+        let Some(package_id) = crate::shell::launcher::verified_package_for_descendant(pid) else {
+            continue;
+        };
+        if let Some(report) = observe_player(&connection, name.as_str().to_string(), package_id)
+            .await
+            .and_then(|observation| report_from_observation(&observation, &apps))
+        {
+            reports.push(report);
+        }
+    }
+    reports
 }
 
-fn observe_player(
-    connection: &zbus::blocking::Connection,
+async fn observe_player(
+    connection: &zbus::Connection,
     bus_name: String,
     package_id: String,
 ) -> Option<PlayerObservation> {
-    let player =
-        zbus::blocking::Proxy::new(connection, bus_name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
-    let root =
-        zbus::blocking::Proxy::new(connection, bus_name.as_str(), MPRIS_PATH, ROOT_IFACE).ok()?;
-    let identity = root.get_property("Identity").ok();
-    let status = player.get_property("PlaybackStatus").ok()?;
-    let metadata = player.get_property("Metadata").ok()?;
-    let position_us = player.get_property("Position").unwrap_or(0);
-    drop(root);
-    drop(player);
+    let player = player_proxy(connection, &bus_name, PLAYER_IFACE).await?;
+    let root = player_proxy(connection, &bus_name, ROOT_IFACE).await?;
+    let identity = root.get_property("Identity").await.ok();
+    let status = player.get_property("PlaybackStatus").await.ok()?;
+    let metadata = player.get_property("Metadata").await.ok()?;
+    let position_us = player.get_property("Position").await.unwrap_or(0);
     Some(PlayerObservation {
         bus_name,
         package_id,
@@ -796,67 +908,56 @@ pub enum Outcome {
     Skipped,
 }
 
-/// Send `cmd` to the active player. Returns `None` when there is no
-/// player, the bus is unreachable, or the player didn't answer inside
-/// [`DEADLINE`] — cases where the caller should show nothing rather than
-/// claim something happened.
-pub fn send(cmd: Command) -> Option<Outcome> {
-    let (tx, rx) = mpsc::channel();
-    let spawned = std::thread::Builder::new()
-        .name("tilo-mpris".to_string())
-        .spawn(move || {
-            let _ = tx.send(run(cmd)); // dropped if the caller already gave up
-        });
-    if let Err(e) = spawned {
-        tracing::warn!(target: "tilo::mpris", error = %e, "could not spawn mpris worker");
-        return None;
-    }
-    if let Ok(outcome) = rx.recv_timeout(DEADLINE) {
-        outcome
-    } else {
-        tracing::debug!(target: "tilo::mpris", "no player answered within the deadline");
-        None
-    }
+/// Send `cmd` to the active player on the session runtime and return at
+/// once. `on_outcome` runs there with the resulting state once the player
+/// accepted the command within [`DEADLINE`]; it should only publish (wake the
+/// compositor loop). With no player, no bus, a refusal or a late answer it
+/// is not called — the caller shows nothing rather than claim something
+/// happened. Returns `false` when the command could not be dispatched.
+pub fn send<F>(cmd: Command, on_outcome: F) -> bool
+where
+    F: FnOnce(Outcome) + Send + 'static,
+{
+    spawn_on_session(async move {
+        let asked = Instant::now();
+        let Some(outcome) = run(cmd).await else {
+            return;
+        };
+        if asked.elapsed() <= DEADLINE {
+            on_outcome(outcome);
+        } else {
+            tracing::debug!(target: "tilo::mpris", "player answered after the deadline; no OSD");
+        }
+    })
 }
 
 /// Pause one exact player after its cross-device successor has reported a
 /// successfully opened source. Unlike media-key dispatch, this never falls
-/// back to whichever unrelated player happens to be active.
+/// back to whichever unrelated player happens to be active. Returns whether
+/// the request was dispatched; the pause itself happens on the session
+/// runtime.
 pub fn pause_named(bus_name: &str) -> bool {
     if !bus_name.starts_with(MPRIS_PREFIX) || bus_name.len() > 256 {
         return false;
     }
     let owned = bus_name.to_string();
-    let (tx, rx) = mpsc::channel();
-    if std::thread::Builder::new()
-        .name("tilo-mpris-handoff".to_string())
-        .spawn(move || {
-            let result = zbus::blocking::Connection::session()
-                .ok()
-                .and_then(|connection| {
-                    let proxy = zbus::blocking::Proxy::new(
-                        &connection,
-                        owned.as_str(),
-                        MPRIS_PATH,
-                        PLAYER_IFACE,
-                    )
-                    .ok()?;
-                    proxy.call_method("Pause", &()).ok()?;
-                    Some(true)
-                })
-                .unwrap_or(false);
-            let _ = tx.send(result);
-        })
-        .is_err()
-    {
-        return false;
-    }
-    rx.recv_timeout(DEADLINE).unwrap_or(false)
+    spawn_on_session(async move {
+        let Some(connection) = session_bus().await else {
+            return;
+        };
+        if let Some(proxy) = player_proxy(&connection, &owned, PLAYER_IFACE).await
+            && let Err(error) = proxy.call_method("Pause", &()).await
+        {
+            tracing::debug!(target: "tilo::mpris", %error, "handoff source did not pause");
+        }
+    })
 }
 
 /// Pause one exact player only while it still owns the URI that this handoff
 /// opened. This prevents compensation for a failed acknowledgement from
-/// pausing unrelated playback that started immediately afterwards.
+/// pausing unrelated playback that started immediately afterwards. Returns
+/// whether the request was dispatched; the check and pause happen on the
+/// session runtime.
 pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
     if !bus_name.starts_with(MPRIS_PREFIX)
         || bus_name.len() > 256
@@ -867,52 +968,33 @@ pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
     }
     let owned = bus_name.to_string();
     let expected = expected_uri.to_string();
-    let (tx, rx) = mpsc::channel();
-    if std::thread::Builder::new()
-        .name("tilo-mpris-compensate".to_string())
-        .spawn(move || {
-            let result = zbus::blocking::Connection::session()
-                .ok()
-                .and_then(|connection| {
-                    let proxy = zbus::blocking::Proxy::new(
-                        &connection,
-                        owned.as_str(),
-                        MPRIS_PATH,
-                        PLAYER_IFACE,
-                    )
-                    .ok()?;
-                    if !player_reports_uri(&proxy, &expected) {
-                        return None;
-                    }
-                    proxy.call_method("Pause", &()).ok()?;
-                    Some(true)
-                })
-                .unwrap_or(false);
-            let _ = tx.send(result);
-        })
-        .is_err()
-    {
-        return false;
-    }
-    rx.recv_timeout(DEADLINE).unwrap_or(false)
+    spawn_on_session(async move {
+        let Some(connection) = session_bus().await else {
+            return;
+        };
+        let Some(proxy) = player_proxy(&connection, &owned, PLAYER_IFACE).await else {
+            return;
+        };
+        if player_reports_uri(&proxy, &expected).await
+            && let Err(error) = proxy.call_method("Pause", &()).await
+        {
+            tracing::debug!(target: "tilo::mpris", %error, "compensating pause failed");
+        }
+    })
 }
 
-fn run(cmd: Command) -> Option<Outcome> {
-    let conn = zbus::blocking::Connection::session()
-        .map_err(|e| {
-            tracing::debug!(target: "tilo::mpris", error = %e, "no session bus");
-        })
-        .ok()?;
-
-    let name = active_player(&conn)?;
-    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
+async fn run(cmd: Command) -> Option<Outcome> {
+    let conn = session_bus().await?;
+    let name = active_player(&conn).await?;
+    let proxy = player_proxy(&conn, &name, PLAYER_IFACE).await?;
 
     // Read status *before* acting: reading after would race the player's
     // own (asynchronous) state change.
-    let was_playing = matches!(playback_status(&proxy).as_deref(), Some("Playing"));
+    let was_playing = matches!(playback_status(&proxy).await.as_deref(), Some("Playing"));
 
     proxy
         .call_method(cmd.method(), &())
+        .await
         .map_err(|e| {
             tracing::debug!(target: "tilo::mpris", error = %e, method = cmd.method(), "player rejected the command");
         })
@@ -934,37 +1016,39 @@ fn run(cmd: Command) -> Option<Outcome> {
 /// A machine can have several players; the one reporting `Playing` wins,
 /// else the first MPRIS name on the bus, so play/pause resumes whatever
 /// was last open.
-fn active_player(conn: &zbus::blocking::Connection) -> Option<String> {
-    let dbus = zbus::blocking::fdo::DBusProxy::new(conn).ok()?;
-    let names = dbus.list_names().ok()?;
+async fn active_player(conn: &zbus::Connection) -> Option<String> {
+    let dbus = dbus_proxy(conn).await?;
+    let names = dbus.list_names().await.ok()?;
     let players: Vec<String> = names
         .into_iter()
         .map(|n| n.as_str().to_string())
         .filter(|n| n.starts_with(MPRIS_PREFIX))
         .collect();
-    if players.is_empty() {
-        return None;
-    }
     for name in &players {
-        let Ok(proxy) = zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
-        else {
+        let Some(proxy) = player_proxy(conn, name, PLAYER_IFACE).await else {
             continue;
         };
-        if matches!(playback_status(&proxy).as_deref(), Some("Playing")) {
+        if matches!(playback_status(&proxy).await.as_deref(), Some("Playing")) {
             return Some(name.clone());
         }
     }
     players.into_iter().next()
 }
 
-fn playback_status(proxy: &zbus::blocking::Proxy<'_>) -> Option<String> {
-    proxy.get_property::<String>("PlaybackStatus").ok()
+async fn playback_status(proxy: &zbus::Proxy<'_>) -> Option<String> {
+    proxy.get_property::<String>("PlaybackStatus").await.ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     use zbus::zvariant::Value;
+
+    /// Drive one authorized mutation to completion on the calling thread.
+    fn mutate_now<T>(authority: &ResumeAuthority, operation: impl FnOnce() -> T) -> Option<T> {
+        tilo_rt::block_on(authority.mutate(async move { operation() })).unwrap()
+    }
 
     fn text(value: &str) -> OwnedValue {
         OwnedValue::try_from(Value::from(value.to_string())).unwrap()
@@ -1138,10 +1222,13 @@ mod tests {
         let authority = resumes.begin(request_id, now).unwrap();
         let mut mutations = Vec::new();
 
-        assert_eq!(authority.mutate(|| mutations.push("open-uri")), Some(()));
+        assert_eq!(
+            mutate_now(&authority, || mutations.push("open-uri")),
+            Some(())
+        );
         assert!(resumes.cancel(request_id, now));
-        assert_eq!(authority.mutate(|| mutations.push("seek")), None);
-        assert_eq!(authority.mutate(|| mutations.push("play")), None);
+        assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
+        assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
         resumes.finish(&authority, true);
 
         assert_eq!(mutations, ["open-uri"]);
@@ -1158,7 +1245,7 @@ mod tests {
         let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
         let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
         let mutation = std::thread::spawn(move || {
-            mutation_authority.mutate(|| {
+            mutate_now(&mutation_authority, || {
                 mutation_started_tx.send(()).unwrap();
                 release_mutation_rx.recv().unwrap();
             })
@@ -1185,7 +1272,7 @@ mod tests {
         assert_eq!(mutation.join().unwrap(), Some(()));
         assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
         cancellation.join().unwrap();
-        assert_eq!(authority.mutate(|| panic!("late mutation ran")), None);
+        assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
         resumes.lock().unwrap().finish(&authority, true);
         assert!(resumes.lock().unwrap().take_accepted().is_empty());
     }
@@ -1222,17 +1309,19 @@ mod tests {
     /// Must survive a machine with no session bus and no player — which
     /// is exactly what CI is.
     #[test]
-    fn send_is_bounded_and_reports_nothing_when_there_is_no_player() {
+    fn send_dispatches_without_waiting_on_the_bus() {
         let started = std::time::Instant::now();
-        let outcome = send(Command::PlayPause);
+        let (tx, _outcomes) = mpsc::channel();
+        let dispatched = send(Command::PlayPause, move |outcome| {
+            let _ = tx.send(outcome);
+        });
         let elapsed = started.elapsed();
+        assert!(dispatched, "the session runtime takes the command");
+        // The bus round trip happens on the session runtime; a dev machine
+        // with a player delivers an outcome later, CI (no bus) never does.
         assert!(
-            elapsed < DEADLINE * 4,
+            elapsed < DEADLINE,
             "the input path must not wait on the bus: took {elapsed:?}"
         );
-        // A dev machine with a player running legitimately returns Some; on
-        // a machine with none (CI), `outcome` is `None` — either is correct,
-        // the assertion above is the only hard requirement.
-        let _ = outcome;
     }
 }

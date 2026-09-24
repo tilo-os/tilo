@@ -5671,6 +5671,9 @@ pub fn run() {
     let mut network_start: Option<
         crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
     > = None;
+    // A media player's answer to a transport key, as the OSD to raise.
+    let (transport_osd, transport_osds) =
+        crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -6268,6 +6271,7 @@ pub fn run() {
                             mk,
                             frame_builder.host().qs_actions(),
                             frame_builder.host().status_bridge(),
+                            &transport_osd,
                         ) {
                             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
                             session_changed = true;
@@ -7349,6 +7353,10 @@ pub fn run() {
         pump_checkpoint!("peer-presence");
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
+        for osd in transport_osds.drain() {
+            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+            session_changed = true;
+        }
         let mut apps_changed = foreign_capture_changed
             | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         crate::shell::launcher::record_presented_launches(|surface| {
