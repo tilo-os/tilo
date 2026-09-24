@@ -2137,6 +2137,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source-onedrive"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "cloud-source",
+ "cloud-source-onedrive",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
