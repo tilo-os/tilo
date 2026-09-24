@@ -163,10 +163,10 @@ initrd=""
 if [ "$direct_initrd" = 1 ]; then
   say "writing the direct-boot initramfs"
   podman run --rm --network=none --security-opt label=disable \
-    -v "$cache/out:/work/out" "$image" \
+    -v "$cache/out:/work/out" \
+    -v "$modules:/usr/lib/modules/$kver:ro" "$image" \
     dracut --quiet --force --reproducible --no-hostonly --compress zstd \
-      --kver "$kver" --kmoddir "/work/out/stage/lib/modules/$kver" \
-      --add-drivers "virtio_net" \
+      --kver "$kver" --add-drivers "virtio_net" \
       /work/out/initrd-direct.img >&2
   initrd="$cache/out/initrd-direct.img"
 fi
