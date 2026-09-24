@@ -75,9 +75,14 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
 rustls = { workspace = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net" }
+# Account probes speak DAV through the shared bounded client and IMAP through
+# async-imap, the client Mail uses, on a per-probe current-thread runtime.
+tilo-dav = { path = "../../crates/system/tilo-dav" }
+async-imap.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+tokio-rustls.workspace = true
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
@@ -96,6 +101,7 @@ tempfile.workspace = true
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../crates/dev/test-env" }
 rcgen.workspace = true
+test-http = { path = "../../crates/dev/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }
