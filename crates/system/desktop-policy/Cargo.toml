@@ -5,9 +5,16 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Reading and writing personal defaults on the host filesystem, and the
+# storage scanner. Without it the crate is the pure policy vocabulary and
+# resolver, which the desktop model embeds.
+default = ["host-storage"]
+host-storage = ["dep:atomic-file", "dep:xdg-paths"]
+
 [dependencies]
-xdg-paths = { path = "../xdg-paths" }
-atomic-file = { path = "../atomic-file" }
+xdg-paths = { path = "../xdg-paths", optional = true }
+atomic-file = { path = "../atomic-file", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

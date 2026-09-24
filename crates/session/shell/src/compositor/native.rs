@@ -7,6 +7,7 @@ use crate::shell::input_policy::{
     is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
+use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
     ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
 };
@@ -59,6 +60,7 @@ fn with_action_gate<R>(
     let chrome = chrome_handle.borrow();
     let tree = chrome.tree();
     let workspace = tree
+        .desktop
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
     let actor_id = chrome.local_user_for_room(&workspace.room);
@@ -114,9 +116,10 @@ fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
     let Some(workspace) = tree
+        .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.id == tree.active)
+        .find(|workspace| workspace.id == tree.desktop.active)
     else {
         return HashMap::new();
     };
@@ -1353,7 +1356,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree = chrome.tree();
         serde_json::json!({
             "exposures": shares.disclosure().into_iter().map(|(peer, surface, can_control)| {
-                let participant = tree.workspaces.iter().find_map(|workspace| {
+                let participant = tree.desktop.workspaces.iter().find_map(|workspace| {
                     workspace.collaborators.iter()
                         .find(|person| person.session == Some(peer))
                         .map(|person| (workspace, person))
@@ -1373,7 +1376,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "person"
                     }
                 });
-                let target = tree.workspaces.iter().find_map(|workspace| {
+                let target = tree.desktop.workspaces.iter().find_map(|workspace| {
                     workspace.strips.iter()
                         .flat_map(|strip| &strip.window_groups)
                         .flat_map(|group| &group.tabs)
@@ -1466,6 +1469,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let mut tree = tree_handle.write();
         let ws_id = tree
+            .desktop
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
@@ -1497,10 +1501,12 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let mut tree = tree_handle.write();
         let ws_id = tree
+            .desktop
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
         let ws = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == ws_id)
@@ -1546,6 +1552,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let tree = tree_handle.read();
         let ws = tree
+            .desktop
             .active_workspace()
             .ok_or_else(|| "no active workspace".to_string())?;
         let verb = test_control::parse_verb(verb)?;
@@ -1735,7 +1742,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "local_user_id": chrome.active_local_user(),
             "may_administer_active": chrome
                 .tree()
-                .active_workspace()
+                .desktop.active_workspace()
                 .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
@@ -1759,7 +1766,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "ws_grant_draft": {
                 "subject": chrome
                     .tree()
-                    .active_workspace()
+                    .desktop.active_workspace()
                     .and_then(|ws| {
                         crate::shell::workspace_settings::draft_subject(
                             ws,
@@ -3665,16 +3672,16 @@ fn spawn_session_collab_broker(
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
-    use crate::shell::state::TileContent;
-
-    let workspace = tree.active_workspace()?;
+    let workspace = tree.desktop.active_workspace()?;
     let strip_id = tree
+        .desktop
         .active_strip
         .get(&workspace.id)
         .copied()
         .or_else(|| workspace.strips.first().map(|strip| strip.id))?;
     let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
     let group_id = tree
+        .desktop
         .active_group_for(strip_id)
         .filter(|group_id| {
             strip
@@ -3688,13 +3695,7 @@ fn active_physical_gamepad_binding(
         .iter()
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
-    let app_id = match &tab.tile {
-        TileContent::WorkspaceActivity => return None,
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
-    };
+    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
     let workspace_id = workspace.room.to_string();
     Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
         app_id,
@@ -4019,7 +4020,7 @@ fn spawn_session_peer_sync(
             frame_builder
                 .host_mut()
                 .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-                    let active = tree_handle.read().active;
+                    let active = tree_handle.read().desktop.active;
                     match req {
                         PeerSyncRequest::IssueInvite => bridge_net
                             .issue_invite(active, INVITE_EXPIRY_SECONDS)
@@ -4047,6 +4048,7 @@ fn spawn_session_peer_sync(
                         PeerSyncRequest::ListPendingInvitations => {
                             let room = tree_handle
                                 .read()
+                                .desktop
                                 .active_workspace()
                                 .map(|workspace| workspace.room)
                                 .ok_or_else(|| "no active workspace".to_string())?;
@@ -4180,7 +4182,8 @@ fn attach_peer_presence(
         let chrome = frame_builder.chrome_handle();
         let chrome = chrome.borrow();
         let tree = chrome.tree();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .map(|workspace| workspace.room.to_string())
             .collect::<Vec<_>>()
@@ -6775,6 +6778,7 @@ pub fn run() {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 let rooms = tree
+                    .desktop
                     .workspaces
                     .iter()
                     .map(|w| w.room.to_string())
@@ -6782,9 +6786,10 @@ pub fn run() {
                 // The room the user is looking at (where their pointer is), distinct from
                 // the set above (every room the session listens to).
                 let here = tree
+                    .desktop
                     .workspaces
                     .iter()
-                    .find(|w| w.id == tree.active)
+                    .find(|w| w.id == tree.desktop.active)
                     .map(|w| w.room.to_string());
                 (rooms, here)
             };
@@ -7075,7 +7080,7 @@ pub fn run() {
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
-                    tree.active_workspace().and_then(|workspace| {
+                    tree.desktop.active_workspace().and_then(|workspace| {
                         crate::shell::desktop_backdrop::wallpaper_image_for_workspace(
                             &workspace.id.0.to_string(),
                             "lockscreen",
@@ -7953,6 +7958,7 @@ mod tests {
                 Placement::NewGroup,
             );
             let (strip, group) = tree
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| {
                     workspace.strips.iter().find_map(|strip| {
@@ -8235,12 +8241,12 @@ mod tests {
 
     fn directory_test_tree() -> crate::shell::state::WorkspaceTreeHandle {
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         tree.shared()
     }
@@ -8959,7 +8965,7 @@ mod tests {
             .copied()
             .expect("wheel_disc test_id resolves on bootstrap tree");
 
-        let initial_count = fb.chrome().tree().workspaces.len();
+        let initial_count = fb.chrome().tree().desktop.workspaces.len();
 
         // Sweep the footprint bottom-up in 4px rows until one click lands on
         // the affordance; misses are harmless (rim press drags back, row press switches workspace).
@@ -8990,7 +8996,7 @@ mod tests {
                     &mut fb,
                     &mut ctx,
                 );
-                if fb.chrome().tree().workspaces.len() > initial_count {
+                if fb.chrome().tree().desktop.workspaces.len() > initial_count {
                     found = true;
                     break 'sweep;
                 }
@@ -9276,7 +9282,11 @@ mod tests {
             let tree_handle = chrome.tree_handle();
             drop(chrome);
             let mut tree = tree_handle.write();
-            let room = tree.active_workspace().expect("active workspace").room;
+            let room = tree
+                .desktop
+                .active_workspace()
+                .expect("active workspace")
+                .room;
             let noted = tree.note_peer_present(room, 0x51, "alice");
             drop(tree);
             assert!(noted);
@@ -9323,7 +9333,10 @@ mod tests {
             let tree_handle = chrome.tree_handle();
             drop(chrome);
             let mut tree = tree_handle.write();
-            let workspace = tree.active_workspace_mut().expect("active workspace");
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
             workspace.owner = Some("owner".to_string());
             let room = workspace.id.raw().to_string();
             workspace
@@ -9343,6 +9356,7 @@ mod tests {
                 Placement::NewGroup,
             );
             let tab = tree
+                .desktop
                 .active_workspace_mut()
                 .into_iter()
                 .flat_map(|workspace| &mut workspace.strips)
@@ -9904,10 +9918,10 @@ mod gesture_wireup_tests {
         fb.with_chrome(|st| {
             st.add_workspace("second");
         });
-        let before = fb.chrome().tree().active;
+        let before = fb.chrome().tree().desktop.active;
         // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
         apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
-        let after = fb.chrome().tree().active;
+        let after = fb.chrome().tree().desktop.active;
         assert_ne!(
             before, after,
             "a three-finger swipe must move the active workspace, not just resolve to an intent"

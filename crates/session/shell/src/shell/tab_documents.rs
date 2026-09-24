@@ -75,6 +75,7 @@ mod tests {
     use crate::shell::notes_app::{BODY_KEY, NotesApp};
     use crate::shell::search::providers::notes::NotesProvider;
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent as StateTile, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
@@ -239,10 +240,13 @@ mod tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }))
     }

@@ -1,0 +1,167 @@
+//! Window-group widths as a fraction of the strip, never as pixels.
+
+use serde::{Deserialize, Serialize};
+
+/// Per-mille (not px) so a tier means the same fraction on every monitor.
+/// Thirds tile the strip cleanly; `Wide` is the full usable width.
+pub const WIDTH_NARROW_PERMILLE: u16 = 333;
+pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
+pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
+
+/// Narrowest and widest fraction a group may take.
+pub const WIDTH_MIN_PERMILLE: u16 = 150;
+pub const WIDTH_MAX_PERMILLE: u16 = 1000;
+
+/// A pure fraction has no floor — 15% of an 800px strip is 120px, too
+/// narrow for a tab pill or scrollbar — so resolved width clamps up to
+/// this (and back down to the strip width if that's narrower still).
+pub const WIDTH_FLOOR_PX: f64 = 240.0;
+
+/// Reference width the legacy pixel model was scaled against, so a
+/// migrated `Custom(600)` preserves the *proportion* the user saw rather
+/// than snapping to whichever tier is now "Normal".
+const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
+
+/// Narrowest a group may resolve to on a strip of `strip_usable_px`.
+pub fn min_group_px(strip_usable_px: f64) -> f64 {
+    let usable = strip_usable_px.max(1.0);
+    (usable * f64::from(WIDTH_MIN_PERMILLE) / 1000.0)
+        .max(WIDTH_FLOOR_PX)
+        .min(usable)
+}
+
+/// Widest a group may resolve to on a strip of `strip_usable_px`.
+pub fn max_group_px(strip_usable_px: f64) -> f64 {
+    strip_usable_px.max(1.0)
+}
+
+/// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
+/// becomes a stored resolution-independent width.
+pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
+    let usable = strip_usable_px.max(1.0);
+    let raw = (px.max(0.0) / usable * 1000.0).round();
+    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [150.0, 1000.0] above, which fits losslessly in u16"
+    )]
+    {
+        clamped as u16
+    }
+}
+
+/// Persisted width of a [`crate::WindowGroup`], as a fraction of the
+/// strip's usable width — a stored pixel count would mean a different
+/// screen share on every monitor.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub enum WindowWidth {
+    Narrow,
+    Normal,
+    Wide,
+    /// An arbitrary fraction of the strip's usable width, in per-mille.
+    /// What a manual resize persists.
+    Fraction(u16),
+}
+
+impl WindowWidth {
+    /// The fraction this width represents, in per-mille of the strip's
+    /// usable width.
+    pub fn permille(&self) -> u16 {
+        match self {
+            WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
+            WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
+            WindowWidth::Wide => WIDTH_WIDE_PERMILLE,
+            WindowWidth::Fraction(p) => (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE),
+        }
+    }
+
+    /// [`Self::permille`] as a fraction in `[0.15, 1.0]`.
+    pub fn fraction(&self) -> f64 {
+        f64::from(self.permille()) / 1000.0
+    }
+
+    /// Resolve to logical pixels against a strip of `strip_usable_px`,
+    /// clamped into `[min_group_px, max_group_px]` so a fraction can
+    /// neither collapse a group below usability nor push it past the
+    /// output's right edge.
+    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
+        let usable = strip_usable_px.max(1.0);
+        // Rounded: a client's geometry is integers, and a fractional width
+        // would leave sub-pixel seams between groups.
+        (usable * self.fraction())
+            .round()
+            .clamp(min_group_px(usable), max_group_px(usable))
+    }
+
+    /// Always a [`WindowWidth::Fraction`] — records the proportion the
+    /// user landed on rather than a coincident tier, so a later tier
+    /// retune doesn't silently move their window.
+    pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
+        WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
+    }
+
+    /// Migrate a width persisted by the pixel model — see
+    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
+    pub fn from_legacy_pixels(px: u32) -> Self {
+        WindowWidth::Fraction(permille_for_px(
+            f64::from(px),
+            f64::from(LEGACY_PIXEL_REFERENCE_WIDTH),
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for WindowWidth {
+    /// Accepts both the current shape and the legacy pixel shape, so an
+    /// existing persisted workspace still loads.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Raw {
+            Narrow,
+            Normal,
+            Wide,
+            Fraction(u16),
+            /// Legacy: an absolute pixel count.
+            Custom(u32),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Narrow => WindowWidth::Narrow,
+            Raw::Normal => WindowWidth::Normal,
+            Raw::Wide => WindowWidth::Wide,
+            Raw::Fraction(p) => {
+                WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE))
+            }
+            Raw::Custom(px) => WindowWidth::from_legacy_pixels(px),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_pixels_keep_their_proportion() {
+        assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
+        assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
+        assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
+    }
+
+    #[test]
+    fn legacy_custom_shape_deserializes_as_fraction() {
+        let width: WindowWidth = serde_json::from_str(r#"{"Custom":600}"#).unwrap();
+        assert_eq!(width, WindowWidth::Fraction(500));
+    }
+
+    #[test]
+    fn out_of_range_fraction_is_clamped_on_load() {
+        let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
+        assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+    }
+
+    #[test]
+    fn resolve_respects_the_pixel_floor() {
+        assert!((WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON);
+        assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+    }
+}

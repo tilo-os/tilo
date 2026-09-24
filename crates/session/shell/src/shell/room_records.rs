@@ -1026,7 +1026,8 @@ fn leaf_of(path: &Path) -> String {
 /// Human name for the room a record lives in — a raw uuid in a palette row
 /// tells the reader nothing and looks like a bug.
 pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Option<String> {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .find(|w| w.room == room)
         .map(|w| w.name.clone())
@@ -1034,7 +1035,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
 
 /// Rooms in tree order (most-recently-active isn't knowable here).
 pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId> {
-    tree.workspaces.iter().map(|w| w.room).collect()
+    tree.desktop.workspaces.iter().map(|w| w.room).collect()
 }
 
 #[cfg(test)]

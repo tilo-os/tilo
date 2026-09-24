@@ -206,7 +206,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     let target = {
         let state = chrome.borrow();
         let tree = state.tree();
-        let workspace = tree.active_workspace();
+        let workspace = tree.desktop.active_workspace();
         resolve_for(
             path,
             &state.local_user_id,
@@ -293,7 +293,8 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     let launched = {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.active_workspace()
+        tree.desktop
+            .active_workspace()
             .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
     };
     match launched {
@@ -322,13 +323,14 @@ fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
 fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
     let st = chrome.borrow();
     let tree = st.tree();
-    let ws = tree.active_workspace()?;
+    let ws = tree.desktop.active_workspace()?;
     let strip_id = tree
+        .desktop
         .active_strip
         .get(&ws.id)
         .copied()
         .or_else(|| ws.strips.first().map(|s| s.id))?;
-    tree.active_group_for(strip_id).or_else(|| {
+    tree.desktop.active_group_for(strip_id).or_else(|| {
         ws.strips
             .iter()
             .find(|s| s.id == strip_id)
@@ -590,7 +592,7 @@ fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
 /// Anywhere in the tree, not just the active workspace — focusing it
 /// may mean switching to where it is.
 fn tab_showing_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabAddress> {
-    for w in &tree.workspaces {
+    for w in &tree.desktop.workspaces {
         for s in &w.strips {
             for g in &s.window_groups {
                 for t in &g.tabs {
@@ -625,10 +627,10 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
     let ws_id = {
         let st = chrome.borrow();
         let tree = st.tree();
-        if tree.active_workspace().is_none() {
+        if tree.desktop.active_workspace().is_none() {
             return Err(OpenError::NoWorkspace);
         }
-        tree.active
+        tree.desktop.active
     };
     let store = {
         let st = chrome.borrow();
@@ -883,7 +885,7 @@ mod tests {
         let (strip_id, group_id, old_first) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let strip = &tree.workspaces[0].strips[0];
+            let strip = &tree.desktop.workspaces[0].strips[0];
             let ids = (
                 strip.id,
                 strip.window_groups[0].id,
@@ -913,7 +915,7 @@ mod tests {
         {
             let state = chrome.borrow();
             let tree = state.tree();
-            let group = &tree.workspaces[0].strips[0].window_groups[0];
+            let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
             assert_eq!(group.tabs[0].id, left_tab);
             assert_eq!(group.tabs[1].id, old_first);
             drop(tree);
@@ -940,7 +942,7 @@ mod tests {
             let state = chrome.borrow();
             let tree = state.tree();
             assert_eq!(
-                tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
+                tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id,
                 seam_tab
             );
             drop(tree);
@@ -992,11 +994,14 @@ mod tests {
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            let strip = tree.workspaces[0].strips[0].id;
-            let other = tree.workspaces[0].strips[0].window_groups[0].id;
-            let first_tab = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-            tree.set_active_group(strip, other);
-            if let Some(g) = tree.workspaces[0].strips[0].window_groups.first_mut() {
+            let strip = tree.desktop.workspaces[0].strips[0].id;
+            let other = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            let first_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+            tree.desktop.set_active_group(strip, other);
+            if let Some(g) = tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .first_mut()
+            {
                 g.active_tab = first_tab;
             }
         }
@@ -1018,6 +1023,7 @@ mod tests {
         let st = chrome.borrow();
         let tree = st.tree();
         let foreign: Vec<u64> = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -1035,18 +1041,21 @@ mod tests {
         );
 
         let addr = tab_showing_surface(&tree, SURFACE).expect("the window is in the tree");
-        assert_eq!(tree.active, addr.workspace, "its workspace is active");
         assert_eq!(
-            tree.active_strip.get(&addr.workspace).copied(),
+            tree.desktop.active, addr.workspace,
+            "its workspace is active"
+        );
+        assert_eq!(
+            tree.desktop.active_strip.get(&addr.workspace).copied(),
             Some(addr.strip),
             "its strip is active"
         );
         assert_eq!(
-            tree.active_group_for(addr.strip),
+            tree.desktop.active_group_for(addr.strip),
             Some(addr.group),
             "its group is active"
         );
-        let group = tree.workspaces[0]
+        let group = tree.desktop.workspaces[0]
             .strips
             .iter()
             .flat_map(|s| s.window_groups.iter())
@@ -1121,7 +1130,7 @@ mod tests {
             use crate::shell::state::{Effect, Scope, Subject};
             let st = chrome.borrow();
             let tree = st.tree();
-            let ws = tree.active_workspace().unwrap();
+            let ws = tree.desktop.active_workspace().unwrap();
             let want = Subject::app("so.tilo.word-processor");
             let scopes: Vec<Scope> = ws
                 .capabilities
@@ -1339,6 +1348,7 @@ mod tests {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .capabilities
@@ -1350,7 +1360,7 @@ mod tests {
 
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace().unwrap();
+        let ws = tree.desktop.active_workspace().unwrap();
         let want_subject = Subject::app("so.tilo.word-processor");
         let granted: Vec<_> = ws
             .capabilities
@@ -1433,6 +1443,7 @@ mod tests {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .capabilities

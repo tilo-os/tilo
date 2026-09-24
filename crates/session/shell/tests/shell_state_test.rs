@@ -18,8 +18,8 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
     // `bootstrap_demo` seeds a 3-workspace fixture for the overview's 3-card
     // grid; pinned so seed drift surfaces as a failure, not a silent UX shift.
     let t = WorkspaceTree::bootstrap_demo();
-    assert_eq!(t.workspaces.len(), 3);
-    for ws in &t.workspaces {
+    assert_eq!(t.desktop.workspaces.len(), 3);
+    for ws in &t.desktop.workspaces {
         assert_eq!(
             ws.strips.len(),
             1,
@@ -27,7 +27,7 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
             ws.name
         );
         assert!(
-            t.active_strip.contains_key(&ws.id),
+            t.desktop.active_strip.contains_key(&ws.id),
             "missing active_strip for {:?}",
             ws.name
         );
@@ -39,7 +39,7 @@ fn append_workspace_sets_active() {
     let mut t = WorkspaceTree::bootstrap_demo();
     let new_id = t.append_empty_workspace("New");
     t.set_active(new_id);
-    assert_eq!(t.active, new_id);
+    assert_eq!(t.desktop.active, new_id);
 }
 
 #[test]
@@ -79,18 +79,18 @@ fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
 #[test]
 fn fraction_widths_round_trip_through_persisted_json() {
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(742);
+    tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(742);
     let json = serde_json::to_string(&tree).expect("serialize");
     let back: WorkspaceTree = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(
-        back.workspaces[0].strips[0].window_groups[0].width,
+        back.desktop.workspaces[0].strips[0].window_groups[0].width,
         WindowWidth::Fraction(742),
     );
 }
 
 // Reference the remaining imports so this compiles before the widget code
 // that exercises them lands.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "never called: only keeps the imports referenced")]
 fn _type_refs() {
     let _ = std::marker::PhantomData::<Workspace>;
     let _ = std::marker::PhantomData::<Strip>;
@@ -113,12 +113,15 @@ fn persistence_roundtrip_atomic() {
     // persistence with ordinary user state instead of accidentally testing
     // against that migration contract.
     let mut t = WorkspaceTree::bootstrap_default();
-    t.workspaces[0].name = "Round-trip workspace".into();
+    t.desktop.workspaces[0].name = "Round-trip workspace".into();
     save_tree_to(&t, &tmp).expect("save");
     let loaded = load_tree_from(&tmp).expect("load");
-    assert_eq!(loaded.workspaces.len(), t.workspaces.len());
-    assert_eq!(loaded.active, t.active);
-    assert_eq!(loaded.workspaces[0].name, t.workspaces[0].name);
+    assert_eq!(loaded.desktop.workspaces.len(), t.desktop.workspaces.len());
+    assert_eq!(loaded.desktop.active, t.desktop.active);
+    assert_eq!(
+        loaded.desktop.workspaces[0].name,
+        t.desktop.workspaces[0].name
+    );
 }
 
 #[test]
@@ -131,7 +134,7 @@ fn load_missing_file_returns_default() {
     // `load_or_default` falls back to `bootstrap_default` when the persistence
     // file is absent — one empty workspace, not the named trio, so a first
     // boot isn't a claim about someone who never used the machine.
-    assert_eq!(t.workspaces.len(), 1);
+    assert_eq!(t.desktop.workspaces.len(), 1);
     // A first boot is not a refusal; reporting one would alarm every new machine.
     assert!(
         notice.is_none(),
