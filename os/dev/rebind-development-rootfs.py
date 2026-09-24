@@ -36,6 +36,7 @@ REQUIRED_MODULES = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo
 OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi',
     'nvmf', 'nbd', 'fcoe', 'fcoe-uefi', 'nbde', 'clevis', 'clevis-pin-null',
     'clevis-pin-sss', 'clevis-pin-tang', 'clevis-pin-tpm2', 'crypt-ssh'}
+BOARD_OMITTED_DRIVERS = {'lenovo-83ed': {'nouveau', 'amdgpu', 'xe'}}
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
                   'Volumes', 'ExposedPorts', 'Healthcheck', 'Shell', 'OnBuild')
@@ -150,7 +151,11 @@ def mounted(container):
         command(['unmount', container])
 
 
-def create_arguments(image_id, kver, epoch, hooks):
+def omitted_drivers(profile):
+    return sorted({'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
+
+
+def create_arguments(image_id, kver, epoch, hooks, profile=None):
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
         raise ValueError('immutable image ID required')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,254}', kver):
@@ -164,7 +169,9 @@ def create_arguments(image_id, kver, epoch, hooks):
         '--env', f'SOURCE_DATE_EPOCH={epoch}', '--entrypoint=/usr/bin/dracut', image_id,
         '--force', '--reproducible', '--no-hostonly', '--no-hostonly-cmdline', '-v',
         '--kver', kver, '--add', ' '.join(sorted(REQUIRED_MODULES)),
-        '--omit', ' '.join(sorted(OMITTED_MODULES)), '--omit-drivers', 'ext4 xfs',
+        '--omit', ' '.join(sorted(OMITTED_MODULES)),
+        '--omit-drivers', ' '.join(omitted_drivers(profile)),
+        '--add-drivers', 'ext4',
         '--compress', 'zstd',
         f'/usr/lib/modules/{kver}/initramfs.img']
 
@@ -242,7 +249,8 @@ def transform(args):
             hooks.mkdir()
             kver = imported.receipt['kernel_version']
             container = create_owned(create_arguments(imported.image_id, kver,
-                                      args.source_date_epoch, hooks), work / 'container-id')
+                                      args.source_date_epoch, hooks,
+                                      imported.receipt.get('hardware_profile')), work / 'container-id')
             try:
                 info = json.loads(command(['container', 'inspect', container]))[0]
                 if info.get('Image', '').removeprefix('sha256:') != imported.image_id.removeprefix('sha256:') or info.get('Mounts') != []:
@@ -273,6 +281,17 @@ def transform(args):
                     try:
                         staged_path.chmod(0o644)
                         staged_path.replace(module_path)
+                    finally:
+                        staged_path.unlink(missing_ok=True)
+                    omitted_path = hardware.trusted_path(
+                        root, Path('usr/lib/tilo/initramfs-omitted-drivers.txt'), regular=True)
+                    with tempfile.NamedTemporaryFile(dir=omitted_path.parent, delete=False) as staged:
+                        staged.write(('\n'.join(omitted_drivers(
+                            imported.receipt.get('hardware_profile'))) + '\n').encode())
+                        staged_path = Path(staged.name)
+                    try:
+                        staged_path.chmod(0o644)
+                        staged_path.replace(omitted_path)
                     finally:
                         staged_path.unlink(missing_ok=True)
                     hashes = snapshot_payload(root, context / 'payload', kver)
