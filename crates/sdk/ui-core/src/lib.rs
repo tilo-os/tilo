@@ -210,6 +210,8 @@ pub mod state;
 pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod text_edit;
 pub mod text_metrics;
 pub mod text_render;
