@@ -239,7 +239,14 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
             .as_mut()
             .expect("peer announced before publishing actions");
         link.send(&CollabRequest::RemoteAction {
-            message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation },
+            message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation,
+                query: tilo_actions::remote::CatalogueQuery {
+                    provider: None,
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            },
         })
         .expect("ask the action host for its catalogue");
         let answered = std::time::Instant::now()
@@ -258,10 +265,12 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
                         },
                 }) if answer == correlation => {
                     let offered = expected.iter().all(|(resource, action)| {
-                        catalogue.entries.iter().any(|entry| {
-                            entry.app_id == app_id
-                                && entry.descriptor.address.resource == resource.as_str()
-                                && entry.descriptor.address.action == action.as_str()
+                        catalogue.rows.iter().any(|row| {
+                            row.app_id == app_id
+                                && row.action.as_ref().is_some_and(|action_row| {
+                                    action_row.address.resource == resource.as_str()
+                                        && action_row.address.action == action.as_str()
+                                })
                         })
                     });
                     if offered {

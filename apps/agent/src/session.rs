@@ -262,7 +262,7 @@ pub struct Session {
     /// action host offers this agent. This is the planner's application
     /// catalogue; local document contracts remain only for the agent's own
     /// editorial state/tools.
-    broker_catalogue: tilo_actions::remote::Catalogue,
+    broker_catalogue: tilo_actions::remote::CataloguePage,
     /// When [`Self::broker_catalogue`] was last fetched.
     catalogue_fetched: Option<Instant>,
     next_broker_request: u64,
@@ -362,7 +362,7 @@ impl Session {
             chooser,
             last_route: None,
             asked_at: Instant::now(),
-            broker_catalogue: tilo_actions::remote::Catalogue::default(),
+            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
             catalogue_fetched: None,
             next_broker_request: 1,
             active_run: None,
@@ -1075,7 +1075,7 @@ impl Session {
     /// intersection so a stale or narrower launch grant cannot be widened by
     /// a broader workspace catalogue.
     fn document_broker_offers(
-        catalogue: &tilo_actions::remote::Catalogue,
+        catalogue: &tilo_actions::remote::CataloguePage,
         permissions: &PermissionContext,
     ) -> Vec<surface::Offer> {
         surface::broker_offers(catalogue)
@@ -1131,7 +1131,7 @@ impl Session {
             .then(|| surface::decode_address(id))
             .flatten();
         let permissions = self.cfg.permissions.clone();
-        let find = |catalogue: &tilo_actions::remote::Catalogue| {
+        let find = |catalogue: &tilo_actions::remote::CataloguePage| {
             let offers = Self::document_broker_offers(catalogue, &permissions);
             surface::find(&offers, id).cloned().or_else(|| {
                 wanted
@@ -1157,35 +1157,67 @@ impl Session {
         self.refresh_catalogue()
     }
 
-    /// Ask the session's action host what it offers this agent now.
+    /// Ask the session's action host what it offers this agent now, page by
+    /// page, into one catalogue.
     fn refresh_catalogue(&mut self) -> Result<()> {
-        let correlation = self.next_request_id();
-        self.link.send(&CollabRequest::RemoteAction {
-            message: RemoteActionMessage::CatalogueRequest { correlation },
-        })?;
-        match self.wait_for_remote_answer(|message| {
-            matches!(
-                message,
-                RemoteActionMessage::CatalogueResponse { correlation: answered, .. }
-                    if *answered == correlation
-            )
-        })? {
-            Some(RemoteActionMessage::CatalogueResponse {
-                result: Ok(catalogue),
-                ..
-            }) => {
-                tracing::debug!(
-                    actions = catalogue.entries.len(),
-                    "fetched the action catalogue"
-                );
-                self.broker_catalogue = catalogue;
-                self.catalogue_fetched = Some(Instant::now());
+        let mut gathered = tilo_actions::remote::CataloguePage::default();
+        let mut cursor = Vec::new();
+        loop {
+            let correlation = self.next_request_id();
+            self.link.send(&CollabRequest::RemoteAction {
+                message: RemoteActionMessage::CatalogueRequest {
+                    correlation,
+                    query: tilo_actions::remote::CatalogueQuery {
+                        cursor: std::mem::take(&mut cursor),
+                        revision: (!gathered.revision.is_empty())
+                            .then(|| gathered.revision.clone()),
+                        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                        ..tilo_actions::remote::CatalogueQuery::default()
+                    },
+                },
+            })?;
+            let page = match self.wait_for_remote_answer(|message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::CatalogueResponse { correlation: answered, .. }
+                        if *answered == correlation
+                )
+            })? {
+                Some(RemoteActionMessage::CatalogueResponse {
+                    result: Ok(page), ..
+                }) => page,
+                Some(RemoteActionMessage::CatalogueResponse {
+                    result: Err(error), ..
+                }) => {
+                    tracing::warn!(%error, "the action host refused the catalogue");
+                    return Ok(());
+                }
+                _ => {
+                    tracing::warn!("the action host did not answer the catalogue request");
+                    return Ok(());
+                }
+            };
+            if page.stale_cursor {
+                // The offer changed mid-walk; start again from the top.
+                gathered = tilo_actions::remote::CataloguePage::default();
+                continue;
             }
-            Some(RemoteActionMessage::CatalogueResponse {
-                result: Err(error), ..
-            }) => tracing::warn!(%error, "the action host refused the catalogue"),
-            _ => tracing::warn!("the action host did not answer the catalogue request"),
+            gathered.revision = page.revision;
+            gathered.rows.extend(page.rows);
+            if gathered.providers.is_empty() {
+                gathered.providers = page.providers;
+            }
+            if page.exhausted || page.next_cursor.is_empty() {
+                break;
+            }
+            cursor = page.next_cursor;
         }
+        tracing::debug!(
+            actions = gathered.rows.len(),
+            "fetched the action catalogue"
+        );
+        self.broker_catalogue = gathered;
+        self.catalogue_fetched = Some(Instant::now());
         Ok(())
     }
 
@@ -1194,13 +1226,16 @@ impl Session {
         match offer.broker_peer_id? {
             0 => self
                 .broker_catalogue
-                .entries
+                .rows
                 .iter()
-                .find(|entry| {
-                    tilo_actions::remote::workspace_provider_room(&entry.provider).is_some()
-                        && entry.descriptor.address == offer.descriptor.address
+                .find(|row| {
+                    tilo_actions::remote::workspace_provider_room(&row.provider).is_some()
+                        && row
+                            .action
+                            .as_ref()
+                            .is_some_and(|action| action.address == offer.descriptor.address)
                 })
-                .map(|entry| entry.provider.clone()),
+                .map(|row| row.provider.clone()),
             peer => Some(peer.to_string()),
         }
     }

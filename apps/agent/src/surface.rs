@@ -539,9 +539,9 @@ impl Offer {
 /// inert offers the planner already consumes. No application registry or
 /// document reconstruction is involved: arbitrary apps appear here solely
 /// because they published a descriptor to the authenticated broker.
-pub fn broker_offers(catalogue: &tilo_actions::remote::Catalogue) -> Vec<Offer> {
+pub fn broker_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
     catalogue
-        .entries
+        .rows
         .iter()
         .filter_map(|entry| {
             // A live application's actions name its broker connection; the
@@ -553,7 +553,7 @@ pub fn broker_offers(catalogue: &tilo_actions::remote::Catalogue) -> Vec<Offer> 
                 tilo_actions::remote::workspace_provider_room(&entry.provider)?;
                 0
             };
-            let mut descriptor = entry.descriptor.clone();
+            let mut descriptor = entry.action.clone()?;
             descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
             Some(Offer {
                 app: entry.app_id.clone(),
@@ -1569,10 +1569,19 @@ mod tests {
 
     #[test]
     fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
-        let entry = |peer_id: u64| tilo_actions::remote::CatalogueEntry {
+        let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
             provider: peer_id.to_string(),
             app_id: "so.tilo.calculator".into(),
-            descriptor: ActionDescriptor {
+            parent_resource: String::new(),
+            resource: tilo_actions::remote::CatalogueResource {
+                id: "calculator.document".into(),
+                kind: "calculator.document".into(),
+                label: "Calculator".into(),
+                presentation: None,
+            },
+            has_children: false,
+            visibility: None,
+            action: Some(ActionDescriptor {
                 address: ActionAddress::new("calculator.document", "clear"),
                 resource_kind: "calculator.document".into(),
                 resource_label: "Calculator".into(),
@@ -1583,11 +1592,12 @@ mod tests {
                 contract: tilo_actions::ActionContract::default(),
                 params: Vec::new(),
                 input: tilo_actions::InputSpec::None,
-            },
+            }),
         };
-        let catalogue = tilo_actions::remote::Catalogue {
+        let catalogue = tilo_actions::remote::CataloguePage {
             revision: "1".into(),
-            entries: vec![entry(41), entry(42)],
+            rows: vec![entry(41), entry(42)],
+            ..tilo_actions::remote::CataloguePage::default()
         };
         let offers = broker_offers(&catalogue);
         assert_eq!(offers.len(), 2);

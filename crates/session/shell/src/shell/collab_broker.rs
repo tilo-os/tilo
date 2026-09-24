@@ -485,17 +485,6 @@ impl AppActionBroker {
         self.state.replace_published_surfaces_for_test(surfaces);
     }
 
-    /// Bounded, nonblocking bridge from shell chrome into the broker's
-    /// LocalSet-owned application directory capabilities. Palette code must
-    /// poll the returned oneshot in its cache owner; it must never block a
-    /// compositor frame on a Cap'n Proto RPC.
-    #[must_use]
-    pub fn action_directory_request_queue(
-        &self,
-    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRequestQueue {
-        self.state.action_directory_request_queue()
-    }
-
     pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
         self.state.published_surfaces()
     }
@@ -506,28 +495,6 @@ impl AppActionBroker {
     #[must_use]
     pub fn surfaces_generation(&self) -> u64 {
         self.state.published_surfaces_generation()
-    }
-
-    /// Small inert routes for currently connected `ActionDirectory` sources.
-    /// Shell search uses these to fan out bounded pull queries; capabilities
-    /// themselves remain owned by the broker `LocalSet`.
-    pub fn action_directory_roots(
-        &self,
-    ) -> Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot> {
-        self.state.action_directory_roots()
-    }
-
-    /// Fetch one deterministic, bounded page of inert directory routes.
-    /// Callers that expose root navigation retain `next_after_peer`; routine
-    /// palette queries use the first page without rebuilding the registry.
-    #[must_use]
-    pub fn action_directory_root_page(
-        &self,
-        after_peer: Option<u64>,
-        max_results: usize,
-    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRootPage {
-        self.state
-            .action_directory_root_page(after_peer, max_results)
     }
 
     /// The broker state behind this facade, for the action host.
@@ -1230,22 +1197,30 @@ fn spawn_inner(
 /// Answer each request through `host` and send the answer back to the
 /// device that asked, on the topic it asked on.
 pub(crate) fn answer_remote_actions(
-    net: &ShellNetwork,
+    net: &Arc<ShellNetwork>,
     host: Option<&crate::shell::remote_actions::BrokerActionHost>,
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
     for request in requests {
-        let reply = match host {
+        let answer = match host {
             Some(host) => tilo_actions::remote::serve(host, &request.caller, request.message),
             None => tilo_actions::remote::refuse(
                 &request.message,
                 tilo_actions::remote::ActionHostError::Unavailable {
                     reason: "the application broker is not running".into(),
                 },
-            ),
+            )
+            .map(tilo_actions::remote::Pending::ready),
         };
-        if let Some(reply) = reply {
-            net.send_remote_action(request.workspace_topic, request.from, reply);
+        // Answered whenever the host has the answer — an application that
+        // re-resolves a directory row never holds up this drainer.
+        if let Some(answer) = answer {
+            let net = Arc::clone(net);
+            answer.then(move |reply| {
+                if let Some(reply) = reply {
+                    net.send_remote_action(request.workspace_topic, request.from, reply);
+                }
+            });
         }
     }
 }

@@ -12,8 +12,8 @@
 //! [`InvocationId`]: tilo_actions::InvocationId
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, Catalogue, InvocationReceipt, InvocationState,
-    InvokeRequest,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending,
 };
 
 use crate::shell::collab_broker::AppActionBroker;
@@ -44,52 +44,42 @@ impl BrokerActionHost {
             own_peer: Some(peer_id),
         }
     }
-}
 
-impl BrokerActionHost {
-    /// [`ActionHost::invoke`], also returning the broker job — for an
-    /// in-process caller, such as the palette, that lists and cancels jobs.
-    ///
-    /// # Errors
-    ///
-    /// The same as [`ActionHost::invoke`].
+    /// [`ActionHost::invoke`], also naming the broker job once admitted —
+    /// for an in-process caller, such as the palette, that lists jobs.
+    #[must_use]
     pub(crate) fn invoke_job(
         &self,
         caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
-        self.broker.state().action_invoke_job(caller, request)
-    }
-
-    /// Invoke an action a provider publishes through a live, revision-bound
-    /// directory rather than its eager surface. The owner re-resolves the
-    /// target at `request.revision` before anything starts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ActionHostError`] when the invocation was not admitted.
-    pub(crate) async fn invoke_resolved(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
-        self.broker
-            .state()
-            .action_invoke_resolved(caller, request)
-            .await
+        request: InvokeRequest,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let state = std::sync::Arc::clone(self.broker.state());
+        let caller = caller.clone();
+        let invocation = request.invocation;
+        self.invoke(&caller, request).map(move |result| {
+            let receipt = result?;
+            let job = state
+                .remote_job(&caller, &invocation)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            Ok((job, receipt))
+        })
     }
 }
 
 impl ActionHost for BrokerActionHost {
-    fn catalogue(&self, caller: &Caller) -> Result<Catalogue, ActionHostError> {
-        Ok(self.broker.state().action_catalogue_for(caller))
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.broker.state().action_query(caller, &query)
     }
 
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.broker
             .state()
             .action_invoke(caller, self.own_peer, &request)
@@ -207,18 +197,37 @@ mod tests {
         }
     }
 
+    /// The answer of a host that answers at once.
+    fn now<T>(mut answer: tilo_actions::remote::Pending<T>) -> T {
+        match answer.poll_ready() {
+            tilo_actions::remote::PendingPoll::Ready(value) => value,
+            _ => panic!("an eager surface answers at once"),
+        }
+    }
+
+    fn catalogue(host: &BrokerActionHost, caller: &Caller) -> CataloguePage {
+        now(host.query(
+            caller,
+            CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        ))
+        .expect("catalogue")
+    }
+
     #[test]
     fn the_catalogue_offers_only_what_the_caller_may_use() {
         let (host, _) = host();
-        let catalogue = host.catalogue(&owner()).expect("owner catalogue");
-        let offered: Vec<_> = catalogue
-            .entries
+        let page = catalogue(&host, &owner());
+        let offered: Vec<_> = page
+            .rows
             .iter()
-            .map(|entry| {
-                (
-                    entry.provider.split(':').next().unwrap_or_default(),
-                    entry.descriptor.address.action.as_str(),
-                )
+            .filter_map(|row| {
+                Some((
+                    row.provider.split(':').next().unwrap_or_default(),
+                    row.action.as_ref()?.address.action.as_str(),
+                ))
             })
             .collect();
         assert_eq!(
@@ -233,10 +242,7 @@ mod tests {
             "a remote device is not offered launching apps on this desktop"
         );
         assert!(
-            host.catalogue(&stranger())
-                .expect("stranger catalogue")
-                .entries
-                .is_empty(),
+            catalogue(&host, &stranger()).rows.is_empty(),
             "a caller outside the workspace is offered nothing"
         );
     }
@@ -247,18 +253,18 @@ mod tests {
         let mut erase = refresh(tilo_actions::InvocationId::new());
         erase.target.address = ActionAddress::new("files.entry:/tmp/report", "erase");
         assert_eq!(
-            host.invoke(&owner(), erase.clone()),
+            now(host.invoke(&owner(), erase.clone())),
             Err(ActionHostError::ConfirmationRequired)
         );
         erase.confirmation = Some(tilo_actions::remote::Confirmation::Phrase("erase".into()));
         assert_eq!(
-            host.invoke(&owner(), erase.clone()),
+            now(host.invoke(&owner(), erase.clone())),
             Err(ActionHostError::ConfirmationRequired),
             "the wrong kind of evidence is not accepted"
         );
         assert!(invocations.try_recv().is_err());
         erase.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
-        host.invoke(&owner(), erase).expect("confirmed");
+        now(host.invoke(&owner(), erase)).expect("confirmed");
         assert!(invocations.try_recv().is_ok(), "dispatched once confirmed");
     }
 
@@ -267,14 +273,11 @@ mod tests {
         let (host, _) = host();
         let elsewhere = Caller::local_person("a1".repeat(32)).in_room("not-this-room");
         assert!(
-            host.catalogue(&elsewhere)
-                .expect("catalogue")
-                .entries
-                .is_empty(),
+            catalogue(&host, &elsewhere).rows.is_empty(),
             "a connection admitted to another room reaches nothing here"
         );
         assert_eq!(
-            host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new())),
+            now(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
             Err(ActionHostError::UnknownAction)
         );
     }
@@ -283,12 +286,12 @@ mod tests {
     fn a_retried_remote_invocation_dispatches_once() {
         let (host, mut invocations) = host();
         let id = tilo_actions::InvocationId::new();
-        let first = host.invoke(&owner(), refresh(id)).expect("admitted");
+        let first = now(host.invoke(&owner(), refresh(id))).expect("admitted");
         assert_eq!(first.invocation, id);
         assert_eq!(first.status, ReceiptStatus::Accepted);
         assert!(invocations.try_recv().is_ok(), "dispatched to the app");
 
-        let retry = host.invoke(&owner(), refresh(id)).expect("retry");
+        let retry = now(host.invoke(&owner(), refresh(id))).expect("retry");
         assert_eq!(retry, first);
         assert!(
             invocations.try_recv().is_err(),
@@ -309,13 +312,13 @@ mod tests {
     fn remote_callers_cannot_reach_what_they_are_not_offered() {
         let (host, mut invocations) = host();
         assert_eq!(
-            host.invoke(&stranger(), refresh(tilo_actions::InvocationId::new())),
+            now(host.invoke(&stranger(), refresh(tilo_actions::InvocationId::new()))),
             Err(ActionHostError::UnknownAction)
         );
         let mut elsewhere = refresh(tilo_actions::InvocationId::new());
         elsewhere.target.provider = "8".into();
         assert_eq!(
-            host.invoke(&owner(), elsewhere),
+            now(host.invoke(&owner(), elsewhere)),
             Err(ActionHostError::UnknownAction)
         );
         assert!(invocations.try_recv().is_err());
