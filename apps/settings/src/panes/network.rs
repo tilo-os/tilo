@@ -495,7 +495,7 @@ pub struct NetworkPane {
     connection_rx: std::sync::mpsc::Receiver<(NetworkJob, Result<NetworkJobSuccess, String>)>,
     wifi_continuity: Arc<dyn WifiContinuityClient>,
     connection_notice: Option<String>,
-    ca_picker_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
+    ca_picker_rx: Option<ui::portal::PortalChannel>,
     /// Opening the network sign-in page, run on the app runtime.
     captive_portal: ui::LatestRequest<Result<(), String>>,
     /// A diagnostics read from `NetworkManager`, run on the app runtime.
@@ -2118,15 +2118,16 @@ impl NetworkPane {
             && let Ok(result) = receiver.try_recv()
         {
             match result {
-                Ok(Some(path)) => {
+                ui::portal::PortalOutcome::Opened(path) => {
+                    let path = path.display().to_string();
                     let object = crate::ensure_text_object(state, root, ENTERPRISE_CA_KEY);
                     let old_len =
                         state.text(&object).map_or(0, |text| text.chars().count()) as isize;
                     let _ = state.splice_text(&object, 0, old_len, &path);
                     self.connection_notice = Some("CA certificate selected.".into());
                 }
-                Ok(None) => {}
-                Err(error) => {
+                ui::portal::PortalOutcome::Cancelled => {}
+                ui::portal::PortalOutcome::Failed(error) => {
                     self.connection_notice = Some(format!("Could not choose certificate: {error}"));
                 }
             }
@@ -2885,21 +2886,11 @@ impl NetworkPane {
         }
         let _ = state.put(root, ENTERPRISE_CA_CHOOSE_KEY, false);
         if self.ca_picker_rx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.ca_picker_rx = Some(rx);
-            std::thread::spawn(move || {
-                let result =
-                    runtime_portal_xdg::FileChooser::open("Choose organization CA certificate")
-                        .map(|files| {
-                            files
-                                .into_iter()
-                                .next()
-                                .and_then(|file| file.path)
-                                .map(|path| path.display().to_string())
-                        })
-                        .map_err(|error| error.to_string());
-                let _ = tx.send(result);
-            });
+            self.ca_picker_rx = Some(
+                ui::portal::PickRequest::open("Choose organization CA certificate", "Choose")
+                    .thread_name("settings-ca-picker")
+                    .send(),
+            );
         }
     }
 
@@ -2908,19 +2899,21 @@ impl NetworkPane {
             return;
         }
         let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
-        // Both steps are D-Bus round trips (system bus, then the desktop
-        // portal); they run on the app runtime and report through
-        // `sync_captive_portal_result`.
-        let started = self.captive_portal.spawn(async {
-            let uri = ui::rt::app()
-                .spawn_blocking(os_actions::captive_portal_uri)
-                .await
-                .unwrap_or_else(|error| Err(format!("the lookup task stopped: {error}")))?;
-            runtime_portal_xdg::OpenUri::open_async(&uri)
-                .await
-                .map_err(|error| {
-                    format!("could not open browser through the desktop portal: {error}")
+        // Both steps block (a system-bus lookup, then the desktop portal), so
+        // they run on a worker of the app runtime and report through
+        // `sync_captive_portal_result`. The opener is resolved here: a scoped
+        // host is only visible on this thread.
+        let opener = ui::host::current().opener;
+        let started = self.captive_portal.spawn(async move {
+            ui::rt::app()
+                .spawn_blocking(move || {
+                    let uri = os_actions::captive_portal_uri()?;
+                    ui::portal::open_uri_with(&*opener, &uri).map_err(|error| {
+                        format!("could not open browser through the desktop portal: {error}")
+                    })
                 })
+                .await
+                .unwrap_or_else(|error| Err(format!("the sign-in task stopped: {error}")))
         });
         if !started {
             self.report_captive_portal(Err("the settings window is closing".into()));

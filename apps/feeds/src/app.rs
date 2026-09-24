@@ -29,7 +29,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -438,6 +440,8 @@ pub struct FeedsApp {
     import_rx: Option<PortalChannel>,
     /// Save chooser and the subscription snapshot captured when export began.
     export_rx: Option<(PortalChannel, String)>,
+    /// In-flight external link hand-off, drained once per frame.
+    open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
 
     // --- per-feed context menu ------------------------------------------
@@ -580,6 +584,7 @@ impl FeedsApp {
             toast: None,
             import_rx: None,
             export_rx: None,
+            open_link_rx: None,
             background_poll_deadline: Cell::new(None),
             feed_menu: ContextMenu::new(),
             feed_menu_target: None,
@@ -3060,11 +3065,24 @@ impl FeedsApp {
             self.set_toast(ui::i18n!("feeds-open-link-invalid"));
             return;
         };
-        match ui::widget::try_open_external_url(url.as_str()) {
-            Ok(()) => self.set_toast(ui::i18n!("feeds-open-link-started")),
-            Err(error) => {
-                self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
+        self.open_link_rx = Some(ui::portal::send_open_uri(url.as_str()));
+        self.set_toast(ui::i18n!("feeds-open-link-started"));
+    }
+
+    fn drain_open_link(&mut self) {
+        let Some(rx) = &self.open_link_rx else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                LaunchOutcome::Failed("the opener stopped without a result".into())
             }
+        };
+        self.open_link_rx = None;
+        if let LaunchOutcome::Failed(error) = outcome {
+            self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
         }
     }
 }
@@ -4534,6 +4552,7 @@ impl Widget for FeedsApp {
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
         self.drain_export();
+        self.drain_open_link();
         // A Ctrl+K palette action (or any other out-of-band write) mutates the
         // document directly, not this widget's mirrored store. Once the fetch
         // backlog is drained — so the store isn't leading the document with

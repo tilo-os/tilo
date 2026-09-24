@@ -1162,9 +1162,6 @@ impl NotesApp {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            #[cfg(unix)]
-            let result = runtime_portal_xdg::OpenUri::open(&url).map_err(|error| error.to_string());
-            #[cfg(not(unix))]
             let result = ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
