@@ -17639,6 +17639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wire-frame"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

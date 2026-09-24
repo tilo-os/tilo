@@ -214,6 +214,7 @@ members = [
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
+    "crates/system/wire-frame",
     "crates/system/xdg-paths",
 
     # Text
