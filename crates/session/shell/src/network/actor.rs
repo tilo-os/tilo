@@ -921,14 +921,7 @@ impl ActorState {
                 self.publish_workspace_control(ws, msg, route).await;
             }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
-                if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
-                    self.publish_direct(ws, target, msg).await;
-                } else {
-                    tracing::warn!(
-                        ws,
-                        "refused a non-action message on the remote-action route"
-                    );
-                }
+                self.publish_remote_action(ws, target, msg).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
@@ -1515,7 +1508,9 @@ impl ActorState {
             return;
         }
         match route {
-            WorkspaceControlRoute::Direct { target } => self.publish_direct(ws, target, msg).await,
+            WorkspaceControlRoute::Direct { target } => {
+                self.publish_direct(ws, target, msg).await;
+            }
             WorkspaceControlRoute::Relayed { via } => {
                 tracing::warn!(
                     ws,
@@ -1526,12 +1521,62 @@ impl ActorState {
         }
     }
 
+    /// Send a remote-action frame to exactly `target`: directly when the
+    /// device is live on this workspace's mesh, otherwise through an
+    /// authenticated workspace host, which routes it to that device alone.
+    async fn publish_remote_action(
+        &mut self,
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
+    ) {
+        let NeighbourMsg::RemoteAction { frame } = msg else {
+            tracing::warn!(
+                ws,
+                "refused a non-action message on the remote-action route"
+            );
+            return;
+        };
+        if self.peers_seen.contains_key(&(ws, target))
+            && self
+                .publish_direct(
+                    ws,
+                    target,
+                    NeighbourMsg::RemoteAction {
+                        frame: frame.clone(),
+                    },
+                )
+                .await
+        {
+            return;
+        }
+        let relayed = self
+            .host_sessions
+            .iter()
+            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .any(|(_, runtime)| {
+                runtime
+                    .session
+                    .publish_remote_action(*target.as_bytes(), frame.clone())
+                    .is_ok()
+            });
+        if !relayed {
+            tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action");
+        }
+    }
+
     /// Deliver one message to exactly `target` on the authenticated direct
     /// surface/control plane. The peer must be live on this workspace.
-    async fn publish_direct(&mut self, ws: WorkspaceId, target: EndpointId, msg: NeighbourMsg) {
+    /// Returns whether the message was written.
+    async fn publish_direct(
+        &mut self,
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
+    ) -> bool {
         if !self.peers_seen.contains_key(&(ws, target)) {
             tracing::warn!(ws, peer = %target, "direct route is no longer live");
-            return;
+            return false;
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
@@ -1545,7 +1590,7 @@ impl ActorState {
             message: msg,
         };
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
-            return;
+            return false;
         };
         let addr = self
             .peers
@@ -1562,7 +1607,7 @@ impl ActorState {
             .await
             else {
                 tracing::warn!(ws, peer = %target, "direct connection failed");
-                return;
+                return false;
             };
             self.surface_connections.insert(target, connection.clone());
             connection
@@ -1573,10 +1618,12 @@ impl ActorState {
             stream.finish().map_err(|_| ())?;
             Ok::<(), ()>(())
         };
-        if !matches!(tokio::time::timeout(budget, send).await, Ok(Ok(()))) {
-            self.surface_connections.remove(&target);
-            tracing::warn!(ws, peer = %target, "direct publish failed");
+        if matches!(tokio::time::timeout(budget, send).await, Ok(Ok(()))) {
+            return true;
         }
+        self.surface_connections.remove(&target);
+        tracing::warn!(ws, peer = %target, "direct publish failed");
+        false
     }
 
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
@@ -2028,7 +2075,11 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
-                if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
+                // A remote-action retry is byte-identical on purpose; the
+                // receiving host deduplicates it by invocation id instead.
+                if !matches!(msg, NeighbourMsg::RemoteAction { .. })
+                    && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                {
                     return;
                 }
                 Some(NetEvent::Msg {
@@ -3017,6 +3068,17 @@ fn spawn_host_pump(
         while let Some(inbound) = session.recv().await {
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
+                HostInbound::RemoteAction { from, frame } => {
+                    let Ok(author) = EndpointId::from_bytes(&from) else {
+                        continue;
+                    };
+                    HostEvent::Message {
+                        author,
+                        // Never deduplicated; see `handle_host_event`.
+                        fingerprint: [0; 32],
+                        msg: NeighbourMsg::RemoteAction { frame },
+                    }
+                }
                 HostInbound::Delta { author, data }
                 | HostInbound::Presence {
                     author,
@@ -4196,6 +4258,74 @@ mod tests {
             ) {
                 break;
             }
+        }
+    }
+
+    /// Two devices that share only a workspace host, with no direct route,
+    /// still exchange remote-action frames: the same bytes, delivered to the
+    /// addressed device attributed to the sender the host authenticated, and
+    /// a byte-identical retry is delivered again rather than deduplicated.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remote_action_frames_fall_back_to_the_workspace_host() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+        )
+        .await;
+
+        let frame = br#"{"version":1}"#.to_vec();
+        for attempt in 0..2 {
+            cmd_a
+                .send(NetCmd::PublishRemoteAction {
+                    ws: 42,
+                    target: b_id,
+                    msg: NeighbourMsg::RemoteAction {
+                        frame: frame.clone(),
+                    },
+                })
+                .await
+                .unwrap();
+            let (peer, received) = timeout(Duration::from_secs(15), async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        peer,
+                        msg: NeighbourMsg::RemoteAction { frame },
+                        ..
+                    }) = rx_b.recv().await
+                    {
+                        return (peer, frame);
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("relayed attempt {attempt} was not delivered"));
+            assert_eq!(peer, a_id, "attributed to the authenticated sender");
+            assert_eq!(received, frame, "the host carries the frame untouched");
         }
     }
 
