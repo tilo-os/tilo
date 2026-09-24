@@ -7,7 +7,7 @@ does not fan out into unrelated builds:
 |---|---|---|---|
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
-| OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
+| OS | `vX.Y.Z`, the nightly **Release / OS** run on `main` when `main` has moved, or a manual run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows, and signed/notarized macOS downloads |
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
@@ -16,7 +16,8 @@ the verified x86-64 channel only after publication succeeds. The guarded
 packaging coordinator remains inactive; its qualification path is separate. The
 [product matrix](ci-product-matrix.md) distinguishes available definitions from
 qualified targets, including Windows apps still awaiting release qualification.
-OS publication remains deliberate through tags or explicit dispatches.
+OS publication happens through tags, explicit dispatches, and one nightly run
+on `main`; it never happens per push.
 
 Kernel, base-image, RPM and WPE buildroot snapshots remain input-promotion
 workflows. They run only when their pinned input set changes; an OS release
@@ -41,8 +42,9 @@ Pull requests use the cheapest lane that proves the affected boundary:
   distribution builds run weekly, on tags, or by explicit dispatch. Their
   sccache namespace is shared by architecture; compiler identity and native
   headers remain part of each cache key.
-- Full OS builds run weekly, on tags, or by explicit dispatch, not on PRs or
-  ordinary `main` pushes. WPE has its own signed snapshot gate; tagged OS
+- Full OS builds run nightly, on tags, or by explicit dispatch, not on PRs or
+  ordinary `main` pushes. The nightly run builds nothing when `main` is
+  already published. WPE has its own signed snapshot gate; tagged OS
   releases require and include it.
 - Ordinary imager changes use the affected-package checks. Native imager
   packaging runs only on tags or manual dispatches. Manual runs default to
@@ -147,18 +149,95 @@ not create a tagged package release, but a manual desktop run from `main`
 **does publish the OS payload**. Only the imager option allocates macOS hosts.
 
 Scheduled and manual OS integration builds retain the independent rebuild,
-installed-VM, desktop, app, and OS integration gates. Continuous OS publication
+installed-VM, desktop, app, and OS integration gates. Per-push OS publication
 and desktop-to-OS publication chaining are disabled in the workflows; setting
 `TILO_CONTINUOUS_OS_RELEASE` alone does not enable them. App collection or
 desktop payload publication does not release an OS version.
 
-A manual **Release / OS** dispatch is also build-only by default. Enable its
-`publish` input only from `main` to allocate and promote a signed generation.
+## Nightly OS publication
+
+Developers and agents build dev VMs from a published, signed OS image, so
+`code.podesta.ai/qos/tilo:latest` must not depend on someone remembering to
+dispatch CI. **Release / OS** therefore runs every night at 02:00 UTC on
+`main` and publishes a signed generation through exactly the protected manual
+`main` path: the same native `runner-disk-100g`/`runner-disk-100g-arm64`
+lanes, KMS signing preflight, reproducibility, installed-VM and AT-SPI gates,
+SBOM, provenance and freshness attestations, and the shared
+`tilo-os-image-series` generation lock. It also receives the same protected
+PCR-prediction and EFI signing inputs, and ships the full image including the
+browser, like a default manual publication.
+
+Before allocating any build lane, the plan job reads the
+`org.opencontainers.image.revision` label of the current `latest` image with
+`skopeo inspect`. When it equals the scheduled commit, the run ends there:
+nothing is built, signed or promoted, and no generation is consumed. Any
+failure to read the label, including the first run when no image exists yet,
+publishes instead, so registry trouble cannot leave the channel stale; the
+cost of that fallback is one redundant release. Because the check runs inside
+the generation lock, a nightly run queued behind a manual publication of the
+same commit also skips.
+
+The installed-desktop gate boots the candidate with a virgl GPU when the runner
+exposes a usable `/dev/dri/renderD*`, and with a plain 2D virtio GPU otherwise;
+the Kata-confined runner kernels have no DRM subsystem. Tilo's DRM backend
+paints on the CPU into dumb buffers and the guest carries Mesa software
+rendering, so the first-login OOBE, compositor, lock and AT-SPI gates run and
+must pass in either mode. The display mode never selects which gates run.
+
+Only runs that can publish (tags, manual `main` runs with `publish`, and
+scheduled `main` runs) share the `tilo-os-image-series` concurrency group.
+Non-publishing integration builds allocate no generation and serialize per
+ref instead, so a long branch rehearsal never delays a release.
+
+The nightly image carries `latest`, `genN` and `main-<sha7>` like a manual
+`main` publication, so anything triggered by a published OS release follows
+it without a separate schedule. Runner cost is bounded to at most one
+two-architecture release per day and none on days without `main` changes.
+
+## Dev VM disks and dev-trust integration images
+
+Dev VMs must not wait on release gating. Every `main` build that gets past the
+image build pushes that image, unsigned, as
+`code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch>`. `tilo-ci` is a
+development-only repository: production policy
+(`os/etc/containers/policy.json`) rejects it, and
+`tools/policy/check_dev_image_contract.py` keeps it that way. The push never
+blocks a release.
+
+Publication refuses to start without its protected inputs
+(`TILO_PCR_PREDICTION_SIGNER`, `TILO_EFI_SIGNING_CERT_SHA256` and
+`TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`). Until all three are configured, the
+nightly run is a `main` integration build instead of a publication, with a
+warning. It still runs every gate and produces the `tilo-ci` image and a dev
+disk, and it skips when this commit's integration image already exists. Once
+the inputs are configured, the nightly run publishes without further changes.
+
+After the build, `dispatch-dev-disk` requests **Release / Dev VM disk** once
+per run:
+
+- when the run promoted a signed release, from its exact index digest, as
+  `tilo-vm:main-<sha7>` (or the release version);
+- otherwise, on `main`, from the run's x86-64 `tilo-ci` image after checking
+  that its revision label names the run's commit, as `tilo-vm:main-<sha7>-ci`.
+
+`dev-disk.yml` derives the base's trust from its repository. A `tilo` base must
+carry the release signature and provenance naming the source revision; a
+`tilo-ci` base must carry that revision as its OCI label and may publish only
+`-ci` tags, so it can never take a name a signed release would use. The disk
+manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
+newest `main-*` disk, so developers get the freshest image either way. Dispatch
+`dev-disk.yml` with `base_image=code.podesta.ai/qos/tilo-ci:main-<sha7>-x86_64`
+to rebuild a disk by hand.
+
+A manual **Release / OS** dispatch is build-only by default. Enable its
+`publish` input only from `main` to allocate and promote a signed generation
+without waiting for the nightly run.
 This runs the same image, reproducibility, and VM gates as a safe integration
 rehearsal while the production signing key is unavailable.
 
-Publishing allocates both `imager-linux-x86_64` and
-`imager-linux-aarch64`. Each native lane independently rebuilds, reseals,
+A tag publication allocates both `imager-linux-x86_64` and
+`imager-linux-aarch64`; a manual or nightly `main` publication uses
+`runner-disk-100g` and `runner-disk-100g-arm64`. Each native lane independently rebuilds, reseals,
 boots, signs, generates an SBOM, and attests its child manifest with the same
 source revision and generation. Only after both descriptors agree does the
 generic promotion job construct an OCI index containing exactly those two
@@ -167,7 +246,7 @@ the immutable `genN`, source, and main-commit tags to that index. Every durable
 write is read back and an exact retry is accepted; a conflicting immutable tag
 fails closed. Only then does `latest` move as the release commit point.
 No architecture-specific child is promoted as an update channel. Non-publishing
-scheduled builds and manual rehearsals retain the single generic x86-64 lane,
+manual rehearsals retain the single generic x86-64 lane,
 so absent native release capacity does not block ordinary integration feedback.
 
 ## Dev VM disks
@@ -230,6 +309,9 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   immutable desktop payload. Store its audience in
   `TILO_OS_APP_COLLECTION_AUDIENCE`. Restrict it to **Release / OS** events;
   currently these are tags, schedules and manual dispatches.
+- The release-signing role (`AWS_SIGNING_ROLE_ARN`, OIDC audience
+  `tilo-release-signing`) must trust scheduled runs on `main` as well as
+  manual `main` dispatches and `v*` tags; the nightly publication signs with it.
 - Desktop payload publication uses a package-write/repository-write integration
   restricted to `package-desktop.yml` scheduled/manual runs on `main`; store its audience in
   `TILO_DESKTOP_RELEASE_AUDIENCE`.
