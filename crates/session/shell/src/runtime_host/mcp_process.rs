@@ -130,6 +130,11 @@ pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
 ///
 /// This function does not mutate process-global state. The native executable
 /// applies the returned values at its single-threaded startup boundary.
+///
+/// # Errors
+///
+/// Rejects a relative profile path and returns any error creating or
+/// securing the private directories.
 pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(

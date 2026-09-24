@@ -177,6 +177,10 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a scripted proof run whose steps depend on each other in order"
+)]
 pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.
     // The normal Session host still owns admission and invocation policy.
