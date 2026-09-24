@@ -263,7 +263,7 @@ fn same_path_old_new_restore_undo_redo_uses_actual_historic_pixels_and_current_m
     assert_eq!(app.edited_pixels(), Some(&old_rgba));
     assert_eq!(reopened.get_heads(), heads);
     assert_eq!(
-        reopened.get(ROOT, "view_only").unwrap().unwrap().0.to_str(),
+        reopened.get(ROOT, "view_only").unwrap().unwrap().0.as_str(),
         Some("current")
     );
     assert!(reopened.get_change_by_hash(&selected).is_some());
@@ -402,7 +402,7 @@ fn exact_current_and_legacy_roots_tombstones_unknown_authored_fields_survive_res
             doc = AutoCommit::load(&doc.save()).unwrap();
         }
         assert_eq!(
-            doc.get(ROOT, "receipt").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "receipt").unwrap().unwrap().0.as_str(),
             Some("current")
         );
         assert!(doc.get_change_by_hash(&selected[0]).is_some());

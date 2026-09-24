@@ -17,7 +17,7 @@ fn resource(profile: &str, workspace: &str) -> HistoryResource {
 fn value(doc: &AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .expect("read value")
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .and_then(|(value, _)| value.as_str().map(str::to_owned))
 }
 
 fn load(snapshot: &HistorySnapshot) -> AutoCommit {
@@ -137,7 +137,7 @@ fn controller_keeps_older_entries_reachable_beyond_the_widget_default_window() {
 
     let snapshot = load(history.snapshot().unwrap());
     assert_eq!(
-        snapshot.get(ROOT, "revision").unwrap().unwrap().0.to_u64(),
+        snapshot.get(ROOT, "revision").unwrap().unwrap().0.as_u64(),
         Some(0)
     );
 }

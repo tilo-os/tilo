@@ -187,7 +187,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     let patches = doc.diff(&before, &after);
     assert!(matches!(patches.as_slice(), [automerge::Patch {
         action: automerge::PatchAction::PutMap { key, value, .. }, ..
-    }] if key == "body" && value.0.to_str() == Some("edited")));
+    }] if key == "body" && value.0.as_str() == Some("edited")));
 }
 
 #[test]
@@ -250,5 +250,5 @@ fn diagnostics_preserve_active_patch_cursor() {
     let patches = doc.diff_incremental();
     assert!(matches!(patches.as_slice(), [automerge::Patch {
         action: automerge::PatchAction::PutMap { key, value, .. }, ..
-    }] if key == "body" && value.0.to_str() == Some("edited")));
+    }] if key == "body" && value.0.as_str() == Some("edited")));
 }

@@ -15,7 +15,7 @@ impl Action for Write {
             return Err(ActionError::Refused("fixture refusal".into()));
         }
         if d.get(ROOT, "body")?
-            .and_then(|(v, _)| v.to_str().map(str::to_owned))
+            .and_then(|(v, _)| v.as_str().map(str::to_owned))
             .as_deref()
             != Some(&self.value)
         {
@@ -51,7 +51,7 @@ impl Widget for Owner {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .into(),
         ));

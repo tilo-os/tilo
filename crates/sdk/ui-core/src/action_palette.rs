@@ -2013,7 +2013,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("yes".to_string()),
         );
         assert!(!p.is_open(), "an immediate action closes the palette");
@@ -2220,7 +2220,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "name")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
         );
@@ -2291,7 +2291,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some("yes".into())
         );
     }

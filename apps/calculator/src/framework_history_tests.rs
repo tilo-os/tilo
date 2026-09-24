@@ -31,7 +31,7 @@ fn verify_restored(d: &AutoCommit) {
             .unwrap()
             .unwrap()
             .0
-            .to_bool(),
+            .as_bool(),
         Some(true)
     );
 }
@@ -104,7 +104,7 @@ fn legacy_list_versions_are_readable_but_restore_refusal_is_nonmutating() {
             .unwrap()
             .unwrap()
             .0
-            .to_bool(),
+            .as_bool(),
         Some(true)
     );
     let mut d = managed_driver(doc, legacy);
