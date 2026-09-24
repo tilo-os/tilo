@@ -79,7 +79,8 @@ impl AccountService for WorkspaceAccount {
         let tree = self.grants.tree_handle();
         let room = {
             let tree = tree.read();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| workspace.id == caller.workspace_id)
                 .map(|workspace| workspace.room.to_string())
@@ -455,6 +456,7 @@ impl EmailService for ShellEmailService {
         let Some((room, mut capabilities, defaults, user_id)) =
             self.tree.try_read().and_then(|tree| {
                 let workspace = tree
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|workspace| workspace.id == request.workspace_id)?;
@@ -836,7 +838,8 @@ impl WallpaperService for ShellWallpaperService {
             return PortalResult::Failed("invalid wallpaper source".into());
         }
         let Some(workspace_id) = self.tree.try_read().and_then(|tree| {
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| workspace.id.0.to_string() == request.workspace_id)
                 .map(|workspace| workspace.id.0.to_string())
@@ -863,7 +866,8 @@ impl WallpaperService for ShellWallpaperService {
         staged: &StagedWallpaper,
     ) -> PortalResult<()> {
         let Some(workspace_id) = self.tree.try_read().and_then(|tree| {
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| workspace.id.0.to_string() == request.workspace_id)
                 .map(|workspace| workspace.id.0.to_string())

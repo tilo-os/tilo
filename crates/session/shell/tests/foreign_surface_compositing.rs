@@ -224,6 +224,7 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
         let chrome = fb.chrome();
         let mut rendered = chrome.tree_mut();
         let focus = rendered
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -240,7 +241,7 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
             .map(|(strip_id, g)| (strip_id, g.id));
         let (strip_id, group_id) =
             focus.expect("the mirrored tree must hold the adopted client's group");
-        rendered.set_active_group(strip_id, group_id);
+        rendered.desktop.set_active_group(strip_id, group_id);
     }
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     (fb, protocol_tree)
@@ -560,10 +561,11 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
         let mut rendered = chrome.tree_mut();
         tab_binding::adopt_toplevel(&mut rendered, back, Some("org.example.back".into()));
         let group = rendered
+            .desktop
             .active_strip
-            .get(&rendered.active)
+            .get(&rendered.desktop.active)
             .copied()
-            .and_then(|strip| rendered.active_group_for(strip))
+            .and_then(|strip| rendered.desktop.active_group_for(strip))
             .expect("the first adoption focuses the group it landed in");
         tab_binding::adopt_toplevel_at(
             &mut rendered,

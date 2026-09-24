@@ -172,6 +172,7 @@ members = [
     "crates/runtime/ush",
 
     # Session
+    "crates/session/desktop-model",
     "crates/session/greeter",
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",

@@ -280,6 +280,7 @@ impl HostApplicationsProvider {
                                 st.strip_viewport(),
                             );
                         let portal_workspace_id = tree
+                            .desktop
                             .active_workspace()
                             .map(|workspace| workspace.room.to_string());
                         drop(tree);
