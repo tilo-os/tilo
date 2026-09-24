@@ -80,6 +80,8 @@ pub struct NativeConfig {
     pub eager_bytes: u64,
     pub scheduler: EpochScheduler,
     pub leases: LeaseTiming,
+    /// Arbitrate the room's write leases (its always-on host).
+    pub lease_authority: bool,
 }
 
 impl NativeConfig {
@@ -100,6 +102,7 @@ impl NativeConfig {
             eager_bytes: 1024 * 1024,
             scheduler: EpochScheduler::default(),
             leases: LeaseTiming::default(),
+            lease_authority: false,
         }
     }
 }
@@ -350,23 +353,26 @@ impl Engine {
 
         let materialized = state.materialized()?;
         let lease_class: HashSet<PathBuf> = state.leases()?.into_keys().collect();
-        let write_denied = Arc::new(Mutex::new(HashSet::new()));
-        let leases = LeaseKeeper::new(
+        let write_gates = Arc::new(super::lease::WriteGates::default());
+        let mut leases = LeaseKeeper::new(
             Arc::clone(&fs),
             Arc::clone(&placeholders),
             live.clone(),
             cfg.device,
             cfg.leases,
             lease_class,
-            Arc::clone(&write_denied),
+            Arc::clone(&write_gates),
         );
+        if cfg.lease_authority {
+            leases.serve_as_authority();
+        }
         let mut projector = Projector::new(
             live.clone(),
             Arc::clone(&placeholders),
             content,
             runtime,
             owner,
-            write_denied,
+            write_gates,
         );
         projector.eager_bytes = cfg.eager_bytes;
         let scheduler = cfg.scheduler.clone();
@@ -456,11 +462,14 @@ impl Engine {
                 if let Some(g) = generation.as_mut() {
                     g.borrow_and_update();
                 }
+                if remote {
+                    self.leases.arbitrate();
+                }
                 self.project();
                 last_project = Instant::now();
             }
             if last_lease.elapsed() >= LEASE_TICK {
-                self.leases.tick(QuickFS::record_clock_ms());
+                self.tick_leases();
                 last_lease = Instant::now();
             }
         };
@@ -641,8 +650,62 @@ impl Engine {
                 }
             );
         }
-        self.leases.tick(QuickFS::record_clock_ms());
+        self.tick_leases();
         Ok(())
+    }
+
+    /// Lease renewals and releases; a lease is not released while its file
+    /// has changes not yet published.
+    fn tick_leases(&mut self) {
+        let mut unpublished: HashSet<PathBuf> = self.modified.clone();
+        unpublished.extend(self.journal.pending().iter().filter_map(|e| e.path.clone()));
+        self.leases.tick(QuickFS::record_clock_ms(), &unpublished);
+    }
+
+    /// Publishes this device's current content of `rel` again, as the
+    /// holder of its lease, after a version from a tenancy that was not
+    /// its author's became the head. The content is the last epoch's, a
+    /// crash-consistent image.
+    fn reassert(&mut self, rel: &Path) {
+        let Some(snapshot) = self.capture.last_snapshot().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(node) = self.capture.node(rel) else {
+            return;
+        };
+        let Ok(data) = std::fs::read(snapshot.join(rel)) else {
+            return;
+        };
+        let fence = self.leases.fence_for(rel);
+        let attrs = PosixAttrs::of_local(node.mode, false, false);
+        let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
+            .unwrap_or_else(|_| QuickFS::record_clock_ms());
+        match self
+            .fs
+            .apply_local_file_as(rel, &data, mtime_ms, attrs, fence)
+        {
+            Ok(()) => {
+                println!(
+                    "{} was replaced by a version from another device's tenancy: republished this device's version as the lease holder",
+                    rel.display()
+                );
+                let entry = self.fs.entry_at(rel);
+                if let Some(m) = self.materialized.get_mut(rel) {
+                    m.hash = entry.as_ref().and_then(|e| e.hash).map(|h| *h.as_bytes());
+                    m.size = entry.as_ref().map_or(m.size, |e| e.size);
+                    m.own = true;
+                    m.fence = fence;
+                    let record = m.clone();
+                    if let Err(error) = self
+                        .state
+                        .set_materialized(&[(rel.to_path_buf(), Some(record))])
+                    {
+                        self.note_error(&error);
+                    }
+                }
+            }
+            Err(errno) => eprintln!("republishing {} failed (errno {errno})", rel.display()),
+        }
     }
 
     /// Applies each operation through the record plane, in order.
@@ -845,6 +908,11 @@ impl Engine {
         let dir = node.kind == NodeKind::Dir;
         let symlink = matches!(node.kind, NodeKind::Symlink(_));
         let attrs = PosixAttrs::of_local(node.mode, dir, symlink);
+        let fence = if node.kind == NodeKind::File {
+            self.leases.fence_for(path)
+        } else {
+            None
+        };
         let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
             .unwrap_or_else(|_| QuickFS::record_clock_ms());
         let applied = match &node.kind {
@@ -852,7 +920,8 @@ impl Engine {
             NodeKind::File => match std::fs::read(snapshot.join(path)) {
                 Ok(data) => {
                     out.bytes = out.bytes.saturating_add(data.len() as u64);
-                    self.fs.apply_local_file_as(path, &data, mtime_ms, attrs)
+                    self.fs
+                        .apply_local_file_as(path, &data, mtime_ms, attrs, fence)
                 }
                 Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
             },
@@ -860,7 +929,8 @@ impl Engine {
             NodeKind::Symlink(target) => {
                 let bytes = target.as_os_str().as_encoded_bytes();
                 out.bytes = out.bytes.saturating_add(bytes.len() as u64);
-                self.fs.apply_local_file_as(path, bytes, mtime_ms, attrs)
+                self.fs
+                    .apply_local_file_as(path, bytes, mtime_ms, attrs, None)
             }
         };
         match applied {
@@ -884,6 +954,8 @@ impl Engine {
                         .map(|r| *r.0.as_bytes()),
                     mode: Some(attrs.mode),
                     symlink,
+                    fence,
+                    own: true,
                 };
                 self.materialized.insert(path.to_path_buf(), record.clone());
                 out.mats.push((path.to_path_buf(), Some(record)));
@@ -1006,7 +1078,16 @@ impl Engine {
             return;
         }
         let tree = self.fs.tree_snapshot();
-        let out = self.projector.project(&tree, &self.materialized, &spans);
+        let fs = Arc::clone(&self.fs);
+        let holder_of = move |record: [u8; 16], epoch: u64| fs.lease_holder_of(record, epoch);
+        let fencing = project::Fencing {
+            me: self.cfg.device,
+            holder_of: &holder_of,
+            now_ms: QuickFS::record_clock_ms(),
+        };
+        let out = self
+            .projector
+            .project(&tree, &self.materialized, &spans, &fencing);
         for (from, to) in &out.moved {
             for old in self.capture.paths_below(from) {
                 self.node_dirty.insert(old);
@@ -1055,6 +1136,20 @@ impl Engine {
         }
         for e in &out.errors {
             eprintln!("materialising {e}");
+        }
+        for rel in &out.fenced {
+            eprintln!(
+                "{}: the current version was written in a tenancy its author did not hold; kept as a conflict version, not applied",
+                rel.display()
+            );
+        }
+        for copy in &out.conflicts {
+            println!("kept this device's fenced version as {}", copy.display());
+            self.capture.mark_dirty(copy);
+            self.retry_at = Some(Instant::now());
+        }
+        for rel in out.reassert.clone() {
+            self.reassert(&rel);
         }
         if !out.written.is_empty() || !out.removed.is_empty() || !out.moved.is_empty() {
             println!(

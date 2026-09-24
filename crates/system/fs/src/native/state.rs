@@ -120,6 +120,10 @@ pub struct Materialized {
     pub mode: Option<u32>,
     /// Materialised as a symbolic link.
     pub symlink: bool,
+    /// The tenancy the version was written in, for a lease-class file.
+    pub fence: Option<crate::namespace::VersionFence>,
+    /// This device published the version.
+    pub own: bool,
 }
 
 /// The row format before records, modes and fences were kept.
@@ -427,6 +431,8 @@ mod tests {
                             record: Some([4; 16]),
                             mode: Some(0o644),
                             symlink: false,
+                            fence: None,
+                            own: true,
                         }),
                     )],
                 )
