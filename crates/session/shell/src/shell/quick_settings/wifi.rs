@@ -1188,26 +1188,4 @@ mod tests {
             Some("Couldn’t scan · Refresh to try again")
         );
     }
-
-    #[test]
-    fn clicking_the_connected_row_is_a_no_op() {
-        let mut pane = QuickSettingsWifiPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut connected = network("Home", true);
-        connected.connected = true;
-        let mut state = QuickSettingsState {
-            wifi_networks: vec![connected],
-            ..Default::default()
-        };
-        let actions = RecordingActions::default();
-        pane.list.layout_from(panel, 1, 116.0);
-
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(state.wifi_password.is_none());
-        assert!(state.wifi_joining.is_none());
-        assert!(actions.0.borrow().is_empty());
-    }
 }

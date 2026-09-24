@@ -1696,8 +1696,8 @@ mod tests {
         let group = {
             let chrome = fb.chrome();
             let mut tree = chrome.tree_mut();
-            let group = tree.workspaces[0].strips[0].window_groups[0].id;
-            tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+            let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
             group
         };
         fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));

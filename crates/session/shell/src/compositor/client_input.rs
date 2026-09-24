@@ -856,7 +856,8 @@ fn placements_for_live_surfaces(
     tree: &WorkspaceTree,
     live: &HashSet<u64>,
 ) -> HashMap<u64, (StripId, GroupId)> {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| {
@@ -1724,8 +1725,8 @@ mod tests {
         let group = {
             let chrome = fb.chrome();
             let mut tree = chrome.tree_mut();
-            let group = tree.workspaces[0].strips[0].window_groups[0].id;
-            tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+            let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
             group
         };
         fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
@@ -2706,8 +2707,11 @@ mod tests {
             .get(&surface)
             .copied()
             .expect("adopted live surface has an input address");
-        assert_eq!(tree.active_strip.get(&tree.active), Some(&strip));
-        assert_eq!(tree.active_group_for(strip), Some(group));
+        assert_eq!(
+            tree.desktop.active_strip.get(&tree.desktop.active),
+            Some(&strip)
+        );
+        assert_eq!(tree.desktop.active_group_for(strip), Some(group));
         assert!(
             placements_for_live_surfaces(&tree, &HashSet::new()).is_empty(),
             "dead protocol surfaces must not retain routable placement"
