@@ -783,7 +783,7 @@ mod tests {
         let mut connection = sample(id, "Tilo device");
         connection.kind = ConnectionKind::Tilo;
         connection.auth = AuthMethod::DeviceIdentity;
-        connection.host = iroh::SecretKey::generate().public().to_string();
+        connection.host = iroh_base::SecretKey::generate().public().to_string();
         connection.presence = Presence::Online;
         assert!(
             connect_spec(&connection)
@@ -815,7 +815,7 @@ mod tests {
         let mut connection = sample(id, "Tilo device");
         connection.kind = ConnectionKind::Tilo;
         connection.auth = AuthMethod::DeviceIdentity;
-        connection.host = iroh::SecretKey::generate().public().to_string();
+        connection.host = iroh_base::SecretKey::generate().public().to_string();
         let connect = connect_spec(&connection);
         assert_eq!(connect.contract.permission, PermissionRequirement::Read);
         assert_eq!(connect.contract.risk, RiskLevel::Privileged);
