@@ -2829,10 +2829,9 @@ fn live_launch_with_no_saved_book_is_empty_not_fabricated() {
 #[serial_test::serial]
 fn created_contact_persists_across_a_restart() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
 
     // First launch.
     let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
@@ -2879,10 +2878,9 @@ fn created_contact_persists_across_a_restart() {
 #[serial_test::serial]
 fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
     let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
 
@@ -2949,10 +2947,9 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
 #[serial_test::serial]
 fn a_legacy_address_book_is_imported_into_the_store() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
     let (dir, legacy) = scratch_book();
     let book = sample_contacts();
     crate::storage::save(&legacy, &book).unwrap();
@@ -3545,10 +3542,9 @@ fn import_of_nothing_is_a_clean_noop() {
 #[serial_test::serial]
 fn deleting_a_contact_persists_the_removal() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
     // Seed a book into the store, then delete one contact and restart.
     let book = sample_contacts();
     let removed = book[0].id;

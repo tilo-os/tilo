@@ -824,8 +824,8 @@ fn import_reads_a_real_ics_file() {
     // the real parse path — not a bundled sample.
     let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: single-threaded test process for this env var.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
     let today = chrono::Local::now().date_naive();
     std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
 
@@ -845,7 +845,7 @@ fn import_reads_a_real_ics_file() {
             .any(|e| e.title == "Quarterly all-hands"),
         "the .ics file's event parsed in"
     );
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -950,8 +950,8 @@ fn resource_import_refuses_invalid_batch_without_partial_writes_or_success() {
 fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
     let dir = std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("temporary transfer directory");
-    // SAFETY: `serial` prevents this process-global test seam from racing.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
     let today = chrono::Local::now().date_naive();
     std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).expect("write fixture");
 
@@ -1021,8 +1021,7 @@ fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
         "completion arrives only after the document action commits"
     );
 
-    // SAFETY: see the setup above.
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3362,8 +3361,8 @@ fn cycling_reminder_advances_and_reaches_the_exported_ics() {
 fn export_writes_a_real_ics_file_to_the_transfer_dir() {
     let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
 
     let mut app = CalendarApp::new_demo();
     let mut state = AutoCommit::new();
@@ -3389,7 +3388,7 @@ fn export_writes_a_real_ics_file_to_the_transfer_dir() {
         "the confirmation truthfully includes the exported VTODO count"
     );
 
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3403,7 +3402,8 @@ fn keyboard_shortcuts_switch_views_navigate_and_act() {
     // it to a temp dir first.
     let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
 
     let mut h = Harness::new(1280, 800);
     // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -3455,7 +3455,7 @@ fn keyboard_shortcuts_switch_views_navigate_and_act() {
         "'e' exported an .ics through the key path"
     );
 
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
