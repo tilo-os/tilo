@@ -55,7 +55,7 @@ unicode-normalization = "0.1.25"
 
 [target.'cfg(unix)'.dependencies]
 # Launcher-authenticated priority projection to the Tilo shell notification service.
-zbus = { workspace = true, features = ["blocking-api"] }
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 
 [dev-dependencies]
 # Serialises the tests that construct scratch files / drive the portal
