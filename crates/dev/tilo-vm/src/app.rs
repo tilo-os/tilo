@@ -19,7 +19,8 @@ use tilo_vm_protocol::{
 use crate::build;
 use crate::ci;
 use crate::cli::{
-    Builder, Command, CreateArgs, InputCommand, SeatCommand, SlotCommand, UpgradeArgs, VmCommand,
+    Builder, Command, CreateArgs, InputCommand, ScenarioCommand, SeatCommand, SlotCommand,
+    UpgradeArgs, VmCommand,
 };
 use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -39,6 +40,7 @@ use crate::sshkey;
 use crate::vmbuild;
 
 mod kernel;
+mod scenario;
 
 pub struct Outcome {
     pub text: String,
@@ -563,6 +565,7 @@ impl App {
             Some(Command::Seat(command)) => self.seat(command),
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
+            Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
             Some(Command::Gc {
                 dry_run,
                 keep,
@@ -2417,10 +2420,7 @@ impl App {
         if entry.scenario_only() {
             return Err(CliError::BootComponent {
                 name,
-                driver: entry
-                    .scenario
-                    .clone()
-                    .unwrap_or_else(|| "os/dev/vm.sh boot".into()),
+                driver: scenario_driver(entry),
             });
         }
         if other_flags {
@@ -3294,6 +3294,21 @@ fn describe_owner(owner: &Owner) -> Option<String> {
     }
 }
 
+/// What exercises a scenario-only boot component. The installer has its
+/// own `tilo-vm scenario`; the others name the os/dev driver the manifest
+/// records.
+pub fn scenario_driver(entry: &Component) -> String {
+    match entry.name.as_str() {
+        "installer" => {
+            "tilo-vm scenario install   (a throwaway VM installs from your medium through the installer's actions and cold-boots the result; the release gate is os/dev/test-installer-cycle.sh)".into()
+        }
+        _ => entry
+            .scenario
+            .clone()
+            .unwrap_or_else(|| "os/dev/vm.sh boot".into()),
+    }
+}
+
 /// The slot a command names explicitly, after `--slot` was folded in.
 fn named_slot(command: &Command) -> Option<String> {
     match command {
@@ -3654,6 +3669,32 @@ mod tests {
             warnings: vec![],
             boot: None,
         }
+    }
+
+    #[test]
+    fn swapping_the_installer_redirects_to_its_scenario() {
+        let manifest = Manifest::parse(
+            "[[component]]\nname = \"installer\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-installer-cycle.sh\"\n\n[[component]]\nname = \"uki\"\nkind = \"boot\"\nscope = \"vm\"\nscenario = \"os/dev/test-measured-boot.sh\"\n",
+        )
+        .unwrap();
+        let installer = scenario_driver(manifest.get("installer").unwrap());
+        assert!(
+            installer.starts_with("tilo-vm scenario install"),
+            "{installer}"
+        );
+        let error = CliError::BootComponent {
+            name: "installer".into(),
+            driver: installer,
+        };
+        assert!(
+            error.hint().contains("tilo-vm scenario install"),
+            "{}",
+            error.hint()
+        );
+        assert_eq!(
+            scenario_driver(manifest.get("uki").unwrap()),
+            "os/dev/test-measured-boot.sh"
+        );
     }
 
     #[test]

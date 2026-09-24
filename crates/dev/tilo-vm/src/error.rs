@@ -218,6 +218,19 @@ pub enum CliError {
         context: String,
         source: std::io::Error,
     },
+    #[error("no installer medium at {path}")]
+    ScenarioMedium { path: String },
+    #[error("the install scenario failed in {phase}: {detail}")]
+    Scenario {
+        phase: String,
+        detail: String,
+        /// The run's artifact directory.
+        artifacts: String,
+        /// The VM's console socket (gone once the VM stopped).
+        console: String,
+    },
+    #[error("{what} runs from a Tilo worktree (it drives os/dev/vm.sh)")]
+    NeedsWorktree { what: String },
 }
 
 impl CliError {
@@ -400,6 +413,20 @@ impl CliError {
                 "rebuild the base from this worktree: tilo-vm vm upgrade --from local --rebuild-base   |   or rebase onto a newer commit   |   or, to go back on purpose: add --allow-older-base".into()
             }
             Self::Io { .. } => "check the path and permissions named above; tilo-vm doctor checks the setup".into(),
+            Self::ScenarioMedium { .. } => {
+                "build one: ./os/build.sh --local, then ./os/dev/build-custom-installer.sh (writes os/output/installer/qcow2/disk.qcow2)   |   or pass one: tilo-vm scenario install --medium <installer.qcow2>".into()
+            }
+            Self::Scenario { phase, artifacts, console, .. } => {
+                let inspect = if phase == "install" || phase == "boot-installer" {
+                    format!("rerun with --keep and read the installer yourself while it runs: tilo-control --socket {console} state-dump --pretty   (actions list shows every step and why it is blocked)")
+                } else {
+                    "rerun with --keep to keep the target disk for inspection".to_owned()
+                };
+                format!("read the evidence in {artifacts} (installer and greeter state, target serial log)   |   {inspect}")
+            }
+            Self::NeedsWorktree { what } => format!(
+                "run {what} from a checkout of the Tilo repository, where os/dev/vm.sh lives"
+            ),
         }
     }
 
@@ -433,6 +460,9 @@ impl CliError {
             Self::ImageRefused { .. } | Self::BaseOlder { .. } | Self::NotBootc { .. } => "images",
             Self::InvalidInput(_) => "driving",
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
+            Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
+                "scenarios"
+            }
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
@@ -733,10 +763,31 @@ mod tests {
                 context: "c".into(),
                 source: std::io::Error::other("e"),
             },
+            CliError::ScenarioMedium {
+                path: "/w/os/output/installer/qcow2/disk.qcow2".into(),
+            },
+            CliError::Scenario {
+                phase: "install".into(),
+                detail: "begin@installer.review was refused".into(),
+                artifacts: "/w/target/tilo-vm-scenarios/x".into(),
+                console: "/run/user/1000/tilo-vm-x/console.sock".into(),
+            },
+            CliError::Scenario {
+                phase: "first-boot".into(),
+                detail: "no greeter answered".into(),
+                artifacts: "/w/target/tilo-vm-scenarios/x".into(),
+                console: "/run/user/1000/tilo-vm-x/console.sock".into(),
+            },
+            CliError::NeedsWorktree {
+                what: "tilo-vm scenario install".into(),
+            },
         ];
         for error in &all {
             match error {
-                CliError::NoVm { .. }
+                CliError::ScenarioMedium { .. }
+                | CliError::Scenario { .. }
+                | CliError::NeedsWorktree { .. }
+                | CliError::NoVm { .. }
                 | CliError::KernelBuild { .. }
                 | CliError::KernelNotRunning { .. }
                 | CliError::HostBuildUnsupported { .. }
