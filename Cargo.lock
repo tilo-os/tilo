@@ -608,6 +608,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-test-env",
  "tracing",
 ]
 
@@ -2162,8 +2163,8 @@ dependencies = [
  "anyhow",
  "runtime-fs",
  "runtime-portal",
- "serial_test",
  "tempfile",
+ "tilo-test-env",
  "xdg-paths",
 ]
 

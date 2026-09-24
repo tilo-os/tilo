@@ -139,66 +139,58 @@ where
 mod tests {
     use super::*;
 
-    fn clear_tilo_env() {
-        for (k, _) in std::env::vars() {
-            if k.starts_with("TILO_") {
-                unsafe { std::env::remove_var(&k) };
+    /// A scope with every `TILO_*` variable removed, restored on drop.
+    fn without_tilo_env() -> tilo_test_env::ScopedEnv {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("TILO_") {
+                env.remove(&key);
             }
         }
+        env
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_rejects_absolute_paths() {
-        clear_tilo_env();
+        let _env = without_tilo_env();
         let e = resolve_workspace_path("/etc/passwd").unwrap_err();
         assert!(format!("{e}").contains("relative"));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_rejects_parent_traversal() {
-        clear_tilo_env();
+        let _env = without_tilo_env();
         let e = resolve_workspace_path("notes/../../etc/passwd").unwrap_err();
         assert!(format!("{e}").contains(".."));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_uses_workspace_root_when_env_set() {
-        clear_tilo_env();
-        unsafe { std::env::set_var(TILO_WORKSPACE_ROOT_ENV, "/tmp/tilo-ws") };
+        let mut env = without_tilo_env();
+        env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/tilo-ws");
         let p = resolve_workspace_path("notes/inbox.md").unwrap();
         assert_eq!(p, PathBuf::from("/tmp/tilo-ws/notes/inbox.md"));
-        unsafe { std::env::remove_var(TILO_WORKSPACE_ROOT_ENV) };
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_falls_back_to_standalone_state_dir() {
-        clear_tilo_env();
+        let mut env = without_tilo_env();
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
-        unsafe { std::env::set_var("TILO_PACKAGE_ID", "dev.example.notes") };
+        env.set("XDG_DATA_HOME", tmp.path())
+            .set("TILO_PACKAGE_ID", "dev.example.notes");
         let p = resolve_workspace_path("inbox.md").unwrap();
         assert!(p.starts_with(tmp.path().join("dev.example.notes")));
         assert!(
             p.parent().unwrap().exists(),
             "parent dir should be pre-created"
         );
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
     }
 
     #[test]
-    #[serial_test::serial]
     fn is_workspace_available_reflects_env() {
-        clear_tilo_env();
+        let mut env = without_tilo_env();
         assert!(!is_workspace_available());
-        unsafe { std::env::set_var(TILO_WORKSPACE_ROOT_ENV, "/tmp/xxx") };
+        env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/xxx");
         assert!(is_workspace_available());
-        unsafe { std::env::remove_var(TILO_WORKSPACE_ROOT_ENV) };
     }
 }
