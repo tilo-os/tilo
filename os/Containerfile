@@ -1471,10 +1471,8 @@ COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-id
 # the running session; and D-Bus allows one owner per name, so with the
 # compositor also serving, whichever lost the race left a portal that
 # answered nothing while looking healthy.
-COPY \
-    os/usr/share/xdg-desktop-portal/portals/tilo.portal \
-    os/usr/share/xdg-desktop-portal/tilo-portals.conf \
-    /usr/share/xdg-desktop-portal/
+COPY os/usr/share/xdg-desktop-portal/portals/tilo.portal /usr/share/xdg-desktop-portal/portals/tilo.portal
+COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-portal/tilo-portals.conf
 
 # Opt-in peer-sync user service. NOT enabled by default — users opt
 # in via `systemctl --user enable shell-peer-sync` or by
