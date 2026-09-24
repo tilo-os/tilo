@@ -28,8 +28,8 @@ publication triggers.
 | --- | --- | --- |
 | Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
 | Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No tapp publication and no full OS build |
-| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built tapps to the signed registry; OS publication remains off |
-| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built tapps to the signed registry; no OS build or publication runs per push |
+| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published by an OS tag, a `main` dispatch with `publish=true`, or the nightly `main` run when `main` has moved |
 
 Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
 for the audited documentation/helper allowlist; quality remains required. Use the
@@ -43,7 +43,7 @@ exact head.
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
 | Native Windows apps | Merged toolkit plus `tools/windows/install-apps.ps1`; production allowlist currently contains 30 selectable apps | This is a local build/install path, not continuous distributable app packaging. Versioned archive/MSIX format, signing/promotion, native dependency identity, disposable installation and runtime tests are not a qualified release path. Consider broad app coverage after a bounded native qualification. |
-| OS x86-64/ARM64 | `build-image.yml`: weekly integration, explicit builds and deliberate tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
+| OS x86-64/ARM64 | `build-image.yml`: nightly `main` publication (skipped when `main` is already published), explicit builds and tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
 | Dev VM disks | `dev-disk.yml`: requested by each published OS generation or by explicit dispatch; builds `tilo-vm` on the verified same-commit OS image, boots the disk, publishes `tilo-vm:<tag>` and qcow2 (optional VHDX) disks with a `tilo-vm-disk.json` manifest | Default lane is x86-64; aarch64 is an `architectures` input. The boot check proves SSH reachability only. UTM, libvirt and Hyper-V import are not qualified. |
 | macOS Imager | Native x86-64 and ARM64 signed/notarized DMG and app-zip lanes; first-party Homebrew cask with native install tests | Enabled for `full_native` rehearsal and release tags; requires ephemeral native runners and protected signing/notarization brokers. This does not qualify unrelated standalone macOS apps. |
 
@@ -62,8 +62,9 @@ Do not route Windows work onto Linux `runner` just because it is available.
 2. Observe dependency-selected app packaging on `main`, including shared-runtime
    compatibility, immutable receipts and atomic channel promotion; extend routine
    packaging to ARM64 after its native lane has sustained reliable throughput.
-3. Keep OS publication manual through a release tag or a `main` dispatch with
-   `publish=true`, after image, reproducibility and VM gates pass.
+3. Publish the OS through a release tag, a `main` dispatch with `publish=true`,
+   or the nightly `main` run, only after image, reproducibility and VM gates
+   pass; never per push.
 4. If native Windows app distribution becomes worthwhile, qualify a versioned,
    signed archive or MSIX on disposable native hosts. The shared toolkit and local
    installer already exist; distribution and clean-machine runtime evidence do not.
