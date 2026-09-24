@@ -47,6 +47,7 @@ pub fn run(subject: &Subject<'_>) {
     writer_identity_survives_writes_without_one(subject);
     accepted_writes_become_durable(subject);
     leases_are_exclusive_until_dropped(subject);
+    shared_leases_coexist_and_exclude_an_exclusive_owner(subject);
     keys_never_alias(subject);
     views_round_trip(subject);
 }
@@ -176,13 +177,46 @@ fn leases_are_exclusive_until_dropped(subject: &Subject<'_>) {
     drop(other);
 }
 
+fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
+    let store = subject.store;
+    let package = format!("so.tilo.shared-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
+    for key in [fresh("shared"), StorageKey::package(package)] {
+        let first = store.lease_shared(&key).unwrap();
+        let second = store.lease_shared(&key).unwrap();
+        assert!(
+            first.primary,
+            "the first shared writer continues the identity"
+        );
+        assert!(!second.primary, "only one shared writer is primary");
+        assert!(matches!(store.lease(&key), Err(StoreError::Busy(_))));
+        store
+            .write(&key, WriteOp::Replace(b"a".to_vec()), Some(b"primary"))
+            .unwrap();
+        store
+            .write(&key, WriteOp::Append(b"b".to_vec()), None)
+            .unwrap();
+        subject.committed(&key);
+        assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
+        drop(first);
+        let third = store.lease_shared(&key).unwrap();
+        assert!(third.primary, "primacy passes on once released");
+        drop((second, third));
+        let exclusive = store.lease(&key).unwrap();
+        assert!(matches!(store.lease_shared(&key), Err(StoreError::Busy(_))));
+        drop(exclusive);
+    }
+}
+
 fn keys_never_alias(subject: &Subject<'_>) {
     let store = subject.store;
     let record = format!("alias-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let keys = [
         StorageKey::record("so.tilo.conformance", "room", record.clone()),
         StorageKey::record("so.tilo.conformance", "other-room", record.clone()),
-        StorageKey::record("so.tilo.other", "room", record),
+        StorageKey::record("so.tilo.other", "room", record.clone()),
+        StorageKey::package_record("so.tilo.conformance", record.clone()),
+        StorageKey::room_index("so.tilo.conformance", record.clone()),
+        StorageKey::package(format!("so.tilo.alias-{record}")),
     ];
     let leases: Vec<_> = keys.iter().map(|key| store.lease(key).unwrap()).collect();
     for (n, key) in keys.iter().enumerate() {
