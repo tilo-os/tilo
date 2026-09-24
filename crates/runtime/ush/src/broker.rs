@@ -1379,6 +1379,20 @@ mod tests {
         drop(broker);
     }
 
+    /// Whether `pid` no longer runs. The killed helper is reparented away from
+    /// the broker, so under an init that does not reap orphans it lingers as a
+    /// zombie: terminated, yet still answering signal 0.
+    fn has_terminated(pid: i32) -> bool {
+        // SAFETY: signal 0 only probes whether a test-recorded pid exists.
+        if (unsafe { libc::kill(pid, 0) }) == -1 {
+            return true;
+        }
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with(['Z', 'X']))
+        })
+    }
+
     #[test]
     fn disconnecting_the_guest_cancels_the_host_command() {
         use std::os::unix::fs::PermissionsExt;
@@ -1423,10 +1437,7 @@ mod tests {
             stopped = pids
                 .iter()
                 .copied()
-                .filter(|pid| {
-                    // SAFETY: signal 0 only probes whether a test-recorded pid exists.
-                    (unsafe { libc::kill(*pid, 0) }) == -1
-                })
+                .filter(|pid| has_terminated(*pid))
                 .collect();
             if stopped.len() == pids.len() {
                 break;
