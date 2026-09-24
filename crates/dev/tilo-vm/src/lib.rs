@@ -17,5 +17,6 @@ pub mod hypervisor;
 pub mod imageup;
 pub mod receipt;
 pub mod remote;
+pub mod sshguard;
 pub mod sshkey;
 pub mod vmbuild;

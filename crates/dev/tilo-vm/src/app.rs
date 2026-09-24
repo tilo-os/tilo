@@ -34,6 +34,7 @@ use crate::hypervisor::{
 use crate::imageup;
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
+use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
@@ -261,27 +262,6 @@ fn registry_login(runner: &mut dyn Runner) -> Result<String, CliError> {
     }
 }
 
-/// Commands that change the VM's `/usr` or tilo-vm's state behind its back.
-pub fn looks_like_deploy(command: &[String]) -> bool {
-    let line = command.join(" ");
-    let writes_usr = ["cp ", "mv ", "install ", "rsync ", "tee ", "> ", "ln "]
-        .iter()
-        .any(|verb| line.contains(verb) && line.contains("/usr/"));
-    writes_usr
-        || [
-            "systemd-sysext merge",
-            "systemd-sysext refresh",
-            "systemd-sysext unmerge",
-            "/var/lib/tilo-vm",
-            "/var/lib/extensions",
-            "bootc usr-overlay",
-            "ostree admin unlock",
-            "tilo-vmd",
-        ]
-        .iter()
-        .any(|pattern| line.contains(pattern))
-}
-
 /// `path`, or its nearest ancestor that exists.
 fn existing_ancestor(path: &Path) -> &Path {
     path.ancestors()
@@ -401,14 +381,31 @@ impl App {
         let adapter = Self::adapter(vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let remote = Remote::connect(
+        let remote = match Remote::connect(
             &vm.name,
             &endpoint,
             vm.entry.key.as_deref(),
             vm.entry.daemon.as_deref(),
             debug,
-        )
-        .map_err(|error| key_refusal(vm, adapter.as_ref(), &endpoint, error))?;
+        ) {
+            Ok(remote) => remote,
+            // SSH works; whether vm upgrade can fix it depends on bootc.
+            Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
+                return Err(CliError::ProtocolMismatch {
+                    vm: vm.name.clone(),
+                    client,
+                    daemon,
+                    bootc: self.probe_bootc(vm, &endpoint),
+                });
+            }
+            Err(CliError::DaemonMissing { .. }) => {
+                return Err(CliError::DaemonMissing {
+                    vm: vm.name.clone(),
+                    bootc: self.probe_bootc(vm, &endpoint),
+                });
+            }
+            Err(error) => return Err(key_refusal(vm, adapter.as_ref(), &endpoint, error)),
+        };
         for issue in &remote.hello.issues {
             self.warnings.push(format!(
                 "slot {}: {}; {}",
@@ -417,6 +414,25 @@ impl App {
         }
         self.receipt.set("vm", &vm.name);
         Ok(remote)
+    }
+
+    /// Does the VM have bootc? `None` when SSH did not say.
+    fn probe_bootc(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Option<bool> {
+        let output = self.vm_sh(vm, endpoint, imageup::BOOTC_PROBE).ok()?;
+        imageup::parse_bootc_probe(&output.stdout)
+    }
+
+    /// Why `connect` failed, as `status` and `vm status` report it; asks the
+    /// hypervisor whether the VM is running at all.
+    fn connect_failure(
+        &mut self,
+        vm: &Resolved,
+        adapter: &dyn Hypervisor,
+        error: &CliError,
+    ) -> ConnectFailure {
+        let running = adapter.running(&vm.vm(), &mut self.runner);
+        let debug = Self::debug_commands(adapter, &vm.name);
+        connect_failure(&vm.name, running, &debug, error)
     }
 
     /// # Errors
@@ -575,11 +591,17 @@ impl App {
         let mut remote = match self.connect(&vm) {
             Ok(remote) => remote,
             Err(error) => {
-                lines.push(format!("  unreachable: {error}"));
-                insert(&mut vm_data, "reachable", json!(false));
-                let data = json!({ "vm": vm_data, "error": error.to_json() });
+                let adapter = Self::adapter(&vm)?;
+                let failure = self.connect_failure(&vm, adapter.as_ref(), &error);
+                lines.push(failure.text(&error));
+                insert(&mut vm_data, "state", json!(failure.state));
+                insert(&mut vm_data, "reachable", json!(failure.ssh));
+                let mut data = json!({ "vm": vm_data });
+                merge_error(&mut data, &error);
                 let mut outcome = Outcome::new(lines.join("\n"), data);
-                outcome.next = vec!["tilo-vm vm start".into(), "tilo-vm doctor".into()];
+                outcome.next = failure.next;
+                outcome.failed = true;
+                self.warnings.clear();
                 return Ok(outcome);
             }
         };
@@ -648,6 +670,7 @@ impl App {
         }
         self.warnings.clear();
         lines.push(goals.into());
+        insert(&mut vm_data, "state", json!("ready"));
         insert(&mut vm_data, "reachable", json!(true));
         let data = json!({
             "vm": vm_data,
@@ -1017,9 +1040,10 @@ impl App {
         raw: bool,
         command: &[String],
     ) -> Result<Outcome, CliError> {
-        if !raw && looks_like_deploy(command) {
-            return Err(CliError::RawDeploy {
+        if !raw && let Some(change) = sshguard::guarded_write(command) {
+            return Err(CliError::RawWrite {
                 command: command.join(" "),
+                change,
             });
         }
         let vm = self.resolve_vm(name)?;
@@ -1058,33 +1082,25 @@ impl App {
         match self.connect(&vm) {
             Ok(remote) => {
                 lines.push(format!(
-                    "  reachable; tilo-vmd {} (protocol {}, {})",
+                    "  running and ready; tilo-vmd {} (protocol {}, {})",
                     remote.hello.daemon_version, remote.hello.protocol, remote.hello.arch
                 ));
+                insert(&mut data, "state", json!("ready"));
                 insert(&mut data, "reachable", json!(true));
                 insert(&mut data, "daemon", json!(remote.hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
             }
-            Err(error @ CliError::DaemonMissing { .. }) => {
-                lines.push(
-                    "  reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
-                        .into(),
-                );
-                insert(&mut data, "reachable", json!(true));
-                insert(&mut data, "daemon", Value::Null);
-                insert(&mut data, "error", error.to_json());
-                let mut outcome = Outcome::new(lines.join("\n"), data);
-                outcome.next = vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)];
-                Ok(outcome)
-            }
             Err(error) => {
-                lines.push(format!("  not reachable: {error}"));
-                insert(&mut data, "reachable", json!(false));
-                insert(&mut data, "error", error.to_json());
-                let mut outcome = Outcome::new(lines.join("\n"), data).next(&["tilo-vm vm start"]);
-                outcome
-                    .next
-                    .extend(Self::debug_commands(adapter.as_ref(), &vm.name));
+                let failure = self.connect_failure(&vm, adapter.as_ref(), &error);
+                lines.push(failure.text(&error));
+                insert(&mut data, "state", json!(failure.state));
+                insert(&mut data, "reachable", json!(failure.ssh));
+                insert(&mut data, "daemon", Value::Null);
+                merge_error(&mut data, &error);
+                let mut outcome = Outcome::new(lines.join("\n"), data);
+                outcome.next = failure.next;
+                outcome.failed = true;
+                self.warnings.clear();
                 Ok(outcome)
             }
         }
@@ -1511,10 +1527,12 @@ impl App {
     }
 
     /// Boot id, base.json, free space and bootc status, in one round trip.
+    /// `command` is what needs them, named when the VM has no bootc.
     fn vm_facts(
         &mut self,
         vm: &Resolved,
         endpoint: &SshEndpoint,
+        command: &str,
     ) -> Result<imageup::VmFacts, CliError> {
         let output = self.vm_sh(vm, endpoint, &imageup::vm_facts_script())?;
         if !output.stdout.contains("@@base") {
@@ -1526,10 +1544,16 @@ impl App {
             };
             return Err(key_refusal(vm, adapter.as_ref(), endpoint, error));
         }
-        imageup::parse_vm_facts(&output.stdout).map_err(|detail| CliError::CommandFailed {
-            command: "bootc status --json".into(),
-            status: format!("VM {} did not report a bootc status ({detail})", vm.name),
-            stderr: output.stderr.trim().to_owned(),
+        imageup::parse_vm_facts(&output.stdout).map_err(|error| match error {
+            imageup::FactsError::NoBootc => CliError::NotBootc {
+                vm: vm.name.clone(),
+                command: command.to_owned(),
+            },
+            imageup::FactsError::Unreadable(detail) => CliError::CommandFailed {
+                command: "bootc status --json".into(),
+                status: format!("VM {} did not report a bootc status ({detail})", vm.name),
+                stderr: output.stderr.trim().to_owned(),
+            },
         })
     }
 
@@ -1553,7 +1577,7 @@ impl App {
             imageup::check_image(&image, &imageup::ImageFacts::default())?;
         }
         // Fail on an unreachable or non-bootc VM before a long build.
-        self.vm_facts(&vm, &endpoint)?;
+        self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         if build {
             self.build_dev_image(&image, args.base.as_deref(), args.rebuild_base)?;
         }
@@ -1562,7 +1586,7 @@ impl App {
             .receipt
             .phase("check", || local_image_facts(runner, &image))?;
         imageup::check_image(&image, &image_facts)?;
-        let facts = self.vm_facts(&vm, &endpoint)?;
+        let facts = self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         match imageup::check_base_age(&image, facts.base.as_ref(), image_facts.base.as_ref()) {
             Err(error) if !args.allow_older_base => return Err(error),
             Err(error) => self
@@ -1639,7 +1663,7 @@ impl App {
         {
             imageup::check_image(image, &imageup::ImageFacts::default())?;
         }
-        let facts = self.vm_facts(vm, endpoint)?;
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
         let (transport, imgref) = match &args.image {
             Some(image) => ("registry", image.clone()),
             None => match facts.bootc.spec.clone() {
@@ -1963,6 +1987,11 @@ impl App {
                     missing = true;
                     break;
                 }
+                Err(error @ CliError::ProtocolMismatch { .. }) => {
+                    self.warnings.push(format!("{error}; {}", error.hint()));
+                    daemon = Some(String::from("incompatible"));
+                    break;
+                }
                 Err(_) => std::thread::sleep(Duration::from_secs(1)),
             }
         }
@@ -2005,7 +2034,7 @@ impl App {
         let vm = self.resolve_vm(name)?;
         let adapter = Self::adapter(&vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-        let facts = self.vm_facts(&vm, &endpoint)?;
+        let facts = self.vm_facts(&vm, &endpoint, "vm rollback-image")?;
         let Some(target) = facts.bootc.rollback.clone() else {
             return Err(CliError::Unsupported {
                 what: format!("rolling back VM {}: it has no previous image", vm.name),
@@ -3101,6 +3130,127 @@ fn doctor_outcome(checks: &[Check]) -> Outcome {
     outcome
 }
 
+/// Put an error's `error`, `hint` and `see` at the top level of a report,
+/// the one shape every `--json` error has.
+fn merge_error(data: &mut Value, error: &CliError) {
+    if let (Value::Object(map), Value::Object(fields)) = (data, error.to_json()) {
+        map.extend(fields);
+    }
+}
+
+/// Why a VM's daemon could not be reached, for `status` and `vm status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectFailure {
+    /// `off`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
+    pub state: &'static str,
+    /// What the VM is doing, in one line.
+    pub summary: String,
+    /// Whether SSH answered.
+    pub ssh: bool,
+    pub next: Vec<String>,
+}
+
+impl ConnectFailure {
+    fn text(&self, error: &CliError) -> String {
+        format!(
+            "  {}\n  error: {error}\n  hint: {}",
+            self.summary,
+            error.hint()
+        )
+    }
+}
+
+/// Tell apart a VM that is off, one whose SSH does not answer, one without
+/// tilo-vmd and one whose tilo-vmd is incompatible; each has its own fix.
+pub fn connect_failure(
+    vm: &str,
+    running: Option<bool>,
+    debug: &[String],
+    error: &CliError,
+) -> ConnectFailure {
+    let fail = |state, summary: String, ssh, next: Vec<String>| ConnectFailure {
+        state,
+        summary,
+        ssh,
+        next,
+    };
+    let start = format!("tilo-vm vm start {vm}");
+    let ssh = format!("tilo-vm vm ssh {vm}");
+    let no_ssh = || {
+        let mut next = debug.to_vec();
+        next.push("tilo-vm doctor".into());
+        next
+    };
+    match error {
+        CliError::RootKeyRefused { .. } => fail(
+            "key-refused",
+            "running; SSH answers but refuses the root key".into(),
+            true,
+            vec!["tilo-vm guide platforms".into(), "tilo-vm doctor".into()],
+        ),
+        CliError::DaemonMissing { bootc, .. } => fail(
+            "no-daemon",
+            "running and reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
+                .into(),
+            true,
+            match bootc {
+                Some(true) => vec![
+                    format!("tilo-vm vm upgrade {vm} --image code.sandbox.example/qos/tilo-vm:<tag>"),
+                    ssh,
+                ],
+                Some(false) => vec!["tilo-vm vm create <name>".into(), ssh],
+                None => vec![format!("tilo-vm vm status {vm}"), ssh],
+            },
+        ),
+        CliError::ProtocolMismatch {
+            client,
+            daemon,
+            bootc,
+            ..
+        } => fail(
+            "incompatible",
+            format!(
+                "running and reachable over SSH, but its tilo-vmd speaks protocol {daemon} and this tilo-vm speaks {client}"
+            ),
+            true,
+            match (client > daemon, bootc) {
+                (false, _) => vec!["cargo build -p tilo-vm".into()],
+                (true, Some(true)) => vec![format!("tilo-vm vm upgrade {vm}")],
+                (true, Some(false)) => vec!["tilo-vm vm create <name>".into(), ssh],
+                (true, None) => vec![format!("tilo-vm vm status {vm}")],
+            },
+        ),
+        _ if running == Some(false) => fail(
+            "off",
+            "shut off (the hypervisor reports it is not running)".into(),
+            false,
+            vec![start],
+        ),
+        CliError::Unreachable { .. } if running == Some(true) => fail(
+            "no-ssh",
+            "running, but SSH does not answer (still booting, or stuck)".into(),
+            false,
+            no_ssh(),
+        ),
+        CliError::Unreachable { .. } => {
+            let mut next = vec![format!("{start}   (if it is off)")];
+            next.extend(no_ssh());
+            fail(
+                "no-ssh",
+                "SSH does not answer (the hypervisor cannot say whether it is running)".into(),
+                false,
+                next,
+            )
+        }
+        _ => fail(
+            "error",
+            "could not be checked".into(),
+            false,
+            vec!["tilo-vm doctor".into()],
+        ),
+    }
+}
+
 fn unsupported(adapter: &dyn Hypervisor, what: &str) -> CliError {
     let caps = adapter.capabilities();
     CliError::Unsupported {
@@ -3233,14 +3383,166 @@ mod tests {
     }
 
     #[test]
-    fn deploy_attempts_over_raw_ssh_are_caught() {
-        let cmd = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
-        assert!(looks_like_deploy(&cmd("sudo cp shell /usr/bin/shell")));
-        assert!(looks_like_deploy(&cmd("systemd-sysext refresh")));
-        assert!(looks_like_deploy(&cmd("rm -rf /var/lib/tilo-vm/layers/x")));
-        assert!(!looks_like_deploy(&cmd("ls /usr/bin")));
-        assert!(!looks_like_deploy(&cmd("journalctl -b -p warning")));
-        assert!(!looks_like_deploy(&[]));
+    fn vm_ssh_refuses_writes_before_it_looks_for_a_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let ssh = |raw: bool, line: &str| {
+            Command::Vm(VmCommand::Ssh {
+                raw,
+                name: None,
+                vm: None,
+                command: line.split(' ').map(str::to_owned).collect(),
+            })
+        };
+        let error = app
+            .run(Some(ssh(false, "cp shell /usr/bin/shell")))
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::RawWrite { .. }), "{error}");
+        assert!(!error.to_string().contains("deploy"), "{error}");
+        assert!(
+            error.to_string().contains("writes /usr/bin/shell"),
+            "{error}"
+        );
+        assert!(error.hint().contains("--raw"), "{}", error.hint());
+        // Reads and --raw get past the guard, to the missing VM.
+        for command in [
+            ssh(false, "systemctl status tilo-vmd --no-pager"),
+            ssh(false, "tilo-vmd --version"),
+            ssh(true, "cp shell /usr/bin/shell"),
+        ] {
+            let error = app.run(Some(command)).err().unwrap();
+            assert!(
+                matches!(error, CliError::NoVm { .. } | CliError::UnknownVm { .. }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_tells_off_from_silent_from_missing_from_incompatible() {
+        let debug = [
+            "tilo-vm vm shot dev".to_owned(),
+            "tilo-vm vm serial dev".to_owned(),
+        ];
+        let unreachable = CliError::Unreachable {
+            vm: "dev".into(),
+            detail: "Connection refused".into(),
+            debug: debug.to_vec(),
+        };
+        let off = connect_failure("dev", Some(false), &debug, &unreachable);
+        assert_eq!(off.state, "off");
+        assert!(off.summary.contains("shut off"), "{}", off.summary);
+        assert_eq!(off.next, ["tilo-vm vm start dev"]);
+
+        let silent = connect_failure("dev", Some(true), &debug, &unreachable);
+        assert_eq!(silent.state, "no-ssh");
+        assert!(
+            !silent.next.iter().any(|n| n.contains("vm start")),
+            "{:?}",
+            silent.next
+        );
+        assert!(silent.next.contains(&"tilo-vm vm serial dev".to_owned()));
+        assert!(silent.next.contains(&"tilo-vm doctor".to_owned()));
+        let unknown = connect_failure("dev", None, &debug, &unreachable);
+        assert!(unknown.next[0].starts_with("tilo-vm vm start dev"));
+
+        let missing = CliError::DaemonMissing {
+            vm: "dev".into(),
+            bootc: Some(false),
+        };
+        let no_daemon = connect_failure("dev", Some(true), &debug, &missing);
+        assert_eq!(no_daemon.state, "no-daemon");
+        assert!(no_daemon.ssh);
+        assert!(!no_daemon.next.iter().any(|n| n.contains("vm upgrade")));
+
+        let older_vm = |bootc| CliError::ProtocolMismatch {
+            vm: "dev".into(),
+            client: 3,
+            daemon: 2,
+            bootc,
+        };
+        let incompatible = connect_failure("dev", Some(true), &debug, &older_vm(Some(true)));
+        assert_eq!(incompatible.state, "incompatible");
+        assert!(incompatible.ssh);
+        assert!(
+            incompatible.summary.contains("protocol 2"),
+            "{}",
+            incompatible.summary
+        );
+        assert!(
+            incompatible.summary.contains("speaks 3"),
+            "{}",
+            incompatible.summary
+        );
+        assert_eq!(incompatible.next, ["tilo-vm vm upgrade dev"]);
+        assert!(!incompatible.next.iter().any(|n| n.contains("vm start")));
+        let no_bootc = connect_failure("dev", None, &debug, &older_vm(Some(false)));
+        assert!(
+            !no_bootc.next.iter().any(|n| n.contains("vm upgrade")),
+            "{:?}",
+            no_bootc.next
+        );
+        let older_tool = CliError::ProtocolMismatch {
+            vm: "dev".into(),
+            client: 2,
+            daemon: 3,
+            bootc: Some(true),
+        };
+        assert_eq!(
+            connect_failure("dev", Some(true), &debug, &older_tool).next,
+            ["cargo build -p tilo-vm"]
+        );
+    }
+
+    #[test]
+    fn json_errors_have_one_top_level_shape_everywhere() {
+        if std::env::var_os("TILO_VM").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("vms.toml"),
+            "default = \"probe\"\n[vms.probe]\nhypervisor = \"qemu\"\nssh = \"root@127.0.0.1:1\"\n",
+        )
+        .unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let reports = [
+            app.run(Some(Command::Status)).unwrap(),
+            app.run(Some(Command::Vm(VmCommand::Status { name: None })))
+                .unwrap(),
+        ];
+        for report in reports {
+            assert!(report.failed, "{}", report.text);
+            for key in ["error", "hint", "see"] {
+                assert!(
+                    report.data[key].as_str().is_some_and(|v| !v.is_empty()),
+                    "{key} is not a top-level string: {:#}",
+                    report.data
+                );
+            }
+            assert!(report.text.contains("hint: "), "{}", report.text);
+            assert!(
+                report.next.iter().all(|n| !n.ends_with("vm start")),
+                "{:?}",
+                report.next
+            );
+        }
+        // The same keys as a failed command's own error.
+        let failed = CliError::NoVm {
+            registry: "r".into(),
+        }
+        .to_json();
+        let mut merged = json!({ "vm": {} });
+        merge_error(
+            &mut merged,
+            &CliError::NoVm {
+                registry: "r".into(),
+            },
+        );
+        for key in ["error", "hint", "see"] {
+            assert_eq!(merged[key], failed[key]);
+        }
     }
 
     #[test]
