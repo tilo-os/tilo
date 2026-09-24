@@ -286,11 +286,39 @@ it may read ([§14](#14-permissions)). The separate FUSE recipient mount
   - The supported root is already Btrfs on the composefs backend
     (`os/Containerfile:2168`, `os/usr/lib/bootc/install/40-tilo.toml`), but it
     is one filesystem, and bootc keeps `/var` on it.
-- Recommended: the installer creates a second LUKS2 partition for the store
-  volume, unlocked by a key sealed inside the root filesystem, so there is no
-  second prompt. Existing installs migrate to a loop-mounted Btrfs image file
-  (`chattr +C` to avoid double copy-on-write) or stay on Tier 2. **This is open
-  question Q1.**
+- **Decided (Q1): every Tilo OS install gets a store volume**, mounted at
+  `/var/lib/tilo/store` (`var-lib-tilo-store.mount`, from `/etc/fstab`,
+  `nofail`). `os/usr/libexec/tilo-store-volume` owns the policy; its header
+  and `os/tests/store_volume.sh` are the reference.
+  - *Whole-disk installs* end the GPT with a LUKS2 + Btrfs partition of type
+    `0b6c5d38-8ba9-40aa-a1f6-dcc035f5438d` ("Tilo store", invisible to root
+    discovery and to `systemd-gpt-auto-generator`). It unlocks from a random
+    key file inside the encrypted root
+    (`/etc/cryptsetup-keys.d/tilo-store.key`, `/etc/crypttab`), so there is
+    no second prompt; the install's recovery key is enrolled in it too, so
+    the rooms never sit behind a factor the person was not shown. Sizing:
+    after ESP and `/boot`, the root and the store get half each, the root
+    never less than 32 GiB; a store under 8 GiB is not created. Half, because
+    until the file-backed `ChunkStore` (§7.4) lands, synced content is also
+    kept in the daemon's content store on the root. The store is the last
+    partition, so it is the one that can grow.
+  - *Alongside installs and installs that predate the store* get an image:
+    `tilo-store-volume.service` (ordered before `fs.service`) creates
+    `/var/lib/tilo/store.img` once, preallocated and `chattr +C`, sized to
+    half the root's free space beyond a reserve of max(16 GiB, 10 %), at
+    least 8 GiB, else it logs why and FUSE keeps serving. It is attached with
+    direct I/O (`tilo-store-loop.service`) and covered by the root's own
+    encryption. Nothing is copied: on its first native start the daemon
+    projects every room from its local content store, small files at once and
+    large ones as placeholders that hydrate from the same store.
+    `kind=none` in `/etc/tilo/store-volume.conf` opts a machine out.
+  - On every boot the service hands root-owned rooms to the local person (the
+    installer's account, else greetd's session user, else the only regular
+    account) and writes `--data-plane=auto --store=… --native-owner=UID:GID`
+    to `/run/tilo-store/fs.env`; without that file `fs.service` serves FUSE.
+  - The store is mounted with `context=…:fusefs_t:s0`, the label files under
+    `/var/workspace` had on the FUSE mount, so every domain keeps exactly the
+    access it had until `tilo_fs_t`'s enforcing policy defines a store type.
 - Each room's tree is a Btrfs subvolume under `live/`. That lets one room be
   snapshotted, quota-accounted (simple quotas, not qgroups) and removed alone.
 - `/var/workspace` stays the user-visible path. It shows one directory per
@@ -595,9 +623,10 @@ bounds.
   replicated (files materialise as 0644, directories as 0755): the record
   plane has no field for either yet.
 - Materialised files belong to the room directory's owner (`--native-owner
-  UID:GID` overrides). Tilo OS has no store volume yet, so the shipped service
-  selects FUSE; the installer step that creates the volume (Q1) must also give
-  the room to the local person.
+  UID:GID` overrides). On Tilo OS the store volume (§6.2) is prepared before
+  the daemon starts and passes the local person as `--native-owner`; the
+  daemon therefore needs `CAP_CHOWN`, `CAP_FOWNER` and `CAP_DAC_OVERRIDE` to
+  create, fill and hand over files in a room it does not own.
 
 ---
 
@@ -1669,7 +1698,7 @@ stopped.
 | 2 | Btrfs snapshot per epoch stalls writers under heavy write load (it forces writeback of the subvolume) | medium / medium | Adaptive epochs (streaming writers are not published until quiescent). K5 gate. Per-file reflink fallback |
 | 3 | fanotify queue overflow or a daemon crash misses changes | medium / low | Generation-based rescan (§6.4). The filesystem is the truth |
 | 4 | Security model shifts from FUSE-enforced per-identity views to materialisation plus sandbox binds | certain / medium | Stated in §14. `security.md` updated in stage 4. Read-only enforced by permission events |
-| 5 | A dedicated store volume complicates install and existing machines | high / medium | Q1. Loop-image migration, or stay on Tier 2 |
+| 5 | A dedicated store volume complicates install and existing machines | high / medium | Decided in §6.2: a store partition on whole-disk installs, an image-backed store everywhere else, FUSE when neither fits |
 | 6 | QUIC CPU cost limits 10 GbE | medium / low | Stage 2 measures CPU per GB. Multiple connections per peer if one is CPU-bound |
 | 7 | Ed25519 and Merkle proof cost at 1M records | low / medium | One signature per changeset, batch verification, verify once |
 | 8 | Automerge memory for large documents | medium / medium | Collections for large data. Segments and checkpoints. The engine hidden behind `Tx<T>` |
@@ -1707,9 +1736,9 @@ stopped.
 
 ## 22. Open questions for the owner
 
-1. **Store volume (Q1).** A separate LUKS2 partition (recommended), a loop
-   image on the root Btrfs, or Tier 2 on Tilo OS until K6 shows mount marks
-   suffice? What happens on existing installs?
+1. **Store volume (Q1).** *Decided:* a separate LUKS2 partition on
+   whole-disk installs, a loop image on the root Btrfs for alongside and
+   existing installs (K6 showed mount marks do not suffice). See §6.2.
 2. **Tier 1 go/no-go (Q2).** Is Tier 2 (native data, FUSE metadata) an
    acceptable end state for Tilo OS if K1 or K2 fails, or is Tier 1 a hard
    requirement that justifies carrying kernel patches?
