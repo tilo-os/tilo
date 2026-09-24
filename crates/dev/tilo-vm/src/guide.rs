@@ -25,6 +25,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         include_str!("../guide/driving.md"),
     ),
     (
+        "images",
+        "Containerfile, unit, /etc and package changes: vm upgrade --from local, rollback-image",
+        include_str!("../guide/images.md"),
+    ),
+    (
         "storage",
         "disk use, caps and gc",
         include_str!("../guide/storage.md"),
@@ -72,6 +77,7 @@ mod tests {
             "concepts",
             "swapping",
             "driving",
+            "images",
             "storage",
             "platforms",
             "troubleshooting",
