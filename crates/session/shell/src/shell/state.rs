@@ -62,19 +62,12 @@ mod identity_fs_tests {
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
         let cache = temp.path().join("cache");
-        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
-        let old_cache = std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR");
-        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
-        let old_started = std::env::var_os("TILO_FS_AUTHORITY_TEST_STARTED");
-        let old_release = std::env::var_os("TILO_FS_AUTHORITY_TEST_RELEASE");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", &started);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+        env.set("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
+        env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
+        env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
+        env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
 
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl.clone()),
@@ -107,30 +100,6 @@ mod identity_fs_tests {
             wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
             "the publisher worker must retire before its fixture is removed"
         );
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_publisher {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
-            }
-            match old_cache {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_CACHE_DIR"),
-            }
-            match old_log {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
-            }
-            match old_started {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_STARTED"),
-            }
-            match old_release {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_RELEASE"),
-            }
-        }
     }
 
     #[test]
@@ -154,15 +123,10 @@ mod identity_fs_tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
-        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
-        let old_count = std::env::var_os("TILO_FS_AUTHORITY_TEST_COUNT");
-        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", &count);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+        env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+        env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl),
             ..WorkspaceTree::default()
@@ -189,36 +153,16 @@ mod identity_fs_tests {
             wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
             "the retry worker must retire before its fixture is removed"
         );
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_publisher {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
-            }
-            match old_count {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_COUNT"),
-            }
-            match old_log {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn filesystem_export_maps_selected_person_through_verified_device_chain() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let system = temp.path().join("system");
-        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("TILO_IDENTITY_ROOT", &system);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg);
+        env.set("TILO_IDENTITY_ROOT", &system);
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
@@ -271,17 +215,6 @@ mod identity_fs_tests {
                 Subject::User(key) if key.as_bytes() == &device
             )
         }));
-
-        unsafe {
-            match old_xdg {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-        }
     }
 
     #[test]

@@ -8101,15 +8101,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // SAFETY: `serial(process_env)` keeps this off any other
-        // test's env. The group name is load-bearing: serial_test only
-        // excludes tests that name the *same* group, and every other
-        // test in this crate that writes `XDG_RUNTIME_DIR` names
-        // `process_env`. Under the unnamed group this ran alongside
-        // them, read the variable after one of them had pointed it at
-        // an already-dropped tempdir, and failed to bind a socket in a
-        // directory that no longer existed.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
         let broker = spawn_session_collab_broker(&chrome, None)
@@ -8151,7 +8144,6 @@ mod tests {
         );
 
         drop(broker);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     /// A live socket is not taken away from the session that owns it. Two
@@ -8162,7 +8154,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
@@ -8192,7 +8185,6 @@ mod tests {
 
         drop(second);
         drop(first);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     // developer surfaces are absent from a shipped build
