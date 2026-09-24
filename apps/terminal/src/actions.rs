@@ -646,6 +646,37 @@ mod tests {
         assert!(widget.is_disconnected());
     }
 
+    /// A live session that printed a titled prompt with a public OSC 8 link,
+    /// projected into the document through the real emulator path.
+    fn live_session() -> (TerminalWidget, AutoCommit) {
+        let (mut widget, _writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.init_crdt(&mut doc, &ROOT);
+        widget.feed(
+            &mut doc,
+            &ROOT,
+            b"\x1b]2;build\x07$ make\r\nsee \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\\r\n",
+        );
+        widget.sync(&mut doc, &ROOT);
+        doc.commit();
+        (widget, doc)
+    }
+
+    // The terminal publishes only effects and views, so the sweep checks the
+    // surface is non-empty and protocol-valid with an empty registry.
+    ui::action_contract_tests! {
+        seed: live_session().1,
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| Widget::resources(&live_session().0, doc),
+        palette: [
+            "Send text",
+            "Run command",
+            "Interrupt process",
+            "Clear screen",
+            "Copy visible output",
+        ],
+    }
+
     #[test]
     fn only_public_web_osc_links_are_exported_to_agents() {
         let (mut widget, _writes) = build_test_widget();

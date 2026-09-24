@@ -411,6 +411,16 @@ mod tests {
         );
     }
 
+    // Typst publishes only effects and views (the source is native text), so
+    // the sweep checks a non-empty, protocol-valid surface with an empty
+    // registry.
+    ui::action_contract_tests! {
+        seed: synced().1,
+        registry: tilo_actions::ActionRegistry::new(),
+        resources: |doc| resources(doc),
+        palette: ["Open Typst file", "Save Typst file", "Recompile", "Export PDF", "Zoom in"],
+    }
+
     /// The source remains native text while effects/views are discoverable.
     #[test]
     fn exports_effect_and_view_operations_without_fake_document_actions() {
