@@ -2443,6 +2443,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-control"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+]
+
+[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5185,7 +5195,9 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "bounded-command",
+ "console-control",
  "greetd_ipc",
+ "serde_json",
  "taffy",
  "tilo-ui",
  "tracing",
@@ -6680,14 +6692,17 @@ dependencies = [
  "automerge",
  "block-devices",
  "bounded-command",
+ "console-control",
  "libc",
  "os-actions",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
  "tilo-power-mgmt",
  "tilo-ui",
+ "tracing",
  "tracing-subscriber",
  "uuid",
  "vello",
@@ -14915,6 +14930,7 @@ dependencies = [
  "tilo-vm-protocol",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
