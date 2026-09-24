@@ -36,8 +36,6 @@
     )
 )]
 
-use std::sync::Arc;
-
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 
@@ -75,12 +73,6 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
-    // qdoc blobs are content-addressed attachments. Their durable cache keeps
-    // a restarted chat able to serve the same portable hash, while qdoc's
-    // transport layer handles sharing it with collaborators.
-    qdoc::blobstore::set_store(Arc::new(qdoc::blobstore::FsBlobStore::new(
-        qdoc::blobstore::FsBlobStore::default_root(),
-    )));
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
