@@ -4,7 +4,7 @@ use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
 struct Fixture {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     endpoint: Endpoint,
     fs: QuickFS,
     ino: u64,
@@ -74,7 +74,7 @@ impl Fixture {
         let original = history.snapshot(record).unwrap().versions[0].id;
         fs.commit_content(ino, b"second").unwrap();
         Self {
-            _directory: directory,
+            directory,
             endpoint,
             fs,
             ino,
@@ -85,7 +85,7 @@ impl Fixture {
     }
 
     fn reopen(&self) -> QuickFS {
-        let path = self._directory.path();
+        let path = self.directory.path();
         let namespace = Arc::new(Mutex::new(
             Namespace::from_bytes(
                 "reopened-mount",
@@ -141,7 +141,7 @@ impl Fixture {
             }
         }
         let mut output = Vec::new();
-        collect(self._directory.path(), &mut output);
+        collect(self.directory.path(), &mut output);
         output.sort_by(|a, b| a.0.cmp(&b.0));
         output
     }
@@ -354,7 +354,7 @@ async fn checked_restore_legacy_uses_existing_durable_owners_and_retains_receipt
     );
     let runtime = fixture.fs.replacement_transactions.as_ref().unwrap();
     let reopened = crate::record_transaction::RecordTransactionJournal::open(
-        fixture._directory.path().join("transactions"),
+        fixture.directory.path().join("transactions"),
     )
     .unwrap();
     drop(reopened);
@@ -551,7 +551,7 @@ async fn checked_restore_legacy_prepared_reopen_preserves_later_and_unrelated_re
     let unrelated_record = fixture.fs.ns().record_id_for(unrelated).unwrap();
     let later_hash = fixture.fs.ns().hash_for(fixture.ino);
     std::fs::write(
-        fixture._directory.path().join("namespace.am"),
+        fixture.directory.path().join("namespace.am"),
         fixture.fs.ns().save(),
     )
     .unwrap();
@@ -768,7 +768,7 @@ async fn checked_restore_every_durable_phase_reopens_exactly_and_next_edit_is_va
             let fixture = Fixture::with_signed(signed).await;
             let request = fixture.request();
             std::fs::write(
-                fixture._directory.path().join("namespace.am"),
+                fixture.directory.path().join("namespace.am"),
                 fixture.fs.ns().save(),
             )
             .unwrap();
@@ -950,7 +950,7 @@ async fn checked_restore_prepared_fences_same_repository_second_publisher_and_ra
         .unwrap();
     let later = fixture.fs.ns().content_revision_for(fixture.ino).unwrap();
     std::fs::write(
-        fixture._directory.path().join("namespace.am"),
+        fixture.directory.path().join("namespace.am"),
         fixture.fs.ns().save(),
     )
     .unwrap();
@@ -1210,7 +1210,7 @@ async fn checked_restore_service_retained_journal_capacity_survives_reopen_and_r
             entry.validate().unwrap();
             std::fs::write(
                 fixture
-                    ._directory
+                    .directory
                     .path()
                     .join("transactions")
                     .join(format!("{}.json", request.intent_id)),
@@ -1220,7 +1220,7 @@ async fn checked_restore_service_retained_journal_capacity_survives_reopen_and_r
         }
         *fixture.journal.lock().unwrap() =
             crate::record_transaction::RecordTransactionJournal::open(
-                fixture._directory.path().join("transactions"),
+                fixture.directory.path().join("transactions"),
             )
             .unwrap();
         assert_eq!(
@@ -1310,17 +1310,19 @@ async fn checked_restore_remote_signed_transaction_materializes_then_preserves_l
     let request = fixture.request();
     let remote = tempfile::tempdir().unwrap();
     for (path, bytes) in fixture.durable_bytes() {
-        if let Ok(relative) = path.strip_prefix(fixture._directory.path().join("records")) {
+        if let Ok(relative) = path.strip_prefix(fixture.directory.path().join("records")) {
             let target = remote.path().join("records").join(relative);
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
             std::fs::write(target, bytes).unwrap();
         }
     }
-    std::fs::copy(
-        fixture._directory.path().join("history.json"),
-        remote.path().join("history.json"),
-    )
-    .unwrap();
+    // The history store is a snapshot plus its append-only log.
+    for name in ["history.json", "history.json.log"] {
+        let source = fixture.directory.path().join(name);
+        if source.exists() {
+            std::fs::copy(source, remote.path().join(name)).unwrap();
+        }
+    }
     let namespace = Arc::new(Mutex::new(fixture.fs.ns().clone()));
     let history = Arc::new(
         crate::history::FileHistoryStore::open(remote.path().join("history.json")).unwrap(),
@@ -1429,7 +1431,7 @@ async fn checked_restore_legacy_same_byte_heads_have_explicit_deterministic_cont
     );
     assert_eq!(fixture.durable_bytes(), before);
     std::fs::write(
-        fixture._directory.path().join("namespace.am"),
+        fixture.directory.path().join("namespace.am"),
         fixture.fs.ns().save(),
     )
     .unwrap();
@@ -1508,9 +1510,9 @@ async fn checked_restore_admission_io_error_retains_intent_and_signed_fence_unti
     for signed in [true, false] {
         let fixture = Fixture::with_signed(signed).await;
         let request = fixture.request();
-        let root = fixture._directory.path().join("transactions");
+        let root = fixture.directory.path().join("transactions");
         std::fs::create_dir_all(&root).unwrap();
-        let backup = fixture._directory.path().join("transactions-before-fault");
+        let backup = fixture.directory.path().join("transactions-before-fault");
         std::fs::rename(&root, &backup).unwrap();
         std::fs::write(&root, b"unavailable journal directory").unwrap();
         let namespace = fixture.fs.ns().save();
@@ -1563,7 +1565,7 @@ async fn checked_restore_availability_tracks_current_projection_without_changing
     let mut fixture = Fixture::new().await;
     let request = fixture.request();
     let registry = Arc::new(Mutex::new(
-        AvailabilityRegistry::open(fixture._directory.path().join("availability.json")).unwrap(),
+        AvailabilityRegistry::open(fixture.directory.path().join("availability.json")).unwrap(),
     ));
     let root = fixture
         .fs
@@ -1686,7 +1688,7 @@ async fn checked_restore_production_startup_clears_exact_prepared_fence_after_pa
         for projections_already_complete in [false, true] {
             let fixture = Fixture::new().await;
             let request = fixture.request();
-            let namespace_path = fixture._directory.path().join("namespace.am");
+            let namespace_path = fixture.directory.path().join("namespace.am");
             std::fs::write(&namespace_path, fixture.fs.ns().save()).unwrap();
             RESTORE_FAULTS
                 .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
@@ -1729,7 +1731,7 @@ async fn checked_restore_production_startup_clears_exact_prepared_fence_after_pa
             }
             let hydrator = fixture.fs.hydrator.clone();
             let Fixture {
-                _directory: directory,
+                directory,
                 endpoint,
                 fs,
                 history,
@@ -1908,7 +1910,7 @@ async fn checked_restore_startup_completion_rejects_incomplete_or_mismatching_ad
             .unwrap()
             .clone();
         let repository = crate::record_repository::RecordRepository::open(
-            fixture._directory.path().join("records"),
+            fixture.directory.path().join("records"),
         )
         .unwrap();
         if mismatching_batch {
@@ -1962,7 +1964,7 @@ async fn checked_restore_startup_completion_rejects_incomplete_or_mismatching_ad
             &mut fixture.journal.lock().unwrap(),
             &fixture.history,
             &fixture.fs.namespace,
-            &fixture._directory.path().join("namespace.am"),
+            &fixture.directory.path().join("namespace.am"),
             &proposed,
             |_| Ok(()),
         );
@@ -2009,7 +2011,7 @@ async fn checked_restore_startup_completion_io_failure_remains_retryable_and_fen
             intent_id: request.intent_id
         }
     );
-    let records_path = fixture._directory.path().join("records");
+    let records_path = fixture.directory.path().join("records");
     let repository =
         Arc::new(crate::record_repository::RecordRepository::open(&records_path).unwrap());
     repository
@@ -2022,9 +2024,9 @@ async fn checked_restore_startup_completion_io_failure_remains_retryable_and_fen
     )
     .with_transaction_recovery(
         fixture.journal.clone(),
-        fixture._directory.path().join("namespace.am"),
+        fixture.directory.path().join("namespace.am"),
     );
-    let unavailable = fixture._directory.path().join("records-during-io-fault");
+    let unavailable = fixture.directory.path().join("records-during-io-fault");
     std::fs::rename(&records_path, &unavailable).unwrap();
     std::fs::write(&records_path, b"unavailable record directory").unwrap();
     assert!(matches!(

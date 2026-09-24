@@ -2907,6 +2907,20 @@ async fn open_namespace_mount(
     }
 }
 
+/// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU
+/// between 2 and 16.
+fn fuse_worker_threads() -> usize {
+    std::env::var("TILO_FS_FUSE_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(4, std::num::NonZeroUsize::get)
+                .clamp(2, 16)
+        })
+}
+
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
 #[allow(
     clippy::too_many_arguments,
@@ -2941,7 +2955,7 @@ async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let predictive_policy_task =
-        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
+        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it must
     // never fall back to Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
@@ -3011,6 +3025,35 @@ async fn run_mount(
         None => fs,
     };
     fs.resume_pending_evictions();
+    // Bytes accepted by fsync, or whose commit failed, are staged per
+    // workspace so they survive a crash or unmount and are replayed here.
+    let unsaved_dir = predictive_cache_root
+        .as_ref()
+        .filter(|_| !read_only)
+        .map(|root| {
+            root.join("unsaved-writes")
+                .join(checked_history_workspace.to_string())
+        });
+    let fs = match unsaved_dir {
+        Some(dir) => match fs::unsaved::UnsavedStore::open(&dir) {
+            Ok(store) => {
+                let fs = fs.with_unsaved_store(store);
+                let placed = fs.recover_unsaved_writes();
+                if placed > 0 {
+                    println!("Recovered {placed} staged unsaved file(s)");
+                }
+                fs
+            }
+            Err(error) => {
+                eprintln!(
+                    "unsaved-write staging unavailable at {} ({error}); fsync commits directly",
+                    dir.display()
+                );
+                fs
+            }
+        },
+        None => fs,
+    };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
         fs::storage::StorageAuthority::new(
@@ -3042,8 +3085,23 @@ async fn run_mount(
             }
         });
 
+    // Kernel passthrough for fully local read-only opens is opt-in while the
+    // backing files are a per-open materialisation of the chunk store.
+    let fs = match predictive_cache_root
+        .as_ref()
+        .filter(|_| std::env::var_os("TILO_FS_PASSTHROUGH").is_some())
+    {
+        Some(root) => fs.with_passthrough(root.join("passthrough")),
+        None => fs,
+    };
+
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
+    // Several workers, each with its own /dev/fuse descriptor, so one slow
+    // request (a first write seeding a large file, a commit) does not stall
+    // every other process using the mount.
+    config.n_threads = Some(fuse_worker_threads());
+    config.clone_fd = true;
     if read_only {
         config.mount_options.push(MountOption::RO);
     }
