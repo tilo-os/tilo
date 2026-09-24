@@ -387,40 +387,44 @@ mod tests {
     use super::*;
     use crate::model::Request;
     use ui::search::SearchProvider;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     #[test]
     fn late_request_is_found_with_bounded_cursor_work_and_no_variable_values() {
-        let mut collection = Collection::new("Load test");
-        collection.requests = (0..100_001)
-            .map(|i| {
-                let mut request = Request::new(if i == 100_000 {
-                    "Late unique request needle".to_string()
-                } else {
-                    format!("Request {i}")
-                });
-                request.id = uuid::Uuid::from_u128(i as u128 + 1);
-                request
-            })
-            .collect();
-        let mut environment = Environment::new("Secrets");
-        environment
-            .variables
-            .push(crate::model::KeyValue::new("token", "do-not-index"));
-        let mut provider = ApiSearchProvider::new();
-        provider
-            .refresh(&[collection], &[environment], &[])
-            .expect("valid workspace catalog");
-        let hit = provider.search_page("late unique request needle", None, 8, 1);
-        assert!(hit.inspected <= 8 && hit.results.len() <= 1);
-        assert_eq!(hit.results[0].title, "GET Late unique request needle");
-        let address = hit.results[0].action_address().expect("canonical address");
+        let (mut provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut collection = Collection::new("Load test");
+                collection.requests = corpus
+                    .map(|row| {
+                        let mut request = Request::new(row.text);
+                        request.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        request
+                    })
+                    .collect();
+                let mut environment = Environment::new("Secrets");
+                environment
+                    .variables
+                    .push(crate::model::KeyValue::new("token", "do-not-index"));
+                let mut provider = ApiSearchProvider::new();
+                provider
+                    .refresh(&[collection], &[environment], &[])
+                    .expect("valid workspace catalog");
+                provider
+            },
+            3_000,
+        );
+        assert_eq!(
+            hit.title,
+            format!("GET ordinary record 2999 {LATE_HIT_NEEDLE}")
+        );
+        let address = hit.action_address().expect("canonical address");
         let resource = provider
             .resolve_action_resource(&address)
             .expect("the exact late request materializes on demand");
         assert_eq!(resource.id.0, address.resource);
         assert!(resource.actions.iter().any(|action| action.id == "send"));
         assert!(provider.search("do-not-index").is_empty());
-        let first = provider.search_page("Request", None, 4, 1);
+        let first = provider.search_page("ordinary", None, 4, 1);
         let cursor = first.next.expect("broad result is paged");
         provider.refresh(&[], &[], &[]).expect("empty catalog");
         assert!(!provider.action_directory_cursor_is_current(&cursor));
