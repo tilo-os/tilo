@@ -2741,7 +2741,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn room_discovery_never_crosses_scopes_after_restart() {
         let dir = tempfile::tempdir().expect("temporary state directory");
-        // SAFETY: serialised by this module's persistent-record tests.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
         let package = "so.tilo.room-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -2847,11 +2847,11 @@ mod tests {
     /// A record adopted from a live document (the "save as" case) is
     /// written out rather than mistaken for something already on disk.
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn history_existing_legacy_record_reopens_without_initializing_missing_content() {
         let tmp = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: all environment changes in this test use state_dir_env.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
         }
@@ -2896,11 +2896,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn history_existing_package_record_migrates_once_without_losing_old_history() {
         let tmp = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: serialized on state_dir_env.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
         }
@@ -2994,11 +2994,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn history_existing_scoped_refuses_corruption_empty_and_mismatched_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: serialized on state_dir_env.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
         }
