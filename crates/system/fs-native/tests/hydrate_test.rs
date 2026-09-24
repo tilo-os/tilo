@@ -483,3 +483,53 @@ fn a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers() {
     );
     h.stop();
 }
+
+struct Toggle {
+    grant: std::sync::atomic::AtomicBool,
+    asked: std::sync::atomic::AtomicU64,
+}
+
+impl fs_native::hydrate::WritePolicy for Toggle {
+    fn admit_writer(&self, _file: (u64, u64)) -> Result<(), i32> {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        if self.grant.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(libc::EBUSY)
+        }
+    }
+}
+
+#[test]
+fn an_asking_gate_lets_the_write_policy_decide() {
+    let Some(s) = fanotify_scratch("hydrate_ask") else {
+        return;
+    };
+    let fetcher = PatternFetcher::new(Duration::ZERO);
+    let h = start(&fetcher, 64 * 1024);
+    let policy = Arc::new(Toggle {
+        grant: std::sync::atomic::AtomicBool::new(false),
+        asked: std::sync::atomic::AtomicU64::new(0),
+    });
+    h.set_write_policy(Arc::clone(&policy) as Arc<dyn fs_native::hydrate::WritePolicy>);
+    let path = s.live.join("wal");
+    fs::write(&path, vec![1u8; 8192]).unwrap();
+    let key = h.gate(&path, fs_native::hydrate::WriteGate::Ask).unwrap();
+    assert_eq!(key, Hydrator::file_key(&path).unwrap());
+
+    // Readers never ask.
+    let mut buf = vec![0u8; 16];
+    File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .unwrap();
+    assert_eq!(policy.asked.load(Ordering::Relaxed), 0);
+
+    let w = OpenOptions::new().write(true).open(&path).unwrap();
+    let err = w.write_at(b"z", 0).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EBUSY));
+    policy.grant.store(true, Ordering::Relaxed);
+    w.write_at(b"z", 0).unwrap();
+    assert!(policy.asked.load(Ordering::Relaxed) >= 2);
+    h.stop();
+}
