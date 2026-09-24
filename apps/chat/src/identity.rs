@@ -164,21 +164,13 @@ fn user_display() -> String {
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
-        .map(capitalise)
+        .map(ui::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ");
     if display.is_empty() {
         "You".to_string()
     } else {
         display
-    }
-}
-
-fn capitalise(p: &str) -> String {
-    let mut ch = p.chars();
-    match ch.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
-        None => String::new(),
     }
 }
 
@@ -235,7 +227,7 @@ mod tests {
     fn initials_and_display_are_tidy() {
         assert_eq!(initials_of("Ada Lovelace"), "AL");
         assert_eq!(initials_of("mononym"), "M");
-        assert_eq!(capitalise("ada"), "Ada");
+        assert_eq!(ui::format::capitalize_first("ada"), "Ada");
     }
 
     #[test]

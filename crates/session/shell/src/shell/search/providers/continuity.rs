@@ -425,7 +425,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 ),
                 title: format!(
                     "{} placement suggestion for {}",
-                    capitalize(verb),
+                    ui::format::capitalize_first(verb),
                     label_for(&proposal.peer)
                 ),
                 subtitle: "Act on the current proximity-derived placement proposal".into(),
@@ -738,13 +738,6 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
     actions
-}
-
-fn capitalize(value: &str) -> String {
-    let mut chars = value.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().collect::<String>() + chars.as_str()
-    })
 }
 
 fn projection_revision<'a>(
