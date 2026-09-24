@@ -51,6 +51,18 @@
     clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
+// Without `native` the event-loop runner that drives `App`'s frame pipeline
+// is absent, so the parts of `App` only it reaches go unused. They stay
+// compiled — CI builds this configuration so the portable toolkit cannot rot —
+// and are not reported as dead in it.
+#![cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        unused_imports,
+        reason = "the portable build omits the native runner, the only caller of parts of App's frame pipeline"
+    )
+)]
 
 //! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
@@ -145,7 +157,7 @@ pub mod history_mode;
 pub mod history_source;
 pub mod host;
 #[cfg(all(windows, feature = "notifications"))]
-pub mod host_notifications;
+pub use native::host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
@@ -156,6 +168,8 @@ pub mod live_collaboration;
 pub mod local_state;
 pub mod math;
 pub mod mpris;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod nav_stack;
 pub mod num;
 pub mod offscreen;
@@ -203,7 +217,8 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod wake;
-pub mod warmup;
+#[cfg(feature = "native")]
+pub use native::warmup;
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

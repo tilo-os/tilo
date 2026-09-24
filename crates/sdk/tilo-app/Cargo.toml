@@ -6,7 +6,9 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["native"]
+# The native desktop runner and host services; see `tilo-ui`'s `native`.
+native = ["ui-core/native"]
 test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
@@ -19,7 +21,7 @@ presentation-feedback = ["ui-core/presentation-feedback"]
 notifications = ["ui-core/notifications"]
 
 [dependencies]
-ui-core = { package = "tilo-ui", path = "../ui-core" }
+ui-core = { package = "tilo-ui", path = "../ui-core", default-features = false }
 
 [lints]
 workspace = true

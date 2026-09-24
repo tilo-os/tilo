@@ -222,12 +222,12 @@ mod tests {
 
     #[test]
     fn filters_preserve_globs_and_expand_mime_types() {
-        let filter = super::super::FileFilter::new("PDF")
+        let filter = crate::portal::FileFilter::new("PDF")
             .glob("*.pdf")
             .mimetype("application/pdf");
         assert_eq!(filter_pattern(&filter), "*.pdf");
         assert!(
-            filter_pattern(&super::super::FileFilter::new("PNG").mimetype("image/png"))
+            filter_pattern(&crate::portal::FileFilter::new("PNG").mimetype("image/png"))
                 .split(';')
                 .any(|glob| glob == "*.png")
         );

@@ -32,6 +32,10 @@ include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
+#[cfg(feature = "native")]
+mod native_runner;
+#[cfg(all(windows, feature = "native"))]
+pub(crate) use native_runner::prepare_native_renderer;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -132,9 +136,11 @@ pub enum UserEvent {
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
+    #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
 }
 
+#[cfg(feature = "native")]
 impl From<accesskit_winit::Event> for UserEvent {
     fn from(e: accesskit_winit::Event) -> Self {
         UserEvent::AccessKit(e.window_event)
@@ -442,8 +448,8 @@ pub struct ActionUiRoute {
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
 )]
 pub struct App {
-    #[cfg(windows)]
-    startup_renderer: Option<RendererPreparation>,
+    #[cfg(all(windows, feature = "native"))]
+    startup_renderer: Option<native_runner::RendererPreparation>,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
@@ -632,6 +638,7 @@ impl AppConstructionInputs {
     fn production(collab_manager: CollaborationManager) -> Self {
         // The screen reader below speaks through the host's services, so a
         // process that never installed any gets the native desktop's.
+        #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
         Self {
             collab_manager,
@@ -1187,7 +1194,7 @@ impl App {
         );
         let configured_theme = inputs.configured_theme.resolve();
         let mut app = Self {
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "native"))]
             startup_renderer: None,
             wake_scope,
             state,
@@ -2061,115 +2068,6 @@ impl App {
     /// name → generic default.
     pub fn resolved_window_title(&self) -> String {
         resolve_window_title(self.window.title.as_deref())
-    }
-
-    /// Run this application on the platform event loop.
-    pub fn run(self) {
-        self.run_with_setup(|_| {});
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
-        self.startup_renderer = renderer;
-        self
-    }
-
-    /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before the
-    /// loop starts, so callers can spawn threads that inject [`UserEvent`]s.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the platform windowing system can't create the event loop.
-    /// Once running, a Wayland compositor disconnect is a normal application
-    /// shutdown boundary (session logout, compositor restart), so an
-    /// `ExitFailure` is logged and returned rather than converted into a panic.
-    #[allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
-    )]
-    pub fn run_with_setup<F>(mut self, setup: F)
-    where
-        F: FnOnce(EventLoopProxy<UserEvent>),
-    {
-        assert!(
-            self.wake_scope.is_some(),
-            "live App requires from_factory, try_from_factory, or from_scoped_parts"
-        );
-        if self.history.is_none() {
-            self.enable_document_history_chrome();
-        }
-        crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
-        let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
-        #[cfg(target_os = "macos")]
-        if crate::host::environment().diagnostics.window_no_activate {
-            use winit::platform::macos::EventLoopBuilderExtMacOS;
-            // Native scripted input does not need to take the user's keyboard.
-            // Keep normal launches unchanged; this is an opt-in profiling mode.
-            event_loop_builder.with_activate_ignoring_other_apps(false);
-        }
-        let event_loop = event_loop_builder.build().unwrap();
-        let proxy = event_loop.create_proxy();
-        let wake_proxy = proxy.clone();
-        self.wake_scope
-            .as_mut()
-            .unwrap()
-            .bind(move |event| {
-                let _ = wake_proxy.send_event(UserEvent::Wake(event));
-            })
-            .expect("App wake scope must be open and unbound at native startup");
-        // The AccessKit adapter routes events back through this as
-        // `UserEvent::AccessKit`.
-        let a11y_proxy = proxy.clone();
-        #[allow(
-            clippy::panic,
-            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
-        )]
-        let native_scenario = crate::native_scenario::load_from_env()
-            .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
-        assert!(
-            native_scenario.is_none() || self.profiler.is_some(),
-            "native performance scenarios require QOS_PROFILE_OUT or QOS_PROFILE"
-        );
-        {
-            let _entry = self.enter_wake_scope();
-            setup(proxy);
-            self.init_layout();
-        }
-
-        let mut handler = AppHandler {
-            app: self,
-            window: None,
-            render: None,
-            audience_presentation: None,
-            floating_windows: Vec::new(),
-            a11y_adapter: None,
-            a11y_proxy,
-            ime_state: None,
-            primary_frames_sent: 0,
-            primary_frames_completed: 0,
-            last_primary_frame_presented: 0,
-            primary_retry: crate::render_thread::retry::RenderRetryState::default(),
-            floating_source_clear_frames: std::collections::HashMap::new(),
-            floating_destination_present_frames: std::collections::HashMap::new(),
-            touch_pointer: crate::interaction::TouchPointerEmulator::default(),
-            dispatching_touch_pointer: false,
-            native_scenario,
-            native_input_ids: Vec::new(),
-            native_input_origin: None,
-            native_input_pointer_passthrough: false,
-            native_input_route_isolation: false,
-            animation_schedule: animation_schedule::AnimationSchedule::default(),
-        };
-        match event_loop.run_app(&mut handler) {
-            Ok(()) => {}
-            Err(winit::error::EventLoopError::ExitFailure(status)) => {
-                tracing::debug!(status, "window system disconnected; application exiting");
-            }
-            Err(error) => {
-                tracing::error!(%error, "application event loop failed; application exiting");
-            }
-        }
     }
 }
 
