@@ -1488,6 +1488,12 @@ mod tests {
         assert!(fills >= 1, "a laid-out split must paint something");
     }
 
+    /// Pretend `ms` of wall clock passed since the last drawn frame, so the
+    /// next draw advances the animations by exactly that step.
+    fn elapse(ns: &mut NavSplit, ms: u64) {
+        ns.last_tick = crate::time::now().checked_sub(crate::time::Duration::from_millis(ms));
+    }
+
     /// Helper: run a full presence draw through the production path.
     fn draw_frame(ns: &mut NavSplit) {
         let theme = Theme::dark();
@@ -1533,8 +1539,9 @@ mod tests {
             "first frame establishes the clock and must not jump the slide"
         );
 
-        // A wall-clock gap, then a second draw advances the easing by a dt.
-        std::thread::sleep(crate::time::Duration::from_millis(16));
+        // A frame's worth of wall clock, then a second draw advances the
+        // easing by that dt.
+        elapse(&mut ns, 16);
         draw_frame(&mut ns);
         let r = ns.flap().reveal();
         assert!(
@@ -1548,7 +1555,7 @@ mod tests {
 
         // Pump enough frames for the exponential approach to settle.
         for _ in 0..240 {
-            std::thread::sleep(crate::time::Duration::from_millis(1));
+            elapse(&mut ns, 16);
             draw_frame(&mut ns);
             if !ns.flap().is_animating(ns.layout_mode()) {
                 break;
@@ -1571,7 +1578,7 @@ mod tests {
         assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
         // Even with a time gap, a snapped (already-settled) flap stays
         // put because tick() is a no-op once reveal == target.
-        std::thread::sleep(crate::time::Duration::from_millis(20));
+        elapse(&mut ns, 20);
         draw_frame(&mut ns);
         assert_eq!(
             ns.flap().reveal(),
