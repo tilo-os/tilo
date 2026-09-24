@@ -452,8 +452,6 @@ pub struct NotesApp {
     markdown_job: ui::LatestRequest<MarkdownJobResult>,
     markdown_invocation: Option<tilo_actions::InvocationId>,
     markdown_results: Vec<tilo_actions::InvocationUpdate>,
-    #[cfg(test)]
-    test_markdown_pick: Option<ui::portal::PortalOutcome>,
     external_link_opens: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
     canonical_asset_manifest: Vec<(String, String)>,
@@ -775,8 +773,6 @@ impl NotesApp {
             markdown_job: ui::LatestRequest::new(),
             markdown_invocation: None,
             markdown_results: Vec::new(),
-            #[cfg(test)]
-            test_markdown_pick: None,
             external_link_opens: Vec::new(),
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             canonical_asset_manifest: Vec::new(),
@@ -2448,7 +2444,7 @@ impl NotesApp {
         let request = ui::portal::PickRequest::open("Import Markdown", "Import")
             .filter(ui::portal::FileFilter::new("Markdown").glob("*.md"))
             .thread_name("notes-import-markdown");
-        let channel = self.send_markdown_pick(request);
+        let channel = request.send();
         self.markdown_transfer = Some((MarkdownTransfer::Import, channel));
         self.self_dirty = true;
         Ok(())
@@ -2471,7 +2467,7 @@ impl NotesApp {
                     .glob("*.webp"),
             )
             .thread_name("notes-insert-image");
-        let channel = self.send_markdown_pick(request);
+        let channel = request.send();
         self.markdown_transfer = Some((MarkdownTransfer::InsertImage { page }, channel));
         self.self_dirty = true;
         Ok(())
@@ -2513,7 +2509,7 @@ impl NotesApp {
         )
         .filter(ui::portal::FileFilter::new("Markdown").glob("*.md"))
         .thread_name("notes-export-markdown");
-        let channel = self.send_markdown_pick(request);
+        let channel = request.send();
         self.markdown_transfer = Some((
             MarkdownTransfer::Export {
                 markdown: markdown.into_bytes(),
@@ -2531,17 +2527,6 @@ impl NotesApp {
         ));
         self.self_dirty = true;
         Ok(())
-    }
-
-    fn send_markdown_pick(
-        &mut self,
-        request: ui::portal::PickRequest,
-    ) -> ui::portal::PortalChannel {
-        #[cfg(test)]
-        if let Some(outcome) = self.test_markdown_pick.take() {
-            return ui::portal::inject_for_test(outcome);
-        }
-        request.send()
     }
 
     fn complete_markdown_operation(&mut self, outcome: Result<tilo_actions::ActionOutput, String>) {
@@ -5737,7 +5722,9 @@ mod tests {
             2
         );
         let destination = source.path().join("Exported.md");
-        app.test_markdown_pick = Some(ui::portal::PortalOutcome::Opened(destination.clone()));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
         app.request_markdown_export(&doc, page).unwrap();
         settle_markdown_io(&mut app, &mut doc);
         let exported = std::fs::read_to_string(&destination).unwrap();
@@ -6057,24 +6044,10 @@ mod tests {
             );
             return;
         }
-        // The backend is process-global. Install it only in this isolated
-        // child so neither this assertion nor concurrent widget tests touch
-        // the user's real clipboard or replace one another's backend.
-        #[derive(Default)]
-        struct PrivateClipboard(std::sync::Mutex<Option<String>>);
-        impl ui::clipboard::ClipboardBackend for PrivateClipboard {
-            fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
-                *self.0.lock().unwrap() = Some(text.to_owned());
-                true
-            }
-            fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
-                self.0.lock().unwrap().clone()
-            }
-            fn name(&self) -> &'static str {
-                "notes-isolated-test"
-            }
-        }
-        ui::clipboard::install_clipboard_backend(Arc::new(PrivateClipboard::default()));
+        // The default host is process-global. Install a recording one only in
+        // this isolated child so neither this assertion nor concurrent widget
+        // tests touch the user's real clipboard or replace one another's host.
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let (mut app, state, _tmp, welcome) = app_seeded_into_doc();
         app.open_notes_operation(
             actions::NotesOperation::CopyPageLink { page: welcome },
@@ -6221,21 +6194,20 @@ mod tests {
 
     #[test]
     fn portal_markdown_export_writes_the_snapshotted_bytes() {
-        let (mut app, mut state, tmp, _) = app_seeded_into_doc();
+        let (mut app, mut state, tmp, page) = app_seeded_into_doc();
         let destination = tmp.path().join("exported.md");
-        app.markdown_transfer = Some((
-            MarkdownTransfer::Export {
-                markdown: b"# Portable\n\nBody\n".to_vec(),
-                asset_root: None,
-                canonical_assets: HashMap::new(),
-            },
-            ui::portal::inject_for_test(ui::portal::PortalOutcome::Opened(destination.clone())),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
+        app.request_markdown_export(&state.doc, page).unwrap();
+        assert_eq!(recorder.pick_requests()[0].title(), "Export Markdown");
+        let Some((MarkdownTransfer::Export { markdown, .. }, _)) = &app.markdown_transfer else {
+            panic!("export must snapshot the page before the chooser answers");
+        };
+        let snapshot = markdown.clone();
+        assert!(!snapshot.is_empty());
         settle_markdown_io(&mut app, &mut state.doc);
-        assert_eq!(
-            std::fs::read_to_string(destination).unwrap(),
-            "# Portable\n\nBody\n"
-        );
+        assert_eq!(std::fs::read(destination).unwrap(), snapshot);
         assert!(
             app.transfer_toasts
                 .iter()
@@ -6397,10 +6369,11 @@ mod tests {
         let (mut app, mut state, tmp, _) = app_seeded_into_doc();
         let source = tmp.path().join("Project brief.md");
         std::fs::write(&source, "# Scope\n\n- Fast\n").unwrap();
-        app.markdown_transfer = Some((
-            MarkdownTransfer::Import,
-            ui::portal::inject_for_test(ui::portal::PortalOutcome::Opened(source)),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(source));
+        app.request_markdown_import().unwrap();
+        assert_eq!(recorder.pick_requests()[0].title(), "Import Markdown");
         settle_markdown_io(&mut app, &mut state.doc);
         app.sync(&mut state.doc, &state.root);
         admit_pending_import(&mut app, &mut state);
@@ -6451,7 +6424,9 @@ mod tests {
             .unwrap();
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        app.test_markdown_pick = Some(outcome);
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(outcome);
         assert_eq!(
             app.start_resource_operation_with_document(
                 invocation,
@@ -6469,6 +6444,7 @@ mod tests {
                 .is_none(),
             "chooser admission is not success"
         );
+        assert_eq!(recorder.pick_requests().len(), 1);
         invocation
     }
 
@@ -6534,10 +6510,12 @@ mod tests {
         let source = temp.path().join("Launch.md");
         std::fs::write(&source, "Launch body").unwrap();
         app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-        // Inject cancellation so any accidental chooser start is hermetic.
-        app.test_markdown_pick = Some(ui::portal::PortalOutcome::Cancelled);
+        // A recording host keeps any accidental chooser start hermetic.
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
         assert!(app.request_markdown_export(&state.doc, page).is_err());
         assert!(app.request_image_insert(page).is_err());
+        assert!(recorder.pick_requests().is_empty());
         assert!(app.markdown_invocation.is_none());
         assert!(app.markdown_transfer.is_none());
         admit_pending_import(&mut app, &mut state);

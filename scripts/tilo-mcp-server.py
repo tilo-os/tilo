@@ -35,8 +35,22 @@ import sys
 import urllib.parse
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-DEFAULT_SOCKET = "/tmp/tilo.sock"
 SERVER_INFO = {"name": "tilo-actions", "version": "0.1.0"}
+
+
+def default_socket() -> str | None:
+    """`$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`.
+
+    Never a shared directory: a well-known name under /tmp can be bound
+    first by another account, which then receives every command sent.
+    """
+    explicit = os.environ.get("TILO_TEST_CONTROL")
+    if explicit:
+        return explicit
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not os.path.isabs(runtime):
+        return None
+    return os.path.join(runtime, "tilo-session", "test-control.sock")
 
 
 class CompositorError(RuntimeError):
@@ -430,11 +444,15 @@ def selftest(comp: Compositor) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--socket", default=os.environ.get("TILO_TEST_CONTROL", DEFAULT_SOCKET),
-                   help="control socket path (default: $TILO_TEST_CONTROL, else %(default)s)")
+    p.add_argument("--socket", default=default_socket(),
+                   help="control socket path (default: $TILO_TEST_CONTROL, else "
+                        "$XDG_RUNTIME_DIR/tilo-session/test-control.sock)")
     p.add_argument("--selftest", action="store_true",
                    help="connect, enumerate, print the result, exit; no model needed")
     args = p.parse_args()
+    if args.socket is None:
+        p.error("no control socket: pass --socket or set TILO_TEST_CONTROL "
+                "(XDG_RUNTIME_DIR is unset, so there is no private default)")
     comp = Compositor(args.socket)
     return selftest(comp) if args.selftest else serve(comp)
 

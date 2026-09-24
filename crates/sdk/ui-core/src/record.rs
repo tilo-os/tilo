@@ -633,81 +633,6 @@ impl Ord for RecordCheckout {
     }
 }
 
-/// The writer behind one open record: the launch-environment route's
-/// background [`crate::persist::Autosave`], or a [`app_state::DocWriter`]
-/// over the host's [`DurableStore`].
-enum RecordWriter {
-    Legacy(crate::persist::Autosave),
-    Store(app_state::DocWriter),
-}
-
-impl RecordWriter {
-    /// Submit whatever changed since the last submission.
-    fn request(&mut self, doc: &mut AutoCommit) {
-        match self {
-            Self::Legacy(saver) => saver.request(doc),
-            Self::Store(writer) => writer.request(doc),
-        }
-    }
-
-    /// Submit changes, retrying with a full checkpoint after a failure.
-    fn save(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
-        match self {
-            Self::Legacy(saver) => saver.request(doc),
-            Self::Store(writer) => writer.save(doc),
-        }
-        Ok(())
-    }
-
-    fn try_flush(&mut self) -> Result<(), String> {
-        match self {
-            Self::Legacy(saver) => saver.try_flush(),
-            Self::Store(writer) => writer.try_flush(),
-        }
-    }
-
-    fn flush(&mut self) {
-        match self {
-            Self::Legacy(saver) => saver.flush(),
-            Self::Store(writer) => {
-                if let Err(error) = writer.try_flush() {
-                    tracing::error!(%error, "record persistence failed");
-                }
-            }
-        }
-    }
-
-    fn last_error(&self) -> Option<String> {
-        match self {
-            Self::Legacy(saver) => saver.last_error(),
-            Self::Store(writer) => writer.last_error(),
-        }
-    }
-
-    fn durability_snapshot(&self) -> app_state::DurabilitySnapshot {
-        match self {
-            Self::Legacy(saver) => saver.durability_snapshot(),
-            Self::Store(writer) => writer.durability_snapshot(),
-        }
-    }
-
-    /// The launch-environment route's file, which is its storage identity.
-    fn document_path(&self) -> Option<&Path> {
-        match self {
-            Self::Legacy(saver) => Some(saver.document_path()),
-            Self::Store(_) => None,
-        }
-    }
-
-    #[cfg(test)]
-    fn counts(&self) -> (usize, usize) {
-        match self {
-            Self::Legacy(saver) => (saver.full_writes(), saver.appends()),
-            Self::Store(writer) => (writer.full_writes(), writer.appends()),
-        }
-    }
-}
-
 /// One record this process has open but is not currently showing.
 struct Parked {
     /// `None` exactly while checked out — the live document is the
@@ -716,7 +641,7 @@ struct Parked {
     kind: RecordKind,
     /// Debounced writer for this record's file. `None` for an in-memory
     /// set, or when the store failed to open (reported once, not per frame).
-    autosave: Option<RecordWriter>,
+    autosave: Option<app_state::DocWriter>,
     /// Belongs to the record: an [`crate::state::UndoEntry`] is a pair of
     /// change hashes in *this* document's graph, so sharing a stack across
     /// records would revert the wrong history.
@@ -742,6 +667,9 @@ pub struct RecordSet {
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
+    /// Where the launch-environment route keeps its documents: shared
+    /// writers on package-scoped keys. `None` for other sets.
+    documents: Option<Rc<dyn DurableStore>>,
     /// The host's storage, for a set opened through [`RecordOwners`]. `None`
     /// for the launch-environment route and for [`RecordSet::in_memory`].
     backend: Option<Rc<dyn DurableStore>>,
@@ -763,17 +691,15 @@ impl RecordSet {
     /// (as in [`crate::persist::open_room`]) — resolving it differently here would
     /// split a package's records from its room index.
     ///
-    /// This route resolves its storage from the native process environment
-    /// and the local filesystem. Hosts with an explicit profile open records
-    /// through [`RecordOwners`] instead, which persists through any
-    /// [`DurableStore`].
+    /// The process environment names the package and room, and the native
+    /// store ([`app_state::DocStore::native_store`]) holds the documents; see
+    /// [`Self::open_in`]. Hosts with an explicit profile open records through
+    /// [`RecordOwners`] instead.
+    ///
+    /// The host's workspace (else cluster) id scopes the records.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        Self::open_in(manifest_id, &crate::host::environment().identity)
-    }
-
-    /// [`Self::open`] for an explicit host identity: its package id wins over
-    /// `manifest_id`, and its workspace (else cluster) id scopes the records.
-    pub fn open_in(manifest_id: impl Into<String>, identity: &crate::host::HostIdentity) -> Self {
+        let environment = crate::host::environment();
+        let identity = &environment.identity;
         let package_id = identity
             .package_id
             .clone()
@@ -786,13 +712,25 @@ impl RecordSet {
             // scope.  It may not collaborate (the broker rejects nil), but
             // it must never fall back to the historical package-global file.
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+        Self::open_in(app_state::DocStore::native_store(), package_id, home)
+    }
+
+    /// The launch-environment set over an explicit store: each record is a
+    /// shared-writer document in room `home`, and pre-room package records
+    /// are imported into exactly one room on first open.
+    pub fn open_in(
+        store: Rc<dyn DurableStore>,
+        package_id: impl Into<String>,
+        home: impl Into<String>,
+    ) -> Self {
         Self {
-            package_id,
-            home,
+            package_id: package_id.into(),
+            home: home.into(),
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
             persistent: true,
+            documents: Some(store),
             backend: None,
             pending: HashMap::new(),
             next_reservation: 0,
@@ -815,6 +753,7 @@ impl RecordSet {
             known: BTreeMap::new(),
             active: None,
             persistent: false,
+            documents: None,
             backend: None,
             pending: HashMap::new(),
             next_reservation: 0,
@@ -1010,10 +949,36 @@ impl RecordSet {
     }
 
     /// Open a record's stored document, and the writer for it.
-    fn load(&self, id: &RecordId) -> (AutoCommit, Option<RecordWriter>) {
+    fn load(&self, id: &RecordId) -> (AutoCommit, Option<app_state::DocWriter>) {
         let mut doc = AutoCommit::new();
         let autosave = self.persist_for(id, &mut doc);
         (doc, autosave)
+    }
+
+    fn documents(&self) -> Result<&Rc<dyn DurableStore>, app_state::StoreError> {
+        self.documents
+            .as_ref()
+            .ok_or_else(|| app_state::StoreError::Io {
+                context: "record set has no document store".into(),
+                source: std::io::Error::from(std::io::ErrorKind::Unsupported),
+            })
+    }
+
+    /// The shared-writer document for one record in this set's room.
+    fn scoped_document(
+        &self,
+        record_key: &str,
+    ) -> Result<app_state::DocStore, app_state::StoreError> {
+        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
+        app_state::DocStore::shared(
+            Rc::clone(self.documents()?),
+            StorageKey::record(&self.package_id, &self.home, record_key),
+        )
+    }
+
+    /// The retained pre-room package record, as a read source.
+    fn package_record(&self, record_key: &str) -> StorageKey {
+        StorageKey::package_record(&self.package_id, record_key)
     }
 
     /// Attach `doc` to this record's file: merge in what's stored, and
@@ -1021,7 +986,7 @@ impl RecordSet {
     /// content survives. The writer is seeded from the **stored** heads,
     /// not merged — seeding from merged heads would mark adopted content
     /// as already saved.
-    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<RecordWriter> {
+    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
         if !self.persistent {
             return None;
         }
@@ -1029,11 +994,7 @@ impl RecordSet {
             return None;
         }
         let record_key = id.storage_key();
-        let mut store = match app_state::DocStore::open_room_record(
-            &self.package_id,
-            &self.home,
-            &record_key,
-        ) {
+        let mut store = match self.scoped_document(&record_key) {
             Ok(store) => store,
             Err(e) => {
                 tracing::error!(
@@ -1041,8 +1002,8 @@ impl RecordSet {
                     error = %e,
                     "record store unavailable; writes refused"
                 );
-                return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                    format!("record {id} store unavailable: {e}"),
+                return Some(crate::persist::DocWriter::disabled(format!(
+                    "record {id} store unavailable: {e}"
                 )));
             }
         };
@@ -1054,8 +1015,8 @@ impl RecordSet {
                     error = %e,
                     "stored record could not be read; original bytes retained and writes refused"
                 );
-                return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                    format!("stored record {id} could not be read: {e}"),
+                return Some(crate::persist::DocWriter::disabled(format!(
+                    "stored record {id} could not be read: {e}"
                 )));
             }
         };
@@ -1064,26 +1025,20 @@ impl RecordSet {
         // the first scoped autosave cannot lose it.
         let mut adopted_legacy = false;
         let stored = stored.or_else(|| {
-            let legacy =
-                app_state::DocStore::legacy_record_document_path(&self.package_id, &record_key)
-                    .ok()?;
-            if !legacy.is_file()
-                || !app_state::DocStore::claim_legacy_record_migration(
-                    &self.package_id,
-                    &self.home,
-                    &record_key,
-                )
-                .ok()?
+            let legacy = self.package_record(&record_key);
+            let documents = self.documents().ok()?;
+            if documents.read(&legacy).ok()??.bytes.is_empty()
+                || !documents.claim(&legacy, &self.home).ok()?
             {
                 return None;
             }
             let mut legacy_store =
-                app_state::DocStore::open_record(&self.package_id, &record_key).ok()?;
+                app_state::DocStore::shared(Rc::clone(documents), legacy.clone()).ok()?;
             let legacy_doc = legacy_store.load().ok().flatten()?;
             tracing::info!(
                 record = %id,
                 room = %self.home,
-                from = %legacy.display(),
+                from = %legacy,
                 "adopting a legacy package-global record into a room"
             );
             adopted_legacy = true;
@@ -1097,8 +1052,8 @@ impl RecordSet {
             && let Err(error) = merged.merge(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
-            return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                format!("stored record {id} could not be merged: {error}"),
+            return Some(crate::persist::DocWriter::disabled(format!(
+                "stored record {id} could not be merged: {error}"
             )));
         }
         // The package actor belongs to its index, and a bootstrap fork actor
@@ -1106,7 +1061,7 @@ impl RecordSet {
         // operations belong to this record's original persistent writer.
         merged.set_actor(store.actor().clone());
         *doc = merged;
-        let mut autosave = crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
+        let mut autosave = store.writer();
         if let Some(mut stored) = stored {
             // Only seed heads that are already in this scoped store.  A
             // legacy document's heads are absent from the new file; seeding
@@ -1116,7 +1071,7 @@ impl RecordSet {
                 autosave.seed(&mut stored);
             }
         }
-        Some(RecordWriter::Legacy(autosave))
+        Some(autosave)
     }
 
     // A host showing several records at once: none can be "checked out"
@@ -1222,7 +1177,7 @@ impl RecordSet {
         validate_identity(loaded.document(), want, &self.home)?;
         let mut doc = owner.accept(loaded)?;
         let owner = Rc::new(owner);
-        let autosave = RecordWriter::Store(app_state::DocWriter::try_start(&owner)?);
+        let autosave = app_state::DocWriter::try_start(&owner)?;
         let history = crate::state::UndoLog::new(&mut doc);
         self.open.insert(
             want.id.clone(),
@@ -1336,7 +1291,8 @@ impl RecordSet {
                 continue;
             };
             slot.action_state.commit_for_save(doc);
-            if let Err(error) = saver.save(doc).and_then(|()| saver.try_flush()) {
+            saver.save(doc);
+            if let Err(error) = saver.try_flush() {
                 errors.push(format!("{id}: {error}"));
             }
         }
@@ -1412,6 +1368,7 @@ impl RecordOwners {
             known: BTreeMap::new(),
             active: None,
             persistent: true,
+            documents: None,
             backend: Some(Rc::clone(&self.store)),
             pending: HashMap::new(),
             next_reservation: 0,
@@ -1450,6 +1407,12 @@ pub enum RecordOpenError {
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
+}
+
+impl From<durable_store::StoreError> for RecordOpenError {
+    fn from(error: durable_store::StoreError) -> Self {
+        Self::Store(error.into())
+    }
 }
 
 fn validate_identity(
@@ -1529,7 +1492,7 @@ impl RecordReservation {
         {
             return Err(RecordOpenError::Busy);
         }
-        let autosave = RecordWriter::Store(start(&owner, &mut doc)?);
+        let autosave = start(&owner, &mut doc)?;
         let history = crate::state::UndoLog::new(&mut doc);
         set.pending.remove(&self.checkout.id);
         set.open.insert(
@@ -1622,8 +1585,8 @@ impl RecordStore {
                 parked
                     .autosave
                     .as_ref()
-                    .and_then(RecordWriter::document_path)
-                    .map(|path| path.to_string_lossy().into_owned())
+                    .filter(|saver| saver.is_enabled())
+                    .map(|saver| saver.document_path().to_string_lossy().into_owned())
             });
         Ok((storage, set.package_id.clone(), set.home.clone()))
     }
@@ -1728,7 +1691,7 @@ impl RecordStore {
             .open
             .get(id)
             .and_then(|p| p.autosave.as_ref())
-            .and_then(RecordWriter::last_error)
+            .and_then(app_state::DocWriter::last_error)
     }
 
     /// Close/retry one actual owner without settling another record's edit.
@@ -1749,10 +1712,8 @@ impl RecordStore {
             return Ok(());
         };
         slot.action_state.commit_for_save(doc);
-        saver
-            .save(doc)
-            .and_then(|()| saver.try_flush())
-            .map_err(|error| format!("{id}: {error}"))
+        saver.save(doc);
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
     }
 
     /// Request current changes once and await actual acknowledgements for every record.
@@ -1813,29 +1774,13 @@ impl RecordStore {
             return Err(RecordOpenError::IdentityMismatch);
         }
         let owner = if set.persistent {
-            let mut owner = app_state::DocStore::open_room_record(
-                &set.package_id,
-                &set.home,
-                &want.id.storage_key(),
-            )?;
-            // An empty/corrupt file is existing evidence too, never permission
-            // to replace it with a freshly initialized document.
+            let key = want.id.storage_key();
+            let mut owner = set.scoped_document(&key)?;
+            // An empty/corrupt document is existing evidence too, never
+            // permission to replace it with a freshly initialized one.
             if owner.load_complete()?.is_some()
-                || owner.document_path().try_exists().map_err(|source| {
-                    app_state::StoreError::Io {
-                        context: "checking new record identity".into(),
-                        source,
-                    }
-                })?
-                || app_state::DocStore::legacy_record_document_path(
-                    &set.package_id,
-                    &want.id.storage_key(),
-                )?
-                .try_exists()
-                .map_err(|source| app_state::StoreError::Io {
-                    context: "checking legacy record identity".into(),
-                    source,
-                })?
+                || owner.has_stored()?
+                || set.documents()?.read(&set.package_record(&key))?.is_some()
             {
                 return Err(RecordOpenError::AlreadyExists);
             }
@@ -1858,12 +1803,7 @@ impl RecordStore {
             );
         }
         doc.commit();
-        let mut autosave = owner.map(|owner| {
-            RecordWriter::Legacy(crate::persist::Autosave::spawn(
-                owner,
-                crate::persist::DEFAULT_DEBOUNCE,
-            ))
-        });
+        let mut autosave = owner.map(|owner| owner.writer());
         if let Some(error) = autosave
             .as_ref()
             .and_then(|saver| saver.durability_snapshot().error)
@@ -1919,50 +1859,35 @@ impl RecordStore {
             if set.home.is_empty() {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            let mut owner = app_state::DocStore::open_room_record(
-                &set.package_id,
-                &set.home,
-                &want.id.storage_key(),
-            )?;
+            let key = want.id.storage_key();
+            let mut owner = set.scoped_document(&key)?;
             let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
                 (doc, false)
             } else {
-                if owner.document_path().try_exists().map_err(|source| {
-                    app_state::StoreError::Io {
-                        context: "checking existing record".into(),
-                        source,
-                    }
-                })? {
+                if owner.has_stored()? {
                     return Err(app_state::StoreError::EmptyExistingDocument {
                         path: owner.document_path().to_path_buf(),
                     }
                     .into());
                 }
-                let key = want.id.storage_key();
-                let path = app_state::DocStore::legacy_record_document_path(&set.package_id, &key)?;
-                if !path
-                    .try_exists()
-                    .map_err(|source| app_state::StoreError::Io {
-                        context: "checking legacy migration source".into(),
-                        source,
-                    })?
-                {
+                let source = set.package_record(&key);
+                let documents = Rc::clone(set.documents()?);
+                if documents.read(&source)?.is_none() {
                     return Err(RecordOpenError::MissingRecord);
                 }
-                let mut legacy = app_state::DocStore::open_record(&set.package_id, &key)?;
+                let mut legacy =
+                    app_state::DocStore::shared(Rc::clone(&documents), source.clone())?;
                 let mut doc = legacy.load_complete()?.ok_or_else(|| {
-                    app_state::StoreError::EmptyExistingDocument { path: path.clone() }
+                    app_state::StoreError::EmptyExistingDocument {
+                        path: legacy.document_path().to_path_buf(),
+                    }
                 })?;
                 // Validate before claiming custody or adding only the missing
                 // room metadata. The old source and all its changes stay intact.
                 if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
                     || home(&doc).as_deref() != Some(set.home.as_str())
                     || room_scope(&doc).is_some_and(|scope| scope != set.home)
-                    || !app_state::DocStore::claim_legacy_record_migration(
-                        &set.package_id,
-                        &set.home,
-                        &key,
-                    )?
+                    || !documents.claim(&source, &set.home)?
                     || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
                 {
                     return Err(RecordOpenError::IdentityMismatch);
@@ -1973,8 +1898,7 @@ impl RecordStore {
             if home(&doc).as_deref() != Some(set.home.as_str()) {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            let mut autosave =
-                crate::persist::Autosave::spawn(owner, crate::persist::DEFAULT_DEBOUNCE);
+            let mut autosave = owner.writer();
             if let Some(error) = autosave.durability_snapshot().error {
                 return Err(RecordOpenError::Initialization(error));
             }
@@ -1990,7 +1914,7 @@ impl RecordStore {
                 Parked {
                     doc: Some(doc),
                     kind: want.kind.clone(),
-                    autosave: Some(RecordWriter::Legacy(autosave)),
+                    autosave: Some(autosave),
                     history,
                     action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
@@ -2295,6 +2219,12 @@ mod tests {
     use super::*;
     use crate::state::State;
 
+    /// The native store over one test's own directory: no process
+    /// environment, so these tests run in parallel.
+    fn native(root: &Path) -> Rc<dyn DurableStore> {
+        Rc::new(app_state::FsStore::new(root))
+    }
+
     #[test]
     fn save_status_older_ack_keeps_newer_pending_edit_saving() {
         let temp = tempfile::tempdir().unwrap();
@@ -2322,7 +2252,7 @@ mod tests {
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         assert!(pending.1 > 0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
             let acknowledged = store.0.borrow().open[&checkout.id]
                 .autosave
@@ -2335,10 +2265,10 @@ mod tests {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::time::now() < deadline,
                 "older writer acknowledgement missing"
             );
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(crate::time::Duration::from_millis(10));
         }
         assert_eq!(
             store.save_status(&checkout.id).unwrap(),
@@ -2529,7 +2459,8 @@ mod tests {
         let before = {
             let set = store.0.borrow();
             let p = &set.open[&want.id];
-            let (full_writes, appends) = p.autosave.as_ref().unwrap().counts();
+            let saver = p.autosave.as_ref().unwrap();
+            let (full_writes, appends) = (saver.full_writes(), saver.appends());
             (full_writes, appends, p.history.revision())
         };
         store.with(&want.id, |doc| put_text(doc, "body", "one edit"));
@@ -2543,7 +2474,8 @@ mod tests {
         let after = {
             let set = store.0.borrow();
             let p = &set.open[&want.id];
-            let (full_writes, appends) = p.autosave.as_ref().unwrap().counts();
+            let saver = p.autosave.as_ref().unwrap();
+            let (full_writes, appends) = (saver.full_writes(), saver.appends());
             (full_writes, appends, p.history.revision())
         };
         assert_eq!(after, (before.0, before.1 + 1, before.2));
@@ -2740,30 +2672,28 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn room_discovery_never_crosses_scopes_after_restart() {
         let dir = tempfile::tempdir().expect("temporary state directory");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+        let documents = native(dir.path());
         let package = "so.tilo.room-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
-        let (mut room_a, mut saver_a) = crate::persist::open_room(package, a);
+        let (mut room_a, mut saver_a) =
+            crate::persist::open_room_in(Rc::clone(&documents), package, a);
         assert!(room::reference(&mut room_a.doc, &entry.id, &entry.kind));
         saver_a.request(&mut room_a.doc);
         saver_a.flush();
 
-        let (room_b, _) = crate::persist::open_room(package, b);
-        let mut set_b = RecordSet::open(package).with_home(b);
+        let (room_b, _) = crate::persist::open_room_in(Rc::clone(&documents), package, b);
+        let mut set_b = RecordSet::open_in(Rc::clone(&documents), package, b);
         assert!(set_b.discover_room(&room_b.doc).is_empty());
 
-        let (room_a_restarted, _) = crate::persist::open_room(package, a);
-        let mut set_a = RecordSet::open(package).with_home(a);
+        let (room_a_restarted, _) = crate::persist::open_room_in(Rc::clone(&documents), package, a);
+        let mut set_a = RecordSet::open_in(Rc::clone(&documents), package, a);
         assert_eq!(set_a.discover_room(&room_a_restarted.doc), vec![entry]);
         assert!(set_a.open_records().is_empty());
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
@@ -2849,19 +2779,14 @@ mod tests {
     /// A record adopted from a live document (the "save as" case) is
     /// written out rather than mistaken for something already on disk.
     #[test]
-    #[serial_test::serial(process_env)]
     fn history_existing_legacy_record_reopens_without_initializing_missing_content() {
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        let documents = native(tmp.path());
         let checkout = RecordCheckout::new(RecordId::for_tab(401), RecordKind::new("tab"));
         let package = "dev.qos.history-existing-legacy";
         let room = "11111111-1111-4111-8111-111111111111";
         let original_heads = {
-            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
             store.open_record(&checkout);
             let heads = store
                 .with(&checkout.id, |doc| {
@@ -2872,7 +2797,7 @@ mod tests {
             store.flush();
             heads
         };
-        let store = RecordStore::new(RecordSet::open(package).with_home(room));
+        let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
         assert!(
             store.open_existing_record_checked(&checkout).is_ok(),
             "existing-only presentation must load a saved legacy record"
@@ -2889,29 +2814,21 @@ mod tests {
             Err(RecordOpenError::MissingRecord)
         ));
         assert!(store.read(&missing.id, |_| ()).is_none());
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn history_existing_package_record_migrates_once_without_losing_old_history() {
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        let documents = native(tmp.path());
         let package = "dev.qos.history-package-record";
         let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
         let room = "11111111-1111-4111-8111-111111111111";
         let old_heads = {
-            let mut owner =
-                app_state::DocStore::open_record(package, &checkout.id.storage_key()).unwrap();
+            let mut owner = app_state::DocStore::shared(
+                Rc::clone(&documents),
+                StorageKey::package_record(package, checkout.id.storage_key()),
+            )
+            .unwrap();
             let mut doc = owner.new_document();
             init(&mut doc, &checkout.id, &checkout.kind, room);
             put_text(&mut doc, "body", "old package content");
@@ -2919,12 +2836,15 @@ mod tests {
             owner.save(&mut doc).unwrap();
             heads
         };
-        let legacy_path =
-            app_state::DocStore::legacy_record_document_path(package, &checkout.id.storage_key())
-                .unwrap();
+        let legacy_path = documents
+            .local_path(&StorageKey::package_record(
+                package,
+                checkout.id.storage_key(),
+            ))
+            .unwrap();
         let original_bytes = std::fs::read(&legacy_path).unwrap();
         {
-            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
             assert!(
                 store.open_existing_record_checked(&checkout).is_ok(),
                 "an existing package record must remain readable"
@@ -2942,22 +2862,24 @@ mod tests {
         }
         assert_eq!(std::fs::read(&legacy_path).unwrap(), original_bytes);
         assert!(
-            !app_state::DocStore::claim_legacy_record_migration(
-                package,
-                "22222222-2222-4222-8222-222222222222",
-                &checkout.id.storage_key(),
-            )
-            .unwrap(),
+            !documents
+                .claim(
+                    &StorageKey::package_record(package, checkout.id.storage_key()),
+                    "22222222-2222-4222-8222-222222222222"
+                )
+                .unwrap(),
             "the durable migration claim remains pinned to its original room"
         );
-        let other = RecordStore::new(
-            RecordSet::open(package).with_home("22222222-2222-4222-8222-222222222222"),
-        );
+        let other = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents),
+            package,
+            "22222222-2222-4222-8222-222222222222",
+        ));
         assert!(
             other.open_existing_record_checked(&checkout).is_err(),
             "migration cannot admit another room"
         );
-        let reopened = RecordStore::new(RecordSet::open(package).with_home(room));
+        let reopened = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
         assert!(reopened.open_existing_record_checked(&checkout).is_ok());
         assert_eq!(
             reopened
@@ -2966,12 +2888,6 @@ mod tests {
                 .as_deref(),
             Some("old package content")
         );
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -2996,14 +2912,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn history_existing_scoped_refuses_corruption_empty_and_mismatched_identity() {
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-        }
+        let documents = native(tmp.path());
         let package = "dev.qos.history-record-refusals";
         let room = "11111111-1111-4111-8111-111111111111";
         for (index, payload) in [
@@ -3047,30 +2958,32 @@ mod tests {
             let key = checkout.id.storage_key();
             // A valid older package source must never hide a damaged scoped file.
             {
-                let mut legacy = app_state::DocStore::open_record(package, &key).unwrap();
+                let mut legacy = app_state::DocStore::shared(
+                    Rc::clone(&documents),
+                    StorageKey::package_record(package, &key),
+                )
+                .unwrap();
                 let mut doc = legacy.new_document();
                 init(&mut doc, &checkout.id, &checkout.kind, room);
                 put_text(&mut doc, "body", "must not become a fallback");
                 legacy.save(&mut doc).unwrap();
             }
             let path = {
-                let owner = app_state::DocStore::open_room_record(package, room, &key).unwrap();
+                let owner = app_state::DocStore::shared(
+                    Rc::clone(&documents),
+                    StorageKey::record(package, room, &key),
+                )
+                .unwrap();
                 owner.document_path().to_path_buf()
             };
             std::fs::write(&path, &payload).unwrap();
-            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
             assert!(store.open_existing_record_checked(&checkout).is_err());
             assert!(store.create_record(&checkout).is_err());
             assert!(store.read(&checkout.id, |_| ()).is_none());
             store.tick();
             store.flush();
             assert_eq!(std::fs::read(&path).unwrap(), payload);
-        }
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
         }
     }
 
@@ -3138,17 +3051,9 @@ mod tests {
     }
 
     #[test]
-    // Shares a serial key with every other test mutating the process-global
-    // `XDG_DATA_HOME` (see `persist::tests`), so they don't race on it.
-    #[serial_test::serial(process_env)]
     fn each_record_persists_to_its_own_file_and_comes_back() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: this test is serialised on `process_env`; no other
-        // thread reads the variable between the set and the reads below.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
+        let documents = native(tmp.path());
         let room_id = "11111111-1111-4111-8111-111111111111";
 
         let a = RecordCheckout::new(
@@ -3161,7 +3066,8 @@ mod tests {
         );
 
         {
-            let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
+            let mut set =
+                RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", room_id);
             let mut state = State::new();
             let mut room = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
@@ -3174,7 +3080,7 @@ mod tests {
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
+        let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.test-records", room_id);
         let mut state = State::new();
         let mut room = AutoCommit::new();
         set.checkout(&mut state, Some(&mut room), &a);
@@ -3206,24 +3112,18 @@ mod tests {
             "one directory per record under {}, got {entries:?}",
             dir.display()
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn same_record_id_in_two_rooms_never_aliases_and_each_hydrates_after_restart() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
+        let documents = native(tmp.path());
         let a = "22222222-2222-4222-8222-222222222222";
         let b = "33333333-3333-4333-8333-333333333333";
         let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
         for (room, body) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             put_text(&mut state.doc, "body", body);
@@ -3231,14 +3131,12 @@ mod tests {
         }
 
         for (room, expected) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open_in(Rc::clone(&documents), "so.tilo.scoped-records", room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));
             assert_eq!(room_scope(&state.doc).as_deref(), Some(room));
         }
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]

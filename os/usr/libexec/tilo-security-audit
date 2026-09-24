@@ -103,7 +103,7 @@ case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
     ;;
   *) warn "/etc/resolv.conf is not owned by NetworkManager" ;;
 esac
-if [ -r /etc/pki/tls/certs/ca-bundle.crt ]; then
+if [ -r /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem ]; then
   ok "immutable Rustls trust bundle is readable"
 else
   warn "immutable Rustls trust bundle is missing or unreadable"

@@ -29,19 +29,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
 use disks::DisksApp;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::taffy::prelude::*;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point};
-use ui::vello::peniko::Color;
 use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
@@ -130,7 +120,6 @@ struct Preset {
 }
 
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
 /// overlay is captured settled rather than mid-animation.
 fn render_shot_to_png(
@@ -141,16 +130,8 @@ fn render_shot_to_png(
     preset: &Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut widget);
     // Apply any pinned selection, then re-sync so the widget adopts it.
     if preset.drive.is_some()
         || preset.part.is_some()
@@ -158,74 +139,32 @@ fn render_shot_to_png(
         || preset.pending.is_some()
         || preset.status.is_some()
     {
+        let doc = &mut frame.state.doc;
         if let Some(d) = preset.drive {
-            disks::doc::DisksDoc::set_selected(&mut state.doc, d);
+            disks::doc::DisksDoc::set_selected(doc, d);
         }
         if let Some(p) = preset.part {
-            disks::doc::DisksDoc::set_selected_part(&mut state.doc, Some(p));
+            disks::doc::DisksDoc::set_selected_part(doc, Some(p));
         }
         if let Some(t) = &preset.tab {
-            disks::doc::DisksDoc::set_tab(&mut state.doc, t);
+            disks::doc::DisksDoc::set_tab(doc, t);
         }
         if let Some(p) = &preset.pending {
-            disks::doc::DisksDoc::set_pending(&mut state.doc, p);
+            disks::doc::DisksDoc::set_pending(doc, p);
         }
         if let Some(status) = &preset.status {
-            disks::doc::DisksDoc::set_status(&mut state.doc, status);
+            disks::doc::DisksDoc::set_status(doc, status);
         }
-        widget.sync(&mut state.doc, &state.root);
+        frame.sync(&mut widget);
     }
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(&widget, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            ui::taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            &mut text_renderer,
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    frame.layout(&mut widget)?;
     // After layout the width (hence the docked/overlay split) is settled, so
     // snapping the flap here lands a fully-revealed overlay for the capture.
     if narrow {
         widget.snap_sidebar(true);
     }
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let scene = frame.draw(&mut widget);
+    frame.write_png(&scene, out);
     println!("disks: wrote shot to {}", out.display());
     Ok(())
 }

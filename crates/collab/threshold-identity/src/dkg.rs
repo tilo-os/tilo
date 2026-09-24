@@ -32,7 +32,9 @@ use frost_ed25519::keys::dkg::{
     round2::{Package as Round2Package, SecretPackage as Round2Secret},
 };
 use frost_ed25519::keys::{KeyPackage, PublicKeyPackage};
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
+
+use crate::rng::FrostRng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 
@@ -90,7 +92,10 @@ pub struct DkgSession {
 // bytes) vs. the round secrets; not boxed to balance sizes, since
 // `DkgPhase` only ever lives on the stack inside one `DkgSession` and
 // boxing would force a heap alloc per DKG run.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "DkgPhase lives on the stack of one session; boxing would allocate per DKG run"
+)]
 enum DkgPhase {
     /// Round 1 emitted; awaiting other participants' Round 1 packages.
     Round1Sent {
@@ -127,7 +132,7 @@ impl DkgSession {
     /// `threshold` is `0`, `total` is `0`, or `threshold > total`, or
     /// an error if the underlying FROST DKG round-1 step or
     /// serialization fails.
-    pub fn start<R: CryptoRng + RngCore>(
+    pub fn start<R: CryptoRng + ?Sized>(
         share_index: u16,
         threshold: u16,
         total: u16,
@@ -137,7 +142,7 @@ impl DkgSession {
             return Err(ThresholdError::InvalidThresholdParameters { threshold, total });
         }
         let id = u16_to_identifier(share_index)?;
-        let (secret, pkg) = dkg::part1(id, total, threshold, rng)?;
+        let (secret, pkg) = dkg::part1(id, total, threshold, FrostRng(rng))?;
         let round1 = EnrolmentRound1 {
             from_share_index: share_index,
             package_bytes: pkg.serialize()?,
@@ -397,9 +402,10 @@ impl DkgSession {
 
 fn dummy_key_package_placeholder() -> Result<KeyPackage, ThresholdError> {
     use frost_ed25519::keys::{IdentifierList, generate_with_dealer};
-    use rand::SeedableRng;
+    use rand_core::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([0xCDu8; 32]);
-    let (mut shares, _pk) = generate_with_dealer(2, 2, IdentifierList::Default, &mut rng)?;
+    let (mut shares, _pk) =
+        generate_with_dealer(2, 2, IdentifierList::Default, FrostRng(&mut rng))?;
     let (_, share) = shares
         .pop_first()
         .ok_or_else(|| ThresholdError::FrostInternal("dealer produced no shares".to_string()))?;
@@ -408,8 +414,8 @@ fn dummy_key_package_placeholder() -> Result<KeyPackage, ThresholdError> {
 
 fn dummy_public_key_package_placeholder() -> Result<PublicKeyPackage, ThresholdError> {
     use frost_ed25519::keys::{IdentifierList, generate_with_dealer};
-    use rand::SeedableRng;
+    use rand_core::SeedableRng;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([0xCEu8; 32]);
-    let (_shares, pk) = generate_with_dealer(2, 2, IdentifierList::Default, &mut rng)?;
+    let (_shares, pk) = generate_with_dealer(2, 2, IdentifierList::Default, FrostRng(&mut rng))?;
     Ok(pk)
 }

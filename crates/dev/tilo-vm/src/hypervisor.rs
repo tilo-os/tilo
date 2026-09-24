@@ -1,0 +1,1337 @@
+//! Thin adapters over each host's native hypervisor tooling. Humans keep
+//! using the hypervisor's own UI; tilo-vm only needs create, start, stop,
+//! destroy and the SSH endpoint, plus optional debugging capabilities for
+//! when SSH is not reachable.
+//!
+//! Adapters only *build* command lines; [`Runner`] executes them, so the
+//! generated commands are unit-tested on every platform.
+
+use std::path::Path;
+
+use serde::Serialize;
+
+use crate::config::VmEntry;
+use crate::error::CliError;
+use crate::sshkey;
+
+/// One external command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommandLine {
+    pub program: String,
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<(String, String)>,
+}
+
+impl CommandLine {
+    pub fn new(program: &str, args: &[&str]) -> Self {
+        Self {
+            program: program.into(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            env: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    #[must_use]
+    pub fn env(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn display(&self) -> String {
+        let quote = |s: &str| {
+            if s.is_empty() || s.contains([' ', '"', '\'', '$', ';', '|']) {
+                format!("'{}'", s.replace('\'', "'\\''"))
+            } else {
+                s.to_owned()
+            }
+        };
+        let env = self.env.iter().fold(String::new(), |mut env, (k, v)| {
+            env.push_str(k);
+            env.push('=');
+            env.push_str(&quote(v));
+            env.push(' ');
+            env
+        });
+        let args = self
+            .args
+            .iter()
+            .map(|a| quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{env}{} {args}", self.program)
+            .trim_end()
+            .to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub success: bool,
+    pub status: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Executes command lines; faked in tests.
+pub trait Runner {
+    /// Run to completion, capturing output.
+    ///
+    /// # Errors
+    /// The program could not be started.
+    fn output(&mut self, command: &CommandLine) -> Result<Output, CliError>;
+    /// Run attached to the terminal.
+    ///
+    /// # Errors
+    /// The program could not be started.
+    fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError>;
+}
+
+pub struct SystemRunner {
+    pub cwd: Option<std::path::PathBuf>,
+}
+
+impl SystemRunner {
+    fn command(&self, line: &CommandLine) -> std::process::Command {
+        let mut command = std::process::Command::new(&line.program);
+        command
+            .args(&line.args)
+            .envs(line.env.iter().map(|(k, v)| (k, v)));
+        if let Some(cwd) = &self.cwd {
+            command.current_dir(cwd);
+        }
+        command
+    }
+
+    fn spawn_error(line: &CommandLine, error: &std::io::Error) -> CliError {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            CliError::ToolMissing {
+                tool: line.program.clone(),
+                purpose: format!("run `{}`", line.display()),
+            }
+        } else {
+            CliError::CommandFailed {
+                command: line.display(),
+                status: "not started".into(),
+                stderr: error.to_string(),
+            }
+        }
+    }
+}
+
+impl Runner for SystemRunner {
+    fn output(&mut self, line: &CommandLine) -> Result<Output, CliError> {
+        let output = self
+            .command(line)
+            .output()
+            .map_err(|e| Self::spawn_error(line, &e))?;
+        Ok(Output {
+            success: output.status.success(),
+            status: output.status.to_string(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn interactive(&mut self, line: &CommandLine) -> Result<bool, CliError> {
+        let status = self
+            .command(line)
+            .status()
+            .map_err(|e| Self::spawn_error(line, &e))?;
+        Ok(status.success())
+    }
+}
+
+/// Run each command in order, stopping at the first failure.
+///
+/// # Errors
+/// The first command that fails.
+pub fn run_all(runner: &mut dyn Runner, commands: &[CommandLine]) -> Result<(), CliError> {
+    for command in commands {
+        let output = runner.output(command)?;
+        if !output.success {
+            return Err(CliError::CommandFailed {
+                command: command.display(),
+                status: output.status,
+                stderr: output.stderr.trim().to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SshEndpoint {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl SshEndpoint {
+    /// `[user@]host[:port]`, defaulting to root on port 22.
+    pub fn parse(text: &str) -> Option<Self> {
+        let (user, rest) = text
+            .rsplit_once('@')
+            .map_or(("root", text), |(u, r)| (u, r));
+        let (host, port) = match rest.rsplit_once(':') {
+            Some((host, port)) if !host.contains(':') => (host, port.parse().ok()?),
+            _ => (rest, 22),
+        };
+        (!host.is_empty() && !user.is_empty()).then(|| Self {
+            user: user.into(),
+            host: host.into(),
+            port,
+        })
+    }
+}
+
+/// What an adapter can do beyond the required five operations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one independent flag per optional adapter capability"
+)]
+pub struct Capabilities {
+    pub serial: bool,
+    pub screenshot: bool,
+    pub reset: bool,
+    /// How the root SSH key reaches the guest as a systemd credential at
+    /// creation. Without one, the key is installed once after the first boot
+    /// (`tilo-vm guide platforms`).
+    pub credentials: Option<&'static str>,
+    /// Native control channel passed through by `vm control`.
+    pub control: Option<&'static str>,
+    /// Boots `VmEntry::direct_kernel` from the host (`swap kernel --direct`).
+    pub direct_kernel: bool,
+}
+
+/// A VM as the adapter sees it.
+pub struct Vm<'a> {
+    pub name: &'a str,
+    pub entry: &'a VmEntry,
+}
+
+impl Vm<'_> {
+    fn disk(&self) -> Result<&str, CliError> {
+        self.entry.disk.as_deref().ok_or_else(|| CliError::Config {
+            path: crate::config::registry_path().display().to_string(),
+            detail: format!("VM '{}' has no `disk`", self.name),
+        })
+    }
+
+    fn memory(&self) -> u32 {
+        self.entry.memory_mb.unwrap_or(8192)
+    }
+
+    fn cpus(&self) -> u32 {
+        self.entry.cpus.unwrap_or(4)
+    }
+
+    fn ssh_port(&self) -> u16 {
+        self.entry.ssh_port.unwrap_or(2222)
+    }
+}
+
+pub trait Hypervisor {
+    fn name(&self) -> &'static str;
+    /// Commands that create the VM from its image. `root_key` is the public
+    /// key line for root's `authorized_keys`, passed on where the adapter has
+    /// a credential channel ([`Capabilities::credentials`]).
+    ///
+    /// # Errors
+    /// Missing registry fields.
+    fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    /// Where SSH listens; may query the hypervisor.
+    ///
+    /// # Errors
+    /// The hypervisor could not report an address.
+    fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError>;
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+    /// Is the VM running, as the hypervisor sees it? `None` when the adapter
+    /// cannot tell.
+    fn running(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
+        None
+    }
+    fn serial(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
+        None
+    }
+    fn screenshot(&self, _vm: &Vm<'_>, _out: &Path) -> Option<CommandLine> {
+        None
+    }
+    fn reset(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
+        None
+    }
+    fn control(&self, _vm: &Vm<'_>, _args: &[String]) -> Option<CommandLine> {
+        None
+    }
+    /// Commands that rewrite an existing VM's definition from its registry
+    /// entry (for `direct_kernel`), where [`Capabilities::direct_kernel`].
+    /// `runner` may query the hypervisor for the VM's identity.
+    ///
+    /// # Errors
+    /// Missing registry fields.
+    fn redefine(
+        &self,
+        _vm: &Vm<'_>,
+        _root_key: &str,
+        _runner: &mut dyn Runner,
+    ) -> Result<Vec<CommandLine>, CliError> {
+        Err(CliError::Unsupported {
+            what: format!("redefining a VM with the {} adapter", self.name()),
+            alternative: "install the kernel in the VM instead: tilo-vm swap kernel".into(),
+        })
+    }
+    /// Power the VM off at once, so the next start takes a new definition.
+    fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
+        None
+    }
+}
+
+/// # Errors
+/// Unknown hypervisor names.
+pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
+    match name {
+        "libvirt" => Ok(Box::new(Libvirt)),
+        "qemu" => Ok(Box::new(Qemu)),
+        "utm" => Ok(Box::new(Utm)),
+        "hyperv" => Ok(Box::new(HyperV)),
+        other => Err(CliError::Unsupported {
+            what: format!("hypervisor '{other}'"),
+            alternative: "set `hypervisor` to libvirt, qemu, utm or hyperv in vms.toml".into(),
+        }),
+    }
+}
+
+fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoint {
+    vm.entry
+        .ssh
+        .as_deref()
+        .and_then(SshEndpoint::parse)
+        .unwrap_or_else(|| SshEndpoint {
+            user: "root".into(),
+            host: default_host.into(),
+            port,
+        })
+}
+
+/// A qcow2 child of the published image, so the image stays pristine. Runs
+/// the `qemu-img` resolved when the VM was created.
+fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
+    let disk = vm.disk()?;
+    let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
+    Ok(vm.entry.image.as_deref().map(|image| {
+        CommandLine::new(
+            qemu_img,
+            &["create", "-f", "qcow2", "-F", "qcow2", "-b", image, disk],
+        )
+    }))
+}
+
+// ---- libvirt (Linux) ----------------------------------------------------------
+
+pub struct Libvirt;
+
+impl Libvirt {
+    /// Write the domain XML beside the disk; the command that defines it.
+    fn define(vm: &Vm<'_>, root_key: &str, uuid: Option<&str>) -> Result<CommandLine, CliError> {
+        let xml_path = domain_xml_path(vm.disk()?);
+        std::fs::write(&xml_path, domain_xml_with_uuid(vm, root_key, uuid)?)
+            .map_err(CliError::io(format!("write {xml_path}")))?;
+        Ok(Self::virsh(vm, &["define", &xml_path]))
+    }
+
+    fn virsh(vm: &Vm<'_>, args: &[&str]) -> CommandLine {
+        CommandLine::new(
+            "virsh",
+            &[
+                "--connect",
+                vm.entry.uri.as_deref().unwrap_or("qemu:///session"),
+            ],
+        )
+        .args_from(args)
+    }
+}
+
+/// Where `create` writes the libvirt domain definition: beside the VM disk.
+pub fn domain_xml_path(disk: &str) -> String {
+    format!("{disk}.xml")
+}
+
+/// Text safe inside an XML element or a quoted attribute.
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&apos;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The libvirt domain for `vm`, defined with `virsh define`. That needs only
+/// libvirt's QEMU driver: no storage or network driver, no virt-install.
+///
+/// UEFI without Secure Boot (local dev images may carry an unsigned kernel),
+/// user-mode networking through passt with the SSH port forwarded, SPICE and
+/// virtio video for virt-manager, and `root_key` as the SMBIOS type 11
+/// credential systemd turns into root's `authorized_keys`. KVM with the
+/// host's CPU, or TCG with the emulator's widest CPU when `emulated`.
+///
+/// # Errors
+/// The VM has no `disk`.
+pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
+    domain_xml_with_uuid(vm, root_key, None)
+}
+
+/// [`domain_xml`] for a domain that already exists: libvirt redefines a
+/// domain only under its own UUID.
+///
+/// # Errors
+/// The VM has no `disk`.
+pub fn domain_xml_with_uuid(
+    vm: &Vm<'_>,
+    root_key: &str,
+    uuid: Option<&str>,
+) -> Result<String, CliError> {
+    let arch = vm.entry.arch.as_deref().unwrap_or(std::env::consts::ARCH);
+    let (machine, features) = match arch {
+        "x86_64" => ("q35", "<acpi/><apic/>"),
+        _ => ("virt", "<acpi/>"),
+    };
+    let (domain_type, cpu) = if vm.entry.emulated {
+        ("qemu", "maximum")
+    } else {
+        ("kvm", "host-passthrough")
+    };
+    let e = xml_escape;
+    Ok(format!(
+        "<domain type='{domain_type}'>
+  <name>{name}</name>{uuid}
+  <memory unit='MiB'>{memory}</memory>
+  <vcpu>{cpus}</vcpu>
+  <os firmware='efi'>
+    <type arch='{arch}' machine='{machine}'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='secure-boot'/>
+      <feature enabled='no' name='enrolled-keys'/>
+    </firmware>
+    <smbios mode='sysinfo'/>{direct}
+  </os>
+  <sysinfo type='smbios'>
+    <oemStrings>
+      <entry>{credential}</entry>
+    </oemStrings>
+  </sysinfo>
+  <features>{features}</features>
+  <cpu mode='{cpu}'/>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='{disk}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <interface type='user'>
+      <backend type='passt'/>
+      <model type='virtio'/>
+      <portForward proto='tcp'><range start='{port}' to='22'/></portForward>
+    </interface>
+    <serial type='pty'/>
+    <console type='pty'/>
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+    <graphics type='spice' autoport='yes'/>
+    <video><model type='virtio'/></video>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+  </devices>
+</domain>
+",
+        name = e(vm.name),
+        uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
+        memory = vm.memory(),
+        cpus = vm.cpus(),
+        arch = e(arch),
+        credential = e(&sshkey::smbios_credential(root_key)),
+        disk = e(vm.disk()?),
+        port = vm.ssh_port(),
+        direct = vm
+            .entry
+            .direct_kernel
+            .as_ref()
+            .map_or_else(String::new, |d| format!(
+                "\n    <kernel>{}</kernel>\n    <initrd>{}</initrd>\n    <cmdline>{}</cmdline>",
+                e(&d.kernel),
+                e(&d.initrd),
+                e(&d.cmdline)
+            )),
+    ))
+}
+
+impl CommandLine {
+    #[must_use]
+    fn args_from(mut self, args: &[&str]) -> Self {
+        self.args.extend(args.iter().map(|a| (*a).to_owned()));
+        self
+    }
+}
+
+impl Hypervisor for Libvirt {
+    fn name(&self) -> &'static str {
+        "libvirt"
+    }
+
+    fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        let mut commands: Vec<CommandLine> = overlay_disk(vm)?.into_iter().collect();
+        commands.push(Self::define(vm, root_key, None)?);
+        Ok(commands)
+    }
+
+    fn redefine(
+        &self,
+        vm: &Vm<'_>,
+        root_key: &str,
+        runner: &mut dyn Runner,
+    ) -> Result<Vec<CommandLine>, CliError> {
+        let uuid = runner
+            .output(&Self::virsh(vm, &["domuuid", vm.name]))
+            .ok()
+            .filter(|o| o.success)
+            .map(|o| o.stdout.trim().to_owned())
+            .filter(|u| !u.is_empty());
+        Ok(vec![Self::define(vm, root_key, uuid.as_deref())?])
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::virsh(vm, &["destroy", vm.name]))
+    }
+
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![Self::virsh(vm, &["start", vm.name])]
+    }
+
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![Self::virsh(vm, &["shutdown", vm.name])]
+    }
+
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![
+            Self::virsh(vm, &["destroy", vm.name]),
+            Self::virsh(vm, &["undefine", vm.name, "--nvram"]),
+        ]
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        Ok(configured_endpoint(vm, "127.0.0.1", vm.ssh_port()))
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            serial: true,
+            screenshot: true,
+            reset: true,
+            credentials: Some("SMBIOS type 11 OEM string"),
+            control: Some("virsh"),
+            direct_kernel: true,
+        }
+    }
+
+    fn running(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        // Names only, so the answer does not depend on virsh's locale.
+        let output = runner
+            .output(&Self::virsh(vm, &["list", "--name", "--state-running"]))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.lines().any(|l| l.trim() == vm.name))
+    }
+
+    fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::virsh(vm, &["console", vm.name]))
+    }
+
+    fn screenshot(&self, vm: &Vm<'_>, out: &Path) -> Option<CommandLine> {
+        Some(Self::virsh(vm, &["screenshot", vm.name]).arg(out.display().to_string()))
+    }
+
+    fn reset(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::virsh(vm, &["reset", vm.name]))
+    }
+
+    fn control(&self, vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        let mut command = Self::virsh(vm, &[]);
+        command.args.extend(args.iter().cloned());
+        Some(command)
+    }
+}
+
+// ---- raw QEMU via os/dev/vm.sh (Linux, CI and scenario tests) ---------------
+
+/// The headless adapter for CI and scenario tests: it drives `os/dev/vm.sh`
+/// from the worktree root, with that script's own conventions. A VM made
+/// this way is invisible to virt-manager and Boxes, so it is never the
+/// default; people use libvirt.
+pub struct Qemu;
+
+impl Qemu {
+    fn script(vm: &Vm<'_>, args: &[&str]) -> CommandLine {
+        CommandLine::new("bash", &["os/dev/vm.sh"])
+            .args_from(args)
+            .env("TILO_SSH_PORT", vm.ssh_port().to_string())
+    }
+}
+
+impl Hypervisor for Qemu {
+    fn name(&self) -> &'static str {
+        "qemu"
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // os/dev/vm.sh takes no extra QEMU arguments, so no credential.
+        Ok(overlay_disk(vm)?.into_iter().collect())
+    }
+
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        let disk = vm.entry.disk.clone().unwrap_or_default();
+        vec![Self::script(vm, &["boot", "--gl", "--disk", &disk])]
+    }
+
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![Self::script(vm, &["shutdown"])]
+    }
+
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        let mut commands = vec![Self::script(vm, &["stop"])];
+        if let Some(disk) = &vm.entry.disk {
+            commands.push(CommandLine::new("rm", &["-f", disk]));
+        }
+        commands
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        Ok(configured_endpoint(vm, "127.0.0.1", vm.ssh_port()))
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            serial: true,
+            screenshot: true,
+            reset: true,
+            credentials: None,
+            control: Some("QEMU monitor (HMP)"),
+            direct_kernel: false,
+        }
+    }
+
+    fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::script(vm, &["serial"]))
+    }
+
+    fn screenshot(&self, vm: &Vm<'_>, out: &Path) -> Option<CommandLine> {
+        // vm.sh writes $TILO_RUN/<name>.png.
+        let dir = out
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let stem = out
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(Self::script(vm, &["shot", &stem]).env("TILO_RUN", dir))
+    }
+
+    fn reset(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::script(vm, &["cmd", "system_reset"]))
+    }
+
+    fn control(&self, vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        Some(Self::script(vm, &["cmd"]).arg(args.join(" ")))
+    }
+}
+
+// ---- UTM (macOS) --------------------------------------------------------------
+
+pub struct Utm;
+
+impl Hypervisor for Utm {
+    fn name(&self) -> &'static str {
+        "utm"
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // No credential channel: Apple Virtualization has no SMBIOS OEM
+        // strings or fw_cfg, and utmctl cannot set QEMU arguments.
+        // utmctl cannot import a disk; a human imports the published image
+        // once as a template VM in UTM, and each dev VM is a clone of it.
+        let template = vm
+            .entry
+            .template
+            .as_deref()
+            .ok_or_else(|| CliError::Config {
+                path: crate::config::registry_path().display().to_string(),
+                detail: format!(
+                    "VM '{}' needs `template`, the UTM VM imported from the dev image",
+                    vm.name
+                ),
+            })?;
+        Ok(vec![CommandLine::new(
+            "utmctl",
+            &["clone", template, "--name", vm.name],
+        )])
+    }
+
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![CommandLine::new("utmctl", &["start", vm.name])]
+    }
+
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![CommandLine::new("utmctl", &["stop", vm.name, "--request"])]
+    }
+
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![
+            CommandLine::new("utmctl", &["stop", vm.name, "--kill"]),
+            CommandLine::new("utmctl", &["delete", vm.name]),
+        ]
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        if let Some(endpoint) = vm.entry.ssh.as_deref().and_then(SshEndpoint::parse) {
+            return Ok(endpoint);
+        }
+        let command = CommandLine::new("utmctl", &["ip-address", vm.name]);
+        let output = runner.output(&command)?;
+        let host = output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.contains(':'));
+        match (output.success, host) {
+            (true, Some(host)) => Ok(SshEndpoint {
+                user: "root".into(),
+                host: host.into(),
+                port: 22,
+            }),
+            _ => Err(CliError::Unreachable {
+                vm: vm.name.into(),
+                detail: format!("`{}` reported no IPv4 address", command.display()),
+                debug: vec![format!("tilo-vm vm serial {}", vm.name)],
+            }),
+        }
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            serial: true,
+            screenshot: false,
+            reset: false,
+            credentials: None,
+            control: Some("utmctl"),
+            direct_kernel: false,
+        }
+    }
+
+    fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(CommandLine::new("utmctl", &["attach", vm.name]))
+    }
+
+    fn control(&self, _vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        let mut command = CommandLine::new("utmctl", &[]);
+        command.args.extend(args.iter().cloned());
+        Some(command)
+    }
+}
+
+// ---- Hyper-V (Windows) ----------------------------------------------------------
+
+pub struct HyperV;
+
+/// A PowerShell single-quoted string literal.
+fn ps_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+fn powershell(script: &str) -> CommandLine {
+    CommandLine::new(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    )
+}
+
+fn serial_pipe(name: &str) -> String {
+    format!(r"\\.\pipe\tilo-vm-{name}")
+}
+
+impl Hypervisor for HyperV {
+    fn name(&self) -> &'static str {
+        "hyperv"
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        // No credential channel: Hyper-V sets no SMBIOS OEM strings, and its
+        // KVP and file-copy services need guest daemons the image lacks.
+        let name = ps_quote(vm.name);
+        let disk = ps_quote(vm.disk()?);
+        let mut commands = Vec::new();
+        if let Some(image) = &vm.entry.image {
+            commands.push(powershell(&format!(
+                "Copy-Item -LiteralPath {} -Destination {disk}",
+                ps_quote(image)
+            )));
+        }
+        commands.push(powershell(&format!(
+            "New-VM -Name {name} -Generation 2 -MemoryStartupBytes {}MB -VHDPath {disk} -SwitchName 'Default Switch'; \
+             Set-VMProcessor -VMName {name} -Count {}; \
+             Set-VMFirmware -VMName {name} -EnableSecureBoot Off; \
+             Set-VMComPort -VMName {name} -Number 1 -Path {}",
+            vm.memory(),
+            vm.cpus(),
+            ps_quote(&serial_pipe(vm.name)),
+        )));
+        Ok(commands)
+    }
+
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![powershell(&format!("Start-VM -Name {}", ps_quote(vm.name)))]
+    }
+
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![powershell(&format!("Stop-VM -Name {}", ps_quote(vm.name)))]
+    }
+
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        let name = ps_quote(vm.name);
+        vec![powershell(&format!(
+            "Stop-VM -Name {name} -TurnOff -Force; Remove-VM -Name {name} -Force"
+        ))]
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        if let Some(endpoint) = vm.entry.ssh.as_deref().and_then(SshEndpoint::parse) {
+            return Ok(endpoint);
+        }
+        let command = powershell(&format!(
+            "(Get-VMNetworkAdapter -VMName {}).IPAddresses | Where-Object {{ $_ -match '^[0-9.]+$' }} | Select-Object -First 1",
+            ps_quote(vm.name)
+        ));
+        let output = runner.output(&command)?;
+        match output.stdout.trim() {
+            host if output.success && !host.is_empty() => {
+                Ok(SshEndpoint { user: "root".into(), host: host.into(), port: 22 })
+            }
+            _ => Err(CliError::Unreachable {
+                vm: vm.name.into(),
+                detail: "Hyper-V reported no IPv4 address (is the VM running with integration services?)".into(),
+                debug: vec![format!("tilo-vm vm serial {}", vm.name)],
+            }),
+        }
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            serial: true,
+            screenshot: false,
+            reset: true,
+            credentials: None,
+            control: Some("PowerShell (Hyper-V module)"),
+            direct_kernel: false,
+        }
+    }
+
+    fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        // The COM1 named pipe set at creation; PuTTY's plink speaks it.
+        Some(CommandLine::new(
+            "plink.exe",
+            &["-serial", &serial_pipe(vm.name)],
+        ))
+    }
+
+    fn reset(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(powershell(&format!(
+            "Restart-VM -Name {} -Force",
+            ps_quote(vm.name)
+        )))
+    }
+
+    fn control(&self, _vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        Some(powershell(&args.join(" ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
+
+    struct Fake(Vec<CommandLine>, Output);
+
+    impl Runner for Fake {
+        fn output(&mut self, command: &CommandLine) -> Result<Output, CliError> {
+            self.0.push(command.clone());
+            Ok(self.1.clone())
+        }
+        fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+            self.0.push(command.clone());
+            Ok(true)
+        }
+    }
+
+    fn fake(stdout: &str) -> Fake {
+        Fake(
+            Vec::new(),
+            Output {
+                success: true,
+                status: "0".into(),
+                stdout: stdout.into(),
+                stderr: String::new(),
+            },
+        )
+    }
+
+    fn entry() -> VmEntry {
+        VmEntry {
+            hypervisor: String::new(),
+            image: Some("/img/tilo-vm.qcow2".into()),
+            disk: Some("/vms/dev.qcow2".into()),
+            memory_mb: Some(4096),
+            cpus: Some(2),
+            ssh_port: Some(2223),
+            ..VmEntry::default()
+        }
+    }
+
+    fn vm_xml(entry: &VmEntry) -> String {
+        domain_xml(&Vm { name: "dev", entry }, KEY).unwrap()
+    }
+
+    #[test]
+    fn domain_xml_for_x86_64() {
+        let entry = VmEntry {
+            arch: Some("x86_64".into()),
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        for part in [
+            "<domain type='kvm'>",
+            "<name>dev</name>",
+            "<memory unit='MiB'>4096</memory>",
+            "<vcpu>2</vcpu>",
+            "<os firmware='efi'>",
+            "<type arch='x86_64' machine='q35'>hvm</type>",
+            "<feature enabled='no' name='secure-boot'/>",
+            "<smbios mode='sysinfo'/>",
+            "<features><acpi/><apic/></features>",
+            "<cpu mode='host-passthrough'/>",
+            "<driver name='qemu' type='qcow2' discard='unmap'/>",
+            "<source file='/vms/dev.qcow2'/>",
+            "<target dev='vda' bus='virtio'/>",
+            "<backend type='passt'/>",
+            "<portForward proto='tcp'><range start='2223' to='22'/></portForward>",
+            "<serial type='pty'/>",
+            "<graphics type='spice' autoport='yes'/>",
+            "<video><model type='virtio'/></video>",
+            "<rng model='virtio'>",
+        ] {
+            assert!(xml.contains(part), "no {part} in\n{xml}");
+        }
+        assert!(
+            xml.contains(&format!(
+                "<entry>io.systemd.credential.binary:ssh.authorized_keys.root={}</entry>",
+                sshkey::encoded(KEY)
+            )),
+            "{xml}"
+        );
+        assert!(!xml.contains("machine='virt'"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_for_aarch64() {
+        let entry = VmEntry {
+            arch: Some("aarch64".into()),
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        assert!(xml.contains("<domain type='kvm'>"), "{xml}");
+        assert!(
+            xml.contains("<type arch='aarch64' machine='virt'>hvm</type>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<os firmware='efi'>"), "{xml}");
+        assert!(xml.contains("<features><acpi/></features>"), "{xml}");
+        assert!(!xml.contains("<apic/>"), "{xml}");
+        assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_when_emulated_uses_tcg() {
+        let entry = VmEntry {
+            arch: Some("aarch64".into()),
+            emulated: true,
+            ..entry()
+        };
+        let xml = vm_xml(&entry);
+        assert!(xml.starts_with("<domain type='qemu'>"), "{xml}");
+        assert!(xml.contains("<cpu mode='maximum'/>"), "{xml}");
+        assert!(!xml.contains("host-passthrough"), "{xml}");
+        assert!(xml.contains("machine='virt'"), "{xml}");
+    }
+
+    #[test]
+    fn domain_xml_escapes_every_value() {
+        let entry = VmEntry {
+            arch: Some("x86_64".into()),
+            disk: Some("/vms/it's <a> & \"b\".qcow2".into()),
+            ..entry()
+        };
+        let xml = domain_xml(
+            &Vm {
+                name: "a&b<c>",
+                entry: &entry,
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(xml.contains("<name>a&amp;b&lt;c&gt;</name>"), "{xml}");
+        assert!(
+            xml.contains("<source file='/vms/it&apos;s &lt;a&gt; &amp; &quot;b&quot;.qcow2'/>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn libvirt_create_writes_the_domain_beside_the_disk_and_defines_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let entry = VmEntry {
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let create = Libvirt.create(&vm, KEY).unwrap();
+        let displayed: Vec<String> = create.iter().map(CommandLine::display).collect();
+        assert_eq!(
+            displayed,
+            [
+                format!("qemu-img create -f qcow2 -F qcow2 -b /img/tilo-vm.qcow2 {disk}"),
+                format!("virsh --connect qemu:///session define {disk}.xml"),
+            ]
+        );
+        let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+        assert_eq!(written, domain_xml(&vm, KEY).unwrap());
+        assert!(displayed.iter().all(|c| !c.contains("virt-install")));
+    }
+
+    #[test]
+    fn libvirt_commands() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert_eq!(
+            Libvirt.start(&vm)[0].display(),
+            "virsh --connect qemu:///session start dev"
+        );
+        assert_eq!(
+            Libvirt.destroy(&vm)[1].display(),
+            "virsh --connect qemu:///session undefine dev --nvram"
+        );
+        assert_eq!(
+            Libvirt
+                .screenshot(&vm, Path::new("/tmp/s.png"))
+                .unwrap()
+                .display(),
+            "virsh --connect qemu:///session screenshot dev /tmp/s.png"
+        );
+        let endpoint = Libvirt.ssh_endpoint(&vm, &mut fake("")).unwrap();
+        assert_eq!((endpoint.host.as_str(), endpoint.port), ("127.0.0.1", 2223));
+        let mut runner = fake("other\ndev\n\n");
+        assert_eq!(Libvirt.running(&vm, &mut runner), Some(true));
+        assert_eq!(
+            runner.0[0].display(),
+            "virsh --connect qemu:///session list --name --state-running"
+        );
+        assert_eq!(Libvirt.running(&vm, &mut fake("dev2\n")), Some(false));
+        assert_eq!(Utm.running(&vm, &mut fake("")), None);
+    }
+
+    #[test]
+    fn qemu_wraps_vm_sh() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert_eq!(
+            Qemu.start(&vm)[0].display(),
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh boot --gl --disk /vms/dev.qcow2"
+        );
+        assert_eq!(
+            Qemu.reset(&vm).unwrap().display(),
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_reset"
+        );
+        assert_eq!(
+            Qemu.screenshot(&vm, Path::new("/tmp/out/boot.png"))
+                .unwrap()
+                .display(),
+            "TILO_SSH_PORT=2223 TILO_RUN=/tmp/out bash os/dev/vm.sh shot boot"
+        );
+        assert_eq!(Qemu.destroy(&vm)[1].display(), "rm -f /vms/dev.qcow2");
+    }
+
+    #[test]
+    fn disks_are_made_with_the_qemu_img_resolved_at_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = VmEntry {
+            qemu_img: Some("/usr/bin/qemu-img".into()),
+            disk: Some(dir.path().join("dev.qcow2").display().to_string()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert!(
+            Libvirt.create(&vm, KEY).unwrap()[0]
+                .display()
+                .starts_with("/usr/bin/qemu-img create")
+        );
+        assert!(
+            Qemu.create(&vm, KEY).unwrap()[0]
+                .display()
+                .starts_with("/usr/bin/qemu-img create")
+        );
+    }
+
+    #[test]
+    fn utm_commands() {
+        let entry = VmEntry {
+            template: Some("Tilo Dev".into()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert_eq!(
+            Utm.create(&vm, KEY).unwrap()[0].display(),
+            "utmctl clone 'Tilo Dev' --name dev"
+        );
+        assert_eq!(Utm.stop(&vm)[0].display(), "utmctl stop dev --request");
+        assert_eq!(Utm.serial(&vm).unwrap().display(), "utmctl attach dev");
+        let mut runner = fake("fe80::1\n192.168.64.5\n");
+        let endpoint = Utm.ssh_endpoint(&vm, &mut runner).unwrap();
+        assert_eq!(endpoint.host, "192.168.64.5");
+        assert_eq!(runner.0[0].display(), "utmctl ip-address dev");
+        let no_template = entry_without_template();
+        assert!(matches!(
+            Utm.create(
+                &Vm {
+                    name: "dev",
+                    entry: &no_template
+                },
+                KEY
+            ),
+            Err(CliError::Config { .. })
+        ));
+    }
+
+    fn entry_without_template() -> VmEntry {
+        entry()
+    }
+
+    #[test]
+    fn hyperv_commands_quote_for_powershell() {
+        let entry = VmEntry {
+            disk: Some(r"C:\VMs\it's.vhdx".into()),
+            image: None,
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let create = HyperV.create(&vm, KEY).unwrap();
+        assert_eq!(create.len(), 1);
+        assert_eq!(create[0].program, "powershell.exe");
+        assert_eq!(
+            create[0].args[..3],
+            ["-NoProfile", "-NonInteractive", "-Command"]
+        );
+        let script = &create[0].args[3];
+        assert!(script.contains(r"-VHDPath 'C:\VMs\it''s.vhdx'"), "{script}");
+        assert!(script.contains("-MemoryStartupBytes 4096MB"));
+        assert!(
+            script.contains(r"Set-VMComPort -VMName 'dev' -Number 1 -Path '\\.\pipe\tilo-vm-dev'")
+        );
+        assert_eq!(HyperV.start(&vm)[0].args[3], "Start-VM -Name 'dev'");
+        assert_eq!(
+            HyperV.reset(&vm).unwrap().args[3],
+            "Restart-VM -Name 'dev' -Force"
+        );
+        assert_eq!(
+            HyperV.serial(&vm).unwrap().display(),
+            r"plink.exe -serial \\.\pipe\tilo-vm-dev"
+        );
+        let endpoint = HyperV.ssh_endpoint(&vm, &mut fake("172.20.1.9\n")).unwrap();
+        assert_eq!(endpoint.host, "172.20.1.9");
+    }
+
+    #[test]
+    fn configured_ssh_wins() {
+        let entry = VmEntry {
+            ssh: Some("tilo@10.0.0.2:2200".into()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let mut runner = fake("");
+        let endpoint = Utm.ssh_endpoint(&vm, &mut runner).unwrap();
+        assert_eq!(
+            endpoint,
+            SshEndpoint {
+                user: "tilo".into(),
+                host: "10.0.0.2".into(),
+                port: 2200
+            }
+        );
+        assert!(
+            runner.0.is_empty(),
+            "no query when the address is configured"
+        );
+        assert_eq!(SshEndpoint::parse("vm.local").unwrap().port, 22);
+        assert!(SshEndpoint::parse("@x").is_none());
+    }
+
+    #[test]
+    fn capabilities_match_the_optional_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let entry = VmEntry {
+            template: Some("Tilo Dev".into()),
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        for name in ["libvirt", "qemu", "utm", "hyperv"] {
+            let a = adapter(name).unwrap();
+            let caps = a.capabilities();
+            assert_eq!(caps.serial, a.serial(&vm).is_some(), "{name} serial");
+            assert_eq!(
+                caps.screenshot,
+                a.screenshot(&vm, Path::new("/tmp/x.png")).is_some(),
+                "{name} shot"
+            );
+            assert_eq!(caps.reset, a.reset(&vm).is_some(), "{name} reset");
+            let _ = std::fs::remove_file(domain_xml_path(&disk));
+            let in_args = a.create(&vm, KEY).unwrap().iter().any(|c| {
+                c.args
+                    .iter()
+                    .any(|arg| arg.contains("io.systemd.credential"))
+            });
+            let in_domain = std::fs::read_to_string(domain_xml_path(&disk))
+                .is_ok_and(|xml| xml.contains("io.systemd.credential"));
+            let passes_key = in_args || in_domain;
+            assert_eq!(caps.credentials.is_some(), passes_key, "{name} credentials");
+            assert_eq!(
+                caps.control.is_some(),
+                a.control(&vm, &[]).is_some(),
+                "{name} control"
+            );
+            assert_eq!(
+                caps.direct_kernel,
+                a.redefine(&vm, KEY, &mut fake("")).is_ok() && a.power_off(&vm).is_some(),
+                "{name} direct kernel"
+            );
+        }
+        assert!(adapter("vbox").is_err());
+    }
+
+    #[test]
+    fn libvirt_boots_a_direct_kernel_from_the_registry_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let mut entry = VmEntry {
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let plain = domain_xml(&vm, KEY).unwrap();
+        assert!(!plain.contains("<kernel>"), "{plain}");
+        entry.direct_kernel = Some(crate::config::DirectKernel {
+            kernel: "/c/tilo-kernel/direct/dev/vmlinuz".into(),
+            initrd: "/c/tilo-kernel/direct/dev/initrd.img".into(),
+            cmdline: "root=UUID=1 ro console=ttyS0 a<b".into(),
+            kver: "7.2.5+dev".into(),
+        });
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let xml = domain_xml(&vm, KEY).unwrap();
+        let os = xml
+            .split_once("<os ")
+            .and_then(|(_, rest)| rest.split_once("</os>"))
+            .map(|(os, _)| os)
+            .unwrap();
+        assert!(
+            os.contains("<kernel>/c/tilo-kernel/direct/dev/vmlinuz</kernel>"),
+            "{os}"
+        );
+        assert!(
+            os.contains("<initrd>/c/tilo-kernel/direct/dev/initrd.img</initrd>"),
+            "{os}"
+        );
+        assert!(
+            os.contains("<cmdline>root=UUID=1 ro console=ttyS0 a&lt;b</cmdline>"),
+            "{os}"
+        );
+        // Redefined under the existing domain's UUID, which virsh reports.
+        let mut runner = fake("e7482d68-86d0-43dc-8f53-fc6b508ea038\n");
+        let commands = Libvirt.redefine(&vm, KEY, &mut runner).unwrap();
+        assert_eq!(
+            runner.0[0].display(),
+            "virsh --connect qemu:///session domuuid dev"
+        );
+        assert_eq!(
+            commands[0].display(),
+            format!("virsh --connect qemu:///session define {disk}.xml")
+        );
+        let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+        assert!(written.contains("<kernel>"), "{written}");
+        assert!(
+            written.contains("<uuid>e7482d68-86d0-43dc-8f53-fc6b508ea038</uuid>"),
+            "{written}"
+        );
+        assert_eq!(
+            Libvirt.power_off(&vm).unwrap().display(),
+            "virsh --connect qemu:///session destroy dev"
+        );
+    }
+}

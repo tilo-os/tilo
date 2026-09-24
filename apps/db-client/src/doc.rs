@@ -25,6 +25,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_scalar, read_str};
 
 use crate::model::{ConnectionProfile, Engine};
 use uuid::Uuid;
@@ -136,25 +137,25 @@ impl ConnectionsDoc {
             // let concurrent peer actions converge without resurrecting a
             // second profile. Tombstones are intentionally invisible to the
             // ordinary connection picker.
-            if bool_field(doc, &row, "removed").unwrap_or(false) {
+            if read_bool(doc, &row, "removed").unwrap_or(false) {
                 continue;
             }
-            let id = str_field(doc, &row, "id")
+            let id = read_str(doc, &row, "id")
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .unwrap_or_else(Uuid::new_v4);
-            let engine = Engine::from_key(&str_field(doc, &row, "engine").unwrap_or_default());
+            let engine = Engine::from_key(&read_str(doc, &row, "engine").unwrap_or_default());
             out.push(ConnectionProfile {
                 id,
-                name: str_field(doc, &row, "name").unwrap_or_default(),
+                name: read_str(doc, &row, "name").unwrap_or_default(),
                 engine,
-                host: str_field(doc, &row, "host").unwrap_or_default(),
+                host: read_str(doc, &row, "host").unwrap_or_default(),
                 port: int_field(doc, &row, "port").unwrap_or(0) as u16,
-                database: str_field(doc, &row, "database").unwrap_or_default(),
-                user: str_field(doc, &row, "user").unwrap_or_default(),
+                database: read_str(doc, &row, "database").unwrap_or_default(),
+                user: read_str(doc, &row, "user").unwrap_or_default(),
                 password: String::new(),
-                file_path: str_field(doc, &row, "file_path").unwrap_or_default(),
+                file_path: read_str(doc, &row, "file_path").unwrap_or_default(),
                 connected: false,
-                is_sample: bool_field(doc, &row, "is_sample").unwrap_or(false),
+                is_sample: read_bool(doc, &row, "is_sample").unwrap_or(false),
             });
         }
         out
@@ -166,7 +167,7 @@ impl ConnectionsDoc {
         let target = id.to_string();
         for i in 0..doc.length(&list) {
             if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i)
-                && str_field(doc, &row, "id").as_deref() == Some(target.as_str())
+                && read_str(doc, &row, "id").as_deref() == Some(target.as_str())
             {
                 return Some((i, row));
             }
@@ -195,13 +196,13 @@ impl SavedQueriesDoc {
         (0..doc.length(&list))
             .filter_map(|index| match doc.get(&list, index) {
                 Ok(Some((Value::Object(ObjType::Map), row)))
-                    if !bool_field(doc, &row, "removed").unwrap_or(false) =>
+                    if !read_bool(doc, &row, "removed").unwrap_or(false) =>
                 {
-                    let id = str_field(doc, &row, "id").and_then(|id| Uuid::parse_str(&id).ok())?;
+                    let id = read_str(doc, &row, "id").and_then(|id| Uuid::parse_str(&id).ok())?;
                     Some(SavedQuery {
                         id,
-                        name: str_field(doc, &row, "name").unwrap_or_default(),
-                        sql: str_field(doc, &row, "sql").unwrap_or_default(),
+                        name: read_str(doc, &row, "name").unwrap_or_default(),
+                        sql: read_str(doc, &row, "sql").unwrap_or_default(),
                     })
                 }
                 _ => None,
@@ -210,33 +211,11 @@ impl SavedQueriesDoc {
     }
 }
 
-fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
+/// An `Int`, or a `Uint` reinterpreted as `i64`.
 fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Int(i) => Some(*i),
-            ScalarValue::Uint(u) => Some(*u as i64),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
+    match read_scalar(doc, obj, key)? {
+        ScalarValue::Int(i) => Some(i),
+        ScalarValue::Uint(u) => Some(u as i64),
         _ => None,
     }
 }

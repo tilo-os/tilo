@@ -321,7 +321,7 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
 
     let fetch = || -> Result<String, Box<dyn std::error::Error>> {
         use std::io::Read as _;
-        let client = reqwest::blocking::Client::builder()
+        let client = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(15))
             .build()?;
         let response = client.get(url).send()?.error_for_status()?;
@@ -341,12 +341,7 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
             {
                 match crate::storage::private_root_write_guard(dir) {
                     Ok(_private_write) => {
-                        std::fs::create_dir_all(dir).ok();
-                        let temporary = p.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-                        if std::fs::write(&temporary, &text).is_ok() {
-                            let _ = std::fs::rename(&temporary, p);
-                        }
-                        let _ = std::fs::remove_file(temporary);
+                        let _ = atomic_file::write_creating_parent(p, text.as_bytes());
                     }
                     Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
                 }

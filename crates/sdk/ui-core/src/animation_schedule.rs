@@ -1,5 +1,5 @@
 //! Paces animation-only redraw requests; input and renderer recovery bypass it.
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
@@ -31,7 +31,7 @@ mod tests {
 
     #[test]
     fn animation_schedule_repeated_callbacks_do_not_redraw_or_postpone_tick() {
-        let start = Instant::now();
+        let start = crate::time::now();
         let mut schedule = AnimationSchedule::default();
         let deadline = start + Duration::from_nanos(16_666_667);
         assert_eq!(schedule.poll(start, true), (true, Some(deadline)));
@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn animation_schedule_idle_or_reduced_motion_resets_and_reactivation_is_immediate() {
-        let start = Instant::now();
+        let start = crate::time::now();
         let mut schedule = AnimationSchedule::default();
         assert!(schedule.poll(start, true).0);
         assert_eq!(
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn animation_schedule_late_callback_emits_one_frame_without_catchup_burst() {
-        let start = Instant::now();
+        let start = crate::time::now();
         let mut schedule = AnimationSchedule::default();
         schedule.poll(start, true);
         let late = start + Duration::from_millis(100);

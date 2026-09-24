@@ -1,0 +1,33 @@
+[package]
+name = "tilo-vm"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Host CLI for Tilo dev VMs: per-agent slots, layer swaps and driving"
+
+[lib]
+name = "tilo_vm"
+
+[[bin]]
+name = "tilo-vm"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+clap.workspace = true
+dirs.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tilo-vm-protocol = { path = "../tilo-vm-protocol" }
+toml.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -20,6 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+xdg-paths = { path = "../../../crates/system/xdg-paths" }
 # Threshold-shared Ed25519 identity. Signing goes through the
 # identity's group key; verify is a regular Ed25519 verify against
 # the group public key, so callers only need the verifying-key
@@ -30,9 +31,9 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 collab-types           = { path = "../../collab/collab-types" }
 
 blake3.workspace = true
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 hex.workspace = true
-rand.workspace = true
 semver.workspace = true
 serde.workspace = true
 thiserror.workspace = true

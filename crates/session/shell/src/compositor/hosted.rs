@@ -246,7 +246,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         if let Some(path) = crate::compositor::native::test_control_path(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            std::env::var_os("TILO_TEST_CONTROL"),
+            std::env::var_os(crate::shell::test_control_socket::TEST_CONTROL_ENV),
         ) {
             let socket_path = path;
             tilo_startup_metrics::mark("hosted-event-loop-enter");
@@ -580,7 +580,7 @@ fn bring_up_portal(
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {
-            let conn = zbus::ConnectionBuilder::session()?.build().await?;
+            let conn = zbus::connection::Builder::session()?.build().await?;
             crate::portal::serve(conn, ctx).await
         });
     let handle = match serve_result {

@@ -1,0 +1,44 @@
+# One dev slot's graphical session: a PAM login for tds-<slot> through the
+# production greetd stack, then the production session entry point. Dev
+# image only; tilo-vmd starts, stops and configures it through drop-ins:
+#   50-tilo-vm-layers.conf  ExtensionDirectories= (the slot's layers)
+#   50-tilo-vm-seat.conf    XDG_SEAT=seat-<slot> and the drm backend (headful),
+#                            or seat0/VT 1 while the slot holds the seat0 lease
+# Without a seat drop-in the session is headless. Provisional: seat sessions
+# are validated on a real VM; a seatless user-class session for the headless
+# backend is not yet.
+[Unit]
+Description=Tilo dev session for slot %i
+After=systemd-user-sessions.service systemd-logind.service
+Wants=systemd-logind.service
+
+[Service]
+Type=simple
+User=tds-%i
+PAMName=greetd
+# Match a greetd session, which runs with no ambient capabilities: greetd's
+# worker calls setuid() after pam_open_session, and that uid switch clears
+# the ambient set pam_systemd grants. A PAMName= unit re-raises it after its
+# own uid switch, so drop the one capability pam_systemd adds (it also makes
+# bwrap refuse to start apps directly from the compositor). tilo-vmd checks
+# CapAmb and CapEff of the running session against zero.
+CapabilityBoundingSet=~CAP_WAKE_ALARM
+# A greetd session runs in a login user's domain; a system unit would otherwise
+# run as unconfined_service_t. tilo-vmd checks the session's domain
+# (default unconfined_t, `tilo-vmd rpc --expect-domain`).
+SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+Environment=TILO_VM_BACKEND=headless
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_CLASS=user
+Environment=XDG_SESSION_DESKTOP=tilo
+Environment=LIBSEAT_BACKEND=logind
+# tilo-control reaches the session here (the compositor's dev-overrides
+# feature reads TILO_TEST_CONTROL).
+Environment=TILO_TEST_CONTROL=/run/tilo-vm/%i/control.sock
+RuntimeDirectory=tilo-vm/%i
+# PAM moves the process into session-N.scope, so `journalctl -u` does not
+# see its output; tilo-vm logs reads this identifier instead.
+SyslogIdentifier=tilo-session-%i
+ExecStart=/usr/libexec/tilo-session --backend ${TILO_VM_BACKEND}
+Restart=always
+RestartSec=2

@@ -4,6 +4,7 @@
 //! a comment onto a `comment` mark over the body range carrying the comment id, plus its
 //! author/date/content in the `comments` container.
 
+use crate::codecs::xml_escape::{escape_attr, push_text};
 use crate::model::{DocMut, DocRef, materialize_comments};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
@@ -112,6 +113,11 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
                     append(doc, &cur, &mut cur_len, &txt);
                 }
             }
+            Event::GeneralRef(r) if in_t => {
+                if let Some(c) = crate::codecs::resolve_general_ref(&r) {
+                    append(doc, &cur, &mut cur_len, c.encode_utf8(&mut [0; 4]));
+                }
+            }
             Event::End(e) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
                 b"w:p" => cur = None,
@@ -131,29 +137,6 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 /// Render a comment's paragraphs as `w:comment` inner XML (plain text + tabs/breaks;
 /// richer inline styling in comments is not modeled).
 fn render_comment_body(blocks: &[BlockView]) -> String {
@@ -165,7 +148,7 @@ fn render_comment_body(blocks: &[BlockView]) -> String {
             if !buf.is_empty() {
                 out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
                 for c in buf.chars() {
-                    push_escaped(out, c);
+                    push_text(out, c);
                 }
                 out.push_str("</w:t></w:r>");
                 buf.clear();

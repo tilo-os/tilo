@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::personal_continuity::DeviceId;
@@ -154,7 +155,7 @@ impl RemoteCaptureGrant {
     fn mint() -> Self {
         let mut bytes = [0; 32];
         while bytes == [0; 32] {
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
         }
         Self(bytes)
     }
@@ -287,7 +288,7 @@ impl RemoteCaptureRegistry {
         }
         let mut session_id = [0; 16];
         while session_id == [0; 16] || self.sessions.contains_key(&session_id) {
-            OsRng.fill_bytes(&mut session_id);
+            UnwrapErr(SysRng).fill_bytes(&mut session_id);
         }
         let grant = RemoteCaptureGrant::mint();
         self.sessions.insert(

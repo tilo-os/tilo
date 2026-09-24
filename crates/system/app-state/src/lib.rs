@@ -3,23 +3,21 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Canonical on-disk home for a Tilo app's Automerge document: one file per
-//! package at `$XDG_DATA_HOME/<package-id>/state.automerge`, atomic writes,
-//! a debounced background writer. The path derives only from
-//! `TILO_PACKAGE_ID`, validated so an app can't address another app's
-//! storage or the shared workspace FUSE root.
+//! Persistence for a Tilo app's Automerge documents, through one seam.
 //!
-//! [`Autosave`] appends `save_after(persisted_heads)` (linear write volume,
-//! not quadratic) and round-trips the document's own bytes rather than a
-//! rebuilt `AutoCommit`, so saves stay mergeable with a diverged peer. The
-//! actor id lives in a sidecar for restart continuity; [`DocStore::open`]
-//! takes an exclusive `flock` so two live instances never share one.
+//! Every document lives behind a [`durable_store::DurableStore`] key.
+//! [`FsStore`] is the native implementation: one directory per document
+//! (`<data home>/<package-id>/state.automerge` for a package's own document,
+//! below it for rooms and records), atomic replacement, synced appends, an
+//! actor sidecar for restart continuity and `flock` gates for single or
+//! shared ownership. Identifiers are validated so an app can't address
+//! another app's storage or the shared workspace FUSE root.
 //!
-//! Hosts that own an explicit profile persist records through the
-//! [`durable_store::DurableStore`] seam instead: [`FsStore`] maps its keys
-//! onto the same canonical files, and [`DocOwner`] + [`DocWriter`] give a
-//! document the same validation, repair and append/compact behaviour over
-//! any store.
+//! [`DocOwner`] leases one key and decodes it; [`DocWriter`] persists the
+//! live document without blocking, appending `save_after(sent_heads)`
+//! (linear write volume, not quadratic) until compaction pays off, and
+//! reporting what is actually durable. [`DocStore`] adds the load/save
+//! conveniences and schema policy apps drive by hand, on the same owner.
 
 #![cfg_attr(
     test,
@@ -41,16 +39,17 @@ use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use durable_store::{DurableStore, StorageKey, WriteOp};
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
-mod autosave;
 mod doc_writer;
 mod fs_store;
-pub use autosave::{Autosave, DEFAULT_DEBOUNCE, DurabilitySnapshot};
-pub use doc_writer::{DocOwner, DocWriter, StoredLoad};
+pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
@@ -263,68 +262,35 @@ pub fn validate_record_identity(package: &str, room: &str, record: &str) -> Resu
     validate_record_key(record)
 }
 
-/// The persistent store for one package's Automerge document. Construct
-/// with [`DocStore::open`], then drive by hand ([`DocStore::load_or_new`] +
-/// [`DocStore::save`]) or hand to [`DocStore::autosave`] for debounced writes.
+/// One Automerge document handled by hand: load it, save or append it, and
+/// hand it to a [`DocWriter`] for debounced background writes. A thin policy
+/// layer over a [`DocOwner`] on a [`DurableStore`]; it owns no file
+/// handling of its own.
+///
+/// The launch-environment constructors ([`DocStore::open`],
+/// [`DocStore::open_for`], [`DocStore::open_room`], ...) join the document's
+/// shared writers on an [`FsStore`] rooted at the native data directory, so
+/// two live instances of one app keep appending to one document, as they
+/// always have. [`DocStore::open_canonical_at`] takes the exclusive owner.
 pub struct DocStore {
     package_id: String,
-    dir: PathBuf,
-    document: PathBuf,
-    actor: ActorId,
+    owner: Rc<DocOwner>,
     /// App/document-specific layout understood by this caller. Constructors
     /// default to the toolkit's legacy v1 contract; apps opt into a newer
     /// schema before loading via [`Self::with_schema_version`].
     schema_version: u32,
-    /// Held for as long as the store lives; `None` when another instance already owns the lock.
-    lock: Option<File>,
-    /// Heads the file on disk is known to contain; empty until the first load or save.
+    /// Heads the store is known to hold; empty until the first load or save.
     persisted: Vec<ChangeHash>,
+    /// Whether the store holds any bytes yet; learned on first need.
+    has_base: Option<bool>,
     /// Why [`DocStore::load_or_new`] handed back an empty document instead of
-    /// the one on disk — set only for a refusal that must not be written over;
-    /// e.g. [`Autosave`] switches itself off when this is set.
+    /// the stored one — set only for a refusal that must not be written over;
+    /// e.g. [`DocStore::writer`] hands back a disabled writer when this is set.
     refusal: Option<Refusal>,
-    // Shared for legacy stores, exclusive for canonical owners; acquired before the actor.
-    gate: File,
-    canonical: Option<CanonicalState>,
-    writer_claimed: AtomicBool,
-    #[cfg(test)]
-    faults: std::sync::Arc<TestFaults>,
+    directory: PathBuf,
 }
 
-#[cfg(test)]
-#[derive(Default)]
-struct TestFaults {
-    spawn_failures: std::sync::atomic::AtomicUsize,
-    active_workers: std::sync::atomic::AtomicUsize,
-    max_workers: std::sync::atomic::AtomicUsize,
-    append_prefix: std::sync::Mutex<Option<usize>>,
-    sync_failure: std::sync::Mutex<Option<PathBuf>>,
-    sync_visits: std::sync::Mutex<Vec<PathBuf>>,
-    completion:
-        std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
-}
-
-struct CanonicalState {
-    directory: File,
-    identity: std::sync::Arc<()>,
-    accepted: bool,
-}
-
-/// A validated decoding candidate. No recovered bytes are published until acceptance.
-pub struct CanonicalLoad {
-    doc: AutoCommit,
-    source_bytes: Vec<u8>,
-    repair_bytes: Option<Vec<u8>>,
-    identity: std::sync::Arc<()>,
-}
-
-impl CanonicalLoad {
-    pub fn document(&self) -> &AutoCommit {
-        &self.doc
-    }
-}
-
-/// The document on disk, and why this build would not open it.
+/// The stored document, and why this build would not open it.
 #[derive(Clone, Debug)]
 struct Refusal {
     found: u32,
@@ -361,6 +327,13 @@ impl DocStore {
         Self::open_for(&id)
     }
 
+    /// The store the native host keeps launch-environment documents in: an
+    /// [`FsStore`] over the platform data directory (`$XDG_DATA_HOME`, else
+    /// `~/.local/share`).
+    pub fn native_store() -> Rc<dyn DurableStore> {
+        Rc::new(FsStore::new(cli::data_home()))
+    }
+
     /// Open the store for an explicit package id — for tests and migration
     /// tools; rejects any id that is not a single, non-traversing directory name.
     ///
@@ -370,17 +343,14 @@ impl DocStore {
     /// the package's state directory can't be created, inspected or locked.
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
-        let dir = cli::standalone_state_dir(package_id);
-        Self::open_in(package_id, dir)
+        Self::shared(Self::native_store(), StorageKey::package(package_id))
     }
 
     /// Open the store for **one record** of a package. A record is the unit of
     /// collaboration: one document, one identity, one change graph — Automerge
     /// changes name dependencies by hash, so a change graph can't be served in
-    /// part, meaning separate files per record. `record_key` is validated as
-    /// strictly as a package id. Lands in
-    /// `<package dir>/records/<record_key>/state.automerge`, beside the
-    /// package's own `state.automerge`.
+    /// part, meaning separate documents per record. `record_key` is validated
+    /// as strictly as a package id.
     ///
     /// # Errors
     ///
@@ -390,20 +360,20 @@ impl DocStore {
     pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(record_key)?;
-        let dir = cli::standalone_state_dir(package_id)
-            .join(RECORDS_DIR)
-            .join(record_key);
-        Self::open_in(package_id, dir)
+        Self::shared(
+            Self::native_store(),
+            StorageKey::package_record(package_id, record_key),
+        )
     }
 
     /// Open one record in one collaboration room.  A record id is only
     /// unique *within* a room: a hostile or stale peer must not be able to
-    /// make `uuid:...` in room B resolve to room A's on-disk change graph.
+    /// make `uuid:...` in room B resolve to room A's change graph.
     ///
-    /// This deliberately does not remove the pre-room
-    /// `<package>/records/<record>` location.  Callers may merge that legacy
-    /// document on first open, then persist the merged result here; retaining
-    /// the source makes an interrupted migration recoverable.
+    /// This deliberately does not remove the pre-room package record.
+    /// Callers may merge that legacy document on first open, then persist the
+    /// merged result here; retaining the source makes an interrupted
+    /// migration recoverable.
     ///
     /// # Errors
     ///
@@ -414,15 +384,93 @@ impl DocStore {
         room_key: &str,
         record_key: &str,
     ) -> Result<Self, StoreError> {
+        validate_record_identity(package_id, room_key, record_key)?;
+        Self::shared(
+            Self::native_store(),
+            StorageKey::record(package_id, room_key, record_key),
+        )
+    }
+
+    /// Open the index of **one room** — the list of which records that room
+    /// holds. A sibling of the room's records, so a room id can never resolve
+    /// to a record's document and merge the two.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `package_id` fails [`validate_package_id`] or
+    /// `room_key` fails [`validate_record_key`], or if the room's state
+    /// directory can't be created, inspected or locked.
+    pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(room_key)?;
-        validate_record_key(record_key)?;
-        let dir = cli::standalone_state_dir(package_id)
-            .join(ROOMS_DIR)
-            .join(room_key)
-            .join(RECORDS_DIR)
-            .join(record_key);
-        Self::open_in(package_id, dir)
+        Self::shared(
+            Self::native_store(),
+            StorageKey::room_index(package_id, room_key),
+        )
+    }
+
+    /// Join `key`'s shared writers on `store`.
+    ///
+    /// # Errors
+    /// An exclusive owner holds the key, or the store refuses it.
+    pub fn shared(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
+        let package_id = key.package_id().unwrap_or_default().to_owned();
+        Ok(Self::from_owner(
+            package_id,
+            DocOwner::acquire_shared(store, key)?,
+        ))
+    }
+
+    /// Become `key`'s exclusive owner on `store`.
+    ///
+    /// # Errors
+    /// Another owner holds the key, or the store refuses it.
+    pub fn exclusive(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
+        let package_id = key.package_id().unwrap_or_default().to_owned();
+        Ok(Self::from_owner(package_id, DocOwner::acquire(store, key)?))
+    }
+
+    fn from_owner(package_id: String, owner: DocOwner) -> Self {
+        let directory = owner
+            .label()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        Self {
+            package_id,
+            owner: Rc::new(owner),
+            schema_version: SCHEMA_VERSION,
+            persisted: Vec::new(),
+            has_base: None,
+            refusal: None,
+            directory,
+        }
+    }
+
+    /// A shared writer for the document kept directly in `dir`, for tests
+    /// addressing a directory rather than a package.
+    #[cfg(test)]
+    fn open_in(package_id: &str, dir: &Path) -> Result<Self, StoreError> {
+        let (store, key) = directory_key(dir)?;
+        let mut opened = Self::shared(store, key)?;
+        package_id.clone_into(&mut opened.package_id);
+        Ok(opened)
+    }
+
+    /// The exclusive owner of the document kept directly in `directory`.
+    /// Never adopts stale files. The ownership gate is cooperative: older
+    /// binaries that do not acquire it can still write, so concurrent use of
+    /// one profile with those binaries is unsupported.
+    ///
+    /// # Errors
+    /// Rejects invalid paths, contested gates and every filesystem
+    /// durability failure.
+    pub fn open_canonical_at(package_id: &str, directory: &Path) -> Result<Self, StoreError> {
+        validate_package_id(package_id)?;
+        let (store, key) = directory_key(directory)?;
+        let mut opened = Self::exclusive(store, key)?;
+        package_id.clone_into(&mut opened.package_id);
+        Ok(opened)
     }
 
     /// The old package-global record document path.  Migration code uses this
@@ -469,10 +517,7 @@ impl DocStore {
     ) -> Result<bool, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(room_key)?;
-        claim_legacy_room_migration(
-            &cli::standalone_state_dir(package_id).join(LEGACY_PACKAGE_ROOM_CLAIM),
-            room_key,
-        )
+        Ok(Self::native_store().claim(&StorageKey::package(package_id), room_key)?)
     }
 
     /// The record-level twin of [`Self::claim_legacy_package_migration`].
@@ -488,69 +533,11 @@ impl DocStore {
         room_key: &str,
         record_key: &str,
     ) -> Result<bool, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(room_key)?;
-        validate_record_key(record_key)?;
-        claim_legacy_room_migration(
-            &cli::standalone_state_dir(package_id)
-                .join(RECORDS_DIR)
-                .join(record_key)
-                .join(LEGACY_RECORD_ROOM_CLAIM),
+        validate_record_identity(package_id, room_key, record_key)?;
+        Ok(Self::native_store().claim(
+            &StorageKey::package_record(package_id, record_key),
             room_key,
-        )
-    }
-
-    /// Open the index of **one room** — the list of which records that room
-    /// holds. A sibling directory, not the record itself, so a room id can
-    /// never resolve to a record's document and merge the two. `room_key` is
-    /// validated as strictly as a record key. Lands in
-    /// `<package dir>/rooms/<room_key>/state.automerge`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `package_id` fails [`validate_package_id`] or
-    /// `room_key` fails [`validate_record_key`], or if the room's state
-    /// directory can't be created, inspected or locked.
-    pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(room_key)?;
-        let dir = cli::standalone_state_dir(package_id)
-            .join(ROOMS_DIR)
-            .join(room_key);
-        Self::open_in(package_id, dir)
-    }
-
-    fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
-        // Recovers a pre-existing dir or an older layout's stale file; see `ensure_state_dir`.
-        ensure_state_dir(&dir)?;
-
-        let gate = acquire_gate(&dir.join(CANONICAL_GATE), false)?;
-        let lock = acquire_writer_lock(&dir.join(LOCK_FILE));
-        let actor = if lock.is_some() {
-            load_or_create_actor(&dir.join(ACTOR_FILE))?
-        } else {
-            tracing::warn!(
-                package = package_id,
-                "another instance holds the state lock; running on a fresh automerge actor"
-            );
-            ActorId::random()
-        };
-
-        Ok(Self {
-            package_id: package_id.to_string(),
-            document: dir.join(DOCUMENT_FILE),
-            dir,
-            actor,
-            schema_version: SCHEMA_VERSION,
-            lock,
-            persisted: Vec::new(),
-            refusal: None,
-            gate,
-            canonical: None,
-            writer_claimed: AtomicBool::new(false),
-            #[cfg(test)]
-            faults: std::sync::Arc::default(),
-        })
+        )?)
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
@@ -575,207 +562,12 @@ impl DocStore {
             .join(record))
     }
 
-    /// Open an exclusive canonical owner. Never adopts stale files or falls back to memory.
-    /// The ownership gate is cooperative: older binaries that do not acquire it can still write,
-    /// so concurrent use of one profile with those binaries is unsupported.
-    ///
-    /// # Errors
-    /// Rejects invalid paths, contested gates and every filesystem durability failure.
-    pub fn open_canonical_at(package_id: &str, directory: &Path) -> Result<Self, StoreError> {
-        Self::open_canonical_with(package_id, directory, |_| {})
-    }
-
-    fn open_canonical_with(
-        package_id: &str,
-        directory: &Path,
-        configure: impl FnOnce(&mut Self),
-    ) -> Result<Self, StoreError> {
-        validate_package_id(package_id)?;
-        validate_absolute_directory(directory)?;
-        fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
-        let opened = open_directory(directory, false)
-            .map_err(|e| io_err("opening canonical directory", e))?;
-        let gate = acquire_gate(&directory.join(CANONICAL_GATE), true)?;
-        let actor = load_or_create_actor(&directory.join(ACTOR_FILE))?;
-        let mut store = Self {
-            package_id: package_id.to_owned(),
-            dir: directory.to_path_buf(),
-            document: directory.join(DOCUMENT_FILE),
-            actor,
-            schema_version: SCHEMA_VERSION,
-            lock: None,
-            persisted: Vec::new(),
-            refusal: None,
-            gate,
-            canonical: Some(CanonicalState {
-                directory: opened,
-                identity: std::sync::Arc::new(()),
-                accepted: false,
-            }),
-            writer_claimed: AtomicBool::new(false),
-            #[cfg(test)]
-            faults: std::sync::Arc::default(),
-        };
-        configure(&mut store);
-        store.check_canonical_source()?;
-        store.sync_directory_chain()?;
-        Ok(store)
-    }
-
-    fn canonical_state(&self) -> Result<&CanonicalState, StoreError> {
-        self.canonical.as_ref().ok_or_else(|| {
-            io_err(
-                "canonical mode required",
-                io::Error::from(io::ErrorKind::InvalidInput),
-            )
-        })
-    }
-
-    /// Build a private current-schema candidate without publishing bytes or resetting heads.
-    ///
-    /// # Errors
-    /// Rejects legacy mode and propagates schema-stamp errors.
-    pub fn new_canonical_document(&self) -> Result<AutoCommit, StoreError> {
-        self.canonical_state()?;
-        let mut doc = AutoCommit::new().with_actor(self.actor.clone());
-        doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION))
-            .map_err(|e| self.automerge_error(e))?;
-        Ok(doc)
-    }
-
-    fn automerge_error(&self, source: automerge::AutomergeError) -> StoreError {
-        StoreError::Automerge {
-            path: self.document.clone(),
-            source: Box::new(source),
-        }
-    }
-
-    /// Validate every live schema assignment without coercion or mutation.
-    ///
-    /// # Errors
-    /// Rejects legacy mode, malformed/conflicting schemas and newer schemas.
-    pub fn validate_canonical_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
-        self.canonical_state()?;
-        validate_canonical_schema_of(doc, &self.document)
-    }
-
-    /// Decode an existing file, retaining any repair privately for identity validation.
-    ///
-    /// # Errors
-    /// Refuses empty, corrupt, changed or unsupported documents without publishing a repair.
-    pub fn load_canonical(&self) -> Result<Option<CanonicalLoad>, StoreError> {
-        self.load_canonical_with_recovery(true)
-    }
-
-    /// Decode a complete canonical graph without authorizing partial-tail repair.
-    /// The candidate stays bound to this owner and its exact source bytes until acceptance.
-    ///
-    /// # Errors
-    /// Refuses empty, incomplete, corrupt, changed or unsupported documents.
-    pub fn load_canonical_complete(&self) -> Result<Option<CanonicalLoad>, StoreError> {
-        self.load_canonical_with_recovery(false)
-    }
-
-    fn load_canonical_with_recovery(
-        &self,
-        recover_partial: bool,
-    ) -> Result<Option<CanonicalLoad>, StoreError> {
-        self.check_canonical_source()?;
-        let source_bytes = match fs::read(&self.document) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(io_err("reading canonical document", e)),
-        };
-        self.canonical_state()?;
-        let (doc, repair_bytes) = decode_canonical(&source_bytes, recover_partial, &self.document)?;
-        Ok(Some(CanonicalLoad {
-            doc,
-            source_bytes,
-            repair_bytes,
-            identity: self.canonical_state()?.identity.clone(),
-        }))
-    }
-
-    /// Accept this owner's exact validated candidate and acknowledge its durable on-disk heads.
-    ///
-    /// # Errors
-    /// Refuses a changed source/owner or any publication/file/directory synchronization failure.
-    pub fn accept_canonical(
-        &mut self,
-        mut loaded: CanonicalLoad,
-    ) -> Result<AutoCommit, StoreError> {
-        self.check_canonical_source()?;
-        if !std::sync::Arc::ptr_eq(&loaded.identity, &self.canonical_state()?.identity)
-            || fs::read(&self.document).ok().as_ref() != Some(&loaded.source_bytes)
-        {
-            return Err(StoreError::SourceChanged {
-                path: self.document.clone(),
-            });
-        }
-        self.validate_canonical_schema(&loaded.doc)?;
-        if let Some(bytes) = loaded.repair_bytes {
-            self.write_full(&bytes)?;
-        } else {
-            let mut options = OpenOptions::new();
-            options.read(true);
-            #[cfg(windows)]
-            options.write(true);
-            options
-                .open(&self.document)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| io_err("syncing accepted document", e))?;
-            self.sync_directory_chain()?;
-        }
-        loaded.doc.set_actor(self.actor.clone());
-        self.persisted = loaded.doc.get_heads();
-        if let Some(state) = self.canonical.as_mut() {
-            state.accepted = true;
-        }
-        Ok(loaded.doc)
-    }
-
-    fn check_canonical_source(&self) -> Result<(), StoreError> {
-        let state = self.canonical_state()?;
-        for (opened, path) in [
-            (&state.directory, self.dir.clone()),
-            (&self.gate, self.dir.join(CANONICAL_GATE)),
-        ] {
-            if !same_file(opened, &path) {
-                return Err(StoreError::SourceChanged { path });
-            }
-        }
-        Ok(())
-    }
-
-    fn sync_directory_chain(&self) -> Result<(), StoreError> {
-        self.check_canonical_source()?;
-        sync_directory_ancestors(&self.dir, |path| {
-            #[cfg(test)]
-            {
-                self.faults
-                    .sync_visits
-                    .lock()
-                    .unwrap()
-                    .push(path.to_path_buf());
-                if self.faults.sync_failure.lock().unwrap().as_deref() == Some(path) {
-                    return Err(io_err(
-                        "injected directory sync failure",
-                        io::Error::from(io::ErrorKind::Unsupported),
-                    ));
-                }
-            }
-            let _ = path;
-            Ok(())
-        })?;
-        self.check_canonical_source()
-    }
-
     pub fn package_id(&self) -> &str {
         &self.package_id
     }
 
     /// Select the app-owned CRDT layout this store reads and writes. Call
-    /// this before `load`, `load_or_new`, or creating an autosave handle.
+    /// this before `load`, `load_or_new`, or creating a writer.
     #[must_use]
     pub fn with_schema_version(mut self, version: u32) -> Self {
         self.schema_version = version;
@@ -787,25 +579,27 @@ impl DocStore {
         self.schema_version
     }
 
-    /// The directory holding the document, its actor sidecar and its lock.
+    /// The directory holding the document, its actor sidecar and its locks,
+    /// where the store keeps one.
     pub fn dir(&self) -> &Path {
-        &self.dir
+        &self.directory
     }
 
+    /// See [`DocOwner::label`].
     pub fn document_path(&self) -> &Path {
-        &self.document
+        self.owner.label()
     }
 
     /// The Automerge actor this store writes as.
     pub fn actor(&self) -> &ActorId {
-        &self.actor
+        self.owner.actor()
     }
 
-    /// Whether this process won the single-writer lock. `false` means another
-    /// instance is live: writes still succeed (last writer wins, merged on next
-    /// load) but the actor id is fresh rather than the sidecar's.
+    /// Whether this process continues the stored writer identity. `false`
+    /// means another instance is live: writes still succeed (merged on next
+    /// load) but the actor id is fresh rather than the stored one.
     pub fn is_exclusive_writer(&self) -> bool {
-        self.canonical.is_some() || self.lock.is_some()
+        self.owner.is_primary()
     }
 
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
@@ -814,7 +608,7 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the document file exists but can't be read, if its
+    /// Returns an error if the document exists but can't be read, if its
     /// bytes aren't a loadable Automerge document, or if it declares a schema
     /// layout newer than this build understands ([`StoreError::NewerSchema`]).
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
@@ -822,17 +616,16 @@ impl DocStore {
     }
 
     fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
-        let bytes = match fs::read(&self.document) {
-            Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(io_err(format!("reading {}", self.document.display()), e));
-            }
+        let Some(stored) = self.owner.stored()? else {
+            self.has_base = Some(false);
+            return Ok(None);
         };
+        let bytes = stored.bytes;
+        self.has_base = Some(!bytes.is_empty());
         if bytes.is_empty() {
             return if complete {
                 Err(StoreError::EmptyExistingDocument {
-                    path: self.document.clone(),
+                    path: self.document_path().to_path_buf(),
                 })
             } else {
                 Ok(None)
@@ -847,7 +640,7 @@ impl DocStore {
             }),
         )
         .map_err(|source| StoreError::Automerge {
-            path: self.document.clone(),
+            path: self.document_path().to_path_buf(),
             source: Box::new(source),
         })?;
         // Check before reading any value: a newer layout may reuse a key with a
@@ -855,12 +648,12 @@ impl DocStore {
         let found = schema_version_of(&doc);
         if found > self.schema_version {
             return Err(StoreError::NewerSchema {
-                path: self.document.clone(),
+                path: self.document_path().to_path_buf(),
                 found,
                 understood: self.schema_version,
             });
         }
-        doc.set_actor(self.actor.clone());
+        doc.set_actor(self.actor().clone());
         self.persisted = doc.get_heads();
         Ok(Some(doc))
     }
@@ -899,7 +692,7 @@ impl DocStore {
             return Ok(Some(doc));
         }
         migrate(&mut doc, found, self.schema_version).map_err(|message| StoreError::Migration {
-            path: self.document.clone(),
+            path: self.document_path().to_path_buf(),
             from: found,
             to: self.schema_version,
             message,
@@ -948,27 +741,29 @@ impl DocStore {
     pub fn new_document(&mut self) -> AutoCommit {
         self.persisted = Vec::new();
         self.refusal = None;
-        let mut doc = AutoCommit::new().with_actor(self.actor.clone());
+        let mut doc = AutoCommit::new().with_actor(self.actor().clone());
         stamp_schema_version(&mut doc, self.schema_version);
         doc
     }
 
-    /// Rewrite the whole document atomically: temp file, `fsync`, rename — a
-    /// crash at any point leaves either the previous or the new file complete,
-    /// never half-written. Refuses when [`DocStore::refusal`] is set, since the
-    /// in-memory document is an empty stand-in and writing it out would delete
-    /// the user's actual data.
+    /// Replace the whole document and wait until the store has committed it
+    /// — for [`FsStore`], a synced temporary file renamed into place, so a
+    /// crash leaves either the previous or the new document complete.
+    /// Refuses when [`DocStore::refusal`] is set, since the in-memory
+    /// document is an empty stand-in and writing it out would delete the
+    /// user's actual data.
     ///
     /// # Errors
     ///
     /// Returns an error if [`DocStore::refusal`] is set (writing would
-    /// discard a newer-schema document already on disk), or if the file
-    /// can't be written.
+    /// discard a newer-schema document already stored), or if the store
+    /// fails to commit it.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
-        self.write_full(&bytes)?;
+        self.commit(WriteOp::Replace(bytes))?;
+        self.has_base = Some(true);
         self.persisted = doc.get_heads();
         Ok(())
     }
@@ -979,21 +774,21 @@ impl DocStore {
         match &self.refusal {
             None => Ok(()),
             Some(r) => Err(StoreError::NewerSchema {
-                path: self.document.clone(),
+                path: self.document_path().to_path_buf(),
                 found: r.found,
                 understood: self.schema_version,
             }),
         }
     }
 
-    /// Append only the changes `doc` has that the file does not. Returns bytes
-    /// appended (`0` when idle). Refuses for the same data-loss reason as
-    /// [`DocStore::save`].
+    /// Append only the changes `doc` has that the store does not, and wait
+    /// for the store to commit them. Returns bytes appended (`0` when idle).
+    /// Refuses for the same data-loss reason as [`DocStore::save`].
     ///
     /// # Errors
     ///
-    /// Returns an error if [`DocStore::refusal`] is set, or if the file
-    /// can't be written.
+    /// Returns an error if [`DocStore::refusal`] is set, or if the store
+    /// fails to commit the changes.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc, self.schema_version);
@@ -1001,9 +796,16 @@ impl DocStore {
         if heads == self.persisted {
             return Ok(0);
         }
-        // No base file yet: seed a full save (compresses far better than raw change
-        // chunks with no document chunk in front).
-        if !self.document.exists() {
+        let has_base = match self.has_base {
+            Some(known) => known,
+            None => self
+                .owner
+                .stored()?
+                .is_some_and(|stored| !stored.bytes.is_empty()),
+        };
+        // Nothing stored yet: seed a full save (compresses far better than raw
+        // change chunks with no document chunk in front).
+        if !has_base {
             self.save(doc)?;
             return Ok(0);
         }
@@ -1012,9 +814,59 @@ impl DocStore {
             self.persisted = heads;
             return Ok(0);
         }
-        self.append_bytes(&delta)?;
+        let len = delta.len();
+        self.commit(WriteOp::Append(delta))?;
         self.persisted = heads;
-        Ok(delta.len())
+        Ok(len)
+    }
+
+    /// Whether the store holds anything for this document, even bytes that
+    /// would not load.
+    ///
+    /// # Errors
+    /// A failure reading the store.
+    pub fn has_stored(&self) -> Result<bool, StoreError> {
+        Ok(self.owner.stored()?.is_some())
+    }
+
+    /// Merge the document another key of the same store holds (a retained
+    /// pre-room source) into this one and save the result. The source is
+    /// left untouched. `false` when the source holds nothing.
+    ///
+    /// # Errors
+    /// The source can't be read or decoded, or the merged save fails.
+    pub fn import_from(&mut self, source: &StorageKey) -> Result<bool, StoreError> {
+        let Some(stored) = self.owner.store().read(source)? else {
+            return Ok(false);
+        };
+        let label = self
+            .owner
+            .store()
+            .local_path(source)
+            .unwrap_or_else(|| PathBuf::from(source.to_string()));
+        self.merge_bytes(&stored.bytes, &label)
+    }
+
+    /// Submit one write through the owner and wait for its outcome.
+    fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
+        let store = self.owner.store();
+        let key = self.owner.key();
+        let writer = self.owner.unstored_writer();
+        let revision = store.write(key, op, writer.as_deref())?;
+        match store.flush(Some(key)) {
+            Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+        if let durable_store::Durability::Failed(message) = store.durability(key, revision) {
+            return Err(io_err(
+                format!("writing {}", self.document_path().display()),
+                io::Error::other(message),
+            ));
+        }
+        if writer.is_some() {
+            self.owner.note_writer_stored();
+        }
+        Ok(())
     }
 
     /// Adopt a document an older release wrote elsewhere, merging into the
@@ -1029,17 +881,23 @@ impl DocStore {
     /// resulting save fails.
     pub fn migrate_from(&mut self, legacy: &Path) -> Result<bool, StoreError> {
         let bytes = match fs::read(legacy) {
-            Ok(b) if !b.is_empty() => b,
-            Ok(_) => return Ok(false),
+            Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(io_err(format!("reading {}", legacy.display()), e)),
         };
+        self.merge_bytes(&bytes, legacy)
+    }
+
+    fn merge_bytes(&mut self, bytes: &[u8], label: &Path) -> Result<bool, StoreError> {
+        if bytes.is_empty() {
+            return Ok(false);
+        }
         let mut incoming = AutoCommit::load_with_options(
-            &bytes,
+            bytes,
             LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
         )
         .map_err(|source| StoreError::Automerge {
-            path: legacy.to_path_buf(),
+            path: label.to_path_buf(),
             source: Box::new(source),
         })?;
 
@@ -1050,73 +908,51 @@ impl DocStore {
         current
             .merge(&mut incoming)
             .map_err(|source| StoreError::Automerge {
-                path: legacy.to_path_buf(),
+                path: label.to_path_buf(),
                 source: Box::new(source),
             })?;
         self.save(&mut current)?;
         Ok(true)
     }
 
-    /// Hand the store to a background thread that coalesces a burst of edits
-    /// into one write. See [`Autosave`].
-    pub fn autosave(self, debounce: std::time::Duration) -> Autosave {
-        Autosave::spawn(self, debounce)
+    /// A [`DocWriter`] continuing this document in the background: a burst
+    /// of edits becomes one write. Seed it with the loaded document (see
+    /// [`DocWriter::seed`]). A refused store hands back a disabled writer,
+    /// so the stand-in document never reaches storage.
+    pub fn writer(self) -> DocWriter {
+        if let Some(refusal) = &self.refusal {
+            return DocWriter::disabled(refusal.message.clone());
+        }
+        if !self.persisted.is_empty() {
+            let base = self
+                .owner
+                .stored()
+                .ok()
+                .flatten()
+                .map_or(0, |stored| stored.bytes.len());
+            self.owner.adopt(self.persisted.clone(), base);
+        }
+        DocWriter::try_start(&self.owner)
+            .unwrap_or_else(|error| DocWriter::disabled(error.to_string()))
     }
+}
 
-    /// Extend the document file with raw change chunks; caller must ensure the
-    /// chunks aren't already in the file (both [`DocStore::append`] and
-    /// [`Autosave`] derive them from `save_after`).
-    pub(crate) fn append_bytes(&self, delta: &[u8]) -> Result<(), StoreError> {
-        if delta.is_empty() {
-            return Ok(());
-        }
-        if self.canonical.is_some() {
-            self.check_canonical_source()?;
-        }
-        let mut f = OpenOptions::new()
-            .create(self.canonical.is_none())
-            .append(true)
-            .open(&self.document)
-            .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
-        #[cfg(test)]
-        let injected_prefix = self.faults.append_prefix.lock().unwrap().take();
-        #[cfg(test)]
-        if let Some(prefix) = injected_prefix {
-            f.write_all(&delta[..prefix.min(delta.len())]).unwrap();
-            f.sync_all().unwrap();
-            return Err(io_err(
-                "injected append failure after prefix",
-                io::Error::from(io::ErrorKind::WriteZero),
-            ));
-        }
-        f.write_all(delta)
-            .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
-        f.sync_all()
-            .map_err(|e| io_err(format!("syncing {}", self.document.display()), e))?;
-        Ok(())
-    }
-
-    pub(crate) fn write_full(&self, bytes: &[u8]) -> Result<(), StoreError> {
-        if self.canonical.is_some() {
-            self.check_canonical_source()?;
-        } else {
-            fs::create_dir_all(&self.dir)
-                .map_err(|e| io_err(format!("creating {}", self.dir.display()), e))?;
-        }
-        atomic_file::write(&self.document, bytes)
-            .map_err(|e| io_err(format!("writing {}", self.document.display()), e))?;
-        if self.canonical.is_some() {
-            self.sync_directory_chain()?;
-        }
-        #[cfg(test)]
-        let completion = self.faults.completion.lock().unwrap().take();
-        #[cfg(test)]
-        if let Some((reached, resume)) = completion {
-            reached.send(()).unwrap();
-            resume.recv().unwrap();
-        }
-        Ok(())
-    }
+/// The store and key addressing the document kept directly in `directory`.
+fn directory_key(directory: &Path) -> Result<(Rc<dyn DurableStore>, StorageKey), StoreError> {
+    validate_absolute_directory(directory)?;
+    let (Some(root), Some(name)) = (
+        directory.parent(),
+        directory.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Err(io_err(
+            "a document directory needs a named parent",
+            io::Error::from(io::ErrorKind::InvalidInput),
+        ));
+    };
+    Ok((
+        Rc::new(FsStore::new(root)) as Rc<dyn DurableStore>,
+        StorageKey::package(name),
+    ))
 }
 
 fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
@@ -1591,29 +1427,6 @@ fn acquire_writer_lock(_path: &Path) -> Option<File> {
     None
 }
 
-/// Read the actor sidecar, creating a fresh identity the first time.
-fn load_or_create_actor(path: &Path) -> Result<ActorId, StoreError> {
-    match fs::read_to_string(path) {
-        Ok(s) => {
-            if let Ok(actor) = ActorId::try_from(s.trim()) {
-                return Ok(actor);
-            }
-            tracing::warn!(
-                path = %path.display(),
-                "actor sidecar is unreadable; minting a new automerge actor"
-            );
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io_err(format!("reading {}", path.display()), e)),
-    }
-    let actor = ActorId::random();
-    // Atomic so a crash here can't leave a truncated hex string that would
-    // silently downgrade every future launch to a new identity.
-    atomic_file::write(path, actor.to_hex_string().as_bytes())
-        .map_err(|e| io_err(format!("writing {}", path.display()), e))?;
-    Ok(actor)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1652,7 +1465,7 @@ mod tests {
     fn legacy_schema_marker_refuses_newer_documents_without_rewriting() {
         for current in [None, Some(1_u64)] {
             let tmp = tempfile::tempdir().unwrap();
-            let mut store = DocStore::open_in("dev.tilo.notes", tmp.path().to_path_buf()).unwrap();
+            let mut store = DocStore::open_in("dev.tilo.notes", tmp.path()).unwrap();
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "qos:schema_version", 9_u64).unwrap();
             if let Some(value) = current {
@@ -1672,18 +1485,16 @@ mod tests {
 
     #[test]
     fn canonical_schema_validates_legacy_assignments_too() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = DocStore::open_canonical_at("dev.tilo.notes", tmp.path()).unwrap();
         let mut doc = AutoCommit::new();
         doc.put(ROOT, SCHEMA_VERSION_KEY, 1_u64).unwrap();
         doc.put(ROOT, "qos:schema_version", 9_u64).unwrap();
         assert!(matches!(
-            store.validate_canonical_schema(&doc),
+            validate_canonical_schema_of(&doc, Path::new("doc")),
             Err(StoreError::NewerSchema { found: 9, .. })
         ));
         doc.put(ROOT, "qos:schema_version", "invalid").unwrap();
         assert!(matches!(
-            store.validate_canonical_schema(&doc),
+            validate_canonical_schema_of(&doc, Path::new("doc")),
             Err(StoreError::InvalidSchema { .. })
         ));
     }
@@ -1716,8 +1527,7 @@ mod tests {
     #[test]
     fn complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store =
-            DocStore::open_in("dev.qos.complete-load", tmp.path().to_path_buf()).unwrap();
+        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
         let mut doc = store.new_document();
         doc.put(ROOT, "body", "first").unwrap();
         let mut bytes = doc.save();
@@ -1747,8 +1557,7 @@ mod tests {
     #[test]
     fn complete_load_accepts_full_history_and_distinguishes_missing_from_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store =
-            DocStore::open_in("dev.qos.complete-load", tmp.path().to_path_buf()).unwrap();
+        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
         assert!(store.load_complete().unwrap().is_none());
         fs::write(store.document_path(), []).unwrap();
         assert!(matches!(
@@ -1768,122 +1577,6 @@ mod tests {
         assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
     }
 
-    #[test]
-    fn canonical_directory_sync_failure_is_retried_even_when_ancestors_exist() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("profile/package/rooms/room/records/record");
-        let obligation = fs::canonicalize(tmp.path()).unwrap().join("profile");
-        let faults = std::sync::Arc::new(TestFaults::default());
-        *faults.sync_failure.lock().unwrap() = Some(obligation.clone());
-        let result = DocStore::open_canonical_with("so.tilo.test", &path, |store| {
-            store.faults = faults.clone();
-        });
-        assert!(result.is_err());
-        assert!(path.is_dir());
-        assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
-        *faults.sync_failure.lock().unwrap() = None;
-        faults.sync_visits.lock().unwrap().clear();
-        let store = DocStore::open_canonical_with("so.tilo.test", &path, |store| {
-            store.faults = faults.clone();
-        })
-        .unwrap();
-        assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
-        let physical = fs::canonicalize(&path).unwrap();
-        let expected: Vec<_> = physical.ancestors().map(Path::to_path_buf).collect();
-        #[cfg(windows)]
-        let expected: Vec<_> = {
-            let profile = fs::canonicalize(dirs::home_dir().unwrap()).unwrap();
-            assert!(physical.starts_with(&profile));
-            expected
-                .into_iter()
-                .filter(|path| path.starts_with(&profile))
-                .collect()
-        };
-        assert_eq!(*faults.sync_visits.lock().unwrap(), expected);
-        let mut doc = store.new_canonical_document().unwrap();
-        doc.put(ROOT, "body", "visible").unwrap();
-        *faults.sync_failure.lock().unwrap() = Some(physical);
-        assert!(store.write_full(&doc.save()).is_err());
-        assert_eq!(
-            text_of(
-                &AutoCommit::load(&fs::read(store.document_path()).unwrap()).unwrap(),
-                "body"
-            )
-            .as_deref(),
-            Some("visible")
-        );
-        drop(store);
-        let mut reopen = DocStore::open_canonical_at("so.tilo.test", &path).unwrap();
-        let loaded = reopen.load_canonical().unwrap().unwrap();
-        reopen.accept_canonical(loaded).unwrap();
-    }
-
-    #[test]
-    fn canonical_missing_or_replaced_directory_and_gate_never_recreated() {
-        for replace_gate in [false, true] {
-            let tmp = TempDir::new().unwrap();
-            let path = tmp.path().join("record");
-            let store = DocStore::open_canonical_at("so.tilo.test", &path).unwrap();
-            if replace_gate {
-                fs::remove_file(path.join(CANONICAL_GATE)).unwrap();
-                fs::write(path.join(CANONICAL_GATE), b"replacement").unwrap();
-            } else {
-                #[cfg(windows)]
-                {
-                    // Windows prevents moving a directory with an open child
-                    // handle. Verify that protection and its lifetime, rather
-                    // than assuming the Unix rename operation can succeed.
-                    let moved = tmp.path().join("moved");
-                    let error = fs::rename(&path, &moved).unwrap_err();
-                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-                    assert!(path.is_dir());
-                    assert!(!moved.exists());
-                    store.write_full(b"still owned").unwrap();
-                    assert_eq!(fs::read(path.join(DOCUMENT_FILE)).unwrap(), b"still owned");
-                    drop(store);
-                    fs::rename(&path, &moved).unwrap();
-                    assert!(!path.exists());
-                    assert_eq!(fs::read(moved.join(DOCUMENT_FILE)).unwrap(), b"still owned");
-                    continue;
-                }
-                #[cfg(not(windows))]
-                fs::rename(&path, tmp.path().join("moved")).unwrap();
-            }
-            assert!(matches!(
-                store.write_full(b"forbidden"),
-                Err(StoreError::SourceChanged { .. })
-            ));
-            assert!(matches!(
-                store.append_bytes(b"forbidden"),
-                Err(StoreError::SourceChanged { .. })
-            ));
-            assert_eq!(path.exists(), replace_gate);
-        }
-    }
-
-    #[test]
-    fn canonical_empty_corrupt_and_changed_sources_are_never_published() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        assert!(store.load_canonical().unwrap().is_none());
-        for bytes in [b"".as_slice(), b"not automerge".as_slice()] {
-            fs::write(store.document_path(), bytes).unwrap();
-            assert!(store.load_canonical().is_err());
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-        }
-        let mut doc = store.new_canonical_document().unwrap();
-        doc.put(ROOT, "body", "original").unwrap();
-        let bytes = doc.save();
-        fs::write(store.document_path(), &bytes).unwrap();
-        let loaded = store.load_canonical().unwrap().unwrap();
-        fs::write(store.document_path(), b"replacement").unwrap();
-        assert!(matches!(
-            store.accept_canonical(loaded),
-            Err(StoreError::SourceChanged { .. })
-        ));
-        assert_eq!(fs::read(store.document_path()).unwrap(), b"replacement");
-    }
-
     fn with_partial_tail(doc: &mut AutoCommit) -> Vec<u8> {
         let heads = doc.get_heads();
         let mut bytes = doc.save();
@@ -1893,7 +1586,7 @@ mod tests {
         bytes
     }
 
-    fn assert_malformed_schemas_are_rejected(store: &DocStore) {
+    fn assert_malformed_schemas_are_rejected() {
         for value in [
             ScalarValue::Int(-1),
             ScalarValue::Int(i64::MAX),
@@ -1919,12 +1612,10 @@ mod tests {
                 } else {
                     doc.save()
                 };
-                fs::write(store.document_path(), &bytes).unwrap();
                 assert!(matches!(
-                    store.load_canonical(),
+                    decode_canonical(&bytes, true, Path::new("doc")),
                     Err(StoreError::InvalidSchema { .. })
                 ));
-                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
             }
         }
         let mut object = AutoCommit::new();
@@ -1932,12 +1623,12 @@ mod tests {
             .put_object(ROOT, SCHEMA_VERSION_KEY, ObjType::Map)
             .unwrap();
         assert!(matches!(
-            store.validate_canonical_schema(&object),
+            validate_canonical_schema_of(&object, Path::new("doc")),
             Err(StoreError::InvalidSchema { .. })
         ));
     }
 
-    fn assert_supported_schemas_are_nonmutating(store: &DocStore) {
+    fn assert_supported_schemas_are_nonmutating() {
         for value in [
             None,
             Some(ScalarValue::Int(0)),
@@ -1956,30 +1647,22 @@ mod tests {
                 } else {
                     doc.save()
                 };
-                fs::write(store.document_path(), &bytes).unwrap();
                 if newer {
                     assert!(matches!(
-                        store.load_canonical(),
+                        decode_canonical(&bytes, true, Path::new("doc")),
                         Err(StoreError::NewerSchema { .. })
                     ));
                 } else {
-                    let loaded = store.load_canonical().unwrap().unwrap();
+                    let loaded = decode_canonical(&bytes, true, Path::new("doc")).unwrap();
                     if value.is_none() {
-                        assert!(
-                            loaded
-                                .document()
-                                .get(ROOT, SCHEMA_VERSION_KEY)
-                                .unwrap()
-                                .is_none()
-                        );
+                        assert!(loaded.0.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none());
                     }
                 }
-                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
             }
         }
     }
 
-    fn assert_schema_conflicts_are_checked(store: &mut DocStore) {
+    fn assert_schema_conflicts_are_checked() {
         for (left, right, accepted) in [
             (ScalarValue::Int(1), ScalarValue::Uint(1), true),
             (ScalarValue::Uint(0), ScalarValue::Uint(1), false),
@@ -1990,21 +1673,19 @@ mod tests {
             b.put(ROOT, SCHEMA_VERSION_KEY, right).unwrap();
             a.merge(&mut b).unwrap();
             let bytes = a.save();
-            fs::write(store.document_path(), &bytes).unwrap();
             if accepted {
-                let loaded = store.load_canonical().unwrap().unwrap();
-                let restored = store.accept_canonical(loaded).unwrap();
+                let loaded = decode_canonical(&bytes, true, Path::new("doc")).unwrap();
+                let restored = loaded.0;
                 assert_eq!(restored.get_all(ROOT, SCHEMA_VERSION_KEY).unwrap().len(), 2);
             } else {
                 assert!(matches!(
-                    store.load_canonical(),
+                    decode_canonical(&bytes, true, Path::new("doc")),
                     Err(StoreError::InvalidSchema {
                         reason: "conflicting schema versions",
                         ..
                     })
                 ));
             }
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
         }
         let mut supported_winner_seen = false;
         for swap in [false, true] {
@@ -2017,12 +1698,10 @@ mod tests {
             a.merge(&mut b).unwrap();
             supported_winner_seen |= schema_version_of(&a) == 1;
             let bytes = a.save();
-            fs::write(store.document_path(), &bytes).unwrap();
             assert!(matches!(
-                store.load_canonical(),
+                decode_canonical(&bytes, true, Path::new("doc")),
                 Err(StoreError::NewerSchema { found: 2, .. })
             ));
-            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
         }
         assert!(
             supported_winner_seen,
@@ -2032,69 +1711,17 @@ mod tests {
 
     #[test]
     fn canonical_schema_checks_all_live_values_without_mutation() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        assert_malformed_schemas_are_rejected(&store);
-        assert_supported_schemas_are_nonmutating(&store);
-        assert_schema_conflicts_are_checked(&mut store);
-    }
-
-    #[test]
-    fn canonical_prefix_repair_sync_failure_leaves_visible_bytes_unacknowledged() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        let mut doc = store.new_canonical_document().unwrap();
-        doc.put(ROOT, "body", "prefix").unwrap();
-        let torn = with_partial_tail(&mut doc);
-        fs::write(store.document_path(), &torn).unwrap();
-        let loaded = store.load_canonical().unwrap().unwrap();
-        *store.faults.sync_failure.lock().unwrap() = Some(fs::canonicalize(tmp.path()).unwrap());
-        assert!(store.accept_canonical(loaded).is_err());
-        assert!(store.persisted.is_empty());
-        assert!(!store.canonical_state().unwrap().accepted);
-        assert!(AutoCommit::load(&fs::read(store.document_path()).unwrap()).is_ok());
-        *store.faults.sync_failure.lock().unwrap() = None;
-        let loaded = store.load_canonical().unwrap().unwrap();
-        store.accept_canonical(loaded).unwrap();
-        assert!(store.canonical_state().unwrap().accepted);
-    }
-
-    #[test]
-    fn canonical_recovery_waits_for_acceptance_and_is_bound_to_its_store() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        let mut doc = store.new_canonical_document().unwrap();
-        doc.put(ROOT, "body", "prefix").unwrap();
-        let heads = doc.get_heads();
-        let mut bytes = doc.save();
-        doc.put(ROOT, "body", "torn").unwrap();
-        let tail = doc.save_after(&heads);
-        bytes.extend_from_slice(&tail[..tail.len() / 2]);
-        fs::write(store.document_path(), &bytes).unwrap();
-        let loaded = store.load_canonical().unwrap().unwrap();
-        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-        assert_eq!(
-            text_of(loaded.document(), "body").as_deref(),
-            Some("prefix")
-        );
-        let other = TempDir::new().unwrap();
-        let mut wrong = DocStore::open_canonical_at("so.tilo.test", other.path()).unwrap();
-        assert!(matches!(
-            wrong.accept_canonical(loaded),
-            Err(StoreError::SourceChanged { .. })
-        ));
-        let loaded = store.load_canonical().unwrap().unwrap();
-        store.accept_canonical(loaded).unwrap();
-        assert!(AutoCommit::load(&fs::read(store.document_path()).unwrap()).is_ok());
+        assert_malformed_schemas_are_rejected();
+        assert_supported_schemas_are_nonmutating();
+        assert_schema_conflicts_are_checked();
     }
 
     #[test]
     fn canonical_gate_blocks_legacy_before_actor_creation() {
         let tmp = TempDir::new().unwrap();
-        // The canonical protocol reserves this gate before touching actor or document.
-        let gate_path = tmp.path().join("canonical.lock");
-        let gate = acquire_writer_lock(&gate_path).unwrap();
-        let result = DocStore::open_in("so.tilo.test", tmp.path().to_path_buf());
+        // The exclusive owner holds this gate before touching actor or document.
+        let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
+        let result = DocStore::open_in("so.tilo.test", tmp.path());
         assert!(
             result.is_err(),
             "a legacy opener must respect the canonical gate"
@@ -2102,7 +1729,7 @@ mod tests {
         assert!(!tmp.path().join(ACTOR_FILE).exists());
         assert!(!tmp.path().join(DOCUMENT_FILE).exists());
         drop(gate);
-        assert!(DocStore::open_in("so.tilo.test", tmp.path().to_path_buf()).is_ok());
+        assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
     }
 
     fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
@@ -2686,7 +2313,7 @@ mod tests {
             DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
         let mut doc = run1.load_or_new();
         assert!(run1.refusal().is_none(), "a fresh store is not refused");
-        let mut autosave1 = Autosave::spawn(run1, DEFAULT_DEBOUNCE);
+        let mut autosave1 = run1.writer();
         assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
         autosave1.seed(&mut doc);
         doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
@@ -2709,7 +2336,7 @@ mod tests {
             Some("survives"),
             "state written in run 1 must round-trip across the re-open"
         );
-        let autosave2 = Autosave::spawn(run2, DEFAULT_DEBOUNCE);
+        let autosave2 = run2.writer();
         assert!(
             autosave2.is_enabled(),
             "the SECOND run must persist too — this is the bug: a non-idempotent \
@@ -2736,7 +2363,7 @@ mod tests {
         let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
         assert!(path.is_dir(), "the stale file must have become a directory");
         let mut doc = run1.load_or_new();
-        let mut autosave1 = Autosave::spawn(run1, DEFAULT_DEBOUNCE);
+        let mut autosave1 = run1.writer();
         assert!(
             autosave1.is_enabled(),
             "recovering from a stale file must enable persistence, not fall back"
@@ -2805,7 +2432,7 @@ mod tests {
             Some("from-old-layout"),
             "an old-format document must migrate into the recovered store"
         );
-        let autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
+        let autosave = store.writer();
         assert!(
             autosave.is_enabled(),
             "persistence must be enabled after migration"

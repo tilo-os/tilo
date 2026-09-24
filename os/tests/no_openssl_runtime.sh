@@ -229,7 +229,7 @@ done
 if [ "$missing_runtime_source_root" -eq 0 ]; then
   if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
       "${runtime_source_roots[@]}" \
-      -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
+      -g '*.rs' -g '*.sh' -g '!**/tests/**' -g '!**/crates/dev/**' >/dev/null; then
     bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
   else
     ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
@@ -251,7 +251,7 @@ grep -Fq 'rpm -q systemd-coredump' "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'runtime can retain process memory through inherited systemd-coredump'
 
 native_roots="$repo/crates/system/tilo-native-certs/src/lib.rs"
-if grep -Fq 'const TILO_CA_BUNDLE: &str = "/etc/pki/tls/certs/ca-bundle.crt"' "$native_roots" \
+if grep -Fq 'const TILO_CA_BUNDLE: &str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"' "$native_roots" \
    && grep -Fq 'Path::new(TILO_CA_BUNDLE)' "$native_roots" \
    && ! grep -Fq 'var_os("SSL_CERT_FILE")' "$native_roots"; then
   ok 'Rustls trust is fixed to the immutable OS bundle and ignores environment overrides'
@@ -321,13 +321,13 @@ else
   bad 'unused libevent OpenSSL adapter is not removed and audited'
 fi
 
-grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/Containerfile" \
-  && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
+grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/build-support.sh" \
+  && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/build-support.sh" \
   || bad 'kernel modules are not signed and verified by tilo-crypto'
 if grep -Fq "sed -i '/hostprogs-always-\$(CONFIG_MODULE_SIG_FORMAT).*sign-file/d' scripts/Makefile" \
-    "$repo/os/kernel/Containerfile" \
+    "$repo/os/kernel/build-support.sh" \
   && grep -Fq "sed -i '/^hostprogs := extract-cert\$/d' certs/Makefile" \
-    "$repo/os/kernel/Containerfile"; then
+    "$repo/os/kernel/build-support.sh"; then
   ok 'kernel recipe disables upstream libcrypto host helpers'
 else
   bad 'kernel recipe does not disable upstream libcrypto host helpers'

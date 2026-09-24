@@ -13,8 +13,8 @@
 //! Ed25519 secret) can be passed in without threading it through the widget
 //! event surface.
 
+use crate::time::SystemTime;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
@@ -654,8 +654,8 @@ impl Widget for InviteMintScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use collab_types::generate_keypair;
-    use std::time::Duration;
 
     #[test]
     fn mint_now_produces_url_and_envelope() {
@@ -664,7 +664,7 @@ mod tests {
         s.set_expiry(InviteExpiry::OneHour);
         let (sk, pk) = generate_keypair();
         let env = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, SystemTime::now())
+            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap()
             .clone();
         assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
@@ -676,7 +676,7 @@ mod tests {
         let mut s = InviteMintScreen::new();
         let (sk, pk) = generate_keypair();
         let err = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, SystemTime::now())
+            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap_err();
         assert!(matches!(
             err,
@@ -689,7 +689,7 @@ mod tests {
         let mut s = InviteMintScreen::new();
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, SystemTime::now())
+        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap();
         assert!(s.last_envelope().is_some());
         s.revoke();
@@ -728,7 +728,7 @@ mod tests {
 
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, SystemTime::now())
+        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap();
         let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
         let qr = minted.qr.expect("a minted invite shows its QR");

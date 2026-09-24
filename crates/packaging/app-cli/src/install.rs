@@ -245,7 +245,7 @@ fn download_reporting_limited(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<u64, String> {
     let url = safe_download_url(url)?;
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-app/0.1")
         .timeout(download_timeout())
         // The publisher-signed URL is the only endpoint authorized to serve

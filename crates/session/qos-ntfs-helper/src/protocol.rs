@@ -41,7 +41,7 @@ fn hash(domain: &[u8], parts: &[&[u8]]) -> String {
         h.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
         h.update(part);
     }
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 fn unhex(text: &str) -> io::Result<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
@@ -181,5 +181,5 @@ fn native_metadata(report: &Report, root_record: u64) -> io::Result<(u64, String
         return Err(invalid());
     }
     let creation = creation.ok_or_else(invalid)?;
-    Ok((creation, format!("{:x}", Sha256::digest(&upcase))))
+    Ok((creation, hex::encode(Sha256::digest(&upcase))))
 }

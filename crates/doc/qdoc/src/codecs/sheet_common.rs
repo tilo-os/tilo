@@ -1,12 +1,14 @@
 //! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the bounded OPC/ODF
-//! ZIP container (reusing the hardened [`crate::codecs::safety`] reader) and XML
-//! escaping. Every byte of untrusted spreadsheet input enters through
-//! [`SheetPackage::read`], so the same zip-bomb / entry-count / DTD-XXE guards the
-//! document codecs enforce apply verbatim to spreadsheets.
+//! ZIP container (reusing the hardened [`crate::codecs::safety`] reader) and
+//! prefix-insensitive XML name/attribute access. Every byte of untrusted
+//! spreadsheet input enters through [`SheetPackage::read`], so the same zip-bomb /
+//! entry-count / DTD-XXE guards the document codecs enforce apply verbatim to
+//! spreadsheets.
 
 use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::{CodecError, Confidence};
-use crate::sheet::Workbook;
+use crate::sheet::{CellInput, Workbook};
+use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -24,6 +26,48 @@ pub trait SheetProvider: Send + Sync {
     /// Returns [`CodecError`] if the workbook cannot be serialised into this
     /// format, or if writing its container fails.
     fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError>;
+}
+
+/// A spreadsheet package parsed without touching a CRDT: its tabs in order with
+/// their cells, the document properties, and the unmodeled parts an export
+/// re-emits verbatim. [`SheetProvider::import`] writes one of these into a
+/// [`Workbook`]; a reader that keeps its own model (an app's grid) can use it
+/// directly and skip the CRDT.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedWorkbook {
+    pub sheets: Vec<ParsedSheet>,
+    /// Document properties (`title`/`author`/`created`/`modified`).
+    pub properties: BTreeMap<String, String>,
+    /// Unmodeled package parts by part name (`xl/styles.xml`, `styles.xml`, …).
+    pub preserved: BTreeMap<String, Vec<u8>>,
+}
+
+/// One parsed tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedSheet {
+    pub name: String,
+    /// `(A1 reference, cell)` in document order; a later entry for a reference
+    /// replaces an earlier one, as it does in a [`Workbook`].
+    pub cells: Vec<(String, CellInput)>,
+}
+
+impl ParsedWorkbook {
+    /// Writes everything into `wb`, filing preserved parts under `format`
+    /// (`xlsx`/`ods`) where that codec's export looks for them.
+    pub(crate) fn apply(self, wb: &mut Workbook, format: &str) {
+        for sheet in self.sheets {
+            let id = wb.add_sheet(&sheet.name);
+            for (reference, cell) in sheet.cells {
+                wb.set_cell(&id, &reference, cell);
+            }
+        }
+        for (key, value) in &self.properties {
+            wb.set_prop(key, value);
+        }
+        for (name, bytes) in &self.preserved {
+            wb.set_preserved(&format!("{format}/part/{name}"), bytes);
+        }
+    }
 }
 
 /// A spreadsheet package's parts in original zip order, read bounded + XXE-hardened
@@ -45,11 +89,6 @@ impl SheetPackage {
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, b)| b.as_slice())
-    }
-
-    /// Names of every part (original order).
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.parts.iter().map(|(n, _)| n.as_str())
     }
 
     pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
@@ -120,20 +159,4 @@ pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Opt
         }
     }
     None
-}
-
-/// Escape a string for XML text content or a double-quoted attribute value.
-pub(crate) fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }

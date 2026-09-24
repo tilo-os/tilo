@@ -8,9 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -245,10 +244,7 @@ impl ShellDynamicLauncherService {
 
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let records = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let records = atomic_file::json::load_or_default(&path);
         Self {
             records: Arc::new(Mutex::new(records)),
             path: Arc::new(path),
@@ -811,10 +807,7 @@ impl ShellWallpaperService {
         path: impl Into<PathBuf>,
     ) -> Self {
         let path = path.into();
-        let records = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let records = atomic_file::json::load_or_default(&path);
         Self {
             tree,
             records: Arc::new(Mutex::new(records)),
@@ -1134,37 +1127,11 @@ fn normalise_wallpaper(bytes: &[u8]) -> Result<Vec<u8>, String> {
         return Err("image dimensions are unsupported".into());
     }
     let rgba = image.into_rgba8().into_raw();
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
-    writer
-        .write_image_data(&rgba)
-        .map_err(|error| error.to_string())?;
-    drop(writer);
-    Ok(out)
+    ui::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())
 }
 
 fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "cache path has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
-    let temp = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(|error| error.to_string())?;
-    file.write_all(bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(temp, path).map_err(|error| error.to_string())?;
-    Ok(())
+    atomic_file::write_private(path, bytes).map_err(|error| error.to_string())
 }
 
 fn cleanup_wallpaper_cache(cache: &Path, records: &[WallpaperRecord]) {
@@ -1199,25 +1166,7 @@ pub(crate) fn wallpaper_state_path() -> PathBuf {
 }
 
 fn write_private_json(path: &Path, value: &(impl Serialize + ?Sized)) -> Result<(), String> {
-    let Some(parent) = path.parent() else {
-        return Err("state path has no parent".into());
-    };
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
-    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-    let temp = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .map_err(|error| error.to_string())?;
-    file.write_all(&bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(&temp, path).map_err(|error| error.to_string())?;
-    Ok(())
+    atomic_file::json::write_private(path, value).map_err(|error| error.to_string())
 }
 
 /// All application-facing desktop capabilities.  This is cloneable by design:
@@ -1271,6 +1220,7 @@ impl DesktopPortalServices {
 mod tests {
     use super::*;
     use crate::shell::state::{Expiry, Scope, Subject, Verb};
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn mailto_encoding_cannot_create_an_extra_field() {
@@ -1396,20 +1346,22 @@ mod tests {
 
     #[test]
     fn imported_wallpaper_is_normalised_and_private() {
+        use image::ImageEncoder as _;
         let mut original = Vec::new();
-        let mut encoder = png::Encoder::new(&mut original, 1, 1);
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&[12, 34, 56]).unwrap();
-        drop(writer);
+        image::codecs::png::PngEncoder::new(&mut original)
+            .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let normalized = normalise_wallpaper(&original).unwrap();
-        let decoder = png::Decoder::new(std::io::Cursor::new(normalized));
-        let mut reader = decoder.read_info().unwrap();
-        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut pixels).unwrap();
-        assert_eq!(info.color_type, png::ColorType::Rgba);
-        assert_eq!(&pixels[..4], &[12, 34, 56, 255]);
+        let decoder =
+            image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
+        assert_eq!(
+            image::ImageDecoder::color_type(&decoder),
+            image::ColorType::Rgba8
+        );
+        assert_eq!(
+            ui::png::decode_rgba8(&normalized).unwrap().rgba,
+            [12, 34, 56, 255]
+        );
 
         let cache = tempfile::tempdir().unwrap();
         let file = cache.path().join("private.png");

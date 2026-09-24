@@ -526,11 +526,7 @@ pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
         PathBuf::from("/usr/local/share/color/icc"),
         PathBuf::from("/var/lib/colord/icc"),
     ];
-    if let Some(data) = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
-    {
+    if let Some(data) = xdg_paths::xdg::data_home() {
         roots.push(data.join("icc"));
         roots.push(data.join("color/icc"));
     }

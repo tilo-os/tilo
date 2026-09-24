@@ -26,7 +26,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::OwnedValue;
@@ -65,7 +65,7 @@ impl AccessBackend {
     )]
     async fn access_dialog(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,

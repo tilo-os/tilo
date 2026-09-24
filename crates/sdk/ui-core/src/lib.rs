@@ -51,16 +51,11 @@
     clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
-// Without `native` the event-loop runner that drives `App`'s frame pipeline
-// is absent, so the parts of `App` only it reaches go unused. They stay
-// compiled — CI builds this configuration so the portable toolkit cannot rot —
-// and are not reported as dead in it.
 #![cfg_attr(
-    not(feature = "native"),
+    test,
     allow(
-        dead_code,
-        unused_imports,
-        reason = "the portable build omits the native runner, the only caller of parts of App's frame pipeline"
+        clippy::disallowed_methods,
+        reason = "unit tests may drive real threads and wait on the real clock; the rule guards the library"
     )
 )]
 
@@ -121,16 +116,20 @@ extern crate self as tilo_ui;
 pub(crate) mod application_test_support;
 
 pub mod app;
+pub mod background;
 pub mod caps_lock;
+pub mod capture;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
 pub mod clipboard;
 pub mod collaboration;
 pub mod collection_transition;
+pub mod color;
 pub mod color_compat;
 pub mod content_layout;
 mod damage;
+pub mod date;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware
@@ -166,6 +165,7 @@ pub mod interaction;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
+pub mod location;
 pub mod math;
 pub mod mpris;
 #[cfg(feature = "native")]
@@ -174,10 +174,12 @@ pub mod nav_stack;
 pub mod num;
 pub mod offscreen;
 pub mod overlay;
+pub mod paint;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod png;
 pub mod portal;
 pub mod presence;
 pub mod profiling;
@@ -210,6 +212,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+pub mod time;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;
@@ -243,8 +246,8 @@ pub use collection_transition::{
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
-pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
-pub use image_store::{Fetcher, ImageStore};
+pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
+pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{
     ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,

@@ -19,7 +19,7 @@
 //! `crates/session/shell/src/compositor/selection.rs`). [`WaylandClipboard`]'s
 //! `wl_data_device` is focus-gated instead; `arboard` is kept only for X11.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -111,22 +111,6 @@ impl ClipboardBackend for InProcessClipboard {
     fn name(&self) -> &'static str {
         "in-process"
     }
-}
-
-/// Install `backend` as this process's clipboard, replacing any previous one.
-///
-/// Shorthand for replacing the clipboard of the default
-/// [`crate::host::HostServices`]; see [`crate::host::install_default`].
-pub fn install_clipboard_backend(backend: Arc<dyn ClipboardBackend>) {
-    tracing::debug!(target: "tilo_ui::clipboard", backend = backend.name(), "clipboard backend installed");
-    crate::host::replace_default_clipboard(backend);
-}
-
-/// The clipboard effects on this thread currently reach.
-///
-/// Always `Some`; the `Option` is kept for existing callers.
-pub fn clipboard_backend() -> Option<Arc<dyn ClipboardBackend>> {
-    Some(crate::host::current().clipboard)
 }
 
 /// Emit the "this clipboard does not leave the process" warning exactly once.

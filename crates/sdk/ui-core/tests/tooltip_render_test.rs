@@ -109,15 +109,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/tooltip_over_icon_button_{name}.png");
-        let mut png = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut png, canvas_w, canvas_h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            writer.write_image_data(&rgba).unwrap();
-        }
-        std::fs::write(&path, png).unwrap();
+        tilo_ui::png::write_rgba8(&path, canvas_w, canvas_h, &rgba).unwrap();
         eprintln!("wrote {path}");
     }
 }

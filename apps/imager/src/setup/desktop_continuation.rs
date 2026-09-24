@@ -9,7 +9,6 @@ use super::model::FolderMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
-use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 const MAX_BYTES: usize = 256 * 1024;
@@ -144,10 +143,9 @@ impl Continuation {
         // Content identity binds this complete reviewed selection, including native
         // source identities, policy overrides and destination intent. A repeated
         // install of the exact same review retains stable operation IDs.
-        let revision = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&folders).map_err(|e| e.to_string())?)
-        );
+        let revision = hex::encode(Sha256::digest(
+            serde_json::to_vec(&folders).map_err(|e| e.to_string())?,
+        ));
         Ok(Self {
             version: 1,
             revision,
@@ -493,10 +491,7 @@ fn authenticated_session_ready(
     if !wayland.file_type().is_socket() || wayland.uid() != uid {
         return Err("Untrusted session display".into());
     }
-    let key = bytes.iter().fold(String::new(), |mut key, byte| {
-        let _ = write!(key, "{byte:02x}");
-        key
-    });
+    let key = hex::encode(bytes);
     let socket = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
     let mut stream = connect_readiness(&socket)
         .map_err(|_| "Waiting for trusted Tilo identity setup to finish".to_string())?;

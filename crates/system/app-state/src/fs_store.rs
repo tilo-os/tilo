@@ -28,8 +28,9 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOCK_FILE, RECORDS_DIR, ROOMS_DIR,
-    StoreError, acquire_gate, acquire_writer_lock, ensure_state_dir, io_err, open_directory,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LEGACY_PACKAGE_ROOM_CLAIM,
+    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate,
+    acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir, io_err, open_directory,
     same_file, sync_directory_ancestors, validate_absolute_directory, validate_package_id,
     validate_record_key,
 };
@@ -581,6 +582,33 @@ impl DurableStore for FsStore {
                 reason: "a view has exactly one writer".into(),
             }),
         }
+    }
+
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
+        validate_record_key(claimant)?;
+        let marker = match key {
+            StorageKey::Package { package } => {
+                self.package_dir(package)?.join(LEGACY_PACKAGE_ROOM_CLAIM)
+            }
+            StorageKey::PackageRecord { package, record } => {
+                validate_record_key(record)?;
+                self.package_dir(package)?
+                    .join(RECORDS_DIR)
+                    .join(record)
+                    .join(LEGACY_RECORD_ROOM_CLAIM)
+            }
+            _ => {
+                return Err(SeamError::InvalidKey {
+                    key: key.to_string(),
+                    reason: "only retained package documents are claimed".into(),
+                });
+            }
+        };
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
+        }
+        Ok(claim_legacy_room_migration(&marker, claimant)?)
     }
 
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {

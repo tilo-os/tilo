@@ -1,8 +1,10 @@
 //! Unpacked extension inventory and explicit manifest-scoped startup grants.
 //! CEF's Chrome runtime loads approved MV3 packages on the next browser launch.
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 
 /// Inventory record for one unpacked extension.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,8 +30,13 @@ pub enum ExtensionError {
 }
 
 const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_ARCHIVE_ENTRIES: usize = 4_096;
+/// Entry count and declared unpacked size are checked before anything is
+/// inflated or written to disk.
+const ARCHIVE_LIMITS: ZipLimits = ZipLimits {
+    max_parts: 4_096,
+    max_part_bytes: 256 * 1024 * 1024,
+    max_total_bytes: 256 * 1024 * 1024,
+};
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// The manager and resource surface materialize at most this many locally
 /// installed extensions. This keeps a hostile or accidentally huge profile
@@ -50,6 +57,16 @@ impl std::fmt::Display for ExtensionError {
             Self::Io(e) => write!(f, "io: {e}"),
         }
     }
+}
+
+fn package_error(error: ZipError) -> ExtensionError {
+    ExtensionError::Archive(match error {
+        ZipError::TooManyEntries { .. } => "extension package has too many files".into(),
+        error if error.is_limit_breach() => {
+            "extension package expands beyond the safety limit".into()
+        }
+        error => error.to_string(),
+    })
 }
 
 impl From<std::io::Error> for ExtensionError {
@@ -81,7 +98,7 @@ pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
             "extension packages require an HTTPS URL without embedded credentials".into(),
         ));
     }
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
@@ -126,41 +143,21 @@ pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, 
         ));
     }
     let zip_bytes = strip_crx_header(archive)?;
-    let mut zip = zip::ZipArchive::new(Cursor::new(zip_bytes))
-        .map_err(|e| ExtensionError::Archive(e.to_string()))?;
-    if zip.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(ExtensionError::Archive(
-            "extension package has too many files".into(),
-        ));
-    }
-    let mut unpacked = 0u64;
-    for index in 0..zip.len() {
-        let file = zip
-            .by_index(index)
-            .map_err(|error| ExtensionError::Archive(error.to_string()))?;
-        unpacked = unpacked.saturating_add(file.size());
-        if unpacked > MAX_UNPACKED_BYTES {
-            return Err(ExtensionError::Archive(
-                "extension package expands beyond the safety limit".into(),
-            ));
-        }
-    }
+    let mut zip = BoundedArchive::from_bytes(zip_bytes, ARCHIVE_LIMITS).map_err(package_error)?;
+    zip.check_declared_sizes().map_err(package_error)?;
 
     // Manifest first, so a broken package never touches the disk.
-    let manifest_text = {
-        let mut file = zip
-            .by_name("manifest.json")
-            .map_err(|_| ExtensionError::Manifest("no manifest.json in package".into()))?;
-        if file.size() > MAX_MANIFEST_BYTES {
-            return Err(ExtensionError::Manifest(
-                "manifest.json is too large".into(),
-            ));
-        }
-        let mut text = String::new();
-        file.read_to_string(&mut text)
-            .map_err(|e| ExtensionError::Manifest(e.to_string()))?;
-        text
-    };
+    let manifest_text = zip
+        .read_text("manifest.json", MAX_MANIFEST_BYTES)
+        .map_err(|error| match error {
+            ZipError::Missing { .. } => {
+                ExtensionError::Manifest("no manifest.json in package".into())
+            }
+            error if error.is_limit_breach() => {
+                ExtensionError::Manifest("manifest.json is too large".into())
+            }
+            error => ExtensionError::Manifest(error.to_string()),
+        })?;
     let mut info = parse_manifest(&manifest_text)?;
 
     let dest = root.join(&info.id);
@@ -168,7 +165,8 @@ pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, 
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
-    zip.extract(&dest)
+    zip.archive_mut()
+        .extract(&dest)
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
     info.path = dest;
     Ok(info)
@@ -372,7 +370,7 @@ fn slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     const MANIFEST: &str = r#"{
         "manifest_version": 2,

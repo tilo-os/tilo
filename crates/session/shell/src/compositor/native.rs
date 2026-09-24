@@ -1019,7 +1019,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1102,9 +1102,8 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )?;
-    // Best-effort cleanup of a stale socket — otherwise `bind` fails EADDRINUSE.
-    let _ = std::fs::remove_file(&path);
-    match UnixListener::bind(&path) {
+    // Replaces a stale socket; only this user can ever connect.
+    match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
                 eprintln!("tilo compositor: test_control set_nonblocking: {e}");
@@ -1152,8 +1151,13 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 /// the unlink guard so the file disappears with the process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    // 0700 when created: the test-control socket may share this directory.
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir)
+        && let Err(e) = std::os::unix::fs::DirBuilderExt::mode(
+            std::fs::DirBuilder::new().recursive(true),
+            0o700,
+        )
+        .create(dir)
     {
         eprintln!("tilo compositor: publishing {}: {e}", path.display());
         return None;
@@ -2477,7 +2481,6 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
 ) {
-    use std::io::Write;
     let (w, h) = fb.viewport();
     // Viewport dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -2554,43 +2557,9 @@ fn write_snapshot_png(
         drop(slot);
         rgba
     };
-    let file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: create {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, w, h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = match encoder.write_header() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: png header {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    if let Err(e) = png_writer.write_image_data(&rgba) {
+    if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
         eprintln!(
-            "tilo compositor: test_control snapshot: png write {}: {e}",
-            path.display()
-        );
-        return;
-    }
-    // Drop the PNG writer first so the BufWriter holds the last bytes, then
-    // flush explicitly — else a fast-following file-size assertion could race a buffered tail.
-    drop(png_writer);
-    if let Err(e) = writer.flush() {
-        eprintln!(
-            "tilo compositor: test_control snapshot: flush {}: {e}",
+            "tilo compositor: test_control snapshot: write {}: {e}",
             path.display()
         );
     }
@@ -4639,7 +4608,7 @@ fn start_portal_backend(
     };
 
     let serve_result = runtime.block_on(async {
-        let conn = zbus::ConnectionBuilder::session()?.build().await?;
+        let conn = zbus::connection::Builder::session()?.build().await?;
         crate::portal::serve_with_inhibit_and_clipboard(
             conn,
             ctx,
@@ -5430,7 +5399,7 @@ pub fn run() {
             let bridge = notif_bridge.clone();
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
                 rt.block_on(async move {
-                    let conn = zbus::ConnectionBuilder::session()?.build().await?;
+                    let conn = zbus::connection::Builder::session()?.build().await?;
                     let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
                         // v1: a fresh CallerMap. Per-workspace attribution comes once the bridge
@@ -8846,7 +8815,7 @@ mod tests {
         // constant — tied here so flipping the production call site to a literal `true` fails.
         assert_eq!(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            cfg!(debug_assertions)
+            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
         );
     }
 

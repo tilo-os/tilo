@@ -9,6 +9,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 use super::styles::reassemble_bcp47;
+use crate::codecs::xml_escape::escape_attr;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -206,19 +207,4 @@ fn self_closing_span(s: &str, open_prefix: &str) -> Option<(usize, usize)> {
     } else {
         None
     }
-}
-
-/// Escape a string for use inside a double-quoted XML attribute value.
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }

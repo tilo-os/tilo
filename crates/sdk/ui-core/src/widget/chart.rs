@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -46,14 +46,6 @@ const LINE_WIDTH: f64 = 1.8;
 const SPARK_LINE_WIDTH: f64 = 1.5;
 /// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
-
-/// Replace a colour's alpha channel with `a` (0–255), keeping RGB. The
-/// toolkit's stand-in for a vertical gradient fade — a flat translucent
-/// tint reads cleanly against the dark surfaces and avoids a gradient
-/// resource per frame.
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 /// Widens a sample index/count to `f64` for plot math, through `u32` (exact
 /// in `f64`) with a saturating fallback rather than an `as` cast — a series

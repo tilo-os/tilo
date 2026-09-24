@@ -657,7 +657,7 @@ mod live {
         today: NaiveDate,
         checkpoints: &[(String, String)],
     ) -> (SyncResult, SyncOutcome) {
-        let client = match reqwest::blocking::Client::builder()
+        let client = match tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent("Tilo-Calendar/0.1")
             .build()
@@ -887,7 +887,7 @@ mod live {
     pub fn push_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
     ) -> Vec<crate::model::Id> {
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent("Tilo-Calendar/0.1")
             .build()
@@ -914,7 +914,7 @@ mod live {
     }
 
     pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent("Tilo-Calendar/0.1")
             .build()
@@ -979,7 +979,7 @@ mod live {
     pub fn delete_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
     ) -> Vec<crate::model::Id> {
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent("Tilo-Calendar/0.1")
             .build()
@@ -1004,7 +1004,7 @@ mod live {
     }
 
     pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent("Tilo-Calendar/0.1")
             .build()
@@ -1175,7 +1175,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
             let (server, requests) = serve(vec![(207, vec![], multistatus("token-2"))]);
             let config = config(server.clone());
             let result = pull_calendar_live(
-                &reqwest::blocking::Client::new(),
+                &tilo_net::http::blocking_client().build().unwrap(),
                 &config,
                 &calendar(),
                 NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
@@ -1197,7 +1197,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 (207, vec![], multistatus("replacement")),
             ]);
             let result = pull_calendar_live(
-                &reqwest::blocking::Client::new(),
+                &tilo_net::http::blocking_client().build().unwrap(),
                 &config(server),
                 &calendar(),
                 NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),

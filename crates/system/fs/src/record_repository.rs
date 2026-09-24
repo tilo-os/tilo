@@ -328,7 +328,11 @@ impl RepositoryLease<'_> {
                 .map_err(RecordRepositoryError::TransactionJournal)?;
         }
         for (index, (key, candidate)) in candidates.iter().enumerate() {
-            persist_record(self.root, *key, &candidate.envelopes)?;
+            let previous = self
+                .records
+                .get(key)
+                .map(|record| record.envelopes.as_slice());
+            persist_record(self.root, *key, &candidate.envelopes, previous)?;
             checkpoint(RecordTransactionCheckpoint::ParticipantRecordDurable { index })
                 .map_err(RecordRepositoryError::TransactionFailureInjected)?;
         }
@@ -470,7 +474,11 @@ impl RecordRepository {
 
         journal.ensure_checked_intent_durable(id)?;
         for key in &keys {
-            persist_record(&self.root, *key, &records[key].envelopes)?;
+            let envelopes = &records
+                .get(key)
+                .ok_or(RecordRepositoryError::RecordNotFound)?
+                .envelopes;
+            persist_record(&self.root, *key, envelopes, Some(envelopes))?;
         }
         if journal
             .get(id)
@@ -596,7 +604,12 @@ impl RecordRepository {
         if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
             return Err(RecordRepositoryError::TooManyConflicts);
         }
-        persist_record(&self.root, key, &candidate.envelopes)?;
+        persist_record(
+            &self.root,
+            key,
+            &candidate.envelopes,
+            current.map(|record| record.envelopes.as_slice()),
+        )?;
         records.insert(key, candidate);
         Ok(())
     }
@@ -1555,25 +1568,53 @@ fn decode_stored_record(
     })
 }
 
+/// Borrowing twin of [`PersistedRecordV1`]; serializes to the same bytes.
+#[derive(Serialize)]
+struct PersistedRecordRef<'a> {
+    schema_version: u16,
+    workspace_id: Uuid,
+    record_id: FileRecordId,
+    envelopes: &'a [RecordEnvelopeV1],
+}
+
+fn encode_record(
+    key: RecordRepositoryKey,
+    envelopes: &[RecordEnvelopeV1],
+) -> Result<Vec<u8>, RecordRepositoryError> {
+    Ok(serde_json::to_vec(&PersistedRecordRef {
+        schema_version: RECORD_REPOSITORY_VERSION,
+        workspace_id: key.workspace_id,
+        record_id: key.record_id,
+        envelopes,
+    })?)
+}
+
+/// Durably replace a record file with `envelopes`, keeping the previous file
+/// as a backup generation.
+///
+/// Every envelope in memory was signature-verified when it was merged or
+/// loaded, so the new bytes, and previous bytes identical to the encoding of
+/// the in-memory `previous` envelopes, are accepted without verifying every
+/// signature again. Any other bytes found on disk get the full verification.
 fn persist_record(
     root: &Path,
     key: RecordRepositoryKey,
     envelopes: &[RecordEnvelopeV1],
+    previous: Option<&[RecordEnvelopeV1]>,
 ) -> Result<(), RecordRepositoryError> {
-    let state = PersistedRecordV1 {
-        schema_version: RECORD_REPOSITORY_VERSION,
-        workspace_id: key.workspace_id,
-        record_id: key.record_id,
-        envelopes: envelopes.to_vec(),
-    };
-    let bytes = serde_json::to_vec(&state)?;
+    let bytes = encode_record(key, envelopes)?;
     if bytes.len() as u64 > MAX_RECORD_FILE_BYTES {
         return Err(RecordRepositoryError::RecordFileTooLarge);
     }
+    let previous = previous
+        .map(|envelopes| encode_record(key, envelopes))
+        .transpose()?;
     let path = record_path(root, key);
     crate::durable_backup::write(&path, &bytes, |candidate| {
         candidate.len() as u64 <= MAX_RECORD_FILE_BYTES
-            && decode_stored_record(candidate, key).is_ok()
+            && (candidate == bytes.as_slice()
+                || previous.as_deref() == Some(candidate)
+                || decode_stored_record(candidate, key).is_ok())
     })?;
     Ok(())
 }
@@ -2916,6 +2957,36 @@ mod tests {
                 RecordReplicationError::Signature(_)
             ))
         ));
+    }
+
+    #[test]
+    fn a_record_file_changed_behind_the_repository_is_verified_before_it_becomes_a_backup() {
+        let fixture = Fixture::new();
+        let repo = RecordRepository::open(&fixture.root).unwrap();
+        repo.apply(
+            fixture.key,
+            &fixture.metadata_envelope(1),
+            &fixture.auth(true, true),
+        )
+        .unwrap();
+        // The in-memory envelopes were verified once; bytes on disk that no
+        // longer encode them get the full signature check again.
+        let path = record_path(&fixture.root, fixture.key);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["envelopes"][0]["sequence"] = serde_json::json!(7);
+        let tampered = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &tampered).unwrap();
+        assert!(
+            repo.apply(
+                fixture.key,
+                &fixture.metadata_envelope(2),
+                &fixture.auth(true, true),
+            )
+            .is_err(),
+            "a forged primary is never rotated into the backup generations"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), tampered);
     }
 
     #[test]

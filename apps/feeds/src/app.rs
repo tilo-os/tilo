@@ -3688,7 +3688,7 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
             format!("{source}  ·  {}", a.summary)
         };
         let meta_w = (lr.star_rect.x0 - 8.0 - text_x).max(60.0) as f32;
-        let meta_text = elide(tr, &meta, 12.5, meta_w);
+        let meta_text = tr.elide_to_width(&meta, 12.5, meta_w);
         let (_, meta_h) = tr.measure(&meta_text, 12.5, None);
 
         let sp = &theme.tokens.spacing;
@@ -4412,25 +4412,6 @@ fn draw_chrome_button(
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
     f64::from(tr.measure(s, size, None).0)
-}
-
-/// Truncate `s` with an ellipsis so it fits in `max_w` on a single line.
-fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> String {
-    if tr.measure(s, size, None).0 <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        let mut probe = out.clone();
-        probe.push(ch);
-        probe.push('…');
-        if tr.measure(&probe, size, None).0 > max_w {
-            out.push('…');
-            return out;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// Weight-aware single-line truncation. Measures with the SAME `weight` the
@@ -5624,6 +5605,28 @@ mod tests {
     /// path starts empty (asserted by `live_new_starts_empty`).
     fn app() -> FeedsApp {
         FeedsApp::new_demo()
+    }
+
+    /// Start an OPML export under a recording host whose save chooser
+    /// answers `outcome`, and check the app asked for the export dialog.
+    fn export_with(a: &mut FeedsApp, outcome: PortalOutcome) {
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(outcome);
+        ui::host::scoped(&services, || a.export_opml());
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1, "one save chooser was requested");
+        assert_eq!(picks[0].title(), "Export OPML");
+    }
+
+    /// Start an OPML import under a recording host whose open chooser
+    /// answers `outcome`, and check the app asked for the import dialog.
+    fn import_with(a: &mut FeedsApp, outcome: PortalOutcome) {
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(outcome);
+        ui::host::scoped(&services, || a.request_import());
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1, "one open chooser was requested");
+        assert_eq!(picks[0].title(), "Import OPML");
     }
 
     #[test]
@@ -7009,10 +7012,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("Subscriptions Grün 🌍.opml");
         let xml = opml::export(&a.store);
-        a.export_rx = Some((
-            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
-            xml.clone(),
-        ));
+        export_with(&mut a, PortalOutcome::Opened(path.clone()));
         let deadline = a
             .next_wake_deadline()
             .expect("export must wake without animation");
@@ -7036,10 +7036,7 @@ mod tests {
             let mut a = app();
             let mut doc = AutoCommit::new();
             a.sync(&mut doc, &automerge::ROOT);
-            a.export_rx = Some((
-                ui::portal::inject_for_test(outcome.clone()),
-                opml::export(&a.store),
-            ));
+            export_with(&mut a, outcome.clone());
             a.sync(&mut doc, &automerge::ROOT);
             assert!(a.export_rx.is_none());
             let message = &a.toast.as_ref().unwrap().0;
@@ -7066,10 +7063,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         // A directory cannot be replaced by the export's file write on either host.
-        a.export_rx = Some((
-            ui::portal::inject_for_test(PortalOutcome::Opened(std::env::temp_dir())),
-            opml::export(&a.store),
-        ));
+        export_with(&mut a, PortalOutcome::Opened(std::env::temp_dir()));
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.export_rx.is_none());
         assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
@@ -7081,7 +7075,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.next_wake_deadline().is_none());
-        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        import_with(&mut a, PortalOutcome::Cancelled);
         let deadline = a
             .next_wake_deadline()
             .expect("file completion must wake even with reduced motion");
@@ -7100,16 +7094,16 @@ mod tests {
         // pending requests (no network, no spawned thread).
         let _tx = a.install_test_worker();
 
-        // Write a real OPML file to a scratch path and hand the app the outcome
-        // the portal worker would deliver, then run one `sync` — the exact
-        // per-frame drain the live portal feeds.
+        // Write a real OPML file to a scratch path, have the recording host's
+        // chooser pick it, then run one `sync` — the exact per-frame drain the
+        // live portal feeds.
         let dir = std::env::temp_dir().join(format!("feeds-opml-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("subs.opml");
         std::fs::write(&path, opml::sample_opml()).unwrap();
 
         let feeds_before = a.store.feeds.len();
-        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
+        import_with(&mut a, PortalOutcome::Opened(path));
         assert!(
             a.import_rx.is_some(),
             "a request is in flight until drained"
@@ -7149,7 +7143,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         let before = a.store.feeds.len();
-        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        import_with(&mut a, PortalOutcome::Cancelled);
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.import_rx.is_none(), "cancel clears the request");
         assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
@@ -7733,31 +7727,8 @@ mod tests {
         // Exercise the host clipboard boundary and the real TextInput paste
         // handler without touching the user's clipboard or requiring a desktop
         // clipboard grant. Successful OS transport requires separate native verification.
-        #[derive(Default)]
-        struct TestClipboard(std::sync::Mutex<(Option<String>, Option<String>)>);
-        impl ui::clipboard::ClipboardBackend for TestClipboard {
-            fn set_text(&self, target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
-                let mut values = self.0.lock().unwrap();
-                match target {
-                    ui::clipboard::ClipboardTarget::Clipboard => values.0 = Some(text.into()),
-                    ui::clipboard::ClipboardTarget::Primary => values.1 = Some(text.into()),
-                }
-                true
-            }
-
-            fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
-                let values = self.0.lock().unwrap();
-                match target {
-                    ui::clipboard::ClipboardTarget::Clipboard => values.0.clone(),
-                    ui::clipboard::ClipboardTarget::Primary => values.1.clone(),
-                }
-            }
-
-            fn name(&self) -> &'static str {
-                "feeds-test-clipboard"
-            }
-        }
-        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard::default()));
+        let (services, _recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
 
         let mut a = app();
         let mut doc = AutoCommit::new();

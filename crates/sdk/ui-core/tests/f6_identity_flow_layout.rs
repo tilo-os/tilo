@@ -30,11 +30,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use collab_types::{ChannelId, Role, generate_keypair};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_ui::State;
 use tilo_ui::a11y::{Action, Role as AccessRole};
-use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget, install_clipboard_backend};
+use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use tilo_ui::headless::{FrameHarness, SemanticExpectation};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::QrWidget;
@@ -103,7 +103,7 @@ fn themes() -> Vec<(&'static str, Theme)> {
 /// a minted invite for both invite screens, and a name plus typed code so
 /// every field paints its populated state rather than a placeholder.
 fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFlowError> {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let mut flow = IdentityFlow::new(store);
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
 
@@ -261,7 +261,8 @@ fn paste(harness: &mut FrameHarness, clipboard: &MemoryClipboard, text: &str) {
 #[test]
 fn identity_fields_are_shared_text_inputs_reached_by_tab_typing_and_paste() {
     let clipboard = Arc::new(MemoryClipboard(Mutex::new(None)));
-    install_clipboard_backend(clipboard.clone());
+    let services = tilo_ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = tilo_ui::host::enter(&services);
 
     // Create identity: the one field is a Tab stop, named for its label,
     // carries the seeded value, takes typed keys and a paste.

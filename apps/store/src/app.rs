@@ -264,15 +264,10 @@ fn publisher_identity_lines(item: &StoreItem) -> Vec<String> {
 }
 
 fn format_size(bytes: u64) -> String {
-    const MIB: u64 = 1024 * 1024;
     if bytes == 0 {
         return "Size not published".into();
     }
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    }
+    ui::format::bytes_si(bytes)
 }
 
 /// A compact, printable status detail for the visible progress/error surface.
@@ -1913,10 +1908,7 @@ impl StoreApp {
             .with_accessible_name(&format!("Copy full publisher key {full_key}"))
             .tooltip(format!("Copy full publisher key {full_key}"))
             .on_effect(move || {
-                if let Some(clipboard) = ui::clipboard::clipboard_backend() {
-                    let _ = clipboard
-                        .set_text(ui::clipboard::ClipboardTarget::Clipboard, &clipboard_key);
-                }
+                ui::text_selection::clipboard_copy(&clipboard_key);
             });
             publisher_facts = publisher_facts.push(Box::new(key_button));
         } else {
@@ -3874,12 +3866,7 @@ fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
 }
 
 fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    state
-        .get(root, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, id)| matches!(value, Value::Object(ObjType::Text)).then_some(id))
-        .and_then(|id| state.text(&id).ok())
+    ui::doc::read_text(state, root, key)
         .unwrap_or_default()
         .chars()
         .take(MAX_REPORT_NOTE_CHARS)

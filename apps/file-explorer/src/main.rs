@@ -33,23 +33,16 @@
 )]
 
 use file_explorer::filesystem_metadata as xattr;
-use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
 
 const MAX_RECEIVED_SHARE_URI_BYTES: usize = 16 * 1024;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
+use vello::kurbo::Point;
 
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
@@ -283,7 +276,7 @@ fn navigate_launch_directory(
 
 /// Open persisted state while preserving the file manager's per-replica actor
 /// naming. The shared runner still owns autosave, headless driving, and exit.
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     let (mut state, autosave) = ui::persist::open(app_id);
     // Keep each window's actor stable and distinct for the host-owned
     // collaborative document, even though Files itself stores no UI state in
@@ -844,142 +837,42 @@ fn render_shot_to_png(
     scenario: Option<&str>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let mut child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(&widget, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            &mut text_renderer,
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut widget);
+    frame.layout(&mut widget)?;
 
     // Responsive children learn their actual width only during layout. Settle
     // one structural reflow before capturing so narrow screenshots test the
     // finished interface, not its first-frame breakpoint transition.
     if widget.take_structure_dirty() {
-        taffy = TaffyTree::new();
-        node_map = HashMap::new();
-        widget.sync(&mut state.doc, &state.root);
-        child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )?;
-        bindings.clear();
-        // SAFETY: this admission is rebuilt from the replacement tree before
-        // its renderer-aware settling pass.
-        unsafe {
-            bindings.rebuild(&widget, &taffy, child, &node_map);
-            ui::widget::compute_widget_layout(
-                &mut taffy,
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                &node_map,
-                &bindings,
-                &mut text_renderer,
-            )?;
-        }
-        widget.apply_layout(&taffy, child, Point::ORIGIN);
+        frame.sync(&mut widget);
+        frame.layout(&mut widget)?;
     }
 
     // A live frame paints immediately after layout.  Prime that same phase
     // before geometry-driven demo scenarios: FileView publishes only visible
     // folder drop targets during its clipped draw, so `dropmove` must not see
     // a stale, directory-sized target registry.
-    let mut priming_scene = Scene::new();
-    widget.draw_with_presence(
-        &mut priming_scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
+    let _priming = frame.draw(&mut widget);
 
     // Post-layout scenarios need the laid-out geometry.
-    apply_post_layout_scenario(&mut widget, scenario, (w, h), &mut state, child, &taffy);
+    if let Some((state, taffy, child)) = frame.layout_parts() {
+        apply_post_layout_scenario(&mut widget, scenario, viewport, state, child, taffy);
+    }
 
     // Thumbnail scenarios: requests are enqueued during draw, so a throwaway
     // warm-up draw kicks off generation for the visible cells, then we wait for
     // the pool to settle before the frame we keep — so the shot captures real
     // previews, never the loading placeholders.
     if matches!(scenario, Some("thumbnails" | "thumbnails-fs")) {
-        let mut warm = Scene::new();
-        widget.draw_with_presence(
-            &mut warm,
-            Affine::IDENTITY,
-            &mut text_renderer,
-            &theme,
-            &presence,
-            &permission,
-        );
+        let _warm = frame.draw(&mut widget);
         widget.prewarm_thumbnails(std::time::Duration::from_secs(20));
     }
 
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
+    let mut scene = frame.draw(&mut widget);
     // Composite the overlay layer (context menu + flyout) on top.
-    widget.draw_overlay(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    frame.draw_overlay(&mut widget, &mut scene);
+    frame.write_png(&scene, out);
     println!("file-explorer: wrote shot to {}", out.display());
     Ok(())
 }

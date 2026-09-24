@@ -18,22 +18,9 @@ pub fn color_to_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-/// `#rrggbb` (or `rrggbb`) → `[r,g,b]`; non-hex falls back to black.
+/// `#rrggbb` (or `rrggbb`, `#rgb`) → `[r,g,b]`; non-hex falls back to black.
 pub fn hex_to_color(s: &str) -> [u8; 3] {
-    let h = s.trim().trim_start_matches('#');
-    // `get` returns `None` on a non-boundary split, so a multi-byte character
-    // in the six positions falls through to black instead of panicking.
-    if h.len() == 6
-        && let (Some(rs), Some(gs), Some(bs)) = (h.get(0..2), h.get(2..4), h.get(4..6))
-        && let (Ok(r), Ok(g), Ok(b)) = (
-            u8::from_str_radix(rs, 16),
-            u8::from_str_radix(gs, 16),
-            u8::from_str_radix(bs, 16),
-        )
-    {
-        return [r, g, b];
-    }
-    [0, 0, 0]
+    ui::color::parse_hex(s).map_or([0, 0, 0], ui::color::to_rgb8)
 }
 
 fn attr_f32(props: &BTreeMap<String, AttrVal>, key: &str, default: f32) -> f32 {

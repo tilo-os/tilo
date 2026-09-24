@@ -298,11 +298,7 @@ pub mod recents {
         if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
             return None;
         }
-        let base = if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(xdg)
-        } else {
-            PathBuf::from(std::env::var_os("HOME")?).join(".local/share")
-        };
+        let base = xdg_paths::xdg::data_home()?;
         Some(base.join(id))
     }
 

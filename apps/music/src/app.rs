@@ -385,8 +385,6 @@ pub struct MusicApp {
     pending_media_handoff: Option<PendingMediaHandoff>,
     local_file: Option<crate::local_file::LocalFile>,
     local_file_pick: Option<(tilo_actions::InvocationId, PortalChannel)>,
-    #[cfg(test)]
-    test_local_file_pick: Option<PortalOutcome>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -753,8 +751,6 @@ impl MusicApp {
             pending_media_handoff: None,
             local_file: device_profile.local_file,
             local_file_pick: None,
-            #[cfg(test)]
-            test_local_file_pick: None,
             cover_pick: None,
             cover_pick_for: None,
             cover_embed: None,
@@ -4908,23 +4904,13 @@ fn draw_text(
 /// preceding text conveys nothing and, in a too-narrow column, would spill past
 /// its bounds into the neighbouring UI.
 fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
-    if f64::from(tr.measure_weighted(text, size, None, weight).0) <= max_w {
-        return text.to_string();
-    }
-    let mut s = String::new();
-    for ch in text.chars() {
-        let cand = format!("{s}{ch}\u{2026}");
-        if f64::from(tr.measure_weighted(&cand, size, None, weight).0) > max_w {
-            break;
-        }
-        s.push(ch);
-    }
-    if s.is_empty() {
+    let out = tr.elide_to_width_weighted(text, size, ui::num::f32_of_f64(max_w), weight);
+    if out != text && out.starts_with(ui::text_render::ELLIPSIS) {
         // Not even one glyph + ellipsis fits — render nothing so the `\u{2026}`
         // never overflows into an adjacent column.
         String::new()
     } else {
-        format!("{s}\u{2026}")
+        out
     }
 }
 
@@ -5151,7 +5137,7 @@ fn image_fetcher() -> ui::Fetcher {
             return None;
         }
         let client = CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
+            tilo_net::http::blocking_client()
                 .timeout(std::time::Duration::from_secs(12))
                 .user_agent("Mozilla/5.0 (Tilo Music)")
                 .build()

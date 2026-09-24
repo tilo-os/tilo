@@ -37,8 +37,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::WakeHandle;
@@ -1690,7 +1691,7 @@ impl UpdatesPane {
 
     /// Check for updates → re-query the system + stamp the time + persist.
     fn handle_check(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, CHECK_KEY) {
+        if !read_bool(state, root, CHECK_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
@@ -1734,7 +1735,7 @@ impl UpdatesPane {
     }
 
     fn handle_firmware_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, FIRMWARE_REFRESH_KEY) {
+        if !read_bool(state, root, FIRMWARE_REFRESH_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(
@@ -1776,7 +1777,7 @@ impl UpdatesPane {
     }
 
     fn handle_firmware_install(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, FIRMWARE_INSTALL_KEY) {
+        if !read_bool(state, root, FIRMWARE_INSTALL_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(
@@ -1820,7 +1821,7 @@ impl UpdatesPane {
 
     /// Restart & update → reboot into the staged image (dedup).
     fn handle_restart(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !read_bool(state, root, RESTART_KEY) {
+        if !read_bool(state, root, RESTART_KEY).unwrap_or(false) {
             return;
         }
         let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
@@ -1848,7 +1849,7 @@ impl UpdatesPane {
     /// machine agrees, so the stored value never claims a state the timer
     /// isn't actually in.
     fn handle_auto_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(b) = read_bool_opt(state, root, AUTO_KEY) else {
+        let Some(b) = read_bool(state, root, AUTO_KEY) else {
             return;
         };
         let operation = crate::actions::UpdateOperation::SetAutomatic { enabled: b };
@@ -1904,7 +1905,7 @@ impl UpdatesPane {
         let Some(current) = self.schedule.clone() else {
             return;
         };
-        let Some(requested) = read_str(state, root, SCHEDULE_KEY) else {
+        let Some(requested) = read_str_or_text(state, root, SCHEDULE_KEY) else {
             return;
         };
         let operation = crate::actions::UpdateOperation::SetSchedule {
@@ -1943,7 +1944,7 @@ impl UpdatesPane {
         let Some(current) = self.allow_metered else {
             return;
         };
-        let Some(requested) = read_bool_opt(state, root, METERED_KEY) else {
+        let Some(requested) = read_bool(state, root, METERED_KEY) else {
             return;
         };
         if requested == current {
@@ -1978,7 +1979,7 @@ impl UpdatesPane {
 
     /// Roll back, in two steps. The first only opens the explanation.
     fn handle_rollback(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, ROLLBACK_KEY) {
+        if read_bool(state, root, ROLLBACK_KEY).unwrap_or(false) {
             let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
             self.rollback_armed = true;
             self.notice = None;
@@ -1988,7 +1989,7 @@ impl UpdatesPane {
             );
             self.structure_dirty = true;
         }
-        if read_bool(state, root, ROLLBACK_CONFIRM_KEY) {
+        if read_bool(state, root, ROLLBACK_CONFIRM_KEY).unwrap_or(false) {
             let _ = state.put(
                 root,
                 ROLLBACK_CONFIRM_KEY,
@@ -2207,32 +2208,6 @@ impl Widget for UpdatesPane {
                 .composed
                 .as_ref()
                 .is_some_and(|child| child.needs_redraw())
-    }
-}
-
-/// Read a bool at `key`, treating absent/non-bool as `false`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    read_bool_opt(state, root, key).unwrap_or(false)
-}
-
-fn read_bool_opt(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 
@@ -2693,7 +2668,7 @@ mod tests {
             "the timer must be untouched when the change was refused"
         );
         assert_eq!(
-            read_bool_opt(&doc, &root, AUTO_KEY),
+            read_bool(&doc, &root, AUTO_KEY),
             Some(true),
             "the switch itself must snap back, or it shows a state the machine \
              is not in"

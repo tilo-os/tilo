@@ -10,7 +10,8 @@
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use rand_core::RngCore;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
@@ -125,7 +126,7 @@ impl PairingBrokerServer {
         let identity_path = identity_dir.join(BROKER_IDENTITY_FILE);
         let identity = match read_private_file(&identity_path, MAX_BROKER_IDENTITY_BYTES)? {
             Some(bytes) => decode_broker_identity(&bytes)?,
-            None => create_broker_identity(identity_dir, &identity_path)?,
+            None => create_broker_identity(&identity_path)?,
         };
         // `with_single_cert` below proves that the stored private key matches
         // the pinned certificate. Corruption is never "repaired" by rotating
@@ -156,7 +157,7 @@ impl PairingBrokerServer {
         let identity_path = identity_dir.join(BROKER_IDENTITY_FILE);
         let identity = match read_private_file(&identity_path, MAX_BROKER_IDENTITY_BYTES)? {
             Some(bytes) => decode_broker_identity(&bytes)?,
-            None => create_broker_identity(identity_dir, &identity_path)?,
+            None => create_broker_identity(&identity_path)?,
         };
         Self::start_with_material(
             authority,
@@ -345,10 +346,7 @@ fn decode_broker_identity(bytes: &[u8]) -> io::Result<StoredBrokerIdentity> {
     Ok(identity)
 }
 
-fn create_broker_identity(
-    identity_dir: &Path,
-    identity_path: &Path,
-) -> io::Result<StoredBrokerIdentity> {
+fn create_broker_identity(identity_path: &Path) -> io::Result<StoredBrokerIdentity> {
     use std::os::unix::fs::OpenOptionsExt;
     let certified = rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()])
         .map_err(io::Error::other)?;
@@ -365,38 +363,22 @@ fn create_broker_identity(
             "generated pairing TLS identity is too large",
         ));
     }
-    let mut random = [0u8; 16];
-    rand_core::OsRng.fill_bytes(&mut random);
-    let temporary = identity_dir.join(format!(".broker-identity-{}.tmp", hex::encode(random)));
-    let result = (|| {
-        let mut file = OpenOptions::new()
+    // Hard-linking the complete, synced inode never replaces a concurrently
+    // created identity. The loser loads the winner, keeping one stable pin
+    // even if two shell instances race during startup.
+    let owner_only = |temporary: &Path| {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        // A hard link publishes the complete inode without replacing a
-        // concurrently-created identity. The loser loads the winner, keeping
-        // one stable pin even if two shell instances race during startup.
-        match std::fs::hard_link(&temporary, identity_path) {
-            Ok(()) => {
-                OpenOptions::new()
-                    .read(true)
-                    .open(identity_dir)?
-                    .sync_all()?;
-                Ok(identity)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let stored = read_private_file(identity_path, MAX_BROKER_IDENTITY_BYTES)?
-                    .ok_or_else(|| io::Error::other("published TLS identity disappeared"))?;
-                decode_broker_identity(&stored)
-            }
-            Err(error) => Err(error),
-        }
-    })();
-    let _ = std::fs::remove_file(&temporary);
-    result
+            .open(temporary)
+    };
+    if atomic_file::create_with_temp_opener(identity_path, &bytes, owner_only)? {
+        return Ok(identity);
+    }
+    let stored = read_private_file(identity_path, MAX_BROKER_IDENTITY_BYTES)?
+        .ok_or_else(|| io::Error::other("published TLS identity disappeared"))?;
+    decode_broker_identity(&stored)
 }
 
 impl Drop for PairingBrokerServer {
@@ -828,7 +810,7 @@ pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> 
             ))
         })?;
     let mut id = [0u8; 16];
-    rand_core::OsRng.fill_bytes(&mut id);
+    UnwrapErr(SysRng).fill_bytes(&mut id);
     pairing_channel_at(root.join("pairing-broker").join(hex::encode(id)))
 }
 
@@ -903,7 +885,6 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;
@@ -928,7 +909,7 @@ mod tests {
     }
 
     fn fixture_record() -> IdentityRecord {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         IdentityRecord::from_threshold_identity(
             &id,
@@ -1388,7 +1369,7 @@ mod tests {
     fn full_dkg_crosses_only_the_pinned_tls_broker() {
         let tmp = TmpDir::new("pairing-full-tls");
         let authority = pairing_channel_at(tmp.0.join("authority")).unwrap();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut bootstrap = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (host_session, host_round1) = bootstrap.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let mut host = ui::widget::identity_flow::add_device_host::AddDeviceHostScreen::new();

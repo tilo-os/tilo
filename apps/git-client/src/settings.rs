@@ -10,7 +10,8 @@
 //! front of the raw `root.settings` map.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
+use ui::doc::{read_bool, read_str};
 
 /// How the diff pane lays out old vs. new content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,26 +109,6 @@ fn settings_obj_ref(doc: &AutoCommit) -> Option<ObjId> {
     }
 }
 
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str, default: bool) -> bool {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Boolean(b) => *b,
-            _ => default,
-        },
-        _ => default,
-    }
-}
-
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 impl Settings {
     /// Read the current settings out of the document, falling back to the
     /// defaults for any unset key. Creating the map if absent so the first
@@ -151,13 +132,15 @@ impl Settings {
     /// to the defaults for any unset key.
     fn from_obj(doc: &AutoCommit, obj: &ObjId) -> Self {
         let def = Settings::default();
-        let layout = get_str(doc, obj, keys::DIFF_LAYOUT)
+        let layout = read_str(doc, obj, keys::DIFF_LAYOUT)
             .map_or(def.diff_layout, |s| s.parse().unwrap_or(def.diff_layout));
         Self {
             diff_layout: layout,
-            show_whitespace: get_bool(doc, obj, keys::SHOW_WHITESPACE, def.show_whitespace),
-            syntax_highlight: get_bool(doc, obj, keys::SYNTAX_HIGHLIGHT, def.syntax_highlight),
-            wrap_lines: get_bool(doc, obj, keys::WRAP_LINES, def.wrap_lines),
+            show_whitespace: read_bool(doc, obj, keys::SHOW_WHITESPACE)
+                .unwrap_or(def.show_whitespace),
+            syntax_highlight: read_bool(doc, obj, keys::SYNTAX_HIGHLIGHT)
+                .unwrap_or(def.syntax_highlight),
+            wrap_lines: read_bool(doc, obj, keys::WRAP_LINES).unwrap_or(def.wrap_lines),
         }
     }
 

@@ -57,7 +57,7 @@ pub(crate) struct Admission {
     pub save_local: Option<tilo_actions::InvocationId>,
     pub save_broker_request: Option<u64>,
     pub save_broker_id: Option<u64>,
-    pub save_poll_at: std::time::Instant,
+    pub save_poll_at: crate::time::Instant,
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
     session: uuid::Uuid,
@@ -75,7 +75,7 @@ impl Default for Admission {
             save_local: None,
             save_broker_request: None,
             save_broker_id: None,
-            save_poll_at: std::time::Instant::now(),
+            save_poll_at: crate::time::now(),
             save_waiting: false,
             save_result: None,
             session: uuid::Uuid::new_v4(),
@@ -215,12 +215,13 @@ pub(crate) fn retry_reports(
     errors
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn wake_deadline(
-    scheduled: Option<std::time::Instant>,
+    scheduled: Option<crate::time::Instant>,
     waiting: bool,
-    now: std::time::Instant,
-) -> Option<std::time::Instant> {
-    let close = waiting.then(|| now + std::time::Duration::from_millis(100));
+    now: crate::time::Instant,
+) -> Option<crate::time::Instant> {
+    let close = waiting.then(|| now + crate::time::Duration::from_millis(100));
     scheduled.into_iter().chain(close).min()
 }
 
@@ -229,10 +230,10 @@ mod tests {
     use super::*;
     #[test]
     fn pending_save_deadline_survives_an_otherwise_idle_host() {
-        let now = std::time::Instant::now();
-        let close = now + std::time::Duration::from_millis(100);
+        let now = crate::time::now();
+        let close = now + crate::time::Duration::from_millis(100);
         assert_eq!(wake_deadline(None, true, now), Some(close));
-        let sooner = now + std::time::Duration::from_millis(10);
+        let sooner = now + crate::time::Duration::from_millis(10);
         assert_eq!(wake_deadline(Some(sooner), true, now), Some(sooner));
         assert_eq!(wake_deadline(None, false, now), None);
     }

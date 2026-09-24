@@ -31,6 +31,7 @@
 //! same shared markup.
 
 use std::collections::HashSet;
+use ui::doc::{read_bool, read_number, read_scalar, read_str};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -81,45 +82,11 @@ pub struct PdfDoc;
 impl PdfDoc {
     // ---- scalar read helpers ----------------------------------------
 
-    fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::F64(f) => Some(*f),
-                ScalarValue::Int(i) => Some(*i as f64),
-                ScalarValue::Uint(u) => Some(*u as f64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
+    /// An `Int`, or a `Uint` reinterpreted as `i64`.
     fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Int(i) => Some(*i),
-                ScalarValue::Uint(u) => Some(*u as i64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
+        match read_scalar(doc, obj, key)? {
+            ScalarValue::Int(i) => Some(i),
+            ScalarValue::Uint(u) => Some(u as i64),
             _ => None,
         }
     }
@@ -179,7 +146,7 @@ impl PdfDoc {
         let Some(m) = Self::meta(doc) else {
             return false;
         };
-        Self::get_bool(doc, &m, "seeded").unwrap_or(false)
+        read_bool(doc, &m, "seeded").unwrap_or(false)
     }
 
     pub fn set_meta(doc: &mut AutoCommit, title: &str, author: &str) {
@@ -204,7 +171,7 @@ impl PdfDoc {
         let Some(meta) = Self::meta(doc) else {
             return;
         };
-        if Self::get_bool(doc, &meta, "page-plan-seeded").unwrap_or(false) {
+        if read_bool(doc, &meta, "page-plan-seeded").unwrap_or(false) {
             return;
         }
 
@@ -250,12 +217,12 @@ impl PdfDoc {
                 let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
                     return None;
                 };
-                let id = Self::get_str(doc, &entry, "id")?;
+                let id = read_str(doc, &entry, "id")?;
                 let source_page = Self::get_i64(doc, &entry, "source-page")? as usize;
-                let imported = match Self::get_str(doc, &entry, "content-hash") {
+                let imported = match read_str(doc, &entry, "content-hash") {
                     Some(hash) => Some(ImportedPage {
                         hash,
-                        kind: Self::get_str(doc, &entry, "content-kind")?,
+                        kind: read_str(doc, &entry, "content-kind")?,
                         page: Self::get_i64(doc, &entry, "content-page")? as usize,
                         width_milli: Self::get_i64(doc, &entry, "page-width-milli")? as u32,
                         height_milli: Self::get_i64(doc, &entry, "page-height-milli")? as u32,
@@ -301,7 +268,7 @@ impl PdfDoc {
                 let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
                     continue;
                 };
-                if Self::get_str(doc, &entry, "page-id").is_some() {
+                if read_str(doc, &entry, "page-id").is_some() {
                     continue;
                 }
                 let page = Self::get_i64(doc, &entry, "page").unwrap_or(1) as usize;
@@ -414,7 +381,7 @@ impl PdfDoc {
                 .flatten()
                 .and_then(|(value, entry)| {
                     matches!(value, Value::Object(ObjType::Map))
-                        .then(|| Self::get_str(doc, &entry, "id"))
+                        .then(|| read_str(doc, &entry, "id"))
                         .flatten()
                 })
                 .is_some_and(|candidate| candidate == id);
@@ -450,7 +417,7 @@ impl PdfDoc {
                     .flatten()
                     .and_then(|(value, entry)| {
                         matches!(value, Value::Object(ObjType::Map))
-                            .then(|| Self::get_str(doc, &entry, "page-id"))
+                            .then(|| read_str(doc, &entry, "page-id"))
                             .flatten()
                     })
                     .as_deref()
@@ -488,7 +455,7 @@ impl PdfDoc {
                 .flatten()
                 .and_then(|(value, entry)| {
                     matches!(value, Value::Object(ObjType::Map))
-                        .then(|| Self::get_str(doc, &entry, "id"))
+                        .then(|| read_str(doc, &entry, "id"))
                         .flatten()
                 })
                 .is_some_and(|candidate| candidate == id);
@@ -568,30 +535,28 @@ impl PdfDoc {
             let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
                 continue;
             };
-            let id = Self::get_str(doc, &m, "id").unwrap_or_default();
+            let id = read_str(doc, &m, "id").unwrap_or_default();
             let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
-            let page = Self::get_str(doc, &m, "page-id")
+            let page = read_str(doc, &m, "page-id")
                 .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
                 .unwrap_or(legacy_page);
-            let color = Swatch::parse(&Self::get_str(doc, &m, "color").unwrap_or_default());
-            let author = Self::get_str(doc, &m, "author").unwrap_or_default();
-            let kind = match Self::get_str(doc, &m, "kind").as_deref() {
+            let color = Swatch::parse(&read_str(doc, &m, "color").unwrap_or_default());
+            let author = read_str(doc, &m, "author").unwrap_or_default();
+            let kind = match read_str(doc, &m, "kind").as_deref() {
                 Some("highlight") => AnnoKind::Highlight {
                     rect: PtRect::new(
-                        Self::get_f64(doc, &m, "x").unwrap_or(0.0),
-                        Self::get_f64(doc, &m, "y").unwrap_or(0.0),
-                        Self::get_f64(doc, &m, "w").unwrap_or(0.0),
-                        Self::get_f64(doc, &m, "h").unwrap_or(0.0),
+                        read_number(doc, &m, "x").unwrap_or(0.0),
+                        read_number(doc, &m, "y").unwrap_or(0.0),
+                        read_number(doc, &m, "w").unwrap_or(0.0),
+                        read_number(doc, &m, "h").unwrap_or(0.0),
                     ),
                 },
                 Some("ink") => AnnoKind::Ink {
-                    points: Self::points_from_str(
-                        &Self::get_str(doc, &m, "points").unwrap_or_default(),
-                    ),
+                    points: Self::points_from_str(&read_str(doc, &m, "points").unwrap_or_default()),
                 },
                 _ => AnnoKind::Note {
-                    x: Self::get_f64(doc, &m, "x").unwrap_or(0.0),
-                    y: Self::get_f64(doc, &m, "y").unwrap_or(0.0),
+                    x: read_number(doc, &m, "x").unwrap_or(0.0),
+                    y: read_number(doc, &m, "y").unwrap_or(0.0),
                 },
             };
             out.push(Annotation {
@@ -609,13 +574,13 @@ impl PdfDoc {
         let list = Self::list_ro(doc, "annotations")?;
         let index = Self::index_of(doc, &list, id)?;
         let (_, entry) = doc.get(&list, index).ok()??;
-        Self::get_str(doc, &entry, "page-id")
+        read_str(doc, &entry, "page-id")
     }
 
     fn index_of(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
         for i in 0..doc.length(list) {
             if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(list, i)
-                && Self::get_str(doc, &m, "id").as_deref() == Some(id)
+                && read_str(doc, &m, "id").as_deref() == Some(id)
             {
                 return Some(i);
             }
@@ -644,7 +609,7 @@ impl PdfDoc {
         };
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
-            && Self::get_str(doc, &m, "kind").as_deref() != Some("ink")
+            && read_str(doc, &m, "kind").as_deref() != Some("ink")
         {
             let _ = doc.put(&m, "x", x);
             let _ = doc.put(&m, "y", y);
@@ -667,7 +632,7 @@ impl PdfDoc {
             let anchored = matches!(
                 doc.get(&comments, i),
                 Ok(Some((Value::Object(ObjType::Map), m)))
-                    if Self::get_str(doc, &m, "anno").as_deref() == Some(id)
+                    if read_str(doc, &m, "anno").as_deref() == Some(id)
             );
             if anchored {
                 let _ = doc.delete(&comments, i);
@@ -721,16 +686,16 @@ impl PdfDoc {
             let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
                 continue;
             };
-            let id = Self::get_str(doc, &m, "id").unwrap_or_default();
-            let anno_id = Self::get_str(doc, &m, "anno");
+            let id = read_str(doc, &m, "id").unwrap_or_default();
+            let anno_id = read_str(doc, &m, "anno");
             let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
-            let page = Self::get_str(doc, &m, "page-id")
+            let page = read_str(doc, &m, "page-id")
                 .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
                 .unwrap_or(legacy_page);
-            let author = Self::get_str(doc, &m, "author").unwrap_or_default();
-            let body = Self::get_str(doc, &m, "body").unwrap_or_default();
+            let author = read_str(doc, &m, "author").unwrap_or_default();
+            let body = read_str(doc, &m, "body").unwrap_or_default();
             let created = Self::get_i64(doc, &m, "created").unwrap_or(0);
-            let resolved = Self::get_bool(doc, &m, "resolved").unwrap_or(false);
+            let resolved = read_bool(doc, &m, "resolved").unwrap_or(false);
             let mut replies = Vec::new();
             if let Ok(Some((Value::Object(ObjType::List), rl))) = doc.get(&m, "replies") {
                 let mut seen_reply_ids = HashSet::new();
@@ -740,15 +705,15 @@ impl PdfDoc {
                         // read-only projection a deterministic legacy key;
                         // newly-authored replies always persist their UUID and
                         // are never renumbered when siblings arrive.
-                        let id = Self::get_str(doc, &rm, "id")
+                        let id = read_str(doc, &rm, "id")
                             .unwrap_or_else(|| Self::legacy_reply_id(&id, &rm));
                         if !seen_reply_ids.insert(id.clone()) {
                             continue;
                         }
                         replies.push(Reply {
                             id,
-                            author: Self::get_str(doc, &rm, "author").unwrap_or_default(),
-                            body: Self::get_str(doc, &rm, "body").unwrap_or_default(),
+                            author: read_str(doc, &rm, "author").unwrap_or_default(),
+                            body: read_str(doc, &rm, "body").unwrap_or_default(),
                         });
                     }
                 }
@@ -821,7 +786,7 @@ impl PdfDoc {
             // or peer merge.  The durable reply id makes this idempotent.
             for index in 0..doc.length(&replies) {
                 if let Ok(Some((Value::Object(ObjType::Map), existing))) = doc.get(&replies, index)
-                    && Self::get_str(doc, &existing, "id").as_deref() == Some(reply.id.as_str())
+                    && read_str(doc, &existing, "id").as_deref() == Some(reply.id.as_str())
                 {
                     return;
                 }
@@ -906,27 +871,27 @@ impl PdfDoc {
             };
             // Signatures written before real ink existed carry no "ink" field;
             // they render as a typed-name signature (no fabricated squiggle).
-            let ink = match Self::get_str(doc, &m, "ink").as_deref() {
+            let ink = match read_str(doc, &m, "ink").as_deref() {
                 Some("drawn") => crate::model::SignatureInk::Drawn {
                     strokes: Self::strokes_from_str(
-                        &Self::get_str(doc, &m, "strokes").unwrap_or_default(),
+                        &read_str(doc, &m, "strokes").unwrap_or_default(),
                     ),
                 },
                 _ => crate::model::SignatureInk::Typed,
             };
             out.push(Signature {
-                id: Self::get_str(doc, &m, "id").unwrap_or_default(),
-                page: Self::get_str(doc, &m, "page-id")
+                id: read_str(doc, &m, "id").unwrap_or_default(),
+                page: read_str(doc, &m, "page-id")
                     .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
                     .unwrap_or_else(|| Self::get_i64(doc, &m, "page").unwrap_or(1) as usize),
                 rect: PtRect::new(
-                    Self::get_f64(doc, &m, "x").unwrap_or(0.0),
-                    Self::get_f64(doc, &m, "y").unwrap_or(0.0),
-                    Self::get_f64(doc, &m, "w").unwrap_or(180.0),
-                    Self::get_f64(doc, &m, "h").unwrap_or(56.0),
+                    read_number(doc, &m, "x").unwrap_or(0.0),
+                    read_number(doc, &m, "y").unwrap_or(0.0),
+                    read_number(doc, &m, "w").unwrap_or(180.0),
+                    read_number(doc, &m, "h").unwrap_or(56.0),
                 ),
-                signer: Self::get_str(doc, &m, "signer").unwrap_or_default(),
-                date: Self::get_str(doc, &m, "date").unwrap_or_default(),
+                signer: read_str(doc, &m, "signer").unwrap_or_default(),
+                date: read_str(doc, &m, "date").unwrap_or_default(),
                 ink,
             });
         }

@@ -435,28 +435,9 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
         Some(i) => path.get(i..).unwrap_or(path),
     };
     let last = path.rsplit('/').find(|s| !s.is_empty())?;
-    let name = percent_decode(last);
+    // A path segment: RFC 3986 rules, so a literal `+` stays a plus.
+    let name = ui::uri::decode(last);
     (!name.is_empty()).then_some(name)
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut rest = bytes;
-    while let Some((&first, tail)) = rest.split_first() {
-        if first == b'%'
-            && let Some(hex) = tail.get(..2)
-            && let Ok(hex_str) = std::str::from_utf8(hex)
-            && let Ok(v) = u8::from_str_radix(hex_str, 16)
-        {
-            out.push(v);
-            rest = tail.get(2..).unwrap_or(&[]);
-            continue;
-        }
-        out.push(first);
-        rest = tail;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A readable name for a set of paths the compositor itself is carrying.
@@ -581,6 +562,16 @@ mod tests {
             name_from_uri_list(b"file:///home/me/my%20photo%231.png\r\n").as_deref(),
             Some("my photo#1.png"),
             "a name a URI had to escape shows as the user wrote it"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/C++%20notes%2.txt\r\n").as_deref(),
+            Some("C++ notes%2.txt"),
+            "a plus is literal and a malformed escape is kept verbatim"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/caf%C3%A9%FF.txt\r\n").as_deref(),
+            Some("caf\u{e9}\u{fffd}.txt"),
+            "invalid UTF-8 is replaced, not dropped"
         );
         assert_eq!(
             name_from_uri_list(b"file://localhost/tmp/scan.jpg\r\n").as_deref(),

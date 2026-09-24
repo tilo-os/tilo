@@ -125,9 +125,7 @@ impl LiveAccountTester {
     /// accept alone is deliberately not success: it says nothing about the
     /// saved credential or whether this is an IMAP endpoint.
     fn email(account: &accounts::Account, secret: &accounts::Secret) -> Result<String, String> {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        Self::email_with_roots(account, secret, roots)
+        Self::email_with_roots(account, secret, tilo_net::system_roots())
     }
 
     fn email_with_roots(
@@ -163,13 +161,8 @@ impl LiveAccountTester {
             return Err("account has no saved password".into());
         }
 
-        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| "could not initialize secure protocol versions".to_string())?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        let config = tilo_net::client_config_with_roots(roots)
+            .map_err(|_| "could not initialize secure protocol versions".to_string())?;
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|_| "invalid IMAP server name".to_string())?;
         let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
@@ -229,7 +222,7 @@ impl LiveAccountTester {
             .get("username")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "account has no username".to_string())?;
-        let client = reqwest::blocking::Client::builder()
+        let client = tilo_net::http::blocking_client()
             .connect_timeout(Self::NETWORK_TIMEOUT)
             .timeout(Self::NETWORK_TIMEOUT)
             // Never replay Basic credentials to a redirect target. Discovery

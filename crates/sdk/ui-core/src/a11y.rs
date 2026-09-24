@@ -16,9 +16,6 @@
 //! `accesskit::Role::MultilineTextInput`).
 
 use vello::kurbo::Rect;
-use vello::peniko::Color;
-
-use crate::color_compat::ColorCompat;
 
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
 /// supports; unknown/rare cases fall back to [`Role::Generic`].
@@ -576,33 +573,14 @@ pub struct A11ySettings {
     pub screen_reader: bool,
 }
 
-/// WCAG 2.1 relative luminance of an sRGB colour, in `[0.0, 1.0]`. Alpha is
-/// ignored (colours are assumed opaque for contrast purposes).
-pub fn relative_luminance(c: Color) -> f64 {
-    fn channel(v: u8) -> f64 {
-        let s = f64::from(v) / 255.0;
-        if s <= 0.03928 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
-}
-
-/// WCAG 2.1 contrast ratio between two colours, in `[1.0, 21.0]` (1.0 = same
-/// luminance, 21.0 = black on white). WCAG AA body text wants ≥ 4.5:1; AAA
-/// wants ≥ 7:1.
-pub fn contrast_ratio(a: Color, b: Color) -> f64 {
-    let la = relative_luminance(a);
-    let lb = relative_luminance(b);
-    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    (hi + 0.05) / (lo + 0.05)
-}
+/// WCAG 2.1 luminance and contrast live in [`crate::color`]; re-exported
+/// here, where accessibility code has always found them.
+pub use crate::color::{contrast_ratio, relative_luminance};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::peniko::Color;
 
     #[test]
     fn access_state_default_is_all_clear() {

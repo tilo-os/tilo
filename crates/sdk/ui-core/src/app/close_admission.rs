@@ -71,6 +71,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn finish_close_if_ready(&mut self) -> bool {
         if !self.close_admission.ready || !self.request_close() {
             return false;
@@ -250,7 +251,7 @@ impl App {
                 self.close_admission.save_broker_id = Some(*id);
                 self.observe_close_save(update);
                 self.close_admission.save_poll_at =
-                    std::time::Instant::now() + std::time::Duration::from_millis(100);
+                    crate::time::now() + crate::time::Duration::from_millis(100);
             }
             Err(error) => self.close_admission.save_result = Some(Err(error.clone())),
         }
@@ -315,7 +316,7 @@ impl App {
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_id.is_some()
             && self.close_admission.save_broker_request.is_none()
-            && std::time::Instant::now() >= self.close_admission.save_poll_at
+            && crate::time::now() >= self.close_admission.save_poll_at
         {
             if !self.collaboration.manager.is_connected() {
                 self.close_admission.save_result = Some(Err("save broker disconnected".into()));
@@ -411,6 +412,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn layout_close_dialog(&mut self, logical: (f64, f64)) {
         let Some(root) = self.layout.root_node else {
             return;
@@ -577,7 +579,7 @@ mod tests {
             save_allowed: false,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture root owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
@@ -630,7 +632,7 @@ mod tests {
             crate::State::new(),
             Box::new(crate::widget::Text::new("body")),
         )
-        .with_autosave(crate::persist::Autosave::disabled(
+        .with_autosave(crate::persist::DocWriter::disabled(
             "required writer unavailable",
         ));
         assert!(
@@ -704,7 +706,7 @@ mod tests {
             save_allowed,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);

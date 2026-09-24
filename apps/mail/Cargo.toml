@@ -47,19 +47,23 @@ taffy.workspace = true
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
+# OAuth PKCE (S256 challenge, RFC 7636) and the base64 encodings it, XOAUTH2
+# and the sandboxed HTML data: URL use.
+sha2.workspace = true
+base64.workspace = true
 
 # Live IMAP and SMTP for the account engine. These are optional and gated by
 # `live`; the default build uses the offline backend.
 async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
-lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "tokio1-rustls-tls", "tokio1"] }
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
 # HTTP sender avatars through `ui::ImageStore`; optional and gated by `live`.
-reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
-# Async runtime and rustls backend used by the live engine; bundled roots avoid
-# an OpenSSL or host trust-store dependency.
+reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
+# Async runtime and rustls backend used by the live engine; roots come from the
+# Tilo system bundle through `tilo-net`, never OpenSSL.
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros"] }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-webpki-roots = { version = "0.26", optional = true }
+tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
 futures = { workspace = true, optional = true, features = ["std"] }
 
 [features]
@@ -69,14 +73,14 @@ thin = ["dep:runtime-dylib"]
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures"]
+live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures"]
 # Render HTML mail bodies with WPE WebKit; requires the stack from
 # os/dev/build-wpe.sh.
 html-webview = ["ui/webview-wpe"]
 
 [dev-dependencies]
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
-rcgen = "0.13"
+rcgen.workspace = true
 
 [lints]
 workspace = true
