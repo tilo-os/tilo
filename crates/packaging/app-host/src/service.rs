@@ -50,22 +50,46 @@ struct SystemPackage {
     manifest_text: String,
 }
 
-/// The system store root. `TILO_APPS_SYSTEM_DIR` re-points it in developer
-/// builds only (see [`crate::dev_env`]).
-fn system_data_dir() -> PathBuf {
-    path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV),
-        SYSTEM_DATA_DIR,
-    )
+/// Where the image's preinstalled packages are listed: the metadata
+/// directory holding `registry.toml` and the root every listed payload must
+/// lie under.
+///
+/// Resolved once when the daemon starts and shared by every connection, so
+/// a request never consults the process environment.
+#[derive(Clone, Debug)]
+pub struct SystemCatalog {
+    data_dir: PathBuf,
+    payload_dir: PathBuf,
 }
 
-/// The system payload root. `TILO_APPS_SYSTEM_PAYLOAD_DIR` re-points it in
-/// developer builds only.
-fn system_payload_dir() -> PathBuf {
-    path_or_default(
-        crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_PAYLOAD_DIR_ENV),
-        SYSTEM_PAYLOAD_DIR,
-    )
+impl SystemCatalog {
+    /// The catalog at explicit directories.
+    pub fn at(data_dir: impl Into<PathBuf>, payload_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            payload_dir: payload_dir.into(),
+        }
+    }
+
+    /// The image's catalog: `/usr/share/tilo-apps` and `/usr/lib/tilo-apps`,
+    /// unless `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` name
+    /// other directories in a developer build (see [`crate::dev_env`]).
+    pub fn from_env() -> Self {
+        Self::at(
+            path_or_default(
+                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV),
+                SYSTEM_DATA_DIR,
+            ),
+            path_or_default(
+                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_PAYLOAD_DIR_ENV),
+                SYSTEM_PAYLOAD_DIR,
+            ),
+        )
+    }
+
+    fn packages(&self) -> Result<Vec<SystemPackage>, Error> {
+        system_packages_from(&self.data_dir, &self.payload_dir)
+    }
 }
 
 /// The override the build's gate let through, else the image default.
@@ -81,10 +105,6 @@ fn is_within(root: &Path, path: &Path) -> bool {
         return false;
     };
     path.starts_with(root)
-}
-
-fn system_packages() -> Result<Vec<SystemPackage>, Error> {
-    system_packages_from(&system_data_dir(), &system_payload_dir())
 }
 
 fn system_packages_from(root: &Path, payload_root: &Path) -> Result<Vec<SystemPackage>, Error> {
@@ -181,9 +201,14 @@ fn visible_entries(
     entries
 }
 
-fn visible_system_for_id(store: &Store, id: PackageId) -> Result<Option<SystemPackage>, Error> {
+fn visible_system_for_id(
+    store: &Store,
+    catalog: &SystemCatalog,
+    id: PackageId,
+) -> Result<Option<SystemPackage>, Error> {
     let user_ids = user_app_ids(&store.list());
-    Ok(system_packages()?
+    Ok(catalog
+        .packages()?
         .into_iter()
         .find(|entry| entry.id == id && !user_ids.contains(&entry.app_id)))
 }
@@ -191,16 +216,18 @@ fn visible_system_for_id(store: &Store, id: PackageId) -> Result<Option<SystemPa
 /// Service state shared across every accepted connection.
 pub struct AppHostServer {
     store: Arc<Store>,
+    catalog: Arc<SystemCatalog>,
     max_store_bytes: u64,
 }
 
 impl AppHostServer {
-    /// Build a new server backed by `store`. `max_store_bytes` is the
-    /// soft cap used by the post-install GC sweep; pass `0` to disable
-    /// GC.
-    pub fn new(store: Arc<Store>, max_store_bytes: u64) -> Self {
+    /// Build a new server backed by `store`, listing the preinstalled
+    /// packages of `catalog` beside it. `max_store_bytes` is the soft cap
+    /// used by the post-install GC sweep; pass `0` to disable GC.
+    pub fn new(store: Arc<Store>, catalog: Arc<SystemCatalog>, max_store_bytes: u64) -> Self {
         Self {
             store,
+            catalog,
             max_store_bytes,
         }
     }
@@ -365,10 +392,11 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::ListResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let entries = tokio::task::spawn_blocking(move || {
                 let user_entries = store.list();
-                let system_entries = system_packages()?;
+                let system_entries = catalog.packages()?;
                 let entries = visible_entries(user_entries, system_entries);
                 let sizes: Vec<u64> = entries
                     .iter()
@@ -403,6 +431,7 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::ResolveResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let id_bytes = p
@@ -415,7 +444,7 @@ impl app_host::Server for AppHostServer {
                     let size = payload_size(&store, &entry);
                     return Ok((entry, size, true));
                 }
-                let system = visible_system_for_id(&store, id)
+                let system = visible_system_for_id(&store, &catalog, id)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown package {id}"))?;
                 let entry = system_as_registry(&system);
@@ -603,6 +632,7 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::LaunchResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let id = parse_id(p.get_id().map_err(|e| Error::failed(e.to_string()))?)?;
@@ -621,7 +651,7 @@ impl app_host::Server for AppHostServer {
                         .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
                     (entry, manifest, true)
                 } else {
-                    let system = visible_system_for_id(&store, id)?
+                    let system = visible_system_for_id(&store, &catalog, id)?
                         .ok_or_else(|| Error::failed(format!("unknown package {id}")))?;
                     let manifest = system.manifest_path.clone();
                     (system_as_registry(&system), manifest, false)
