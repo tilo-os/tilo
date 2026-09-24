@@ -2453,7 +2453,7 @@ impl SidebarWheelDisc {
             return;
         };
         let mut state = chrome.borrow_mut();
-        if state.tree().active == WorkspaceId(id) {
+        if state.tree().desktop.active == WorkspaceId(id) {
             // Already there. Bumping anyway re-syncs the rest of the
             // shell against a tree that didn't change — every gesture
             // that ends where it started does exactly that.
@@ -2757,7 +2757,7 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let before = chrome.borrow().tree().workspaces.len();
+        let before = chrome.borrow().tree().desktop.workspaces.len();
         let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"])
             .with_chrome(chrome.clone());
         layout_into_slot(&mut d, live_slot());
@@ -2781,7 +2781,7 @@ mod tests {
                 d.rotation_deg
             );
             assert_eq!(
-                chrome.borrow().tree().workspaces.len(),
+                chrome.borrow().tree().desktop.workspaces.len(),
                 expected,
                 "the press at {}° did not create a workspace",
                 d.rotation_deg
@@ -3243,9 +3243,9 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let tree = WorkspaceTree::bootstrap_demo();
-        assert_eq!(tree.workspaces.len(), 3);
-        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
-        let initial_active = tree.active;
+        assert_eq!(tree.desktop.workspaces.len(), 3);
+        let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
+        let initial_active = tree.desktop.active;
         assert_eq!(
             initial_active, ws_ids[0],
             "bootstrap_demo should leave active = ws_ids[0]"
@@ -3283,12 +3283,12 @@ mod tests {
         );
         let expected_id = ws_ids[d.selected_idx()];
         assert_eq!(
-            chrome.borrow().tree().active,
+            chrome.borrow().tree().desktop.active,
             expected_id,
             "snap_to_nearest must publish the new active workspace id to chrome"
         );
         assert_ne!(
-            chrome.borrow().tree().active,
+            chrome.borrow().tree().desktop.active,
             initial_active,
             "chrome's tree.active must have changed after the snap"
         );
@@ -3413,8 +3413,8 @@ mod tests {
         // First-boot tree: one empty workspace — the state where "+"
         // matters most, so it has to work from a single spoke.
         let tree = WorkspaceTree::bootstrap_default();
-        let initial_count = tree.workspaces.len();
-        let initial_active = tree.active;
+        let initial_count = tree.desktop.workspaces.len();
+        let initial_active = tree.desktop.active;
         let chrome = ChromeState::new(tree);
 
         let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
@@ -3448,12 +3448,12 @@ mod tests {
 
         let state = chrome.borrow();
         assert_eq!(
-            state.tree().workspaces.len(),
+            state.tree().desktop.workspaces.len(),
             initial_count + 1,
             "plus-press must grow the workspace count by exactly 1"
         );
         assert_ne!(
-            state.tree().active,
+            state.tree().desktop.active,
             initial_active,
             "plus-press must activate the newly-created workspace"
         );
@@ -4016,7 +4016,7 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let tree = WorkspaceTree::bootstrap_demo();
-        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
         let chrome = ChromeState::new(tree);
         let spokes: Vec<SpokeLabel> = ws_ids
             .iter()

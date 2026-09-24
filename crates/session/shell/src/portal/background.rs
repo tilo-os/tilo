@@ -190,7 +190,7 @@ impl ShellBackgroundService {
         // workspace. Deliberately choose the workspace the user restored
         // into; that gives launches normal room/capability attribution while
         // preventing every open workspace from spawning a duplicate process.
-        let workspace = tree.read().active_workspace().cloned();
+        let workspace = tree.read().desktop.active_workspace().cloned();
         if let Some(workspace) = workspace {
             let _ = self.launch_enabled_in_workspace(&workspace);
         }
@@ -653,7 +653,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             ctx: {
                 let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-                    crate::shell::state::Workspace::test_default(
+                    crate::shell::state::Workspace::new(
                         crate::shell::state::WorkspaceId(1),
                         "test",
                     ),
@@ -710,16 +710,17 @@ mod tests {
     #[test]
     fn session_start_chooses_only_the_active_workspace() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
-        let active = tree.active_workspace().unwrap().id;
+        let active = tree.desktop.active_workspace().unwrap().id;
         // A second workspace models a restored multi-workspace session.
-        let second = crate::shell::state::Workspace::test_default(
+        let second = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(active.0 + 100),
             "other",
         );
-        tree.workspaces.push(second);
+        tree.desktop.workspaces.push(second);
         let shared = tree.shared();
         let chosen = shared
             .read()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.id);
         assert_eq!(chosen, Some(active));

@@ -145,6 +145,8 @@ mod shell_chrome_test;
 mod shell_state_test;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
+#[path = "state_file_format.rs"]
+mod state_file_format;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]

@@ -138,16 +138,14 @@ struct GroupDrag {
     moved: bool,
 }
 
-/// The one spatial answer to a tab drag within a strip.
+/// The one spatial answer to a tab drag within a strip — the desktop
+/// model's drop target, so what the row previews is exactly what the
+/// model applies.
 ///
 /// Both hover feedback and release consume this value. A target in an
 /// existing group names the exact tab-list insertion point; a group gap names
 /// the slot where a new window group will be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TabDropTarget {
-    ExistingGroup { group_id: u64, tab_index: usize },
-    GroupGap { gap_index: usize },
-}
+pub use tilo_desktop_model::DropTarget as TabDropTarget;
 
 /// Payload published when a tab drag ends outside the row's own band; the
 /// shell hit-tests the release point against other strips and delivers it

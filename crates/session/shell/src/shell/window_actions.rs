@@ -35,13 +35,15 @@ pub enum Destination {
 /// has no groups (a fresh empty workspace).
 pub fn focused_group(st: &ChromeState) -> Option<GroupId> {
     let tree = st.tree();
-    let ws = tree.active_workspace()?;
+    let ws = tree.desktop.active_workspace()?;
     let strip = tree
+        .desktop
         .active_strip
         .get(&ws.id)
         .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
         .or_else(|| ws.strips.first())?;
-    tree.active_group
+    tree.desktop
+        .active_group
         .get(&strip.id)
         .copied()
         .filter(|g| strip.window_groups.iter().any(|w| w.id == *g))
@@ -147,14 +149,19 @@ impl DuplicateError {
 pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
-        let ws = tree.active_workspace().ok_or(DuplicateError::NoActiveTab)?;
+        let ws = tree
+            .desktop
+            .active_workspace()
+            .ok_or(DuplicateError::NoActiveTab)?;
         let strip = tree
+            .desktop
             .active_strip
             .get(&ws.id)
             .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
             .or_else(|| ws.strips.first())
             .ok_or(DuplicateError::NoActiveTab)?;
         let group = tree
+            .desktop
             .active_group
             .get(&strip.id)
             .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
@@ -235,13 +242,15 @@ pub enum SplitPlacement {
 /// back to the first).
 pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
     let tree = st.tree();
-    let ws = tree.active_workspace()?;
+    let ws = tree.desktop.active_workspace()?;
     let strip = tree
+        .desktop
         .active_strip
         .get(&ws.id)
         .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
         .or_else(|| ws.strips.first())?;
     let group = tree
+        .desktop
         .active_group
         .get(&strip.id)
         .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
@@ -268,7 +277,8 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
 pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionError> {
     let surface = {
         let tree = st.tree();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
             .flat_map(|strip| strip.window_groups.iter())
@@ -330,7 +340,7 @@ pub fn split_tab(
 ) -> Result<GroupId, TabActionError> {
     let (strip_id, insert_at, only_tab) = {
         let tree = st.tree();
-        let located = tree.workspaces.iter().find_map(|ws| {
+        let located = tree.desktop.workspaces.iter().find_map(|ws| {
             ws.strips.iter().find_map(|strip| {
                 strip
                     .window_groups
@@ -414,7 +424,8 @@ mod tests {
     fn focused_group_tab_count(st: &ChromeState) -> usize {
         let g = focused_group(st).expect("a focused group");
         let tree = st.tree();
-        tree.active_workspace()
+        tree.desktop
+            .active_workspace()
             .unwrap()
             .strips
             .iter()
@@ -444,6 +455,7 @@ mod tests {
         );
         let tree = st.tree();
         let g = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -479,7 +491,7 @@ mod tests {
         // Collapse to a single tab so the "open beside" branch is under test.
         {
             let mut tree = st.tree_mut();
-            let ws = tree.active_workspace_mut().unwrap();
+            let ws = tree.desktop.active_workspace_mut().unwrap();
             let g = &mut ws.strips[0].window_groups[0];
             g.tabs.truncate(1);
             g.active_tab = g.tabs[0].id;
@@ -487,13 +499,13 @@ mod tests {
         let group = focused_group(&st).unwrap();
         let groups_before = {
             let tree = st.tree();
-            tree.active_workspace().unwrap().strips[0]
+            tree.desktop.active_workspace().unwrap().strips[0]
                 .window_groups
                 .len()
         };
         open_terminal(&mut st, Destination::Beside);
         let tree = st.tree();
-        let strip = &tree.active_workspace().unwrap().strips[0];
+        let strip = &tree.desktop.active_workspace().unwrap().strips[0];
         assert_eq!(
             strip.window_groups.len(),
             groups_before + 1,
@@ -517,7 +529,7 @@ mod tests {
         // Focus the Terminal tab so the duplicate has a known kind to copy.
         let terminal_tab = {
             let mut tree = st.tree_mut();
-            let ws = tree.active_workspace_mut().unwrap();
+            let ws = tree.desktop.active_workspace_mut().unwrap();
             let g = ws.strips[0]
                 .window_groups
                 .iter_mut()
@@ -545,7 +557,7 @@ mod tests {
         assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
         assert_eq!(focused_group_tab_count(&st), before + 1);
         let tree = st.tree();
-        let g = tree.active_workspace().unwrap().strips[0]
+        let g = tree.desktop.active_workspace().unwrap().strips[0]
             .window_groups
             .iter()
             .find(|g| g.id == group)
@@ -576,7 +588,7 @@ mod tests {
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
         {
             let mut tree = st.tree_mut();
-            let ws = tree.active_workspace_mut().unwrap();
+            let ws = tree.desktop.active_workspace_mut().unwrap();
             let g = &mut ws.strips[0].window_groups[0];
             let id = next_id();
             g.tabs.push(Tab {
@@ -626,7 +638,8 @@ mod tests {
 
         for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
             assert!(
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .flat_map(|workspace| workspace.strips.iter())
                     .flat_map(|strip| strip.window_groups.iter())
@@ -642,17 +655,20 @@ mod tests {
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .first_mut()
             .expect("demo has a first workspace")
             .name = "Home (workspace persistence test)".into();
         tree.persist_path = Some(state_path.clone());
         let first = tree
+            .desktop
             .workspaces
             .first()
             .expect("demo has a first workspace")
             .id;
         let target = tree
+            .desktop
             .workspaces
             .get(1)
             .expect("demo has a second workspace")
@@ -663,7 +679,7 @@ mod tests {
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("workspace selection must leave a loadable state file");
         assert_eq!(
-            restarted.active, target,
+            restarted.desktop.active, target,
             "the workspace selected by the user must be the one reopened"
         );
 
@@ -672,13 +688,13 @@ mod tests {
         assert!(moved_up.switch_up());
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("moving to the previous workspace must persist immediately");
-        assert_eq!(restarted.active, first);
+        assert_eq!(restarted.desktop.active, first);
 
         let mut moved_down = restarted;
         moved_down.persist_path = Some(state_path.clone());
         assert!(moved_down.switch_down());
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("moving to the next workspace must persist immediately");
-        assert_eq!(restarted.active, target);
+        assert_eq!(restarted.desktop.active, target);
     }
 }

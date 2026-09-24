@@ -6,9 +6,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(transparent)]
 pub struct SharedSurfaces(HashMap<u64, HashSet<u64>>);
+
+impl<'de> Deserialize<'de> for SharedSurfaces {
+    /// Surface ids are JSON object keys; accept them however the map was
+    /// buffered (see [`crate::serde_ids`]).
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::serde_ids::deserialize_id_map(deserializer).map(Self)
+    }
+}
 
 impl SharedSurfaces {
     pub fn share(&mut self, surface_id: u64, peer_id: u64) {
@@ -50,8 +58,8 @@ impl SharedSurfaces {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Workspace, WorkspaceId};
     use super::*;
+    use crate::{Workspace, WorkspaceId};
 
     #[test]
     fn sharing_is_additive_and_idempotent() {

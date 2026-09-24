@@ -38,7 +38,7 @@ use zbus::{Connection, Proxy};
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
 fn empty_workspace(id: u64, name: &str) -> Workspace {
-    Workspace::test_default(WorkspaceId(id), name)
+    Workspace::new(WorkspaceId(id), name)
 }
 
 /// Server + paired client zbus connections, both p2p. The returned ctx
@@ -121,6 +121,7 @@ async fn bring_up_pair_with_spawners(
             resolver_grants
                 .tree_handle()
                 .read()
+                .desktop
                 .active_workspace()
                 .map(|workspace| PortalCaller::new(workspace.id, app_id))
         })
@@ -836,7 +837,7 @@ async fn screencast_restore_data_skips_reprompt() {
     {
         let handle = ctx.grants.tree_handle();
         let mut t = handle.write();
-        if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = t.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             // Removing the ordinary capability proves this second request is
             // using the separately app-bound portal restore authority.
             ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));

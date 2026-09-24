@@ -19,56 +19,19 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
-/// Per-mille (not px) so a tier means the same fraction on every monitor.
-/// Thirds tile the strip cleanly; `Wide` is the full usable width.
-pub const WIDTH_NARROW_PERMILLE: u16 = 333;
-pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
-pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
-
-/// [`WIDTH_FLOOR_PX`] backs this up on outputs too small for 15% to be
-/// usable pixels.
-pub const WIDTH_MIN_PERMILLE: u16 = 150;
-pub const WIDTH_MAX_PERMILLE: u16 = 1000;
-
-/// A pure fraction has no floor — 15% of an 800px strip is 120px, too
-/// narrow for a tab pill or scrollbar — so resolved width clamps up to
-/// this (and back down to the strip width if that's narrower still).
-pub const WIDTH_FLOOR_PX: f64 = 240.0;
+/// Group widths are the desktop model's: a fraction of the strip, never
+/// pixels, with one set of tiers and clamps for every host.
+pub use tilo_desktop_model::width::{
+    WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE,
+    WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, WindowWidth, max_group_px, min_group_px,
+    permille_for_px,
+};
 
 /// Only reached from a bare `ui` host with no output spans; the shell
 /// always pushes real geometry first.
 pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
-
-pub fn min_group_px(strip_usable_px: f64) -> f64 {
-    let usable = strip_usable_px.max(1.0);
-    (usable * f64::from(WIDTH_MIN_PERMILLE) / 1000.0)
-        .max(WIDTH_FLOOR_PX)
-        .min(usable)
-}
-
-pub fn max_group_px(strip_usable_px: f64) -> f64 {
-    strip_usable_px.max(1.0)
-}
-
-/// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
-/// becomes a stored resolution-independent width.
-pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
-    let usable = strip_usable_px.max(1.0);
-    let raw = (px.max(0.0) / usable * 1000.0).round();
-    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
-    // Safe: `clamped` is bounded to [WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]
-    // (150..=1000) above, well within u16 range and never negative.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to [150.0, 1000.0] above, which fits losslessly in u16"
-    )]
-    {
-        clamped as u16
-    }
-}
 
 const SPAWN_ANIM_MS: u64 = 420;
 /// Kept inside the row's visible margin during the spawn animation.
@@ -121,54 +84,6 @@ fn px_f32(v: f64) -> f32 {
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
-
-/// A width only becomes pixels through [`WindowWidth::resolve`], against
-/// the strip's usable width, so the same stored value means the same
-/// proportion of the screen regardless of output resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowWidth {
-    Narrow,
-    Normal,
-    Wide,
-    /// What a manual resize produces: measured in pixels, converted back
-    /// to a fraction so it survives a restart and a differently-sized
-    /// output.
-    Fraction(u16),
-}
-
-impl WindowWidth {
-    pub fn permille(&self) -> u16 {
-        match self {
-            WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
-            WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
-            WindowWidth::Wide => WIDTH_WIDE_PERMILLE,
-            WindowWidth::Fraction(p) => (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE),
-        }
-    }
-
-    pub fn fraction(&self) -> f64 {
-        f64::from(self.permille()) / 1000.0
-    }
-
-    /// Clamped into `[min_group_px, max_group_px]` so a fraction can
-    /// neither collapse a group below usability nor push it past the
-    /// output's right edge.
-    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
-        let usable = strip_usable_px.max(1.0);
-        // Rounded: a Wayland client's geometry is integers, and a
-        // fractional width would leave sub-pixel seams between groups.
-        (usable * self.fraction())
-            .round()
-            .clamp(min_group_px(usable), max_group_px(usable))
-    }
-
-    /// Always a [`WindowWidth::Fraction`] — records the proportion the
-    /// user landed on rather than a coincident tier, so a later tier
-    /// retune doesn't silently move their window.
-    pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
-        WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
-    }
-}
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
 // search-open, focus, ...), not a bitset encoding related states, and the
