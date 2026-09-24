@@ -221,7 +221,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             app.run();
             return;
         }
-        PortalBringup::Started { handle } => handle,
+        PortalBringup::Started { handle } => Some(handle),
     };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
@@ -521,12 +521,12 @@ enum PortalBringup {
     /// remaining hosted-mode setup, matching legacy behaviour when the portal has nowhere to run.
     RuntimeUnavailable,
     Started {
-        handle: Option<crate::portal::ServerHandle>,
+        handle: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     },
 }
 
-/// Brings up the xdg-desktop-portal D-Bus backend when enabled, reusing the current tokio runtime
-/// when already inside one or minting a dedicated one. The portal must NOT bypass the existing
+/// Brings up the xdg-desktop-portal D-Bus backend on the session runtime when enabled. The portal
+/// must NOT bypass the existing
 /// sandbox / grant enforcement — `flow::resolve` is the only entry point that mutates the
 /// workspace's `grants` map, consulting the same store the chrome's permission-prompt pump uses.
 fn bring_up_portal(
@@ -572,24 +572,21 @@ fn bring_up_portal(
         desktop_services,
         authenticator: None,
     };
-    let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
-        runtime.block_on(async move {
+    // Registers in the background; the window opens without waiting on the bus.
+    let handle = crate::session_runtime::Registration::start(
+        runtime.handle(),
+        "portal",
+        async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
             crate::portal::serve(conn, ctx).await
-        });
-    let handle = match serve_result {
-        Ok(h) => {
+        },
+        |_| {
             tracing::info!(
                 "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}",
                 crate::portal::BUS_NAME
             );
-            Some(h)
-        }
-        Err(e) => {
-            tracing::warn!("portal: serve failed ({e}); continuing without portal");
-            None
-        }
-    };
+        },
+    );
     PortalBringup::Started { handle }
 }
 

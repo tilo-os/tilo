@@ -4460,9 +4460,9 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     #[allow(
         dead_code,
-        reason = "Retaining the server handle keeps its D-Bus connection, bus name, and object server alive."
+        reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
     )]
-    server: crate::portal::ServerHandle,
+    server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
@@ -4658,8 +4658,10 @@ impl PortalBackend {
 /// which is that process. `shell-portal.service` and its D-Bus activation
 /// are removed with this change.
 ///
-/// `None` with no session bus (headless rig, no user bus) — the compositor
-/// still runs, just logging that file open/save won't work.
+/// Registration on the session bus completes in the background. With no
+/// session bus (headless rig, no user bus) it fails there, and the compositor
+/// still runs, just logging that the portal is unavailable. `None` only when
+/// the session runtime itself cannot start.
 #[allow(
     clippy::too_many_lines,
     reason = "portal startup wires the complete backend atomically so no partially registered capability can be advertised"
@@ -4728,50 +4730,50 @@ fn start_portal_backend(
         authenticator: None,
     };
 
-    let serve_result = runtime.block_on(async {
-        let conn = zbus::connection::Builder::session()?.build().await?;
-        crate::portal::serve_with_inhibit_and_clipboard(
-            conn,
-            ctx,
-            inhibit_registry,
-            crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-            )),
-        )
-        .await
-    });
-    let server = match serve_result {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(
-                "portal: could not serve {} ({e}); file open/save will not work",
-                crate::portal::BUS_NAME
-            );
-            return None;
-        }
-    };
+    // Registering on the bus is a round trip to the bus daemon; it happens on
+    // the session runtime while the compositor starts. Until it completes,
+    // nothing can reach the portal, so nothing is queued.
+    let described_documents = documents.describe();
+    let server = crate::session_runtime::Registration::start(
+        runtime.handle(),
+        "portal",
+        async move {
+            let conn = zbus::connection::Builder::session()?.build().await?;
+            crate::portal::serve_with_inhibit_and_clipboard(
+                conn,
+                ctx,
+                inhibit_registry,
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
+                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
+                )),
+            )
+            .await
+        },
+        move |server: &crate::portal::ServerHandle| {
+            // Losing the name isn't warning-shaped: xdg-desktop-portal would
+            // route FileChooser elsewhere, so every Open would hit a backend
+            // with no session state — logged at journal level.
+            if server.owns_name() {
+                tracing::info!(
+                    "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {described_documents}",
+                    crate::portal::BUS_NAME,
+                );
+            } else {
+                tracing::error!(
+                    "portal: another process already owns {} — this session's file \
+                     dialog will never be reached. The standalone \
+                     `shell --portal-server-only` daemon is the usual culprit; it is \
+                     no longer part of the image and its unit should be disabled.",
+                    crate::portal::BUS_NAME
+                );
+            }
+        },
+    );
 
-    // Losing the name isn't warning-shaped: xdg-desktop-portal would route
-    // FileChooser elsewhere, so every Open would hit a backend with no session state — logged at journal level.
-    if !server.owns_name() {
-        tracing::error!(
-            "portal: another process already owns {} — this session's file \
-             dialog will never be reached. The standalone \
-             `shell --portal-server-only` daemon is the usual culprit; it is \
-             no longer part of the image and its unit should be disabled.",
-            crate::portal::BUS_NAME
-        );
-    }
-
-    // The queues are useless until drained; attaching them to the overlay host
-    // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
+    // The queues are drained by the overlay host; a portal whose registration
+    // fails never fills them, so attaching them now costs nothing.
     frame_builder.host_mut().set_portal_queues(prompts, pickers);
 
-    tracing::info!(
-        "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {}",
-        crate::portal::BUS_NAME,
-        documents.describe()
-    );
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
         // looks like an app bug, and the journal is the only place to connect the dots.
@@ -5741,12 +5743,19 @@ pub fn run() {
     let mut notif_runtime: Option<&'static tokio::runtime::Runtime> = None;
     // RAII: dropping this releases the D-Bus bus name and tears down the
     // object server. It is explicitly dropped in the ordered shutdown block.
-    let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
+    // Registered in the background: the loop starts without waiting on the
+    // bus daemon. Until then (or if it fails) shell-internal notifications
+    // keep working.
+    let mut notif_handle: Option<
+        crate::session_runtime::Registration<crate::notifications::ServerHandle>,
+    > = None;
     match crate::session_runtime::runtime() {
         Ok(rt) => {
             let bridge = notif_bridge.clone();
-            let res: Result<crate::notifications::ServerHandle, zbus::Error> =
-                rt.block_on(async move {
+            notif_handle = Some(crate::session_runtime::Registration::start(
+                rt.handle(),
+                "notifications",
+                async move {
                     let conn = zbus::connection::Builder::session()?.build().await?;
                     let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
@@ -5759,23 +5768,15 @@ pub fn run() {
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;
                     crate::notifications::spawn_signal_emitter(conn, bridge);
-                    Ok(handle)
-                });
-            match res {
-                Ok(h) => {
+                    Ok::<_, zbus::Error>(handle)
+                },
+                |_| {
                     tracing::info!(
                         "notifications: serving {} on session bus",
                         crate::notifications::BUS_NAME
                     );
-                    notif_handle = Some(h);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "notifications: serve failed ({e}); continuing with \
-                         shell-internal notifications only"
-                    );
-                }
-            }
+                },
+            ));
             // The power service runs regardless of notification outcome: it
             // lives on the *system* bus (logind/UPower), independent of the
             // session-bus daemon, sharing these threads.
