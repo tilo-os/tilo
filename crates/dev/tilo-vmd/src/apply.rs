@@ -70,6 +70,11 @@ pub trait Apply {
     /// Capabilities and `SELinux` domain of the slot's running session
     /// process, or `None` when it is not running.
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess>;
+    /// The main process of the slot's running session unit, whose mount
+    /// namespace has the slot's layers over `/usr`.
+    fn session_pid(&mut self, _slot: &str) -> Option<u32> {
+        None
+    }
     /// Wait until the slot's session unit is up and stays up.
     ///
     /// # Errors

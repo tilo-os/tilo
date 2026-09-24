@@ -43,6 +43,22 @@ enum Command {
         #[command(flatten)]
         state: State,
     },
+    /// Run one command as a slot sees the system: in its session's mount
+    /// namespace, as its user; output streams, and the run is bounded.
+    Exec {
+        #[command(flatten)]
+        state: State,
+        #[arg(long)]
+        slot: String,
+        /// Seconds before the command is killed (exit 124).
+        #[arg(long, default_value_t = tilo_vm_protocol::EXEC_TIMEOUT_SECONDS)]
+        timeout: u64,
+        /// Output bytes after which the command is killed (exit 125).
+        #[arg(long, default_value_t = tilo_vm_protocol::EXEC_MAX_BYTES)]
+        max_bytes: u64,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Own a seat's uinput keyboard and pointer and serve input requests
     /// (run by tilo-vmd itself as a transient unit).
     InputServe {
@@ -151,6 +167,35 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
+            }
+        }
+        Command::Exec {
+            state,
+            slot,
+            timeout,
+            max_bytes,
+            command,
+        } => {
+            let limit = std::time::Duration::from_secs(timeout);
+            match state.daemon().exec(&slot, &command, limit, max_bytes) {
+                Ok(ended) => {
+                    match ended {
+                        tilo_vmd::exec::Ended::TimedOut => eprintln!(
+                            "tilo-vmd: stopped `{}` after {timeout}s (--timeout)",
+                            command.join(" ")
+                        ),
+                        tilo_vmd::exec::Ended::TooMuchOutput => eprintln!(
+                            "\ntilo-vmd: stopped `{}` after {max_bytes} bytes of output; narrow it (| head, grep)",
+                            command.join(" ")
+                        ),
+                        _ => {}
+                    }
+                    ExitCode::from(ended.code())
+                }
+                Err(error) => {
+                    eprintln!("tilo-vmd: {error}\nhint: {}", error.hint());
+                    ExitCode::from(126)
+                }
             }
         }
         Command::InputServe { seat, socket } => match input::serve(&seat, &socket) {
