@@ -30,25 +30,25 @@ impl Cli {
                 *slot = flag.take();
             }
         }
-        match &mut self.command {
-            Some(
-                Command::Rollback {
-                    slot, slot_flag, ..
-                }
-                | Command::Logs {
-                    slot, slot_flag, ..
-                }
-                | Command::Shot {
-                    slot, slot_flag, ..
-                },
-            ) => fold(slot, slot_flag),
-            Some(Command::Seat(
+        if let Some(
+            Command::Rollback {
+                slot, slot_flag, ..
+            }
+            | Command::Logs {
+                slot, slot_flag, ..
+            }
+            | Command::Shot {
+                slot, slot_flag, ..
+            }
+            | Command::Seat(
                 SeatCommand::Claim {
                     slot, slot_flag, ..
                 }
                 | SeatCommand::Release { slot, slot_flag },
-            )) => fold(slot, slot_flag),
-            _ => {}
+            ),
+        ) = &mut self.command
+        {
+            fold(slot, slot_flag);
         }
         self
     }
@@ -67,7 +67,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, driving, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, driving, images, storage, platforms, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -277,14 +277,20 @@ pub enum VmCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Move the VM to a newer dev image (bootc); slots survive, they live in /var.
+    /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm upgrade\n  tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:2026-09-22"
+        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. For Containerfile,\nunit, /etc and package changes: tilo-vm guide images."
     )]
-    Upgrade {
+    Upgrade(UpgradeArgs),
+    /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm rollback-image\n  tilo-vm vm rollback-image --no-reboot   # takes effect at the next boot\n\nbootc keeps one previous image: the one the VM ran before its last upgrade.\nRolling back twice returns to the newer one."
+    )]
+    RollbackImage {
         name: Option<String>,
+        /// Queue the rollback for the next boot instead of rebooting now.
         #[arg(long)]
-        image: Option<String>,
+        no_reboot: bool,
     },
     /// Attach to the VM's serial console (works when SSH does not).
     #[command(after_help = "Examples:\n  tilo-vm vm serial")]
@@ -350,6 +356,31 @@ pub struct CreateArgs {
     /// UTM VM to clone.
     #[arg(long)]
     pub template: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct UpgradeArgs {
+    pub name: Option<String>,
+    /// A published dev image to switch to (default: the image the VM follows).
+    #[arg(long, conflicts_with = "from")]
+    pub image: Option<String>,
+    /// `local`: build this worktree's dev image (localhost/tilo-vm:latest) and
+    /// move onto it. `local:<image>`: an image already in podman's storage.
+    #[arg(long)]
+    pub from: Option<String>,
+    /// With `--from local`: build FROM this production image as it is,
+    /// instead of localhost/tilo:latest rebuilt when its inputs changed.
+    #[arg(long, requires = "from", conflicts_with = "rebuild_base")]
+    pub base: Option<String>,
+    /// With `--from local`: rebuild the production base even if its inputs look unchanged.
+    #[arg(long, requires = "from")]
+    pub rebuild_base: bool,
+    /// Go ahead when the new image's production base is older than the VM's.
+    #[arg(long)]
+    pub allow_older_base: bool,
+    /// Stage the image for the next boot instead of rebooting now.
+    #[arg(long)]
+    pub no_reboot: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -423,11 +454,11 @@ mod tests {
                 Some(
                     Command::Rollback { slot, .. }
                     | Command::Logs { slot, .. }
-                    | Command::Shot { slot, .. },
+                    | Command::Shot { slot, .. }
+                    | Command::Seat(
+                        SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                    ),
                 ) => slot,
-                Some(Command::Seat(
-                    SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
-                )) => slot,
                 other => panic!("{other:?}"),
             };
             assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
@@ -549,6 +580,57 @@ mod tests {
             matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
         );
         assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
+    }
+
+    #[test]
+    fn upgrade_takes_one_source_and_base_options_only_with_local() {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "vm",
+            "upgrade",
+            "--from",
+            "local",
+            "--rebuild-base",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Vm(VmCommand::Upgrade(UpgradeArgs { ref from, rebuild_base: true, no_reboot: false, .. }))) if from.as_deref() == Some("local")
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "tilo-vm", "vm", "upgrade", "--from", "local", "--image", "x"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["tilo-vm", "vm", "upgrade", "--rebuild-base"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "tilo-vm",
+                "vm",
+                "upgrade",
+                "--from",
+                "local",
+                "--base",
+                "b",
+                "--rebuild-base"
+            ])
+            .is_err()
+        );
+        let cli =
+            Cli::try_parse_from(["tilo-vm", "vm", "rollback-image", "dev", "--no-reboot"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Vm(VmCommand::RollbackImage { ref name, no_reboot: true })) if name.as_deref() == Some("dev")
+        ));
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("vm")
+            .and_then(|vm| vm.find_subcommand_mut("upgrade"))
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("tilo-vm guide images"), "{help}");
     }
 
     fn vm_ssh(words: &[&str]) -> (Option<String>, Option<String>, Vec<String>) {
