@@ -339,17 +339,21 @@ impl Apply for SystemdApply {
         }
     }
 
-    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+    fn session_pid(&mut self, slot: &str) -> Option<u32> {
         let unit = crate::apply::session_unit(slot);
         let output = Command::new("systemctl")
             .args(["show", "--property=MainPID", "--value", &unit])
             .output()
             .ok()?;
-        let main: u32 = String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&output.stdout)
             .trim()
             .parse()
             .ok()
-            .filter(|p| *p > 0)?;
+            .filter(|p| *p > 0)
+    }
+
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+        let main = self.session_pid(slot)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
         for _ in 0..20 {
             if proc_field(main, "Uid:")

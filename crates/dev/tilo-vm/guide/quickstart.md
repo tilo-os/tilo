@@ -29,7 +29,9 @@ tilo-vm slot create --headless
 tilo-vm swap shell           # sync this worktree, build in the VM, restart your session
 tilo-vm shot -o target/shot.png
 tilo-vm control actions list
+tilo-vm slot exec -- sha256sum /usr/bin/shell   # what your slot sees (guide swapping)
 tilo-vm rollback             # back to the previous generation
+tilo-vm rollback --forward   # and forward again
 ```
 
 ## Headful: your shell on a real display path
@@ -59,16 +61,27 @@ What each picture is:
 
 - The VM comes from `TILO_VM`, then `.tilo-vm` in the worktree, then the
   default in `vms.toml`.
-- Your slot is named after your branch. Pass a name (`--slot` for `swap`,
-  `input` and `control`) to use another one.
-- Every command takes `--json`. Commands that change something or run long
-  (create, start, swap, rollback, seat, gc, ...) write a receipt under
-  `target/dev-runs/`; looking around (status, doctor, guide, lists, logs)
-  does not.
+- Your slot is named after your branch, unless `TILO_VM_SLOT` or
+  `slot = "<name>"` in the worktree's `.tilo-vm` names another.
+- Every command that works on a slot accepts `--slot <name>`: `status`,
+  `swap`, `input`, `control`, `rollback`, `logs`, `shot`,
+  `seat claim|release` and `slot create|show|exec|restart|rm`. All but
+  `status`, `swap`, `input` and `control` also take the name as a
+  positional argument (`tilo-vm logs review-a`).
+- After a command on a slot other than your default one, its `next:` hints
+  carry the same `--slot`.
+- Every command takes `--json`; a failure is one object,
+  `{"error","hint","see"}`, at the top level (also inside `status` reports).
+  Commands that change something or run long (create, start, restart, swap,
+  rollback, seat, gc, `vm ssh --raw`, ...) write a receipt under
+  `target/dev-runs/`; looking around (status, doctor, guide, lists, logs,
+  `slot show`, `slot exec`, `vm ssh` without `--raw`) does not.
 - Commands are idempotent: rerunning one that succeeded changes nothing.
 
 Never deploy with raw `ssh`/`scp` into the VM. It bypasses generations, so
-nothing can roll it back, and other agents share that VM.
+nothing can roll it back, and other agents share that VM. `tilo-vm vm ssh`
+is for looking around; it refuses writes into `/usr`, `/etc`, `/boot` and
+tilo-vm's state unless you pass `--raw`.
 
 Changed a Containerfile, a unit, `/etc` or the package list instead of a
 component? `tilo-vm vm upgrade --from local` rebuilds the image and moves the

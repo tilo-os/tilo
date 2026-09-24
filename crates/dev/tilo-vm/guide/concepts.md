@@ -6,7 +6,9 @@ Manager or virt-manager (libvirt's QEMU/KVM user session). One VM is shared
 by several agents.
 
 **Slot.** Your private piece of a VM: Linux user `tds-<slot>`, session unit
-`tilo-vm-session@<slot>`, and an ordered list of layers. A slot's layers
+`tilo-vm-session@<slot>`, and an ordered list of layers. Your default slot
+is named after your branch; `TILO_VM_SLOT` or `slot = "<name>"` in the
+worktree's `.tilo-vm` picks another. A slot's layers
 overlay `/usr` for its session and its user services only; other slots and
 the VM itself do not see them.
 
@@ -24,7 +26,8 @@ bytes are one layer, whoever built them.
 
 **Generation.** A numbered snapshot of a slot: which layer each component
 uses, bottom first (later layers win). `swap` writes a new generation;
-`rollback` switches back. Generation 0 is the bare VM image.
+`rollback` switches back, `rollback --forward` or `--to <n>` forward again.
+Generation 0 is the bare VM image.
 
 **The `vm` slot.** Components with VM-wide scope (`fs`, greeter, system
 services) are swapped into the reserved slot `vm`. Its layers merge into the

@@ -11,10 +11,12 @@
 use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use sha2::Digest as _;
+
 use tilo_vm_protocol::{
     Action, Client, ClientError, ComponentInfo, Gc, LayerImport, LayerList, LayerSource, Owner,
     PROTOCOL_VERSION, Policy, Provenance, Rollback, Scope, SeatClaim, SeatRelease, Shot,
-    SlotCreate, SlotKind, SlotList, SlotRm, Status, Swap, code,
+    SlotCreate, SlotKind, SlotList, SlotRm, SlotShow, Status, Swap, code,
 };
 
 struct Daemon {
@@ -166,8 +168,29 @@ fn full_slot_lifecycle_over_stdio() {
         })
         .unwrap();
     assert_eq!(status.slots[0].components["shell"], v1);
-    assert_eq!(status.slots[0].generations, [1, 2]);
+    // The base generation is listed too: rollback --to 0 reaches it.
+    assert_eq!(status.slots[0].generations, [0, 1, 2]);
     assert!(status.issues.is_empty(), "{:?}", status.issues);
+
+    // slot.show names each file the slot sees, its digest and its layer.
+    let shown = client
+        .call(SlotShow {
+            name: "agent-a".into(),
+        })
+        .unwrap();
+    assert_eq!(shown.slot.generation, 1);
+    assert_eq!(shown.files.len(), 1, "{:?}", shown.files);
+    let file = &shown.files[0];
+    assert_eq!(
+        (
+            file.component.as_str(),
+            file.path.as_str(),
+            file.layer.as_str()
+        ),
+        ("shell", "/usr/bin/shell", v1.as_str())
+    );
+    let digest = hex::encode(sha2::Sha256::digest(&big));
+    assert_eq!(file.sha256.as_deref(), Some(digest.as_str()));
 
     // VM-scope component into a user slot: refused, with the right redirect.
     let fs_layer = import(client, "fs", &tarball("usr/bin/fs", b"fs"));
@@ -272,6 +295,7 @@ fn full_slot_lifecycle_over_stdio() {
             dry_run: true,
             keep_targets: None,
             free_goal_bytes: None,
+            min_age_seconds: None,
         })
         .unwrap();
     assert_eq!(dry.removed_generations, ["agent-a/2"]);
@@ -283,7 +307,7 @@ fn full_slot_lifecycle_over_stdio() {
             .unwrap()
             .slots[0]
             .generations,
-        [1, 2]
+        [0, 1, 2]
     );
     let gc = client
         .call(Gc {
@@ -291,11 +315,33 @@ fn full_slot_lifecycle_over_stdio() {
             dry_run: false,
             keep_targets: None,
             free_goal_bytes: None,
+            min_age_seconds: None,
         })
         .unwrap();
     assert_eq!(gc.removed_generations, ["agent-a/2"]);
     assert!(gc.removed_layers.is_empty());
     assert!(gc.storage.layers_bytes > 0);
+    // What stayed for its age is named, with when it becomes eligible.
+    assert_eq!(gc.min_age_seconds, 3600);
+    let kept = gc
+        .kept_young
+        .iter()
+        .find(|k| k.hash == v2)
+        .expect("v2 is unreferenced and young");
+    assert_eq!(kept.component, "shell");
+    assert!(kept.eligible_in_seconds > 0 && kept.eligible_in_seconds <= 3600);
+    // A minimum age of 0 removes one's own orphaned layers at once.
+    let now = client
+        .call(Gc {
+            keep: 0,
+            dry_run: false,
+            keep_targets: None,
+            free_goal_bytes: None,
+            min_age_seconds: Some(0),
+        })
+        .unwrap();
+    assert!(now.removed_layers.contains(&v2), "{:?}", now.removed_layers);
+    assert!(now.kept_young.is_empty());
 
     assert!(
         client
