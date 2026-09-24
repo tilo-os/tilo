@@ -2440,9 +2440,7 @@ pub use slider::{Slider, SliderFace};
 mod text_input;
 pub use text_input::{TextActionRequest, TextInput, TextInputKind};
 pub mod code_editor;
-pub use code_editor::{
-    CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,
-};
+pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;

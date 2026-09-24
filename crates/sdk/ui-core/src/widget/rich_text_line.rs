@@ -26,25 +26,17 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
+use crate::widget::code_editor::TokenKind;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use crate::widget::{TextInput, Widget};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransientColorRole {
-    Keyword,
-    Type,
-    Function,
-    String,
-    Number,
-    Comment,
-    Macro,
-    Operator,
-}
-
+/// A presentation-only syntax colour over a byte range of the line, painted
+/// from the theme's [`SyntaxPalette`](crate::tokens::SyntaxPalette) and never
+/// written to the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransientColorSpan {
     pub range: std::ops::Range<usize>,
-    pub role: TransientColorRole,
+    pub kind: TokenKind,
 }
 
 /// Emitted when a key would carry the edit out of the line itself; the
@@ -145,7 +137,8 @@ pub struct RichTextLine {
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
     accent_rgb: Option<[u8; 3]>,
-    transient_rgb: [Option<[u8; 3]>; 8],
+    /// The theme's syntax palette, captured when attributes are prepared.
+    syntax: Option<crate::tokens::SyntaxPalette>,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -182,7 +175,7 @@ impl RichTextLine {
             transient_colors: Vec::new(),
             dirty: RichTextDirty::default(),
             accent_rgb: None,
-            transient_rgb: [None; 8],
+            syntax: None,
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
@@ -547,10 +540,8 @@ impl RichTextLine {
                     .rev()
                     .find(|color| color.range.start <= start && color.range.end >= end)
                     .and_then(|color| {
-                        self.transient_rgb
-                            .get(color.role as usize)
-                            .copied()
-                            .flatten()
+                        let rgb = self.syntax.as_ref()?.color(color.kind);
+                        Some([rgb.r(), rgb.g(), rgb.b()])
                     });
                 let color = if segment.code || segment.link.is_some() || segment.external_link {
                     self.accent_rgb
@@ -583,18 +574,7 @@ impl RichTextLine {
     fn prepare_attributes(&mut self, theme: &Theme) {
         let color = theme.tokens.colors.accent[5];
         self.accent_rgb = Some([color.r(), color.g(), color.b()]);
-        let colors = &theme.tokens.colors;
-        self.transient_rgb = [
-            colors.accent[6],
-            colors.accent[7],
-            colors.semantic.info,
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.text_dim,
-            colors.semantic.danger,
-            colors.text_dim,
-        ]
-        .map(|color| Some([color.r(), color.g(), color.b()]));
+        self.syntax = Some(theme.tokens.syntax.clone());
         self.refresh_attributes();
     }
 
@@ -671,7 +651,7 @@ impl RichTextLine {
                         .rev()
                         .find(|color| color.range.contains(&start))
                     {
-                        let color = transient_color(theme, color.role);
+                        let color = transient_color(theme, color.kind);
                         span.color = Some([color.r(), color.g(), color.b()]);
                     }
                     Some(span)
@@ -1123,18 +1103,8 @@ impl Widget for RichTextLine {
     }
 }
 
-fn transient_color(theme: &Theme, role: TransientColorRole) -> vello::peniko::Color {
-    let colors = &theme.tokens.colors;
-    match role {
-        TransientColorRole::Keyword => colors.accent[6],
-        TransientColorRole::Type => colors.accent[7],
-        TransientColorRole::Function => colors.semantic.info,
-        TransientColorRole::String => colors.semantic.success,
-        TransientColorRole::Number => colors.semantic.warning,
-        TransientColorRole::Comment => colors.text_dim,
-        TransientColorRole::Macro => colors.semantic.danger,
-        TransientColorRole::Operator => colors.text_dim,
-    }
+fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
+    theme.tokens.syntax.color(kind)
 }
 
 #[allow(dead_code, reason = "used by feature-gated rich text rendering")]
@@ -1155,7 +1125,7 @@ fn paint_transient_color(
     }
     let x_offset = ctx.xs.get(span.range.start).copied().unwrap_or(0.0);
     let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
-    let color = transient_color(theme, span.role);
+    let color = transient_color(theme, span.kind);
     text_renderer.draw_text_styled(
         scene,
         slice,

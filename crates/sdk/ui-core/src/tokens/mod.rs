@@ -4,6 +4,7 @@ pub mod metrics;
 pub mod motion;
 pub mod radii;
 pub mod spacing;
+pub mod syntax_palette;
 pub mod terminal_palette;
 pub mod typography;
 
@@ -16,6 +17,7 @@ pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
 pub use radii::Radii;
 pub use spacing::{Spacing, SpacingStep};
+pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
 pub use typography::{FontFamily, TextRole, TypeScale, Typography, WeightScale};
 
@@ -37,6 +39,8 @@ pub struct Tokens {
     pub font_size_base: f32,
     /// Palette for terminal-style widgets (fg/bg defaults + ANSI 0..=15).
     pub terminal_palette: TerminalPalette,
+    /// The one syntax-highlighting palette every code surface paints with.
+    pub syntax: SyntaxPalette,
 }
 
 impl Tokens {
@@ -55,6 +59,7 @@ impl Tokens {
             font_mono,
             font_size_base,
             terminal_palette: TerminalPalette::dark(),
+            syntax: SyntaxPalette::dark(),
         }
     }
     pub fn light() -> Self {
@@ -72,6 +77,7 @@ impl Tokens {
             font_mono,
             font_size_base,
             terminal_palette: TerminalPalette::light(),
+            syntax: SyntaxPalette::light(),
         }
     }
 }
