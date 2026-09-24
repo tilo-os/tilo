@@ -134,6 +134,7 @@ members = [
 
     # Hosting
     "crates/hosting/tilo-relay",
+    "crates/hosting/tilo-relay-protocol",
 
     # Media
     "crates/media/core",
