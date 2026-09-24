@@ -60,7 +60,6 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `compositor.md` | strips, window model, input |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
-| `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
