@@ -147,6 +147,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "typography_baseline_geometry.rs"]
+mod typography_baseline_geometry;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]
