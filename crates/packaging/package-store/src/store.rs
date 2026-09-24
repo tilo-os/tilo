@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_app_package::{
-    BlobHash, BlobSink, HashingReader, PackageId, PackageMeta, Tapp, TappError,
+    BlobFetcher, BlobHash, BlobSink, HashingReader, PackageId, PackageMeta, Tapp, TappError,
 };
 
 use crate::StoreError;
@@ -36,17 +36,6 @@ pub struct Admission {
     pub attested_by: String,
     /// Where the bytes came from, recorded for provenance.
     pub source: String,
-}
-
-/// Where the payload blobs a thin package lacks can be fetched from.
-pub trait BlobFetcher: Sync {
-    /// Deliver each of `hashes` to `sink`. The store verifies every blob
-    /// against its hash; a fetcher need not.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a blob cannot be fetched or `sink` refuses it.
-    fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()>;
 }
 
 /// The result of an install.

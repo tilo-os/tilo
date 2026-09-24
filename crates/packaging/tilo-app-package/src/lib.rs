@@ -60,8 +60,8 @@ pub mod verify;
 pub mod version;
 
 pub use blobs::{
-    BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs, HashingReader,
-    OpenBlob,
+    BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
+    HashingReader, OpenBlob,
 };
 pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
