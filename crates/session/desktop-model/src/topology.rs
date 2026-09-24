@@ -225,4 +225,59 @@ impl DesktopTree {
         }
         Some((removed, source_group, emptied))
     }
+
+    /// Move the window group `group_id` to `new_index` within `strip_id`,
+    /// as a unit. `new_index` is clamped to the post-removal index space,
+    /// so a raw gap index (which may equal the length, "append") lands on
+    /// the last slot. Returns the moved group and where it landed; `None`,
+    /// with nothing changed, when the order would not change.
+    pub fn reorder_group_within_strip(
+        &mut self,
+        strip_id: StripId,
+        group_id: GroupId,
+        new_index: usize,
+    ) -> Option<(WindowGroup, usize)> {
+        let groups = &mut self
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| ws.strips.iter_mut())
+            .find(|strip| strip.id == strip_id)?
+            .window_groups;
+        let current = groups.iter().position(|g| g.id == group_id)?;
+        let dest = new_index.min(groups.len().saturating_sub(1));
+        if dest == current {
+            return None;
+        }
+        let moved = groups.remove(current);
+        groups.insert(dest, moved.clone());
+        Some((moved, dest))
+    }
+
+    /// Move the tab at `from` to `to` inside `group_id`'s tab list — an
+    /// intra-group tab drag. `to` is clamped to the last slot. Returns the
+    /// reordered tab list; `None`, with nothing changed, when the order
+    /// would not change.
+    pub fn reorder_tab_within_group(
+        &mut self,
+        group_id: GroupId,
+        from: usize,
+        to: usize,
+    ) -> Option<Vec<Tab>> {
+        let group = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| ws.strips.iter_mut())
+            .flat_map(|strip| strip.window_groups.iter_mut())
+            .find(|group| group.id == group_id)?;
+        if from >= group.tabs.len() {
+            return None;
+        }
+        let dest = to.min(group.tabs.len().saturating_sub(1));
+        if dest == from {
+            return None;
+        }
+        let moved = group.tabs.remove(from);
+        group.tabs.insert(dest, moved);
+        Some(group.tabs.clone())
+    }
 }
