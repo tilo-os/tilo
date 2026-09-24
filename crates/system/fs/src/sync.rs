@@ -2084,7 +2084,7 @@ async fn pull_record_mesh_from_peer(
                     .highest_sequence(key, &remote_cursor.actor)
                     .unwrap_or(local_sequence);
                 if let Some(materializer) = &records.materializer {
-                    materializer.reconcile_repository(&records.repository)?;
+                    materializer.reconcile_record(&records.repository, key)?;
                 }
             }
         }
