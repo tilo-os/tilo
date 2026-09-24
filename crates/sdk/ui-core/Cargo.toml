@@ -54,9 +54,9 @@ gpu-video = ["dmabuf-import"]
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
-# copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
-mpris = ["native", "dep:zbus", "zbus/tokio"]
+# `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
+# backend; the server lives on its own thread with a private runtime.
+mpris = ["native", "dep:zbus"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
@@ -233,14 +233,15 @@ thiserror.workspace = true
 # threshold-identity and ed25519-dalek; OS randomness comes from getrandom.
 rand_core.workspace = true
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
-# adapter bridges our exported tree into the event loop and, via its default
+# adapter bridges our exported tree into the event loop and, via its
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
 # (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
-# winit 0.30.x — the same pin as the `winit` dep above. See
+# winit 0.30.x — the same pin as the `winit` dep above. The `tokio` feature
+# keeps its D-Bus executor on the workspace's single async runtime. See
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = { version = "0.34.0", optional = true }
+accesskit_winit = { version = "0.34.0", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -260,7 +261,7 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional 
 [target.'cfg(unix)'.dependencies]
 # Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
-zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
 # Drives the location portal's update stream (`native::location`).
 futures-util = { workspace = true, optional = true }

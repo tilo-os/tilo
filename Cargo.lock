@@ -87,13 +87,11 @@ checksum = "665c9079b7325a8168a6793437a172dda44b19a05af8ed52d7e32abaada996fe"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
- "async-channel 2.5.0",
- "async-executor",
- "async-task",
  "atspi",
  "futures-lite",
- "futures-util",
  "serde",
+ "tokio",
+ "tokio-stream",
  "zbus",
 ]
 
