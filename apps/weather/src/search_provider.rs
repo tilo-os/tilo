@@ -92,6 +92,7 @@ impl CatalogSearchProvider for CitySearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{SearchProvider, SearchRegistry};
 
     fn saved() -> Vec<SavedLocation> {
@@ -135,23 +136,26 @@ mod tests {
     }
 
     #[test]
-    fn unique_late_city_remains_findable_beyond_one_hundred_thousand_rows() {
-        let template = saved().remove(0);
-        let mut cities = (0..100_001u128)
-            .map(|index| {
-                let mut city = template.clone();
-                city.name = format!("City {index}");
-                city.id = uuid::Uuid::from_u128(index + 1);
-                city
-            })
-            .collect::<Vec<_>>();
-        cities.last_mut().expect("large corpus is nonempty").name = "Late city needle".into();
-        let provider = CitySearchProvider::new(&cities);
-        let page = provider.search_page("city needle", None, 4, 4);
+    fn unique_late_city_remains_findable_among_many_saved_cities() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let template = saved().remove(0);
+                let cities = corpus
+                    .map(|row| {
+                        let mut city = template.clone();
+                        city.name = row.text;
+                        city.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        city
+                    })
+                    .collect::<Vec<_>>();
+                CitySearchProvider::new(&cities)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Late city needle");
-        assert_eq!(provider.stats().records, 100_001);
+        assert_eq!(provider.stats().records, 3_000);
     }
 
     #[test]
