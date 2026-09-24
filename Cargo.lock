@@ -12894,7 +12894,6 @@ dependencies = [
  "atomic-file",
  "serde",
  "serde_json",
- "serial_test",
  "tempfile",
  "xdg-paths",
 ]
