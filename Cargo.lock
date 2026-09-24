@@ -9607,6 +9607,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "package-store"
+version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "atomic-file",
+ "bytes",
+ "ed25519-dalek 3.0.0",
+ "fs",
+ "hex",
+ "iroh-blobs",
+ "libc",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "tilo-test-env",
+ "tokio",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
 name = "page_size"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

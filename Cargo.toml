@@ -157,6 +157,7 @@ members = [
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
+    "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
     "crates/packaging/registry-server",
