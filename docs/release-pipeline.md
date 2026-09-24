@@ -258,6 +258,16 @@ No architecture-specific child is promoted as an update channel. Non-publishing
 manual rehearsals retain the single generic x86-64 lane,
 so absent native release capacity does not block ordinary integration feedback.
 
+A publication reads the next generation from the signed published series and
+refuses to run when `code.podesta.ai/qos/tilo` does not exist, so a renamed
+or deleted repository can never silently restart the series at `gen1`. The
+very first publication therefore needs an explicit operator decision: set the
+repository variable `TILO_OS_SERIES_GENESIS_REVISION` to the full 40-hex
+`main` commit being published, then dispatch **Release / OS** with `publish`.
+Only that exact commit may start an absent series, and only after the
+registry authenticated the request and answered "name unknown". Once `gen1`
+exists the repository exists too and the variable has no effect; delete it.
+
 ## Dev VM disks
 
 A published OS generation requests **Release / Dev VM disk**
