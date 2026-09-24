@@ -55,7 +55,6 @@ pub mod manifest;
 pub mod netgate;
 pub mod performance;
 pub mod profile;
-pub mod registry;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

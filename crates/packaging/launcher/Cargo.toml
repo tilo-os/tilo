@@ -24,10 +24,10 @@ name = "launcher"
 path = "src/lib.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
-# release build. Debug builds always honour them; shipped images never enable
-# this.
-dev-overrides = []
+# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
+# system store's in `package-store`) in a release build. Debug builds always
+# honour them; shipped images never enable this.
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 clap.workspace = true
@@ -47,6 +47,8 @@ runtime-bundle = { path = "../runtime-bundle" }
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
 tilo-app-package = { path = "../tilo-app-package" }
+# Which packages are installed and where: the one registry, read-only.
+package-store = { path = "../package-store" }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission

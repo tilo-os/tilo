@@ -21,7 +21,6 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::registry;
 use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
 
 const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
@@ -175,7 +174,7 @@ enum Cmd {
     },
     /// Resolve an installed package by id and launch its GUI entrypoint.
     /// Counterpart to `run`: takes the reverse-DNS id and looks it up in
-    /// the registry `tilo-install` writes.
+    /// the package store's registry.
     Exec {
         /// Reverse-DNS package identifier.
         #[arg(long)]
@@ -639,7 +638,7 @@ struct ExecArgs {
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
 fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    let entry = match registry::find_installed(package) {
+    let entry = match package_store::find_installed(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
@@ -746,11 +745,8 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     }
 }
 
-/// Resolve an installed package via the registry and launch its
-/// CLI-flavour entrypoint under the sandbox.
-///
-/// A future `app-host` daemon will replace the registry file with a
-/// socket-based lookup.
+/// Resolve an installed package via the package store's registry and
+/// launch its CLI-flavour entrypoint under the sandbox.
 fn run_installed(
     package: &str,
     command: &str,
@@ -758,7 +754,7 @@ fn run_installed(
     minimal_libs: bool,
     rest: Vec<String>,
 ) -> ExitCode {
-    let entry = match registry::find_installed(package) {
+    let entry = match package_store::find_installed(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(

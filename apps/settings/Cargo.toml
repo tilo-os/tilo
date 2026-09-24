@@ -25,6 +25,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 settings-store = { path = "../../crates/system/settings-store" }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
 launcher = { path = "../../crates/packaging/launcher" }
+package-store = { path = "../../crates/packaging/package-store" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
