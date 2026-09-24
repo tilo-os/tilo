@@ -35,7 +35,7 @@ pub fn worktree_id(worktree: &Worktree, host: Option<&str>) -> String {
 }
 
 /// POSIX shell quoting for one word.
-pub(crate) fn sh_quote(word: &str) -> String {
+pub fn sh_quote(word: &str) -> String {
     if !word.is_empty()
         && word
             .bytes()

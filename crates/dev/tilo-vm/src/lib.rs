@@ -14,6 +14,7 @@ pub mod error;
 pub mod guide;
 pub mod host;
 pub mod hypervisor;
+pub mod imageup;
 pub mod receipt;
 pub mod remote;
 pub mod sshkey;

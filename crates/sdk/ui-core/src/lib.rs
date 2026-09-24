@@ -143,6 +143,7 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
+pub mod host;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
 pub mod i18n;

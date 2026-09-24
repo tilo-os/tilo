@@ -271,10 +271,13 @@ jobs:
           export SOURCE_DATE_EPOCH
           rpms_ref=$(sed -n 's/^RPMS_REF=//p' os/rpms-snapshot.env)
           test -n "$rpms_ref" || { echo '::error::os/rpms-snapshot.env pins no RPMS_REF'; exit 1; }
+          # tilo-vm vm upgrade refuses to move a VM onto an older base than it runs.
+          base_created=$(skopeo inspect "docker://$BASE_CHILD" | jq -er .Created)
           podman build \
             --file os/Containerfile.dev \
             --build-arg "BASE_IMAGE=$BASE_CHILD" \
             --build-arg "RPMS_REF=$rpms_ref" \
+            --build-arg "TILO_BASE_CREATED=$base_created" \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --label "org.opencontainers.image.version=$DEV_TAG" \
             --label "org.opencontainers.image.revision=$SOURCE_REVISION" \

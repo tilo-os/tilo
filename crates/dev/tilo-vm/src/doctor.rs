@@ -99,6 +99,15 @@ pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
         });
     }
     if facts.os == "linux" {
+        let cargo = crate::build::cargo_program();
+        if cargo != "cargo" {
+            checks.push(Check::ok(
+                "host cargo",
+                format!(
+                    "swap --builder host runs {cargo} (TILO_VM_CARGO, or rcargo on PATH; TILO_VM_CARGO=cargo builds on this machine)"
+                ),
+            ));
+        }
         for tool in ["cargo", "python3"] {
             checks.push(match facts.first(tool) {
                 Some(path) => Check::ok(

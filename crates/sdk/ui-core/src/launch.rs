@@ -1287,6 +1287,7 @@ fn build_native_app_with_constructor(
 }
 
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+    crate::host::native::install_default_if_unset(Some(spec.app_id));
     #[cfg(windows)]
     let renderer = crate::app::prepare_native_renderer();
     let app = build_native_app(spec, args)?;
