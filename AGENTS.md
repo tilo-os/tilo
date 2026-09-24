@@ -221,7 +221,9 @@ You get a **slot** in a shared dev VM: your own user, session and layer stack, s
 `tilo-vm swap <component>` and undone with `tilo-vm rollback`. Driving stays the one story above:
 `tilo-vm control …` runs the VM's `tilo-control` against your slot, and `tilo-vm shot` is its
 snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy into a VM with raw
-`ssh`/`scp`.
+`ssh`/`scp`. Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go the same
+way: `tilo-vm swap kernel` builds incrementally from the release build's inputs, installs it
+VM-wide and reboots (`tilo-vm guide kernel`).
 
 ## Cargo.lock is committed — do not regenerate it
 

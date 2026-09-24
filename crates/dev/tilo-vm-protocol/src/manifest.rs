@@ -8,6 +8,8 @@
 //! [[component]]
 //! name = "fs"
 //! kind = "userspace"          # or "boot", with `scenario` naming the os/dev driver
+//! dev_swap = "reboot"         # boot components tilo-vm can swap (the kernel)
+//! dev_build = "os/kernel/dev-build.sh"  # and the script that builds them
 //! scope = "vm"                # "session" | "vm"; anything else reads as session
 //! profile = "release"         # cargo profile, default release
 //! packages = ["fs"]
@@ -64,15 +66,36 @@ pub struct ComponentInfo {
     pub scope: Scope,
     #[serde(default)]
     pub units: Vec<String>,
+    /// Takes effect at the next boot (`dev_swap = "reboot"`, the kernel):
+    /// the daemon installs it as the VM's next boot entry and the client
+    /// reboots the VM.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reboot: bool,
+}
+
+impl ComponentInfo {
+    /// A component of `scope` that restarts `units` and needs no reboot.
+    pub fn new(scope: Scope, units: Vec<String>) -> Self {
+        Self {
+            scope,
+            units,
+            reboot: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Component {
     pub name: String,
-    /// `kind = "boot"`: only a cold boot exercises it, so it is never swapped.
+    /// `kind = "boot"`: only a cold boot exercises it. tilo-vm swaps it only
+    /// when it also has `dev_swap` (then `info.reboot` is set); otherwise a
+    /// swap is redirected to `scenario`.
     pub boot: bool,
     /// For boot components: the os/dev driver that cold-boots them.
     pub scenario: Option<String>,
+    /// For swappable boot components: the script that builds them for a dev
+    /// VM, relative to the repository root.
+    pub dev_build: Option<String>,
     pub info: ComponentInfo,
     pub user_units: Vec<String>,
     pub packages: Vec<String>,
@@ -95,6 +118,11 @@ pub fn valid_profile(profile: &str) -> bool {
 }
 
 impl Component {
+    /// A boot component tilo-vm cannot swap: only its scenario exercises it.
+    pub fn scenario_only(&self) -> bool {
+        self.boot && !self.info.reboot
+    }
+
     /// This component built with another cargo profile (`swap --profile`).
     #[must_use]
     pub fn with_profile(mut self, profile: Option<&str>) -> Self {
@@ -258,16 +286,20 @@ impl Manifest {
 
 fn component(name: &str, entry: &toml::Table) -> Component {
     let text = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_owned);
+    let boot = text("kind").as_deref() == Some("boot");
+    let dev_build = text("dev_build").filter(|_| boot);
     Component {
         name: name.to_owned(),
-        boot: text("kind").as_deref() == Some("boot"),
+        boot,
         scenario: text("scenario"),
         info: ComponentInfo {
             scope: text("scope")
                 .as_deref()
                 .map_or(Scope::Session, Scope::parse),
             units: strings(entry, "units"),
+            reboot: boot && text("dev_swap").as_deref() == Some("reboot") && dev_build.is_some(),
         },
+        dev_build,
         user_units: strings(entry, "user_units"),
         packages: strings(entry, "packages"),
         features: strings(entry, "features"),
@@ -333,12 +365,19 @@ mod tests {
             kind = "boot"
             scope = "vm"
             scenario = "os/dev/vm.sh"
+            dev_swap = "reboot"
+            dev_build = "os/kernel/dev-build.sh"
+            [[component]]
+            name = "uki"
+            kind = "boot"
+            scope = "vm"
+            scenario = "os/dev/test-measured-boot.sh"
             [[component]]
             scope = "vm"
             "#,
         )
         .unwrap();
-        assert_eq!(m.components.len(), 4);
+        assert_eq!(m.components.len(), 5);
         let fs = m.get("fs").unwrap();
         assert_eq!(fs.info.scope, Scope::Vm);
         assert_eq!(fs.info.units, ["fs.service", "tilo-fs-replica.service"]);
@@ -351,6 +390,28 @@ mod tests {
         let kernel = m.get("kernel").unwrap();
         assert!(kernel.boot);
         assert_eq!(kernel.scenario.as_deref(), Some("os/dev/vm.sh"));
+        assert!(kernel.info.reboot && !kernel.scenario_only());
+        assert_eq!(kernel.dev_build.as_deref(), Some("os/kernel/dev-build.sh"));
+        let uki = m.get("uki").unwrap();
+        assert!(uki.scenario_only() && !uki.info.reboot && uki.dev_build.is_none());
+        assert!(!fs.scenario_only());
+    }
+
+    #[test]
+    fn reboot_travels_only_when_set() {
+        let plain = serde_json::to_string(&ComponentInfo::new(Scope::Vm, vec![])).unwrap();
+        assert_eq!(plain, r#"{"scope":"vm","units":[]}"#);
+        let old: ComponentInfo = serde_json::from_str(&plain).unwrap();
+        assert!(!old.reboot);
+        let kernel = ComponentInfo {
+            reboot: true,
+            ..ComponentInfo::new(Scope::Vm, vec![])
+        };
+        assert!(
+            serde_json::to_string(&kernel)
+                .unwrap()
+                .contains(r#""reboot":true"#)
+        );
     }
 
     #[test]
@@ -417,7 +478,14 @@ mod tests {
             .expect("os/components.toml exists");
         assert_eq!(m.get("shell").unwrap().info.scope, Scope::Session);
         assert_eq!(m.get("fs").unwrap().info.scope, Scope::Vm);
-        assert!(m.get("kernel").unwrap().boot);
+        let kernel = m.get("kernel").unwrap();
+        assert!(kernel.boot && kernel.info.reboot);
+        for scenario_only in ["installer", "rollback", "initramfs", "uki", "bootloader"] {
+            assert!(
+                m.get(scenario_only).unwrap().scenario_only(),
+                "{scenario_only} must stay scenario-only"
+            );
+        }
     }
 
     #[test]

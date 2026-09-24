@@ -20,6 +20,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         include_str!("../guide/swapping.md"),
     ),
     (
+        "kernel",
+        "change the kernel: incremental build, swap into the VM, reboot, roll back",
+        include_str!("../guide/kernel.md"),
+    ),
+    (
         "driving",
         "control, shot, logs, seat0",
         include_str!("../guide/driving.md"),

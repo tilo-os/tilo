@@ -8,9 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{ControlResult, InputAction};
+use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction};
 
 use crate::apply::{Apply, SessionProcess};
+use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
 use crate::input;
@@ -23,12 +24,14 @@ const TILO_CONTROL: &str = "/usr/bin/tilo-control";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
+    boot: Boot,
 }
 
 impl SystemdApply {
     pub fn new(root: &Path) -> Self {
         Self {
             layers_dir: root.join("layers"),
+            boot: Boot::new(root),
         }
     }
 }
@@ -75,6 +78,23 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 impl Apply for SystemdApply {
+    fn boot_kernel(
+        &mut self,
+        layer: Option<&Path>,
+    ) -> Result<(BootChange, Vec<String>), DaemonError> {
+        match layer {
+            Some(layer) => self.boot.install(layer),
+            None => self.boot.restore_image().map(|change| (change, Vec::new())),
+        }
+    }
+
+    fn confirm_boot(
+        &mut self,
+        expect_version: Option<&str>,
+    ) -> Result<BootConfirmResult, DaemonError> {
+        self.boot.confirm(expect_version)
+    }
+
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         if let Some(uid) = uid_of(user) {
             return Ok(uid);

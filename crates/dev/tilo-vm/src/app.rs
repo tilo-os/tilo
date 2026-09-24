@@ -34,6 +34,8 @@ use crate::remote::{self, LockOutcome, Remote};
 use crate::sshkey;
 use crate::vmbuild;
 
+mod kernel;
+
 pub struct Outcome {
     pub text: String,
     pub data: Value,
@@ -197,6 +199,31 @@ pub fn describe_apply(result: &ApplyResult) -> String {
                     restarted_sessions.join(", ")
                 );
             }
+        }
+        Policy::Reboot => {
+            text.push_str("; VM /usr refreshed with systemd-sysext");
+            match result.boot.as_ref() {
+                Some(boot) => match (&boot.kver, &boot.entry) {
+                    (Some(kver), Some(entry)) => {
+                        let _ = write!(text, "; kernel {kver} is the next boot ({entry})");
+                    }
+                    (None, entry) => {
+                        let _ = write!(
+                            text,
+                            "; the image's kernel is the default boot again{}",
+                            entry
+                                .as_ref()
+                                .map(|e| format!(" ({e})"))
+                                .unwrap_or_default()
+                        );
+                    }
+                    (Some(kver), None) => {
+                        let _ = write!(text, "; kernel {kver} is the next boot");
+                    }
+                },
+                None => text.push_str("; a kernel changed"),
+            }
+            text.push_str("; it takes effect when the VM reboots");
         }
     }
     text
@@ -430,10 +457,27 @@ impl App {
                 from,
                 builder,
                 profile,
-            }) => self.swap(slot, component, &from, builder, profile.as_deref()),
+                direct,
+                jobs,
+                cmdline,
+            }) => self.swap(
+                slot,
+                component,
+                &from,
+                builder,
+                profile.as_deref(),
+                KernelFlags {
+                    direct,
+                    jobs,
+                    cmdline,
+                },
+            ),
             Some(Command::Input { slot, action }) => self.input(slot, action),
             Some(Command::Rollback { slot, to, .. }) => {
                 let slot = self.slot_name(slot)?;
+                if slot == VM_SLOT {
+                    return self.rollback_vm(to);
+                }
                 let vm = self.resolve_vm(None)?;
                 let mut remote = self.connect(&vm)?;
                 let result = self.receipt.phase("apply", || {
@@ -1582,7 +1626,22 @@ impl App {
         from: &str,
         builder: Option<Builder>,
         profile: Option<&str>,
+        kernel: KernelFlags,
     ) -> Result<Outcome, CliError> {
+        // Boot components first: the kernel swaps VM-wide (its slot is `vm`
+        // unless named), the others go to their scenario.
+        if !component.starts_with("app:")
+            && let Some(entry) = self
+                .manifest()?
+                .as_ref()
+                .and_then(|m| m.get(&component))
+                .filter(|c| c.boot)
+                .cloned()
+        {
+            let other_flags = builder.is_some() || profile.is_some();
+            return self.swap_boot(slot.as_deref(), &entry, from, other_flags, kernel);
+        }
+        reject_kernel_flags(&component, &kernel)?;
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
@@ -1596,16 +1655,6 @@ impl App {
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry {
-            if c.boot {
-                let driver = c
-                    .scenario
-                    .clone()
-                    .unwrap_or_else(|| "os/dev/vm.sh boot".into());
-                return Err(CliError::BootComponent {
-                    name: component,
-                    driver,
-                });
-            }
             let fits = if slot == VM_SLOT {
                 c.info.scope == Scope::Vm
             } else {
@@ -1679,6 +1728,37 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    /// A boot component: the kernel swaps, the rest are refused with their
+    /// scenario driver.
+    fn swap_boot(
+        &mut self,
+        slot: Option<&str>,
+        entry: &Component,
+        from: &str,
+        other_flags: bool,
+        kernel: KernelFlags,
+    ) -> Result<Outcome, CliError> {
+        let name = entry.name.clone();
+        if entry.scenario_only() {
+            return Err(CliError::BootComponent {
+                name,
+                driver: entry
+                    .scenario
+                    .clone()
+                    .unwrap_or_else(|| "os/dev/vm.sh boot".into()),
+            });
+        }
+        if other_flags {
+            return Err(CliError::Unsupported {
+                what: format!("--builder and --profile for '{name}'"),
+                alternative: format!(
+                    "the {name} builds with its own script on this host: tilo-vm swap {name} [--jobs N] [--direct]"
+                ),
+            });
+        }
+        self.swap_kernel(slot, entry, from, kernel)
     }
 
     /// `--from worktree` with the chosen builder.
@@ -2237,6 +2317,28 @@ fn key_refusal(
 }
 
 /// `swap --profile` names a cargo profile and builds a component from the worktree.
+/// `swap` options that only the kernel takes.
+#[derive(Debug, Clone, Default)]
+pub struct KernelFlags {
+    /// Boot the host build directly (libvirt) instead of installing it.
+    pub direct: bool,
+    /// Parallel compile jobs.
+    pub jobs: Option<u32>,
+    /// The direct boot's kernel command line.
+    pub cmdline: Option<String>,
+}
+
+/// `--direct` and `--jobs` belong to the kernel's own build.
+fn reject_kernel_flags(component: &str, kernel: &KernelFlags) -> Result<(), CliError> {
+    if kernel.direct || kernel.jobs.is_some() {
+        return Err(CliError::Unsupported {
+            what: format!("--direct and --jobs for '{component}'"),
+            alternative: "they apply to the kernel only: tilo-vm swap kernel --jobs 4, tilo-vm swap kernel --direct".into(),
+        });
+    }
+    Ok(())
+}
+
 fn check_profile(profile: &str, component: &str, from: &str) -> Result<(), CliError> {
     if !tilo_vm_protocol::manifest::valid_profile(profile) {
         return Err(CliError::InvalidInput(format!(
@@ -2459,7 +2561,45 @@ mod tests {
             policy,
             actions,
             warnings: vec![],
+            boot: None,
         }
+    }
+
+    #[test]
+    fn kernel_applies_say_the_reboot_is_next() {
+        let mut swapped = result(Policy::Reboot, vec![Action::SysextRefresh], true);
+        swapped.boot = Some(tilo_vm_protocol::BootChange {
+            kver: Some("7.2.5+dev".into()),
+            entry: Some("tilo-vm-7.2.5+dev-0123456789ab.conf".into()),
+            fallback: Some("fedora.conf".into()),
+            loader: "systemd-boot".into(),
+            initramfs: Some("dracut".into()),
+            initramfs_seconds: 30.0,
+        });
+        let text = describe_apply(&swapped);
+        assert!(
+            text.contains(
+                "kernel 7.2.5+dev is the next boot (tilo-vm-7.2.5+dev-0123456789ab.conf)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("it takes effect when the VM reboots"),
+            "{text}"
+        );
+        let mut back = result(Policy::Reboot, vec![], true);
+        back.boot = Some(tilo_vm_protocol::BootChange {
+            kver: None,
+            entry: Some("fedora.conf".into()),
+            fallback: None,
+            loader: "systemd-boot".into(),
+            initramfs: None,
+            initramfs_seconds: 0.0,
+        });
+        assert!(
+            describe_apply(&back)
+                .contains("the image's kernel is the default boot again (fedora.conf)")
+        );
     }
 
     #[test]

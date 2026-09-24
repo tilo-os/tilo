@@ -9,7 +9,9 @@ tilo-vm swap app:notes                    # one app, installed into your slot's 
 tilo-vm swap shell --from ci:main-1a2b3c4 # the CI build of a published image
 tilo-vm swap shell --from sha:1a2b3c4     # the CI build of a main commit
 tilo-vm swap shell --from layer:<hash>    # a layer already in the VM
+tilo-vm swap kernel                       # the kernel: build, install VM-wide, reboot (guide kernel)
 tilo-vm rollback [--to <generation>]
+tilo-vm rollback --slot vm                # the vm slot, the kernel included
 ```
 
 The one positional argument is the component; the slot is `--slot` and
@@ -77,10 +79,15 @@ restarts. App installs are not generations: `rollback` does not undo them.
 | `session` (shell, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in |
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
 | `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its units restart, and **every slot's session restarts** |
-| `boot` (kernel, UKI, bootloader, initramfs, installer) | nothing | refused; use the scenario driver the error names |
+| `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
+| `boot`, scenario-only (UKI, bootloader, initramfs, installer, rollback) | nothing | refused; use the scenario driver the error names |
 
-A VM-wide swap interrupts other agents' sessions, so prefer session
-components in your own slot.
+A VM-wide swap interrupts other agents' sessions, and a kernel swap reboots
+the VM under them, so prefer session components in your own slot.
+
+A kernel builds on this host, never in the VM: `--builder`, `--profile` and
+`--from ci:` do not apply to it, while `--jobs` and `--direct` apply only to
+it. `tilo-vm guide kernel` has the whole loop.
 
 ## Checks
 

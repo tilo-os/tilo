@@ -37,6 +37,7 @@ run 'Application resource/action contract' \
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
 run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 
