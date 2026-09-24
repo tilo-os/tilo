@@ -160,6 +160,8 @@ pub(in crate::delivery_http) fn ack_core(
     })??;
     Ok(())
 }
+// Plain-poll form kept for the owner-core tests; the routes use `*_from`.
+#[cfg(test)]
 pub(in crate::delivery_http) fn replay_core(
     owner: &SessionOwner,
     current: &CommittedAuthority,
@@ -167,6 +169,24 @@ pub(in crate::delivery_http) fn replay_core(
     revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
     turn: OwnerResourceTurn,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    Ok(replay_core_from(owner, current, request, None, revalidate, turn)?.map(|page| page.bytes))
+}
+/// One served page and the signed cursor of its last complete group.
+pub(in crate::delivery_http) struct ServedPage {
+    pub bytes: Vec<u8>,
+    pub end: tilo_relay::delivery_v3::cursor::CursorToken,
+}
+/// `replay_core` for a PIPELINED_POLL_V1 chain: served after the later of the
+/// request cursor and `floor` (the end of the chain's previous page, a cursor
+/// this host issued to the same consumer and verified here again).
+pub(in crate::delivery_http) fn replay_core_from(
+    owner: &SessionOwner,
+    current: &CommittedAuthority,
+    request: &VerifiedRequest<'_>,
+    floor: Option<&tilo_relay::delivery_v3::cursor::CursorToken>,
+    revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
+    turn: OwnerResourceTurn,
+) -> anyhow::Result<Option<ServedPage>> {
     let cursor = prepare_poll(request.request())
         .map_err(|error| anyhow::anyhow!("invalid bounded poll request: {error:?}"))?;
     replay_page_core(
@@ -174,12 +194,15 @@ pub(in crate::delivery_http) fn replay_core(
         current,
         request.session(),
         cursor.as_ref(),
+        floor,
         revalidate,
         turn,
     )
 }
 /// Continuation input is the retained original ticket, never a new unsigned cursor.
 /// The parent must return this session/checker/turn from actual resume_poll.
+// Plain-poll form kept for the owner-core tests; the routes use `*_from`.
+#[cfg(test)]
 pub(in crate::delivery_http) fn replay_pending_core(
     owner: &SessionOwner,
     current: &CommittedAuthority,
@@ -188,16 +211,40 @@ pub(in crate::delivery_http) fn replay_pending_core(
     revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
     turn: OwnerResourceTurn,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    replay_page_core(owner, current, session, pending.cursor(), revalidate, turn)
+    Ok(
+        replay_pending_core_from(owner, current, pending, session, None, revalidate, turn)?
+            .map(|page| page.bytes),
+    )
+}
+/// `replay_pending_core` for a PIPELINED_POLL_V1 chain (see `replay_core_from`).
+pub(in crate::delivery_http) fn replay_pending_core_from(
+    owner: &SessionOwner,
+    current: &CommittedAuthority,
+    pending: &crate::delivery_http::poll::PendingPoll,
+    session: &VerifiedSession,
+    floor: Option<&CursorToken>,
+    revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
+    turn: OwnerResourceTurn,
+) -> anyhow::Result<Option<ServedPage>> {
+    replay_page_core(
+        owner,
+        current,
+        session,
+        pending.cursor(),
+        floor,
+        revalidate,
+        turn,
+    )
 }
 fn replay_page_core(
     owner: &SessionOwner,
     current: &CommittedAuthority,
     session: &VerifiedSession,
     cursor: Option<&CursorToken>,
+    floor: Option<&CursorToken>,
     mut revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
     mut turn: OwnerResourceTurn,
-) -> anyhow::Result<Option<Vec<u8>>> {
+) -> anyhow::Result<Option<ServedPage>> {
     use std::ops::Bound::{Excluded, Unbounded};
     use tilo_relay::delivery_v3::capabilities::{PAGE_BYTES, page_bounds};
     let guard = current.read().map_err(anyhow::Error::msg)?;
@@ -212,10 +259,19 @@ fn replay_page_core(
                 .map(|verified| verified.committed().sequence)
         })
         .transpose()?;
+    // A chain continues after its previous page, never before the request's
+    // own cursor. Both are verified host-issued cursors of this consumer.
+    if let Some(token) = floor {
+        let floor = owner
+            .data_verify_cursor(&mut turn, &source, token)
+            .map(|verified| verified.committed().sequence)?;
+        after = Some(after.map_or(floor, |after| after.max(floor)));
+    }
     let ledger = owner.delivery_ledger()?;
     // Without MULTI_GROUP_REPLAY_V1 a page carries exactly one complete group.
     let (max_groups, max_frames) = page_bounds(session.capabilities());
     let mut page = Vec::new();
+    let mut end = None;
     let (mut groups, mut frames) = (0_usize, 0_usize);
     while groups < max_groups {
         let next = match after {
@@ -243,13 +299,15 @@ fn replay_page_core(
         page.extend_from_slice(&group.bytes);
         frames += group.frames;
         groups += 1;
+        end = Some(group.cursor);
         after = Some(*sequence);
     }
-    Ok((groups > 0).then_some(page))
+    Ok(end.map(|end| ServedPage { bytes: page, end }))
 }
 struct EncodedGroup {
     bytes: Vec<u8>,
     frames: usize,
+    cursor: CursorToken,
 }
 /// Encode one complete signed replay group (`EventChunk* CommitBoundary`)
 /// within the per-group frame and page byte budgets.
@@ -305,6 +363,7 @@ fn replay_group(
         .map(|event| (event.ordinal, event.digest))
         .collect::<Vec<_>>();
     let token = owner.data_issue_cursor(turn, source, committed.clone())?;
+    let cursor = token.clone();
     let consumer = &ledger.consumers[&session.device_certificate().device_public_key];
     let boundary = CommitBoundary::new(
         consumer.id,
@@ -352,6 +411,7 @@ fn replay_group(
     Ok(EncodedGroup {
         bytes: page,
         frames,
+        cursor,
     })
 }
 struct ReplayEvent<'a> {

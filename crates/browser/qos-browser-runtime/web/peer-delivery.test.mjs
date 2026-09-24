@@ -177,3 +177,49 @@ test('setup persistence never polls the scheduler before delivery custody exists
  const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{await new Promise(r=>setImmediate(r));},fetch:async()=>body()});
  await client.start();await client.close();
 });
+// PIPELINED_POLL_V1: chained held polls use the canonical sorted query.
+const chained=(id,index,cursor='ab')=>request(id,`/peer/v3/events?chain=0123456789abcdef&cursor=${cursor}&index=${index}&mode=chain`,{method:'GET',body:[],proof:[1]});
+test('chained polls are exact GET targets; malformed chains fail closed before fetch',async()=>{
+ for(const prepared of [chained(1,0),chained(1,4294967295)]){
+  const {runtime}=setup({peer_delivery_begin:()=>JSON.stringify(prepared),peer_delivery_advance:()=>JSON.stringify({kind:'ready'})});const fetched=[];
+  const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},fetch:async(url,options)=>{fetched.push([url,options.method,options.body]);return body([]);}});await client.start();
+  assert.equal(fetched.length,1);assert.equal(fetched[0][1],'GET');assert.equal(fetched[0][2],undefined);await client.close();
+ }
+ for(const target of ['/peer/v3/events?chain=0123456789abcdef&index=1&mode=chain','/peer/v3/events?cursor=ab&mode=chain&chain=0123456789abcdef&index=1','/peer/v3/events?chain=0123456789abcdef&cursor=ab&index=01&mode=chain','/peer/v3/events?chain=0123456789ABCDEF&cursor=ab&index=1&mode=chain']){
+  const {runtime}=setup({peer_delivery_begin:()=>JSON.stringify(request(1,target,{method:'GET',body:[],proof:[1]}))});let fetched=false;
+  const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},fetch:async()=>{fetched=true;return body();}});await assert.rejects(client.start());assert.equal(fetched,false,target);await client.close();
+ }
+});
+test('a refused chained poll discards its HTTP session like a plain poll',async()=>{
+ let discarded=0;
+ const {runtime}=setup({peer_delivery_begin:()=>JSON.stringify(chained(1,2)),peer_delivery_discard_session:()=>{discarded++;}});
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},fetch:async()=>new Response(new Uint8Array([1]),{status:403})});
+ await assert.rejects(client.start(),error=>error.terminal===true&&error.sessionRefused===true);assert.equal(discarded,1);await client.close();
+});
+test('several chained polls stay outstanding together and a lost one is forgotten so Rust abandons the chain',async()=>{
+ let issued=0,errors=[];const forgotten=[];const pending=[];
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_advance:()=>JSON.stringify({kind:'idle'}),peer_delivery_next(){return JSON.stringify(issued<3?chained(20+issued,issued++):{kind:'idle'});},peer_delivery_forget(_p,id){forgotten.push(id);},peer_delivery_stop(){},peer_delivery_discard_session(){}};
+ const timers=[];const clock={now:()=>0,setTimeout:(fn)=>{timers.push(fn);return timers.length;},clearTimeout(){}};
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),onError:error=>errors.push(error)});
+ await client.start();for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(pending.length,3,'the whole chain is in flight at once');
+ pending[1].reject(TypeError('Failed to fetch'));pending[0].resolve(body([]));pending[2].resolve(body([]));
+ for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));
+ assert.deepEqual([...forgotten].sort(),[20,21,22],'every handle is forgotten; the failed one without an advance');
+ assert.equal(errors.length,0,'a lost chained poll is retried in place');await client.close();
+});
+test('a stale chained poll (409) restarts the chain at once without counting as a transport failure',async()=>{
+ let issued=0,errors=[];const forgotten=[];let fetches=0;
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:'ready'}),peer_delivery_advance:()=>JSON.stringify({kind:'idle'}),peer_delivery_next(){return JSON.stringify(issued<6?chained(30+issued,issued++):{kind:'idle'});},peer_delivery_forget(_p,id){forgotten.push(id);},peer_delivery_stop(){},peer_delivery_discard_session(){}};
+ const timers=[];const clock={now:()=>0,setTimeout:(fn)=>{timers.push(fn);return timers.length;},clearTimeout(){}};
+ // Five stale answers in a row would exhaust the transient retry budget (3).
+ const client=createPeerDelivery({runtime,peerId:4,persist:async()=>{},clock,fetch:async()=>{fetches++;return fetches<=5?new Response('stale-poll-chain',{status:409}):body([]);},onError:error=>errors.push(error)});
+ await client.start();for(let i=0;i<30;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(errors.length,0,'stale chain answers never escalate to transport recovery');
+ assert.equal(fetches,6,'each stale answer is followed at once, without backoff timers');
+ assert.equal(forgotten.length,6);
+ // A 409 on anything else is still an ordinary failure.
+ const plain=setup({peer_delivery_begin:()=>JSON.stringify(request(1,'/peer/v3/events?mode=poll',{method:'GET',body:[],proof:[1]}))});
+ const other=createPeerDelivery({runtime:plain.runtime,peerId:4,persist:async()=>{},fetch:async()=>new Response('x',{status:409})});
+ await assert.rejects(other.start(),error=>error.staleChain===false);await other.close();await client.close();
+});

@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use tilo_relay::delivery_v3::{
     cursor::CursorToken,
     framing::{self, MessageType},
+    poll_chain::ChainPoll,
     private_wire::{self, PrivateOperation, PrivateScope},
     state::{
         self, AdmissionOutcome, CommitScope, CursorAck, FlowCredit, StateAdmission, StateItemChunk,
@@ -20,11 +21,12 @@ use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
 #[path = "wasm_transfer.rs"]
 mod transfers;
 
-/// Retained request handles (each reserves its bounded response backing).
-const MAX_PENDING_REQUESTS: usize = 8;
-/// Handles a new inline state request leaves free: held poll, private poll
-/// and one ACK or private action.
-const STATE_RESERVED_HANDLES: usize = 3;
+/// Retained request handles (each reserves its bounded response backing:
+/// 10 x ~4 MiB of the Peer's 64 MiB incoming budget).
+const MAX_PENDING_REQUESTS: usize = 10;
+/// Handles a new inline state request leaves free: a held poll and one ACK or
+/// private action (the private poll is usually already held).
+const STATE_RESERVED_HANDLES: usize = 2;
 #[derive(Default)]
 pub(super) struct DeliveryState {
     bootstrap: Option<peer_delivery_auth::Bootstrap>,
@@ -40,9 +42,12 @@ pub(super) struct DeliveryState {
     window: crate::peer_delivery::upload::UploadWindow,
     cursor: Option<StoredDeliveryCursor>,
     pending_cursor: Option<StoredDeliveryCursor>,
-    /// A pipelined poll page that arrived while the previous cut's storage
-    /// transaction was still pending. Installed only after that exact commit.
-    deferred_poll: Option<(u64, Vec<u8>)>,
+    /// Pipelined poll pages that arrived while an earlier cut's storage
+    /// transaction was still pending, in order. Each is installed only after
+    /// the commit before it (bounded by the poll chain depth).
+    deferred_polls: VecDeque<(u64, Vec<u8>)>,
+    /// PIPELINED_POLL_V1 chain of held event polls.
+    chain: crate::peer_delivery::poll_chain::PollChain,
     transfer: Option<transfers::TransferState>,
     recovery: transfers::ResumeState,
     acked: Option<Vec<u8>>,
@@ -59,7 +64,11 @@ struct Upload {
 enum Pending {
     Bootstrap,
     Http(u32),
-    Poll(u64),
+    /// An event poll of cursor-recovery `epoch`; `chain` when chained.
+    Poll {
+        epoch: u64,
+        chain: Option<ChainPoll>,
+    },
     PrivatePoll,
     Snapshot,
     SnapshotResume,
@@ -111,7 +120,8 @@ impl DeliveryState {
         self.broker = None;
         self.upload = None;
         self.window.clear();
-        self.deferred_poll = None;
+        self.deferred_polls.clear();
+        self.chain.abandon();
         self.live = false;
         self.transfer = None;
         self.recovery = Default::default();
@@ -204,7 +214,8 @@ fn ready(peer: &Rc<Peer>) -> Result<String, JsValue> {
     let mut delivery = peer.delivery.borrow_mut();
     delivery.cursor = cursor;
     delivery.pending_cursor = None;
-    delivery.deferred_poll = None;
+    delivery.deferred_polls.clear();
+    delivery.chain.abandon();
     delivery.acked = None;
     delivery.cursor_recovery.reset().map_err(error)?;
     delivery.needs_snapshot = delivery.cursor.is_none();
@@ -287,15 +298,13 @@ pub fn peer_delivery_resume(id: u32) -> Result<String, JsValue> {
                 state.transfer = None;
                 state.needs_snapshot = false;
             }
-            let deferred = state.deferred_poll.take();
             drop(state);
             peer.initial_admission_replay.borrow_mut().finish();
             report(&peer, "admitting", None);
-            // The pipelined page was requested at exactly this cursor; it is
-            // admitted only now that the cut it follows is durable.
-            if let Some((epoch, bytes)) = deferred {
-                return poll_page(&peer, epoch, bytes);
-            }
+            // Pipelined pages follow this cut; each is admitted only once the
+            // cut before it is durable (a duplicate cut stages no write, so
+            // continue with the next page at once).
+            return next_deferred_page(&peer);
         }
         return Ok("{\"kind\":\"idle\"}".into());
     }
@@ -379,7 +388,10 @@ pub(super) fn queue_committed(peer: &Peer) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn request_snapshot(peer: &Peer) -> Result<(), String> {
-    peer.delivery.borrow_mut().needs_snapshot = true;
+    let mut delivery = peer.delivery.borrow_mut();
+    delivery.needs_snapshot = true;
+    delivery.chain.abandon();
+    drop(delivery);
     wake(peer);
     Ok(())
 }
@@ -430,6 +442,13 @@ pub fn peer_delivery_forget(id: u32, request: u32) {
         // retry) releases its items; a resend returns the durable receipt.
         if let Some(Pending::StateBatch(batch)) = pending {
             peer.delivery.borrow_mut().window.abandon(batch);
+        }
+        // An unanswered chained poll: nothing after it is admissible.
+        if let Some(Pending::Poll {
+            chain: Some(poll), ..
+        }) = pending
+        {
+            peer.delivery.borrow_mut().chain.failed(poll);
         }
     }
 }
@@ -605,24 +624,101 @@ pub fn peer_delivery_next(id: u32) -> Result<String, JsValue> {
             Pending::PrivatePoll,
         );
     }
-    let delivery = peer.delivery.borrow();
-    if delivery
+    let base = peer.delivery.borrow().cursor.clone();
+    next_poll(&peer, base.as_ref())
+}
+/// Issue the next event poll at `base` (the committed or pending cut cursor):
+/// one plain poll, or with PIPELINED_POLL_V1 the next position of the chain
+/// (up to its depth while pages keep arriving).
+fn next_poll(peer: &Rc<Peer>, base: Option<&StoredDeliveryCursor>) -> Result<String, JsValue> {
+    const IDLE: &str = "{\"kind\":\"idle\"}";
+    let chained = base.is_some()
+        && peer
+            .delivery
+            .borrow()
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.borrow().pipelined_polls());
+    let mut delivery = peer.delivery.borrow_mut();
+    let polls = delivery
         .pending
         .values()
-        .any(|p| matches!(p, Pending::Poll(_)))
-    {
-        return Ok("{\"kind\":\"idle\"}".into());
-    }
-    let target = match &delivery.cursor {
-        Some(cursor) => format!(
-            "/peer/v3/events?cursor={}&mode=poll",
-            state::encode_cursor_url(&cursor.token).map_err(error)?
-        ),
-        None => "/peer/v3/events?mode=poll".into(),
-    };
+        .filter(|p| matches!(p, Pending::Poll { .. }))
+        .count();
     let epoch = delivery.cursor_recovery.epoch();
+    let Some(base) = base.filter(|_| chained) else {
+        if polls > 0 {
+            return Ok(IDLE.into());
+        }
+        let target = match base {
+            Some(cursor) => format!(
+                "/peer/v3/events?cursor={}&mode=poll",
+                state::encode_cursor_url(&cursor.token).map_err(error)?
+            ),
+            None => "/peer/v3/events?mode=poll".into(),
+        };
+        drop(delivery);
+        return request(
+            peer,
+            "GET",
+            target,
+            vec![],
+            Pending::Poll { epoch, chain: None },
+        );
+    };
+    // Answers of an abandoned chain hold handles until the host answers them
+    // (a new chain start supersedes them there). A further chained poll
+    // leaves one handle for an ACK or private action.
+    if delivery.chain.outstanding() > 0 && delivery.pending.len() + 1 >= MAX_PENDING_REQUESTS {
+        return Ok(IDLE.into());
+    }
+    let Some(poll) = delivery.chain.next(|| {
+        let nonce = tilo_relay::delivery_v3::media_wire::fresh_nonce().unwrap_or([7; 32]);
+        u64::from_le_bytes(nonce[..8].try_into().expect("eight bytes"))
+    }) else {
+        return Ok(IDLE.into());
+    };
+    let target =
+        tilo_relay::delivery_v3::poll_chain::chain_target(&base.token, poll).map_err(error)?;
     drop(delivery);
-    request(&peer, "GET", target, vec![], Pending::Poll(epoch))
+    let result = request(
+        peer,
+        "GET",
+        target,
+        vec![],
+        Pending::Poll {
+            epoch,
+            chain: Some(poll),
+        },
+    );
+    if result.is_err() {
+        peer.delivery.borrow_mut().chain.failed(poll);
+    }
+    result
+}
+/// Admit the next deferred pipelined page, if any; continue past pages whose
+/// cut needs no storage write.
+fn next_deferred_page(peer: &Rc<Peer>) -> Result<String, JsValue> {
+    loop {
+        let next = {
+            let mut delivery = peer.delivery.borrow_mut();
+            if delivery.pending_cursor.is_some() {
+                return Ok("{\"kind\":\"idle\"}".into());
+            }
+            delivery.deferred_polls.pop_front()
+        };
+        let Some((epoch, bytes)) = next else {
+            return Ok("{\"kind\":\"idle\"}".into());
+        };
+        // A reset since the poll was issued makes its page stale.
+        if epoch != peer.delivery.borrow().cursor_recovery.epoch() {
+            continue;
+        }
+        let step = poll_page(peer, epoch, bytes)?;
+        if step != "{\"kind\":\"idle\"}" {
+            return Ok(step);
+        }
+    }
 }
 #[wasm_bindgen]
 pub fn peer_delivery_advance(
@@ -851,45 +947,60 @@ pub fn peer_delivery_advance(
             );
             Ok("{\"kind\":\"idle\"}".into())
         }
-        Pending::Poll(epoch) => {
+        Pending::Poll { epoch, chain } => {
             check(&peer)?;
             peer.last_relay_contact.set(Some(js_sys::Date::now()));
-            if !bytes.is_empty() && peer.delivery.borrow().pending_cursor.is_some() {
+            if let Some(poll) = chain {
                 let mut delivery = peer.delivery.borrow_mut();
-                if delivery.deferred_poll.is_some() {
-                    return Err(error("second deferred replay page"));
+                let answer = delivery.chain.answered(poll, !bytes.is_empty());
+                if answer == crate::peer_delivery::poll_chain::Answer::Stale {
+                    return Ok("{\"kind\":\"idle\"}".into());
                 }
-                delivery.deferred_poll = Some((epoch, bytes));
-                return Ok("{\"kind\":\"idle\"}".into());
+                // A reset since this poll was issued: the chain is stale.
+                if epoch != delivery.cursor_recovery.epoch() {
+                    delivery.chain.abandon();
+                    return Ok("{\"kind\":\"idle\"}".into());
+                }
+            }
+            {
+                let mut delivery = peer.delivery.borrow_mut();
+                // Pages install strictly in order, each after the commit of
+                // the cut before it.
+                if !bytes.is_empty()
+                    && (delivery.pending_cursor.is_some() || !delivery.deferred_polls.is_empty())
+                {
+                    let bound = if chain.is_some() {
+                        crate::peer_delivery::poll_chain::CHAIN_DEPTH
+                    } else {
+                        1
+                    };
+                    if delivery.deferred_polls.len() >= bound {
+                        return Err(error("deferred replay pages exceed the poll chain"));
+                    }
+                    delivery.deferred_polls.push_back((epoch, bytes));
+                    return Ok("{\"kind\":\"idle\"}".into());
+                }
             }
             poll_page(&peer, epoch, bytes)
         }
     }
 }
 fn pipelined_poll(peer: &Rc<Peer>) -> Result<String, JsValue> {
-    let delivery = peer.delivery.borrow();
-    let Some(cursor) = delivery.pending_cursor.as_ref() else {
-        return Ok("{\"kind\":\"idle\"}".into());
+    let base = {
+        let delivery = peer.delivery.borrow();
+        let Some(cursor) = delivery.pending_cursor.as_ref() else {
+            return Ok("{\"kind\":\"idle\"}".into());
+        };
+        if !delivery.live
+            || delivery.transfer.is_some()
+            || delivery.needs_snapshot
+            || !delivery.recovery.scanned()
+        {
+            return Ok("{\"kind\":\"idle\"}".into());
+        }
+        cursor.clone()
     };
-    if !delivery.live
-        || delivery.transfer.is_some()
-        || delivery.needs_snapshot
-        || delivery.deferred_poll.is_some()
-        || !delivery.recovery.scanned()
-        || delivery
-            .pending
-            .values()
-            .any(|p| matches!(p, Pending::Poll(_)))
-    {
-        return Ok("{\"kind\":\"idle\"}".into());
-    }
-    let target = format!(
-        "/peer/v3/events?cursor={}&mode=poll",
-        state::encode_cursor_url(&cursor.token).map_err(error)?
-    );
-    let epoch = delivery.cursor_recovery.epoch();
-    drop(delivery);
-    request(peer, "GET", target, vec![], Pending::Poll(epoch))
+    next_poll(peer, Some(&base))
 }
 /// Admit one replay page for poll `epoch`: one complete group, or with
 /// MULTI_GROUP_REPLAY_V1 several consecutive groups installed together.
@@ -932,6 +1043,8 @@ fn poll_page(peer: &Rc<Peer>, epoch: u64, bytes: Vec<u8>) -> Result<String, JsVa
             install_cuts(&peer, cuts)
         }
         crate::peer_delivery::PageContents::Manifest(payload) => {
+            // A snapshot replaces the scope: later chained answers are stale.
+            peer.delivery.borrow_mut().chain.abandon();
             let result = transfers::manifest(&peer, payload)?;
             peer.delivery
                 .borrow_mut()
@@ -942,6 +1055,8 @@ fn poll_page(peer: &Rc<Peer>, epoch: u64, bytes: Vec<u8>) -> Result<String, JsVa
         }
         crate::peer_delivery::PageContents::Reset => {
             let mut delivery = peer.delivery.borrow_mut();
+            delivery.chain.abandon();
+            delivery.deferred_polls.clear();
             delivery.cursor_recovery.reset().map_err(error)?;
             delivery.needs_snapshot = true;
             Ok("{\"kind\":\"idle\"}".into())

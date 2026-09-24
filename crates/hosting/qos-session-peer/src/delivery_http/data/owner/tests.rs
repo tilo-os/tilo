@@ -2103,3 +2103,189 @@ fn long_session_state_and_replay_turns_stay_within_measured_reservations() {
         "pool used {used} beyond owner custody {actual}"
     );
 }
+
+/// PIPELINED_POLL_V1: a chained poll is served after the chain's previous
+/// page (its floor) and never before its own cursor; the plain poll contract
+/// and sessions without the capability are unchanged.
+#[test]
+fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
+    use crate::delivery_http::poll::{PollError, Polls};
+    use tilo_relay::delivery_v3::{
+        auth::CapabilityPolicy,
+        capabilities::{
+            KNOWN_DATA, PIPELINED_POLL_V1, PRODUCT_DATA_V1, client_allowed, handshake_policy,
+            pipelined_policy,
+        },
+        poll_chain::{ChainPoll, chain_target},
+    };
+    let (mut f, budget, ingress) = product_fixture();
+    let mut registry =
+        HttpSessions::new_for_policy(&f.owner, &f.current, f.now, PRODUCT_DATA_V1).unwrap();
+    let client = CapabilityPolicy {
+        supported: KNOWN_DATA,
+        allowed: client_allowed(PRODUCT_DATA_V1),
+    };
+    // A client that does not request chained polls keeps the old contract.
+    let (plain, plain_caps) = product_session(
+        &mut f,
+        &mut registry,
+        &budget,
+        handshake_policy(PRODUCT_DATA_V1),
+        client,
+        140,
+    );
+    assert_eq!(plain_caps & PIPELINED_POLL_V1, 0);
+    for (i, key) in ["c1", "c2", "c3", "c4"].iter().enumerate() {
+        let edit = native_edit(&f.owner, key);
+        send_batch(
+            &mut f,
+            &mut registry,
+            plain,
+            &[(i as u8 + 1, &edit)],
+            &budget,
+            &ingress,
+            None,
+        )
+        .unwrap();
+    }
+    let all = page_boundaries(
+        &poll(
+            &f,
+            &mut registry,
+            plain,
+            "/peer/v3/events?mode=poll",
+            &budget,
+            &ingress,
+        )
+        .unwrap()
+        .unwrap(),
+    );
+    assert!(all.len() >= 4);
+    let chained = |b: &tilo_relay::delivery_v3::state::CommitBoundary, index| {
+        chain_target(b.cursor().as_bytes(), ChainPoll { chain: 9, index }).unwrap()
+    };
+    // Without the capability a chained poll is not captured as a held poll.
+    {
+        let target = chained(&all[0], 1);
+        let request = Request::new("GET", &target, b"").unwrap();
+        let proof = RequestProof::sign(
+            plain.0,
+            plain.1,
+            &request,
+            f.now,
+            f.now + 30_000_000_000,
+            &f.owner.identity.native,
+        )
+        .unwrap();
+        let (original, _client) = charged_request(&ingress, &request, &proof);
+        let (admitted, _checker, _turn) = registry
+            .admit_revalidating_at(
+                &f.owner,
+                &f.current,
+                &budget,
+                OwnerDataOperation::Replay,
+                &proof,
+                &request,
+                &original,
+                &TestClock::new(f.now),
+            )
+            .unwrap();
+        assert_eq!(
+            Polls::new().capture(&admitted, &original, 1).err(),
+            Some(PollError::Invalid)
+        );
+    }
+    let (session, caps) = product_session(
+        &mut f,
+        &mut registry,
+        &budget,
+        pipelined_policy(PRODUCT_DATA_V1),
+        client,
+        141,
+    );
+    assert_eq!(caps, KNOWN_DATA);
+    let served = |f: &Fixture,
+                  registry: &mut HttpSessions,
+                  target: &str,
+                  floor: Option<&tilo_relay::delivery_v3::cursor::CursorToken>| {
+        let request = Request::new("GET", target, b"").unwrap();
+        let proof = RequestProof::sign(
+            session.0,
+            session.1,
+            &request,
+            f.now,
+            f.now + 30_000_000_000,
+            &f.owner.identity.native,
+        )
+        .unwrap();
+        let (original, _client) = charged_request(&ingress, &request, &proof);
+        let (admitted, mut checker, turn) = registry
+            .admit_revalidating_at(
+                &f.owner,
+                &f.current,
+                &budget,
+                OwnerDataOperation::Replay,
+                &proof,
+                &request,
+                &original,
+                &TestClock::new(f.now),
+            )
+            .unwrap();
+        let ticket = Polls::new()
+            .capture(&admitted, &original, checker.entry_serial())
+            .unwrap();
+        let page = replay_core_from(
+            &f.owner,
+            &f.current,
+            &admitted,
+            floor,
+            |owner, view, session| checker.check(owner, view, session),
+            turn,
+        )
+        .unwrap();
+        (ticket.chain(), page)
+    };
+    let committed = |page: &ServedPage| {
+        page_boundaries(&page.bytes)
+            .iter()
+            .map(|b| b.committed().clone())
+            .collect::<Vec<_>>()
+    };
+    let expect = |from: usize| {
+        all[from..]
+            .iter()
+            .map(|b| b.committed().clone())
+            .collect::<Vec<_>>()
+    };
+    // Index 0 at the first cursor: exactly the suffix after it; its end cursor
+    // is the last group's signed cursor.
+    let (position, page) = served(&f, &mut registry, &chained(&all[0], 0), None);
+    assert_eq!(position, Some(ChainPoll { chain: 9, index: 0 }));
+    let page = page.unwrap();
+    assert_eq!(committed(&page), expect(1));
+    assert_eq!(&page.end, all.last().unwrap().cursor());
+    // A later index at the same (older) cursor continues after the floor.
+    let (_, page) = served(
+        &f,
+        &mut registry,
+        &chained(&all[0], 1),
+        Some(all[1].cursor()),
+    );
+    assert_eq!(committed(&page.unwrap()), expect(2));
+    // The floor never serves before the request's own cursor.
+    let (_, page) = served(
+        &f,
+        &mut registry,
+        &chained(&all[2], 2),
+        Some(all[0].cursor()),
+    );
+    assert_eq!(committed(&page.unwrap()), expect(3));
+    // Nothing after the floor: the poll is held (no page).
+    let (_, page) = served(
+        &f,
+        &mut registry,
+        &chained(&all[0], 3),
+        Some(all.last().unwrap().cursor()),
+    );
+    assert!(page.is_none());
+}

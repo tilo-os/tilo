@@ -4,8 +4,12 @@ use tilo_relay::delivery_v3::{
     cursor::CursorToken,
     framing::{self, FrameError, MessageType},
     http_proof::{Method, Request},
-    state::{self, CursorAck, StateItemChunk},
+    poll_chain::ChainPoll,
+    state::{CursorAck, StateItemChunk},
 };
+// Route tests decode replay frames through this module's glob import.
+#[cfg(test)]
+use tilo_relay::delivery_v3::state;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DataError {
@@ -79,20 +83,17 @@ pub(super) fn prepare_ack(request: &Request<'_>) -> Result<CursorAck, DataError>
     CursorAck::decode(payload).map_err(|_| DataError::InvalidFrame)
 }
 pub(super) fn prepare_poll(request: &Request<'_>) -> Result<Option<CursorToken>, DataError> {
+    prepare_poll_chain(request).map(|(cursor, _)| cursor)
+}
+/// Exact event poll: `mode=poll` or a PIPELINED_POLL_V1 `mode=chain` position.
+pub(super) fn prepare_poll_chain(
+    request: &Request<'_>,
+) -> Result<(Option<CursorToken>, Option<ChainPoll>), DataError> {
     if request.method() != Method::Get || !request.body().is_empty() {
         return Err(DataError::InvalidFrame);
     }
-    if request.target() == "/peer/v3/events?mode=poll" {
-        return Ok(None);
-    }
-    let cursor = request
-        .target()
-        .strip_prefix("/peer/v3/events?cursor=")
-        .and_then(|v| v.strip_suffix("&mode=poll"))
-        .ok_or(DataError::InvalidFrame)?;
-    state::decode_cursor_url(cursor)
-        .map(Some)
-        .map_err(|_| DataError::InvalidFrame)
+    tilo_relay::delivery_v3::poll_chain::parse_poll_target(request.target())
+        .ok_or(DataError::InvalidFrame)
 }
 
 #[cfg(test)]

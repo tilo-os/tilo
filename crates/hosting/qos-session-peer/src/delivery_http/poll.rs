@@ -5,11 +5,13 @@ use tilo_relay::delivery_v3::{
     auth::{Binding, VerifiedSession},
     cursor::CursorToken,
     http_proof::{Request, VerifiedRequest},
+    poll_chain::{ChainPoll, MAX_CHAIN_HELD},
 };
 use tokio::{sync::watch, time::Instant};
 
-// A held poll cannot outnumber the actual parent registry's live-session bound.
-const MAX_POLLS: usize = super::LIVE_LIMIT;
+// A held poll cannot outnumber the actual parent registry's live-session bound
+// times the bounded PIPELINED_POLL_V1 chain of one consumer.
+const MAX_POLLS: usize = super::LIVE_LIMIT * MAX_CHAIN_HELD;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct PollId(u64);
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub(super) struct AdmissionTicket {
     deadline: Instant,
     cancellation: watch::Receiver<bool>,
     cursor: Option<CursorToken>,
+    chain: Option<ChainPoll>,
 }
 pub(super) struct PendingPoll {
     ticket: AdmissionTicket,
@@ -49,6 +52,11 @@ fn request_digest(request: &Request<'_>) -> [u8; 32] {
     hash.update(request.target().as_bytes());
     hash.update(blake3::hash(request.body()).as_bytes());
     *hash.finalize().as_bytes()
+}
+fn same_consumer(left: &AdmissionTicket, right: &AdmissionTicket) -> bool {
+    left.binding.workspace == right.binding.workspace
+        && left.binding.workspace_root == right.binding.workspace_root
+        && left.binding.device == right.binding.device
 }
 impl Polls {
     pub(super) fn new() -> Self {
@@ -69,8 +77,16 @@ impl Polls {
         if original.is_cancelled() {
             return Err(PollError::Cancelled);
         }
-        let cursor =
-            super::data::prepare_poll(admitted.request()).map_err(|_| PollError::Invalid)?;
+        let (cursor, chain) =
+            super::data::prepare_poll_chain(admitted.request()).map_err(|_| PollError::Invalid)?;
+        // Chained polls exist only for sessions that negotiated them.
+        if chain.is_some()
+            && admitted.session().capabilities()
+                & tilo_relay::delivery_v3::capabilities::PIPELINED_POLL_V1
+                == 0
+        {
+            return Err(PollError::Invalid);
+        }
         let original_request = Request::new(
             original.method().as_str(),
             original.target(),
@@ -95,6 +111,7 @@ impl Polls {
             deadline: original.deadline(),
             cancellation: original.cancellation(),
             cursor,
+            chain,
         })
     }
     pub(super) fn park(
@@ -112,27 +129,41 @@ impl Polls {
         {
             return Err(PollError::Invalid);
         }
-        self.repark(PendingPoll { ticket, request })
-    }
-    pub(super) fn repark(&mut self, pending: PendingPoll) -> Result<PollId, PollError> {
+        let pending = PendingPoll { ticket, request };
         if pending.request.is_cancelled() {
             return Err(PollError::Cancelled);
         }
         // Abandoned (client-cancelled) polls must not count against the table
         // or against the one-poll-per-consumer rule.
         self.prune_cancelled();
-        // One stable certified consumer holds only one request, even across
-        // sessions. A newer poll from the same consumer supersedes the older
-        // one, which is answered empty (the client simply polls again) instead
-        // of the newer poll being dropped as a 503.
+        if pending.ticket.chain.is_some_and(|chain| chain.index > 0) {
+            // A later poll of a chain joins the consumer's held chain, bounded.
+            let held = self
+                .pending
+                .values()
+                .filter(|p| same_consumer(&p.ticket, &pending.ticket))
+                .count();
+            if held >= MAX_CHAIN_HELD {
+                return Err(PollError::Capacity);
+            }
+        } else {
+            self.supersede(&pending.ticket);
+        }
+        self.repark(pending)
+    }
+    /// One stable certified consumer holds only one request (or one chain),
+    /// even across sessions. A newer plain poll or chain start supersedes the
+    /// older requests, which are answered empty (the client simply polls
+    /// again) instead of the newer poll being dropped as a 503. Called on
+    /// arrival, also when the newer poll is answered at once.
+    pub(super) fn supersede(&mut self, ticket: &AdmissionTicket) {
+        if ticket.chain.is_some_and(|chain| chain.index > 0) {
+            return;
+        }
         let superseded: Vec<PollId> = self
             .pending
             .iter()
-            .filter(|(_, p)| {
-                p.ticket.binding.workspace == pending.ticket.binding.workspace
-                    && p.ticket.binding.workspace_root == pending.ticket.binding.workspace_root
-                    && p.ticket.binding.device == pending.ticket.binding.device
-            })
+            .filter(|(_, p)| same_consumer(&p.ticket, ticket))
             .map(|(id, _)| *id)
             .collect();
         for id in superseded {
@@ -140,6 +171,18 @@ impl Polls {
                 let _ = old.request.respond(hyper::StatusCode::OK, Vec::new());
             }
         }
+    }
+    /// Sessions that currently hold a poll.
+    pub(super) fn sessions(&self) -> std::collections::BTreeSet<[u8; 16]> {
+        self.pending.values().map(|p| p.ticket.session).collect()
+    }
+    /// Retain a held poll again (arrival after supersession, or a wake that
+    /// found nothing new). Never supersedes: a chain keeps its later polls.
+    pub(super) fn repark(&mut self, pending: PendingPoll) -> Result<PollId, PollError> {
+        if pending.request.is_cancelled() {
+            return Err(PollError::Cancelled);
+        }
+        self.prune_cancelled();
         if self.pending.len() >= MAX_POLLS || self.pending.contains_key(&pending.ticket.id) {
             return Err(PollError::Capacity);
         }
@@ -175,6 +218,11 @@ impl Polls {
             .retain(|_, pending| !pending.request.is_cancelled());
     }
 }
+impl AdmissionTicket {
+    pub(super) fn chain(&self) -> Option<ChainPoll> {
+        self.chain
+    }
+}
 impl PendingPoll {
     pub(super) fn session_id(&self) -> [u8; 16] {
         self.ticket.session
@@ -205,6 +253,9 @@ impl PendingPoll {
     }
     pub(super) fn cursor(&self) -> Option<&CursorToken> {
         self.ticket.cursor.as_ref()
+    }
+    pub(super) fn chain(&self) -> Option<ChainPoll> {
+        self.ticket.chain
     }
     pub(super) fn into_request(self) -> BufferedRequest {
         self.request

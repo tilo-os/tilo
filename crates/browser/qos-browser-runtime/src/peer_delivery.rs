@@ -313,6 +313,7 @@ pub(crate) fn collect_page<'a>(
 pub(crate) mod admission;
 pub(crate) mod cursor_recovery;
 pub(crate) mod incoming;
+pub(crate) mod poll_chain;
 pub(crate) mod resume;
 #[cfg(test)]
 mod tests;

@@ -318,25 +318,36 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
         }
         ("GET", "/peer/v3/events") => {
             let query = parts.uri.query().ok_or_else(Rejection::invalid)?;
-            let mode = if let Some(cursor) = query.strip_prefix("cursor=") {
-                let (cursor, mode) = cursor.split_once('&').ok_or_else(Rejection::invalid)?;
-                if cursor.is_empty()
-                    || cursor.len() > tilo_relay::delivery_v3::state::MAX_CURSOR_URL_BYTES
-                    || cursor.len() % 2 != 0
-                    || !cursor
-                        .bytes()
-                        .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+            // PIPELINED_POLL_V1 chained poll (canonical sorted query, cursor
+            // required); the session capability is enforced on admission.
+            if query.starts_with("chain=") {
+                if tilo_relay::delivery_v3::poll_chain::parse_poll_target(target)
+                    .is_none_or(|(_, chain)| chain.is_none())
                 {
-                    return Err(Rejection::invalid());
+                    return Err(Rejection::unsupported());
                 }
-                mode
+                Route::EventsPoll
             } else {
-                query
-            };
-            if mode != "mode=poll" {
-                return Err(Rejection::unsupported());
+                let mode = if let Some(cursor) = query.strip_prefix("cursor=") {
+                    let (cursor, mode) = cursor.split_once('&').ok_or_else(Rejection::invalid)?;
+                    if cursor.is_empty()
+                        || cursor.len() > tilo_relay::delivery_v3::state::MAX_CURSOR_URL_BYTES
+                        || cursor.len() % 2 != 0
+                        || !cursor
+                            .bytes()
+                            .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+                    {
+                        return Err(Rejection::invalid());
+                    }
+                    mode
+                } else {
+                    query
+                };
+                if mode != "mode=poll" {
+                    return Err(Rejection::unsupported());
+                }
+                Route::EventsPoll
             }
-            Route::EventsPoll
         }
         ("DELETE", path)
             if path.strip_prefix("/peer/v3/sessions/").is_some_and(|id| {

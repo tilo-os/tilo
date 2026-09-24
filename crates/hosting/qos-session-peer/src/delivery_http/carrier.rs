@@ -45,9 +45,10 @@ impl HttpSessions {
         ensure!(boot != [0; 16], "invalid entropy");
         Ok(Self {
             native_time: None,
-            // Transcript extensions (multi-group replay) are negotiated beside
-            // the descriptor bits and never advertised in the descriptor.
-            capabilities: tilo_relay::delivery_v3::capabilities::handshake_policy(
+            // Transcript extensions (multi-group replay, chained polls) are
+            // negotiated beside the descriptor bits and never advertised in
+            // the descriptor. This host serves PIPELINED_POLL_V1.
+            capabilities: tilo_relay::delivery_v3::capabilities::pipelined_policy(
                 policy & descriptor.delivery_capabilities(),
             ),
             boot,

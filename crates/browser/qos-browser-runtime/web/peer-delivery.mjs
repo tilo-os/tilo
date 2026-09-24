@@ -1,17 +1,22 @@
 /** Bounded HTTPS executor. The existing Rust Peer supplies all exact proofs and owns state. */
 const CONTROL=new Set(['/peer/v3/bootstrap','/peer/v3/challenge','/peer/v3/sessions']);
 const POST=new Set(['/peer/v3/state','/peer/v3/acks','/peer/v3/commands/catalogue','/peer/v3/commands/invoke','/peer/v3/commands/status','/peer/v3/commands/cancel','/peer/v3/reads','/peer/v3/snapshots']);
-const poll=/^\/peer\/v3\/events\?(?:cursor=(?:[0-9a-f]{2}){1,4096}&)?mode=poll$/;
+// Plain held poll, or a PIPELINED_POLL_V1 chained poll (cursor required).
+const poll=/^\/peer\/v3\/events\?(?:(?:cursor=(?:[0-9a-f]{2}){1,4096}&)?mode=poll|chain=[0-9a-f]{16}&cursor=(?:[0-9a-f]{2}){1,4096}&index=(?:0|[1-9][0-9]{0,9})&mode=chain)$/;
 const snapshotChunk=/^\/peer\/v3\/snapshots\/[0-9a-f]{32}\/chunks\/(?:0|[1-9][0-9]{0,9})$/;
 const detach=/^\/peer\/v3\/sessions\/[0-9a-f]{32}$/;
 const fail=message=>Object.assign(Error(message),{code:'delivery-unavailable'});
 const FAST_RENEWAL_WINDOW_MS=10000;
 const TRANSIENT_RETRIES=3;
-// Held poll + private poll + ACK + a bounded window of state uploads (4) + one
-// private action. The Rust scheduler bounds retained handles itself (8).
-const MAX_ACTIVE=8;
+// Held polls (a chain of up to 3) + private poll + ACK + a bounded window of
+// state uploads (4). The Rust scheduler bounds retained handles itself (10).
+const MAX_ACTIVE=10;
 // Poll, ACK and state uploads are safe to re-issue: the host answers a resent
 // state item with its original durable receipt (exact delivery id + digest).
+// A chained poll the host no longer continues (the chain was reset or
+// replaced) is answered 409: not a transport failure, the next poll simply
+// starts a new chain.
+const chainedPoll=value=>value.method==='GET'&&/[?]chain=/.test(value.target)&&poll.test(value.target);
 const idempotentTarget=value=>value.method==='GET'&&poll.test(value.target)||value.method==='POST'&&(value.target==='/peer/v3/acks'||value.target==='/peer/v3/state');
 function decode(value){const parsed=JSON.parse(value);if(!parsed||typeof parsed.kind!=='string')throw fail('Invalid Rust delivery step');return parsed;}
 function bytes(value,max,{empty=false}={}){if(!Array.isArray(value)||(!empty&&value.length===0)||value.length>max||value.some(v=>!Number.isInteger(v)||v<0||v>255))throw fail('Prepared delivery bytes exceed bounds');return Uint8Array.from(value);}
@@ -53,7 +58,8 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
     // Recovery must bootstrap a fresh session, which re-registers the consumer.
     const sessionRefused=terminal&&!detachOnly&&(poll.test(value.target)||value.target==='/peer/v3/acks');
     if(sessionRefused)try{runtime.peer_delivery_discard_session?.(peerId);}catch{}
-    throw Object.assign(fail(`Delivery HTTP ${response.status}`),{terminal,sessionRefused});
+    const staleChain=response.status===409&&!detachOnly&&chainedPoll(value);
+    throw Object.assign(fail(`Delivery HTTP ${response.status}`),{terminal,sessionRefused,staleChain});
    }
    const reader=response.body?.getReader();if(!reader){if(empty)return new Uint8Array();throw fail('Delivery response body missing');}
    const result=new Uint8Array(maximum);let size=0;
@@ -71,6 +77,9 @@ export function createPeerDelivery({runtime,peerId,persist,transfers,commit,cloc
     const id=value.id,retryable=idempotentTarget(value);
     try{const response=await send(value);check();if(retryable)transientFailures=0;value=decode(runtime.peer_delivery_advance(peerId,id,response));}
     catch(error){
+     // A stale chained poll: forgotten below (Rust abandons that chain), then
+     // the scheduler starts a new chain at once. Not a transient failure.
+     if(error?.staleChain&&established&&!closed&&!failed&&!renewing){queueMicrotask(wake);return {kind:'idle'};}
      // A lost/timed-out poll or ACK on a lossy link is retried in place: the
      // Rust scheduler re-issues it (fresh proof) once this handle is forgotten.
      // Only repeated failures escalate to full transport recovery.

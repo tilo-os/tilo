@@ -60,8 +60,11 @@ pub(crate) const MAX_STATE_IN_FLIGHT: usize = 4;
 /// before an earlier request (HTTP/2 streams are dispatched concurrently).
 /// A repeated item is answered with its original durable receipt. Above this
 /// budget the request carries only new items and reordering falls back to
-/// RetryLater + drain.
-pub(crate) const RESEND_PREFIX_BYTES: usize = 16 * 1024;
+/// RetryLater + drain. Kept small (about three typing changes): on lossy
+/// long-RTT links every extra TCP segment raises the chance of a
+/// head-of-line stall, and measured resend bytes cost more than the rare
+/// reorder they avoid.
+pub(crate) const RESEND_PREFIX_BYTES: usize = 2 * 1024;
 /// A reordered item (answered RetryLater while another state request was in
 /// flight) is re-sent alone at most this many times before failing.
 const MAX_REORDER_RETRIES: u8 = 3;
@@ -324,13 +327,14 @@ mod tests {
             .unwrap();
         assert_eq!(items, vec![key(3)]);
         // The prefix counts against the 64-item bound.
+        let fits = (RESEND_PREFIX_BYTES / (1 + ITEM_OVERHEAD_BYTES)) as u8;
         let mut window = UploadWindow::default();
-        let first = (0..MAX_BATCH_ITEMS as u8).map(|n| (key(n), 1));
-        window.plan(first).unwrap();
-        let again = (0..=MAX_BATCH_ITEMS as u8).map(|n| (key(n), 1));
-        assert!(
-            window.plan(again).is_none(),
-            "full prefix leaves no room for new items"
+        window.plan((0..fits).map(|n| (key(n), 1))).unwrap();
+        let (_, items) = window.plan((0..100u8).map(|n| (key(n), 1))).unwrap();
+        assert_eq!(items.len(), MAX_BATCH_ITEMS);
+        assert_eq!(
+            items[..fits as usize],
+            (0..fits).map(key).collect::<Vec<_>>()[..]
         );
     }
     #[test]

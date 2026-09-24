@@ -449,10 +449,16 @@ impl DeliveryAuthority {
             })
     }
     /// Required bits plus the optional transcript extensions (multi-group
-    /// replay) whenever the durable replay lane is required. Old hosts
-    /// negotiate the optional bits away.
+    /// replay, chained polls) whenever the durable replay lane is required.
+    /// Old hosts, and hosts without chained polls, negotiate them away.
     fn requested_capabilities(&self) -> u64 {
-        capabilities::handshake_policy(self.required_capabilities)
+        capabilities::pipelined_policy(self.required_capabilities)
+    }
+    /// Whether this session's host serves PIPELINED_POLL_V1 chained polls.
+    pub fn pipelined_polls(&self) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.proof.transcript.negotiated_capabilities & capabilities::PIPELINED_POLL_V1 != 0
+        })
     }
     /// Whether this session's host may answer a poll with several groups.
     pub fn multi_group_replay(&self) -> bool {

@@ -23,6 +23,8 @@ pub(crate) const INSTALLED_DATA_CAPABILITIES: u64 =
 
 pub(crate) struct DataRoutes {
     polls: poll::Polls,
+    /// PIPELINED_POLL_V1 chain position per authenticated session.
+    chains: std::collections::BTreeMap<[u8; 16], ChainState>,
     uploads: staged::Uploads,
     snapshots: snapshots::Snapshots,
     private: private::Private,
@@ -83,10 +85,29 @@ fn reset_frame(owner: &SessionOwner, error: &anyhow::Error) -> Option<Vec<u8>> {
     snapshots::Snapshots::required(owner, reason).ok()
 }
 
+/// Chain states kept at once (live sessions are bounded far lower).
+const CHAIN_STATES: usize = 64;
+
+/// PIPELINED_POLL_V1 position of one session's current chain.
+struct ChainState {
+    id: u64,
+    /// The index answered next; later indexes wait.
+    next: u32,
+    /// Signed cursor ending the chain's last served page.
+    floor: Option<tilo_relay::delivery_v3::cursor::CursorToken>,
+}
+
+enum ChainGate {
+    Ready(Option<tilo_relay::delivery_v3::cursor::CursorToken>),
+    Wait,
+    Stale,
+}
+
 impl DataRoutes {
     pub(crate) fn new(work: crate::store::HostWorkInventory) -> Self {
         Self {
             polls: poll::Polls::new(),
+            chains: std::collections::BTreeMap::new(),
             uploads: staged::Uploads::new(work.clone()),
             snapshots: snapshots::Snapshots::new(work),
             private: private::Private::new(),
@@ -133,6 +154,7 @@ impl DataRoutes {
         let ready = sessions.finish_data(owner, current, budget, body)?;
         for retired in &ready.retired {
             self.polls.fence(*retired);
+            self.chains.remove(retired);
         }
         Ok(ready.bytes)
     }
@@ -316,12 +338,14 @@ impl DataRoutes {
         ensure!(named == id, "detach names another session");
         sessions.retire_session(id);
         self.polls.fence(id);
+        self.chains.remove(&id);
         self.private.retire_session(id);
         Ok(Vec::new())
     }
 
     /// Answer a poll now when a complete group exists; otherwise hold the
     /// original request until a commit, cancellation or its deadline.
+    /// A PIPELINED_POLL_V1 chain poll is answered only in chain order.
     fn poll(
         &mut self,
         sessions: &mut HttpSessions,
@@ -330,7 +354,13 @@ impl DataRoutes {
         budget: &HostBytes,
         request: BufferedRequest,
     ) -> std::result::Result<Dispatched, BufferedRequest> {
-        let outcome = (|| -> Result<(Option<Vec<u8>>, Option<poll::AdmissionTicket>)> {
+        enum Arrival {
+            Page(cores::ServedPage),
+            Hold,
+            Stale,
+        }
+        let mut position = None;
+        let outcome = (|| -> Result<(Arrival, Option<poll::AdmissionTicket>)> {
             let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
             let exact = Request::new(request.method().as_str(), request.target(), request.body())?;
             let (admitted, mut checker, turn) = sessions.admit_revalidating(
@@ -347,35 +377,68 @@ impl DataRoutes {
                 .polls
                 .capture(&admitted, &request, entry)
                 .map_err(|error| anyhow::anyhow!("poll capture refused: {error:?}"))?;
-            let page = cores::replay_core(
+            let session = admitted.session().session_id();
+            position = ticket.chain().map(|chain| (session, chain));
+            self.polls.supersede(&ticket);
+            match ticket.chain() {
+                // A plain poll ends any chain of this session.
+                None => {
+                    self.chains.remove(&session);
+                }
+                Some(chain) if chain.index == 0 => {
+                    self.start_chain(session, chain.chain);
+                }
+                Some(_) => {}
+            }
+            let floor = match self.chain_gate(session, ticket.chain()) {
+                ChainGate::Ready(floor) => floor,
+                ChainGate::Wait => return Ok((Arrival::Hold, Some(ticket))),
+                ChainGate::Stale => return Ok((Arrival::Stale, None)),
+            };
+            let page = cores::replay_core_from(
                 owner,
                 current,
                 &admitted,
+                floor.as_ref(),
                 |owner, view, session| checker.check(owner, view, session),
                 turn,
             )?;
             Ok(match page {
-                Some(page) => (Some(page), None),
-                None => (None, Some(ticket)),
+                Some(page) => (Arrival::Page(page), None),
+                None => (Arrival::Hold, Some(ticket)),
             })
         })();
         match outcome {
-            Ok((Some(page), _)) => {
-                let _ = request.respond(StatusCode::OK, page);
+            Ok((Arrival::Page(page), _)) => {
+                if let Some((session, chain)) = position {
+                    self.chain_answered(session, chain, Some(page.end));
+                }
+                let _ = request.respond(StatusCode::OK, page.bytes);
                 Ok(Dispatched::Responded)
             }
-            Ok((None, Some(ticket))) => match self.polls.park(ticket, request) {
+            // Another chain, an index already answered, or a chain this host
+            // no longer tracks. Not an empty page (which a live chain would
+            // accept and follow): a transient refusal, so the client abandons
+            // the chain and starts a new one at its own cursor.
+            Ok((Arrival::Stale, _)) => {
+                let _ = request.respond(StatusCode::CONFLICT, b"stale-poll-chain".to_vec());
+                Ok(Dispatched::Responded)
+            }
+            Ok((Arrival::Hold, Some(ticket))) => match self.polls.park(ticket, request) {
                 Ok(_) => Ok(Dispatched::Held),
-                // A second held poll for one consumer, or a full table:
-                // answer empty so the client simply polls again.
+                // A full table or chain: the dropped request answers 503 and
+                // the client polls again (a chain client starts a new chain).
                 Err(_) => Ok(Dispatched::Responded),
             },
-            Ok((None, None)) => Err(request),
+            Ok((Arrival::Hold, None)) => Err(request),
             Err(error) => match reset_frame(owner, &error) {
                 // An authenticated consumer whose cursor can no longer be
                 // served receives the contract's reset, not a denial.
                 Some(frame) => {
                     tracing::debug!(route = ?request.route(), %error, "data poll reset");
+                    if let Some((session, _)) = position {
+                        self.chains.remove(&session);
+                    }
                     let _ = request.respond(StatusCode::OK, frame);
                     Ok(Dispatched::Responded)
                 }
@@ -392,8 +455,76 @@ impl DataRoutes {
         }
     }
 
+    /// Begin chain `id` for `session` (its index 0 arrived).
+    fn start_chain(&mut self, session: [u8; 16], id: u64) {
+        // Bounded: sessions without held polls lose their chain first (a
+        // later index of such a chain is then answered empty and the client
+        // starts a new chain).
+        if !self.chains.contains_key(&session) && self.chains.len() >= CHAIN_STATES {
+            let held = self.polls.sessions();
+            self.chains.retain(|key, _| held.contains(key));
+        }
+        if self.chains.contains_key(&session) || self.chains.len() < CHAIN_STATES {
+            self.chains.insert(
+                session,
+                ChainState {
+                    id,
+                    next: 0,
+                    floor: None,
+                },
+            );
+        }
+    }
+
+    /// Whether a (chain) poll may be served now, and after which cursor.
+    fn chain_gate(
+        &self,
+        session: [u8; 16],
+        chain: Option<tilo_relay::delivery_v3::poll_chain::ChainPoll>,
+    ) -> ChainGate {
+        let Some(chain) = chain else {
+            return ChainGate::Ready(None);
+        };
+        match self.chains.get(&session) {
+            Some(state) if state.id == chain.chain && chain.index == state.next => {
+                ChainGate::Ready(state.floor.clone())
+            }
+            Some(state) if state.id == chain.chain && chain.index > state.next => ChainGate::Wait,
+            _ => ChainGate::Stale,
+        }
+    }
+
+    /// Record that chain position `chain` was answered (with a page ending at
+    /// `end`, or empty).
+    fn chain_answered(
+        &mut self,
+        session: [u8; 16],
+        chain: tilo_relay::delivery_v3::poll_chain::ChainPoll,
+        end: Option<tilo_relay::delivery_v3::cursor::CursorToken>,
+    ) {
+        let Some(state) = self.chains.get_mut(&session) else {
+            return;
+        };
+        if state.id != chain.chain || state.next != chain.index {
+            return;
+        }
+        match chain.index.checked_add(1) {
+            Some(next) => {
+                state.next = next;
+                if end.is_some() {
+                    state.floor = end;
+                }
+            }
+            None => {
+                self.chains.remove(&session);
+            }
+        }
+    }
+
     /// Resume every held poll against the current committed owner. Called
-    /// after any owner commit and on the maintenance tick.
+    /// after any owner commit and on the maintenance tick. Held polls are
+    /// visited in arrival order, so a chain's earlier poll is answered (and
+    /// moves the chain on) before its later polls are considered.
     pub(crate) fn wake(
         &mut self,
         sessions: &mut HttpSessions,
@@ -408,21 +539,44 @@ impl DataRoutes {
                 continue;
             };
             let deadline = pending.original().deadline();
-            let result = (|| -> Result<Option<Vec<u8>>> {
+            let session = pending.session_id();
+            let chain = pending.chain();
+            let floor = match self.chain_gate(session, chain) {
+                ChainGate::Ready(floor) => floor,
+                ChainGate::Wait => {
+                    // Its predecessor is still unanswered. An idle answer
+                    // here does not move the chain.
+                    if !self.idle.may_hold(deadline, now) {
+                        let _ = pending.into_request().respond(StatusCode::OK, Vec::new());
+                    } else if let Err(error) = self.polls.repark(pending) {
+                        tracing::debug!(?error, "held chain poll could not be retained");
+                    }
+                    continue;
+                }
+                ChainGate::Stale => {
+                    let _ = pending.into_request().respond(StatusCode::OK, Vec::new());
+                    continue;
+                }
+            };
+            let result = (|| -> Result<Option<cores::ServedPage>> {
                 let (session, mut checker, turn) =
                     sessions.resume_poll(owner, current, budget, &pending)?;
-                cores::replay_pending_core(
+                cores::replay_pending_core_from(
                     owner,
                     current,
                     &pending,
                     &session,
+                    floor.as_ref(),
                     |owner, view, session| checker.check(owner, view, session),
                     turn,
                 )
             })();
             match result {
                 Ok(Some(page)) => {
-                    let _ = pending.into_request().respond(StatusCode::OK, page);
+                    if let Some(chain) = chain {
+                        self.chain_answered(session, chain, Some(page.end));
+                    }
+                    let _ = pending.into_request().respond(StatusCode::OK, page.bytes);
                 }
                 Ok(None) if self.idle.may_hold(deadline, now) => {
                     if let Err(error) = self.polls.repark(pending) {
@@ -431,11 +585,15 @@ impl DataRoutes {
                 }
                 // Deadline reached with nothing new: an empty page means idle.
                 Ok(None) => {
+                    if let Some(chain) = chain {
+                        self.chain_answered(session, chain, None);
+                    }
                     let _ = pending.into_request().respond(StatusCode::OK, Vec::new());
                 }
                 Err(error) => match reset_frame(owner, &error) {
                     Some(frame) => {
                         tracing::debug!(%error, "held data poll reset");
+                        self.chains.remove(&session);
                         let _ = pending.into_request().respond(StatusCode::OK, frame);
                     }
                     None => {
