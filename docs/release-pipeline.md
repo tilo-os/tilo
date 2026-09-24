@@ -165,7 +165,10 @@ lanes, KMS signing preflight, reproducibility, installed-VM and AT-SPI gates,
 SBOM, provenance and freshness attestations, and the shared
 `tilo-os-image-series` generation lock. It also receives the same protected
 PCR-prediction and EFI signing inputs, and ships the full image including the
-browser, like a default manual publication.
+browser, like a default manual publication, once `os/wpe-buildroot-snapshot.env`
+pins a promoted WPE buildroot for both architectures. Until then the nightly
+image omits the browser, with a warning, instead of failing every night; `v*`
+tags still require the browser.
 
 Before allocating any build lane, the plan job reads the
 `org.opencontainers.image.revision` label of the current `latest` image with
