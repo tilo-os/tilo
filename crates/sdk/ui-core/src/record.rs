@@ -1,6 +1,8 @@
 //! Records — the unit of state, collaboration and storage. A record has a
-//! type, a stable identity, and a home room. A file's identity is its path
-//! — the unification, not a special case. Records reference other records
+//! type, a stable identity, and a home room. A file's identity is its file
+//! record — the durable id the filesystem gives the file, which a rename or
+//! move keeps — and its path is only where it currently sits (see
+//! [`RecordId::identify_file`]). Records reference other records
 //! rather than nesting (annotations reference the document they mark up),
 //! so "share the book without my notes" is expressible.
 //!
@@ -35,6 +37,8 @@ const META: &str = "tilo:record";
 const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
+/// Key, in a record's meta map, of the identities it was adopted from.
+const FORMERLY: &str = "formerly";
 
 /// Upper bound for the records an app learns from one room index at once.
 /// This is deliberately small: the index is replicated input, not a request
@@ -44,12 +48,40 @@ const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
 const MAX_RECORD_ID_BYTES: usize = 1024;
 const MAX_RECORD_KIND_BYTES: usize = 64;
 const MAX_RECORD_RELATION_BYTES: usize = 64;
+/// Prefix of a file identity by filesystem record (see [`RecordId`]).
+const FILE_RECORD_PREFIX: &str = "file-record:";
+/// Former identities a checkout may name for migration.
+const MAX_FORMER_IDS: usize = 8;
 
-/// The stable identity of a record. Three shapes, encoded by prefix:
-/// `file:<absolute path>` (identity is the path — opening it twice reaches
-/// one record), `uuid:<uuid>` (minted, for a record with no natural name),
-/// and `tab:<tab id>` (a window's scratch document until a file names it,
-/// see [`RecordId::for_tab`]).
+/// The stable identity of a record. Encoded by prefix:
+/// `file-record:<uuid>` (a file, by the durable id its filesystem record
+/// carries — see [`RecordId::identify_file`]), `file:<absolute path>` (a
+/// file known only by where it is: a not-yet-written Save As target, or a
+/// filesystem that can't hold the durable id), `uuid:<uuid>` (minted, for a
+/// record with no natural name), `tab:<tab id>` (a window's scratch document
+/// until a file names it, see [`RecordId::for_tab`]) and
+/// `derived:<role>@<id>` (see [`RecordId::derived`]).
+///
+/// ## Files
+///
+/// A file's identity is its file record, never its path or its bytes:
+///
+/// - **Rename and move keep it.** The collaborative filesystem keys files by
+///   a `FileRecordId` that survives rename and move and serves it as the
+///   `user.tilo.record-id` attribute; elsewhere the same attribute is written
+///   once on first open and travels with the inode.
+/// - **A copy is a new file.** The filesystem mints a new record for a
+///   created file, and a plain local copy does not carry the attribute, so a
+///   copy starts with its own records. That is deliberate: copying is how a
+///   person forks a document — to send a clean version, or to try different
+///   edits — and mirroring every note into the copy would surprise them and
+///   leak notes into what they hand on. Tools asked to preserve extended
+///   attributes (`cp -a`, `rsync -X`) are an explicit request to keep the
+///   identity, and do.
+/// - **Identical bytes are not the same file.** Nothing here is derived from
+///   content, so two files with the same bytes never share edits by accident.
+///   Content that *should* be shared by bytes is a blob reference instead
+///   ([`add_blob_reference`]).
 ///
 /// The prefix is part of the id, not a tag beside it: the id travels on the
 /// wire and names a file on disk, so it must be self-describing.
@@ -74,6 +106,35 @@ impl RecordId {
         // Not `canonicalize`: it fails for a file that doesn't exist yet
         // (Save As), and a record must be nameable before its bytes are.
         Self(format!("file:{}", normalise(&abs).display()))
+    }
+
+    /// The record of the file whose filesystem record id is `id` — the
+    /// collaborative filesystem's `FileRecordId`, or the id
+    /// [`Self::identify_file`] wrote for a file elsewhere.
+    pub fn for_file_record(id: uuid::Uuid) -> Self {
+        Self(format!("{FILE_RECORD_PREFIX}{}", id.hyphenated()))
+    }
+
+    /// The durable identity of the file at `path`, so reopening it after a
+    /// rename or move reaches the same records.
+    ///
+    /// Reads the file's `user.tilo.record-id` attribute (16 raw bytes — the
+    /// collaborative filesystem serves its `FileRecordId` there). A file
+    /// without one, on a filesystem that accepts user attributes, gets a
+    /// freshly minted id written with create-only semantics (a concurrent
+    /// opener that wins the race is re-read, so both agree). Anything else —
+    /// no attribute support, a read-only file, not a regular file — falls
+    /// back to the path identity [`Self::for_file`]: the best identity the
+    /// file can carry.
+    ///
+    /// Two system calls at most besides the metadata lookup; call it off the
+    /// UI thread when the file might be on a network filesystem.
+    pub fn identify_file(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        match file_identity::read_or_mint(path) {
+            Some(id) => Self::for_file_record(id),
+            None => Self::for_file(path),
+        }
     }
 
     pub fn minted() -> Self {
@@ -111,6 +172,13 @@ impl RecordId {
         self.0.strip_prefix("file:").map(PathBuf::from)
     }
 
+    /// The filesystem record id of a `file-record:` identity.
+    pub fn file_record(&self) -> Option<uuid::Uuid> {
+        self.0
+            .strip_prefix(FILE_RECORD_PREFIX)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+    }
+
     /// A filesystem-safe directory name for this record's document. Must be
     /// stable (same record → same directory next launch, or data is
     /// silently orphaned) and collision-free (two records sharing a
@@ -140,6 +208,11 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     if let Some(path) = s.strip_prefix("file:") {
         let path = Path::new(path);
         return path.is_absolute() && normalise(path) == path;
+    }
+    if let Some(id) = s.strip_prefix(FILE_RECORD_PREFIX) {
+        // Canonical hyphenated lowercase only, so one file has one id.
+        return uuid::Uuid::parse_str(id)
+            .is_ok_and(|parsed| !parsed.is_nil() && parsed.hyphenated().to_string() == id);
     }
     if let Some(uuid) = s.strip_prefix("uuid:") {
         return uuid::Uuid::parse_str(uuid).is_ok();
@@ -190,6 +263,103 @@ fn normalise(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// The durable file id behind [`RecordId::identify_file`]: the
+/// `user.tilo.record-id` extended attribute.
+#[cfg(target_os = "linux")]
+mod file_identity {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    /// The attribute the collaborative filesystem serves its `FileRecordId`
+    /// in, and the one written for files elsewhere.
+    pub(super) const ATTRIBUTE: &str = "user.tilo.record-id";
+
+    fn c_path(path: &Path) -> Option<CString> {
+        CString::new(path.as_os_str().as_bytes()).ok()
+    }
+
+    fn c_name() -> CString {
+        CString::new(ATTRIBUTE).unwrap_or_default()
+    }
+
+    /// The id stored on `path`, if it carries a well-formed one.
+    pub(super) fn read(path: &Path) -> Option<uuid::Uuid> {
+        let path = c_path(path)?;
+        let name = c_name();
+        let mut buf = [0_u8; 16];
+        // SAFETY: both strings are NUL-terminated and `buf` is writable for
+        // its full length, which is what we pass.
+        let n = unsafe {
+            libc::getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        (n == 16)
+            .then(|| uuid::Uuid::from_bytes(buf))
+            .filter(|id| !id.is_nil())
+    }
+
+    /// Store `id` on `path` unless it already carries one. `Ok(false)` when
+    /// another writer got there first.
+    fn create(path: &Path, id: uuid::Uuid) -> std::io::Result<bool> {
+        let path =
+            c_path(path).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let name = c_name();
+        let bytes = id.into_bytes();
+        // SAFETY: NUL-terminated strings and a 16-byte readable value.
+        let rc = unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                libc::XATTR_CREATE,
+            )
+        };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EEXIST) {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+
+    /// The file's id, minting and storing one for a regular file that has
+    /// none. `None` when the file can't carry an id.
+    pub(super) fn read_or_mint(path: &Path) -> Option<uuid::Uuid> {
+        if let Some(id) = read(path) {
+            return Some(id);
+        }
+        if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+            return None;
+        }
+        match create(path, uuid::Uuid::new_v4()) {
+            // Read back rather than trusting the value written: the stored
+            // attribute is the identity, whoever wrote it.
+            Ok(_) => read(path),
+            Err(error) => {
+                tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path");
+                None
+            }
+        }
+    }
+}
+
+/// Without Linux extended attributes a file is identified by its path.
+#[cfg(not(target_os = "linux"))]
+mod file_identity {
+    pub(super) fn read_or_mint(_path: &std::path::Path) -> Option<uuid::Uuid> {
+        None
+    }
 }
 
 /// FNV-1a, 64-bit. Written out rather than imported: this hash names
@@ -262,6 +432,11 @@ pub struct RecordCheckout {
     /// target is brought into the room index so it doesn't dangle. One
     /// level deep.
     pub references: Vec<(RecordCheckout, String)>,
+    /// Identities this record was known by before — a file record that used
+    /// to be named by its path. When nothing is stored under [`Self::id`],
+    /// the host adopts the stored document of the first former identity that
+    /// no other successor has claimed (see [`RecordCheckout::formerly`]).
+    pub formerly: Vec<RecordId>,
 }
 
 impl RecordCheckout {
@@ -270,7 +445,23 @@ impl RecordCheckout {
             id,
             kind,
             references: Vec::new(),
+            formerly: Vec::new(),
         }
+    }
+
+    /// Declare that this record used to be `former`. Opening it where
+    /// nothing is stored under the new id adopts the former record's
+    /// document — its content, history and actors — restamped with the new
+    /// identity. Custody of the former document is claimed durably by the
+    /// first successor, so a different record naming the same former id
+    /// (another file that later sits at the same path) never adopts it too.
+    /// The former document itself stays on disk untouched.
+    #[must_use]
+    pub fn formerly(mut self, former: RecordId) -> Self {
+        if former != self.id && !self.formerly.contains(&former) {
+            self.formerly.push(former);
+        }
+        self
     }
 
     #[must_use]
@@ -282,12 +473,20 @@ impl RecordCheckout {
     /// Room indexes contain names supplied by collaborators.  Keep the
     /// transport boundary typed and bounded before a host considers one.
     pub fn is_valid(&self) -> bool {
+        let formerly_valid = |checkout: &RecordCheckout| {
+            checkout.formerly.len() <= MAX_FORMER_IDS
+                && checkout.formerly.iter().all(|former| {
+                    RecordId::parse(former.as_str()).is_some() && *former != checkout.id
+                })
+        };
         RecordId::parse(self.id.as_str()).is_some()
             && self.kind.is_valid()
+            && formerly_valid(self)
             && self.references.iter().all(|(target, relation)| {
                 target.references.is_empty()
                     && RecordId::parse(target.id.as_str()).is_some()
                     && target.kind.is_valid()
+                    && formerly_valid(target)
                     && valid_label(relation, MAX_RECORD_RELATION_BYTES)
             })
     }
@@ -377,6 +576,125 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
     let kind = RecordKind::new(str_at(doc, &m, "kind").unwrap_or_default());
     Some(RecordCheckout::new(id, kind))
+}
+
+/// Identities this record's document was known by before adoption, oldest
+/// first (see [`RecordCheckout::formerly`]).
+pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return Vec::new();
+    };
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, FORMERLY) else {
+        return Vec::new();
+    };
+    (0..doc.length(&list))
+        .filter_map(|i| match doc.get(&list, i) {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::Str(s) => RecordId::parse(s),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// Give an adopted document `want`'s identity: the stamped id becomes the
+/// new one, the old one is remembered, and references to a former identity
+/// of a declared reference target now name that target. `false` (and the
+/// document untouched) when it isn't `former`'s document of `want`'s kind.
+fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bool {
+    if identity(doc).is_none_or(|found| found.id != *former || found.kind != want.kind) {
+        return false;
+    }
+    let Some(m) = meta_obj(doc) else {
+        return false;
+    };
+    let _ = doc.put(&m, "id", want.id.as_str());
+    let list = match doc.get(&m, FORMERLY) {
+        Ok(Some((Value::Object(ObjType::List), list))) => Some(list),
+        _ => doc.put_object(&m, FORMERLY, ObjType::List).ok(),
+    };
+    if let Some(list) = list {
+        let n = doc.length(&list);
+        let _ = doc.insert(&list, n, former.as_str());
+    }
+    let Some(refs) = refs_obj(doc) else {
+        return true;
+    };
+    for i in (0..doc.length(&refs)).rev() {
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&refs, i) else {
+            continue;
+        };
+        let (Some(target), Some(relation)) = (
+            str_at(doc, &entry, "target"),
+            str_at(doc, &entry, "relation"),
+        ) else {
+            continue;
+        };
+        let Some((successor, _)) = want
+            .references
+            .iter()
+            .find(|(declared, declared_relation)| {
+                *declared_relation == relation
+                    && declared.formerly.iter().any(|f| f.as_str() == target)
+            })
+        else {
+            continue;
+        };
+        let successor_ref = RecordRef::new(successor.id.clone(), relation);
+        if references(doc).contains(&successor_ref) {
+            let _ = doc.delete(&refs, i);
+        } else {
+            let _ = doc.put(&entry, "target", successor.id.as_str());
+        }
+    }
+    true
+}
+
+/// Adopt the stored document of the first former identity of `want` that
+/// exists, belongs to `want`'s kind and room, and whose custody this
+/// successor can claim. `key` names a record's storage in the room; `load`
+/// decodes the document stored there. The former document is only read,
+/// never changed: the adopted copy is restamped and returned for the caller
+/// to persist under the new id.
+fn adopt_former(
+    store: &Rc<dyn DurableStore>,
+    want: &RecordCheckout,
+    room: &str,
+    key: impl Fn(&RecordId) -> StorageKey,
+    mut load: impl FnMut(&StorageKey) -> Result<Option<AutoCommit>, app_state::StoreError>,
+) -> Result<Option<AutoCommit>, app_state::StoreError> {
+    for former in &want.formerly {
+        let former_key = key(former);
+        if store
+            .read(&former_key)?
+            .is_none_or(|stored| stored.bytes.is_empty())
+        {
+            continue;
+        }
+        let Some(mut doc) = load(&former_key)? else {
+            continue;
+        };
+        if room_scope(&doc).is_some_and(|scope| scope != room)
+            || identity(&doc).is_none_or(|found| found.id != *former || found.kind != want.kind)
+        {
+            tracing::warn!(record = %want.id, former = %former, "former record does not match; not adopting it");
+            continue;
+        }
+        // First successor wins, durably: another record naming the same
+        // former identity later (a different file now at the old path) must
+        // never receive these edits as well.
+        if !store.claim(&former_key, &want.id.storage_key())? {
+            tracing::info!(record = %want.id, former = %former, "former record already adopted by another record");
+            continue;
+        }
+        if !restamp(&mut doc, former, want) {
+            continue;
+        }
+        tracing::info!(record = %want.id, former = %former, room, "adopting a record under its new identity");
+        return Ok(Some(doc));
+    }
+    Ok(None)
 }
 
 /// The room this record was minted in.
@@ -948,7 +1266,7 @@ impl RecordSet {
         if self.active.is_none() && !state.doc.get_heads().is_empty() {
             let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
             state.adopt_doc(adopted);
-            let autosave = self.persist_for(&want.id, &mut state.doc);
+            let autosave = self.persist_for(want, &mut state.doc);
             let history = crate::state::UndoLog::new(&mut state.doc);
             self.open.insert(
                 want.id.clone(),
@@ -978,7 +1296,7 @@ impl RecordSet {
         let incoming = if let Some(slot) = self.open.get_mut(&want.id) {
             slot.doc.take().unwrap_or_else(AutoCommit::new)
         } else {
-            let (mut doc, autosave) = self.load(&want.id);
+            let (mut doc, autosave) = self.load(want);
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -1038,9 +1356,9 @@ impl RecordSet {
     }
 
     /// Open a record's stored document, and the writer for it.
-    fn load(&self, id: &RecordId) -> (AutoCommit, Option<app_state::DocWriter>) {
+    fn load(&self, want: &RecordCheckout) -> (AutoCommit, Option<app_state::DocWriter>) {
         let mut doc = AutoCommit::new();
-        let autosave = self.persist_for(id, &mut doc);
+        let autosave = self.persist_for(want, &mut doc);
         (doc, autosave)
     }
 
@@ -1065,6 +1383,25 @@ impl RecordSet {
         )
     }
 
+    /// A former identity's document in this room, restamped for `want`
+    /// (see [`adopt_former`]). Launch-environment route.
+    fn adopt_former_scoped(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<Option<AutoCommit>, app_state::StoreError> {
+        if want.formerly.is_empty() {
+            return Ok(None);
+        }
+        let documents = Rc::clone(self.documents()?);
+        adopt_former(
+            &documents,
+            want,
+            &self.home,
+            |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
+            |key| app_state::DocStore::shared(Rc::clone(&documents), key.clone())?.load_complete(),
+        )
+    }
+
     /// The retained pre-room package record, as a read source.
     fn package_record(&self, record_key: &str) -> StorageKey {
         StorageKey::package_record(&self.package_id, record_key)
@@ -1075,7 +1412,12 @@ impl RecordSet {
     /// content survives. The writer is seeded from the **stored** heads,
     /// not merged — seeding from merged heads would mark adopted content
     /// as already saved.
-    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
+    fn persist_for(
+        &self,
+        want: &RecordCheckout,
+        doc: &mut AutoCommit,
+    ) -> Option<app_state::DocWriter> {
+        let id = &want.id;
         if !self.persistent {
             return None;
         }
@@ -1109,10 +1451,26 @@ impl RecordSet {
                 )));
             }
         };
-        // The old package-global record file is a read-only migration source.
-        // It remains on disk until a later explicit cleanup, so a crash before
-        // the first scoped autosave cannot lose it.
-        let mut adopted_legacy = false;
+        // A former identity's record and the old package-global record file
+        // are read-only migration sources. They remain on disk until a later
+        // explicit cleanup, so a crash before the first scoped autosave cannot
+        // lose them.
+        let mut adopted_elsewhere = false;
+        let stored = match stored {
+            Some(stored) => Some(stored),
+            None => match self.adopt_former_scoped(want) {
+                Ok(adopted) => {
+                    adopted_elsewhere = adopted.is_some();
+                    adopted
+                }
+                Err(e) => {
+                    tracing::error!(record = %id, error = %e, "former record could not be read; writes refused");
+                    return Some(crate::persist::DocWriter::disabled(format!(
+                        "former record of {id} could not be read: {e}"
+                    )));
+                }
+            },
+        };
         let stored = stored.or_else(|| {
             let legacy = self.package_record(&record_key);
             let documents = self.documents().ok()?;
@@ -1130,7 +1488,7 @@ impl RecordSet {
                 from = %legacy,
                 "adopting a legacy package-global record into a room"
             );
-            adopted_legacy = true;
+            adopted_elsewhere = true;
             Some(legacy_doc)
         });
         // Merge transactionally. Automerge may have applied part of a failed
@@ -1152,11 +1510,11 @@ impl RecordSet {
         *doc = merged;
         let mut autosave = store.writer();
         if let Some(mut stored) = stored {
-            // Only seed heads that are already in this scoped store.  A
-            // legacy document's heads are absent from the new file; seeding
+            // Only seed heads that are already in this scoped store.  An
+            // adopted document's heads are absent from the new file; seeding
             // them would append just the metadata change and strand its
             // dependencies after a crash.
-            if !adopted_legacy {
+            if !adopted_elsewhere {
                 autosave.seed(&mut stored);
             }
         }
@@ -1181,7 +1539,7 @@ impl RecordSet {
         }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
-            let (mut doc, autosave) = self.load(&want.id);
+            let (mut doc, autosave) = self.load(want);
             if self.persistent && self.home.is_empty() {
                 tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
                 return false;
@@ -1256,17 +1614,46 @@ impl RecordSet {
             validate_identity(doc, want, &self.home)?;
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
-        let owner = app_state::DocOwner::acquire(backend, key)?;
+        let owner = app_state::DocOwner::acquire(Rc::clone(&backend), key)?;
         let loaded = if recover_partial {
             owner.load()?
         } else {
             owner.load_complete()?
-        }
-        .ok_or(RecordOpenError::MissingRecord)?;
-        validate_identity(loaded.document(), want, &self.home)?;
-        let mut doc = owner.accept(loaded)?;
-        let owner = Rc::new(owner);
-        let autosave = app_state::DocWriter::try_start(&owner)?;
+        };
+        let (mut doc, autosave) = if let Some(loaded) = loaded {
+            validate_identity(loaded.document(), want, &self.home)?;
+            let doc = owner.accept(loaded)?;
+            let owner = Rc::new(owner);
+            let autosave = app_state::DocWriter::try_start(&owner)?;
+            (doc, autosave)
+        } else {
+            // Nothing under the new id: continue a former identity's record,
+            // written in full under the new key before it is shown.
+            let mut doc = adopt_former(
+                &backend,
+                want,
+                &self.home,
+                |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
+                |key| {
+                    Ok(
+                        app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
+                            .load_complete()?
+                            .map(|loaded| loaded.document().clone()),
+                    )
+                },
+            )?
+            .ok_or(RecordOpenError::MissingRecord)?;
+            doc.set_actor(owner.actor().clone());
+            if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+            owner.validate_schema(&doc)?;
+            validate_identity(&doc, want, &self.home)?;
+            doc.commit();
+            let owner = Rc::new(owner);
+            let autosave = app_state::DocWriter::start_new(&owner, &mut doc)?;
+            (doc, autosave)
+        };
         let history = crate::state::UndoLog::new(&mut doc);
         self.open.insert(
             want.id.clone(),
@@ -1959,29 +2346,37 @@ impl RecordStore {
                     }
                     .into());
                 }
-                let source = set.package_record(&key);
-                let documents = Rc::clone(set.documents()?);
-                if documents.read(&source)?.is_none() {
-                    return Err(RecordOpenError::MissingRecord);
-                }
-                let mut legacy =
-                    app_state::DocStore::shared(Rc::clone(&documents), source.clone())?;
-                let mut doc = legacy.load_complete()?.ok_or_else(|| {
-                    app_state::StoreError::EmptyExistingDocument {
-                        path: legacy.document_path().to_path_buf(),
+                if let Some(mut doc) = set.adopt_former_scoped(want)? {
+                    if !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home)) {
+                        return Err(RecordOpenError::IdentityMismatch);
                     }
-                })?;
-                // Validate before claiming custody or adding only the missing
-                // room metadata. The old source and all its changes stay intact.
-                if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
-                    || home(&doc).as_deref() != Some(set.home.as_str())
-                    || room_scope(&doc).is_some_and(|scope| scope != set.home)
-                    || !documents.claim(&source, &set.home)?
-                    || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
-                {
-                    return Err(RecordOpenError::IdentityMismatch);
+                    (doc, true)
+                } else {
+                    let source = set.package_record(&key);
+                    let documents = Rc::clone(set.documents()?);
+                    if documents.read(&source)?.is_none() {
+                        return Err(RecordOpenError::MissingRecord);
+                    }
+                    let mut legacy =
+                        app_state::DocStore::shared(Rc::clone(&documents), source.clone())?;
+                    let mut doc = legacy.load_complete()?.ok_or_else(|| {
+                        app_state::StoreError::EmptyExistingDocument {
+                            path: legacy.document_path().to_path_buf(),
+                        }
+                    })?;
+                    // Validate before claiming custody or adding only the missing
+                    // room metadata. The old source and all its changes stay intact.
+                    if identity(&doc)
+                        .is_none_or(|found| found.id != want.id || found.kind != want.kind)
+                        || home(&doc).as_deref() != Some(set.home.as_str())
+                        || room_scope(&doc).is_some_and(|scope| scope != set.home)
+                        || !documents.claim(&source, &set.home)?
+                        || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
+                    {
+                        return Err(RecordOpenError::IdentityMismatch);
+                    }
+                    (doc, true)
                 }
-                (doc, true)
             };
             validate_identity(&doc, want, &set.home)?;
             if home(&doc).as_deref() != Some(set.home.as_str()) {
@@ -2302,6 +2697,9 @@ pub fn tick(
         None
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {
