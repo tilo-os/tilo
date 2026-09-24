@@ -20,8 +20,8 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_identity_bind,
-    resolve_service_binds_for_launch, to_service_binds,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
+    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -1905,6 +1905,13 @@ pub fn run_with(
     )? {
         resolved.push(identity);
     }
+    if let Some(blobs) = resolve_blob_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(blobs);
+    }
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
@@ -2460,6 +2467,13 @@ fn run_with_capture_spawn<T>(
         opts.no_services,
     )? {
         resolved.push(identity);
+    }
+    if let Some(blobs) = resolve_blob_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(blobs);
     }
     let binds = to_service_binds(&resolved);
 
