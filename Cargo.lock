@@ -2087,6 +2087,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source-dav"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-dav",
+ "serde",
+ "serde_json",
+ "test-http",
+ "tilo-dav",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

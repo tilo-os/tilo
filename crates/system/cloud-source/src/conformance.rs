@@ -457,7 +457,12 @@ pub fn chunked_and_resumed_uploads(fixture: &dyn Fixture) {
     const MAX_CHUNK: u64 = 16 << 20;
     let source = fixture.source();
     let caps = source.capabilities();
-    let chunk = caps.upload_chunk.min(MAX_CHUNK);
+    // Without sessions an upload is one request; keep it modest.
+    let chunk = if caps.resumable_upload {
+        caps.upload_chunk.min(MAX_CHUNK)
+    } else {
+        1 << 20
+    };
     let bytes = pattern(usize::try_from(chunk).unwrap() * 2 + 17);
     let item = upload_bytes(
         source,
