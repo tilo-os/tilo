@@ -167,7 +167,9 @@ impl Daemon {
         let cache = dir.join(format!("{profile}-cache"));
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(mount).unwrap();
-        let sockets = cache.join("authority-sockets");
+        // Short: socket paths are bounded (SUN_LEN) wherever the temporary
+        // directory is.
+        let sockets = dir.join(format!("{profile}-s"));
         std::fs::create_dir_all(&sockets).unwrap();
         // `TILO_FS_TEST_BINARY` runs another build of the daemon (a release
         // build on a loaded machine) against the same assertions.
@@ -807,6 +809,11 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
                 set_mode(&p, 0o755);
             }
         }
+        // Edits and the commit land in different seconds, as when a person
+        // works. An index written in the second its files changed holds
+        // "racily clean" entries that the next `git status` anywhere
+        // rewrites (git's own rule), which is not a sync artifact.
+        std::thread::sleep(Duration::from_millis(1100));
         git(&repo1, &["add", "-A"]).unwrap();
         git(&repo1, &["commit", "-q", "-m", &format!("round {round}")]).unwrap();
     }
