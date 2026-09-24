@@ -4963,7 +4963,7 @@ pub fn run() {
     );
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_clipboard(state.selection_store());
+    crate::compositor::selection::install_host_services(state.selection_store());
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
