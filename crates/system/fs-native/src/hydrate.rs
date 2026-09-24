@@ -41,14 +41,20 @@ pub const RESIDENCY_XATTR: &str = "trusted.tilo.residency";
 /// renamed into place once complete and are never captured.
 pub const STAGING_PREFIX: &str = ".tilo-staging-";
 
-/// How a gated file treats a process that has it open for writing.
+/// How a gated file treats writes.
+///
+/// Every access is classified on its own ([`crate::access`]): a process
+/// that holds the file open read-write and reads it is a reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteGate {
-    /// Refuse with this errno (`EBUSY` while another device holds the
-    /// file's write lease).
+    /// Refuse writes with this errno (`EBUSY` while another device holds
+    /// the file's write lease), and refuse opening it for writing, so a
+    /// program that falls back to a read-only open when a read-write one
+    /// fails (SQLite does) reads normally and reports a read-only file
+    /// when it tries to write.
     Deny(i32),
-    /// Ask the [`WritePolicy`], which may grant the write (acquiring a
-    /// lease) or refuse it.
+    /// Ask the [`WritePolicy`] at the first write, which may grant it
+    /// (acquiring a lease) or refuse it.
     Ask,
 }
 
@@ -235,6 +241,11 @@ fn decode_residency(raw: &[u8]) -> Option<([u8; 32], u64, RangeSet)> {
     Some((content, size, missing))
 }
 
+/// Whether `tid` is one of this process's threads.
+fn is_own_thread(tid: i32) -> bool {
+    Path::new("/proc/self/task").join(tid.to_string()).exists()
+}
+
 fn key_of(fd: BorrowedFd<'_>) -> io::Result<(u64, u64)> {
     // SAFETY: an all-zero `stat` is valid for the kernel to fill.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -298,14 +309,40 @@ impl Shared {
         }
     }
 
-    /// Whether process `pid` holds `key` open for writing.
-    ///
-    /// Pre-content events do not say whether the access is a read or a
-    /// write, and the event's descriptor is the listener's own. The
-    /// accessing process's descriptor table does say it: a writer is a
+    /// Whether the access by thread `tid` writes `key`: from the call it
+    /// is blocked in, else from its descriptor table.
+    fn writes(&self, tid: i32, key: (u64, u64)) -> bool {
+        match crate::access::classify(tid, key) {
+            crate::access::Access::Write => true,
+            crate::access::Access::Read => false,
+            crate::access::Access::Unknown => self.process_writes(tid, key),
+        }
+    }
+
+    /// The verdict on opening a gated file: a `Deny` gate refuses opening
+    /// it for writing. An open that cannot be classified is let through;
+    /// its first write is still refused.
+    fn admit_open(&self, fd: BorrowedFd<'_>, tid: i32) -> u32 {
+        let Ok(key) = key_of(fd) else {
+            return fan::FAN_ALLOW;
+        };
+        match self.gated(key) {
+            Some(WriteGate::Deny(errno))
+                if !is_own_thread(tid)
+                    && crate::access::classify(tid, key) == crate::access::Access::Write =>
+            {
+                self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
+                fan::deny_errno(errno)
+            }
+            _ => fan::FAN_ALLOW,
+        }
+    }
+
+    /// Whether the process of thread `pid` holds `key` open for writing:
+    /// the fallback when the call itself cannot be read. A writer is a
     /// process with the file open `O_WRONLY` or `O_RDWR`.
     fn process_writes(&self, pid: i32, key: (u64, u64)) -> bool {
-        let own = u32::try_from(pid).is_ok_and(|p| p == std::process::id());
+        let own = is_own_thread(pid);
         let skip = if own {
             self.own_fds.lock().map(|g| g.clone()).unwrap_or_default()
         } else {
@@ -355,7 +392,7 @@ impl Shared {
             return fan::FAN_ALLOW;
         };
         if let Some(gate) = self.gated(key)
-            && self.process_writes(pid, key)
+            && self.writes(pid, key)
             && let Err(errno) = self.admit(gate, key)
         {
             self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
@@ -400,11 +437,16 @@ impl Shared {
                 self.own_fd(raw, false);
             }
         }
-        if self.fill(key, fd, &want, true).is_ok() {
-            fan::FAN_ALLOW
-        } else {
-            self.stats.failures.fetch_add(1, Ordering::Relaxed);
-            fan::deny_errno(libc::EIO)
+        match self.fill(key, fd, &want, true) {
+            Ok(_) => fan::FAN_ALLOW,
+            Err(error) => {
+                self.stats.failures.fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "placeholder {}:{} bytes {}..{} unavailable: {error}",
+                    key.0, key.1, want.start, want.end
+                );
+                fan::deny_errno(libc::EIO)
+            }
         }
     }
 
@@ -626,8 +668,13 @@ impl Hydrator {
     /// Starts serving. Needs `CAP_SYS_ADMIN` (pre-content groups).
     pub fn start(fetcher: Arc<dyn Fetcher>, cfg: HydratorConfig) -> io::Result<Self> {
         let event_flags = u32::try_from(libc::O_RDWR | libc::O_LARGEFILE).unwrap_or(2);
+        // Thread ids, so a gated access is classified by the call of the
+        // thread that made it.
         let group = Group::new(
-            fan::FAN_CLASS_PRE_CONTENT | fan::FAN_UNLIMITED_QUEUE | fan::FAN_UNLIMITED_MARKS,
+            fan::FAN_CLASS_PRE_CONTENT
+                | fan::FAN_UNLIMITED_QUEUE
+                | fan::FAN_UNLIMITED_MARKS
+                | fan::FAN_REPORT_TID,
             event_flags,
         )?;
         let workers = cfg.workers.max(1);
@@ -666,10 +713,12 @@ impl Hydrator {
                     let Ok(ev) = ev else { return };
                     shared.stats.events.fetch_add(1, Ordering::Relaxed);
                     let Some(fd) = ev.fd.as_ref() else { continue };
-                    let response = if ev.mask & fan::FAN_PRE_ACCESS == 0 {
-                        fan::FAN_ALLOW
-                    } else {
+                    let response = if ev.mask & fan::FAN_PRE_ACCESS != 0 {
                         shared.serve(fd.as_fd(), ev.range(), ev.pid)
+                    } else if ev.mask & fan::FAN_OPEN_PERM != 0 {
+                        shared.admit_open(fd.as_fd(), ev.pid)
+                    } else {
+                        fan::FAN_ALLOW
                     };
                     if shared.group.respond(fd.as_raw_fd(), response).is_err() {
                         // Kernels without FAN_DENY_ERRNO accept only plain deny.
@@ -856,11 +905,20 @@ impl Hydrator {
             .lock()
             .map_err(|_| io::Error::other("hydrator state poisoned"))?
             .insert(key, gate);
-        self.shared.group.mark_fd(
-            fan::FAN_MARK_ADD | fan::FAN_MARK_INODE,
-            fan::FAN_PRE_ACCESS,
-            file.as_fd(),
-        )?;
+        let (add, remove) = match gate {
+            WriteGate::Deny(_) => (fan::FAN_PRE_ACCESS | fan::FAN_OPEN_PERM, 0),
+            WriteGate::Ask => (fan::FAN_PRE_ACCESS, fan::FAN_OPEN_PERM),
+        };
+        self.shared
+            .group
+            .mark_fd(fan::FAN_MARK_ADD | fan::FAN_MARK_INODE, add, file.as_fd())?;
+        if remove != 0 {
+            // Nothing to remove unless the file was denied before.
+            let _ = self
+                .shared
+                .group
+                .mark_fd(fan::FAN_MARK_REMOVE, remove, file.as_fd());
+        }
         Ok(key)
     }
 
@@ -882,12 +940,15 @@ impl Hydrator {
             .lock()
             .map_err(|_| io::Error::other("hydrator state poisoned"))?
             .contains_key(&key);
-        if !placeholder {
-            let _ =
-                self.shared
-                    .group
-                    .mark_fd(fan::FAN_MARK_REMOVE, fan::FAN_PRE_ACCESS, file.as_fd());
-        }
+        let events = if placeholder {
+            fan::FAN_OPEN_PERM
+        } else {
+            fan::FAN_PRE_ACCESS | fan::FAN_OPEN_PERM
+        };
+        let _ = self
+            .shared
+            .group
+            .mark_fd(fan::FAN_MARK_REMOVE, events, file.as_fd());
         Ok(())
     }
 
