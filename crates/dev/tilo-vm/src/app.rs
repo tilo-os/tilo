@@ -18,7 +18,9 @@ use tilo_vm_protocol::{
 
 use crate::build;
 use crate::ci;
-use crate::cli::{Builder, Command, CreateArgs, InputCommand, SeatCommand, SlotCommand, VmCommand};
+use crate::cli::{
+    Builder, Command, CreateArgs, InputCommand, SeatCommand, SlotCommand, UpgradeArgs, VmCommand,
+};
 use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
 use crate::disk;
@@ -29,6 +31,7 @@ use crate::host::{self, HostFacts};
 use crate::hypervisor::{
     self, CommandLine, Hypervisor, Runner, SshEndpoint, SystemRunner, Vm, run_all,
 };
+use crate::imageup;
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
 use crate::sshkey;
@@ -829,8 +832,9 @@ impl App {
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
-            VmCommand::Upgrade { name, image } => {
-                self.vm_upgrade(name.as_deref(), image.as_deref())
+            VmCommand::Upgrade(args) => self.vm_upgrade(&args),
+            VmCommand::RollbackImage { name, no_reboot } => {
+                self.vm_rollback_image(name.as_deref(), no_reboot)
             }
             VmCommand::Serial { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
@@ -1490,47 +1494,560 @@ impl App {
         .next(&["tilo-vm status", "tilo-vm slot create --headless"]))
     }
 
-    fn vm_upgrade(&mut self, name: Option<&str>, image: Option<&str>) -> Result<Outcome, CliError> {
-        let vm = self.resolve_vm(name)?;
-        registry_login(&mut self.runner)?;
+    /// Run one shell line in the VM as root, capturing its output.
+    fn vm_sh(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        script: &str,
+    ) -> Result<hypervisor::Output, CliError> {
+        let line = remote::ssh_command(
+            endpoint,
+            vm.entry.key.as_deref(),
+            &[script.to_owned()],
+            false,
+        );
+        self.runner.output(&line)
+    }
+
+    /// Boot id, base.json, free space and bootc status, in one round trip.
+    fn vm_facts(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+    ) -> Result<imageup::VmFacts, CliError> {
+        let output = self.vm_sh(vm, endpoint, &imageup::vm_facts_script())?;
+        if !output.stdout.contains("@@base") {
+            let adapter = Self::adapter(vm)?;
+            let error = CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: output.stderr.trim().to_owned(),
+                debug: Self::debug_commands(adapter.as_ref(), &vm.name),
+            };
+            return Err(key_refusal(vm, adapter.as_ref(), endpoint, error));
+        }
+        imageup::parse_vm_facts(&output.stdout).map_err(|detail| CliError::CommandFailed {
+            command: "bootc status --json".into(),
+            status: format!("VM {} did not report a bootc status ({detail})", vm.name),
+            stderr: output.stderr.trim().to_owned(),
+        })
+    }
+
+    fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(args.name.as_deref())?;
         let adapter = Self::adapter(&vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-        // Under the VM lock, so no swap or gc runs while the image changes.
-        let mut command: Vec<String> = [
-            "flock",
-            "--nonblock",
-            "/var/lib/tilo-vm/locks/vm.lock",
-            "bootc",
-        ]
-        .map(str::to_owned)
-        .to_vec();
-        match image {
-            Some(image) => command.extend(["switch".into(), image.to_owned()]),
-            None => command.push("upgrade".into()),
-        }
-        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
-        let output = self.runner.output(&line)?;
-        if !output.success && is_auth_failure(&output.stderr) {
-            return Err(CliError::RegistryLogin {
-                place: format!("VM {}", vm.name),
-                registry: REGISTRY.into(),
+        let Some(from) = args.from.as_deref() else {
+            return self.vm_upgrade_registry(&vm, &endpoint, args);
+        };
+        let (image, build) = imageup::parse_from(from)?;
+        if !build && (args.base.is_some() || args.rebuild_base) {
+            return Err(CliError::Unsupported {
+                what: "--base or --rebuild-base with --from local:<image>".into(),
+                alternative: "those choose how --from local builds; an image you name is used as it is: tilo-vm vm upgrade --from local --rebuild-base".into(),
             });
         }
+        self.receipt.set("image", &image);
+        if !imageup::is_dev_name(&image) {
+            // Refused by name alone, before anything is built or inspected.
+            imageup::check_image(&image, &imageup::ImageFacts::default())?;
+        }
+        // Fail on an unreachable or non-bootc VM before a long build.
+        self.vm_facts(&vm, &endpoint)?;
+        if build {
+            self.build_dev_image(&image, args.base.as_deref(), args.rebuild_base)?;
+        }
+        let runner = &mut self.runner;
+        let image_facts = self
+            .receipt
+            .phase("check", || local_image_facts(runner, &image))?;
+        imageup::check_image(&image, &image_facts)?;
+        let facts = self.vm_facts(&vm, &endpoint)?;
+        match imageup::check_base_age(&image, facts.base.as_ref(), image_facts.base.as_ref()) {
+            Err(error) if !args.allow_older_base => return Err(error),
+            Err(error) => self
+                .warnings
+                .push(format!("{error}; going ahead (--allow-older-base)")),
+            Ok(Some(note)) => self.warnings.push(note),
+            Ok(None) => {}
+        }
+        let floor = self.registry()?.min_free_bytes();
+        if let Some(free) = facts.free_bytes
+            && free < floor
+        {
+            return Err(CliError::LowDisk {
+                place: format!("VM {}", vm.name),
+                free: human_bytes(free),
+                floor: human_bytes(floor),
+            });
+        }
+        let layout = imageup::host_layout(&vm.name);
+        let runner = &mut self.runner;
+        let digest = self
+            .receipt
+            .phase("export", || export_layout(runner, &image, &layout))?;
+        self.receipt.set("digest", &digest);
+        let layout_bytes = imageup::layout_bytes(&layout);
+        if facts.bootc.staged.is_none()
+            && facts
+                .bootc
+                .booted
+                .as_ref()
+                .is_some_and(|b| b.digest == digest)
+        {
+            return Ok(Outcome::new(
+                format!(
+                    "VM {} already runs {image} ({}); nothing to do\n  {}",
+                    vm.name,
+                    imageup::short_digest(&digest),
+                    self.receipt.summary()
+                ),
+                json!({ "vm": vm.name, "image": image, "digest": digest, "changed": false }),
+            )
+            .next(&["tilo-vm status"]));
+        }
+        let transferred = self.send_layout(&vm, &endpoint, &layout)?;
+        self.receipt.set("transferred_bytes", transferred);
+        self.receipt.set("image_bytes", layout_bytes);
+        if !self.json {
+            eprintln!(
+                "tilo-vm: sent {} of the image's {} to VM {} ({})",
+                transferred.map_or_else(|| "?".into(), human_bytes),
+                human_bytes(layout_bytes),
+                vm.name,
+                imageup::VM_LAYOUT
+            );
+        }
+        let stage = Stage {
+            transport: "oci",
+            imgref: imageup::layout_imgref(),
+            expected: Some(digest),
+            no_reboot: args.no_reboot,
+        };
+        self.stage_and_boot(&vm, &endpoint, &facts, &stage)
+    }
+
+    /// `vm upgrade` and `vm upgrade --image`: bootc pulls from a registry.
+    fn vm_upgrade_registry(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+    ) -> Result<Outcome, CliError> {
+        if let Some(image) = &args.image
+            && !imageup::is_dev_name(image)
+        {
+            imageup::check_image(image, &imageup::ImageFacts::default())?;
+        }
+        let facts = self.vm_facts(vm, endpoint)?;
+        let (transport, imgref) = match &args.image {
+            Some(image) => ("registry", image.clone()),
+            None => match facts.bootc.spec.clone() {
+                Some((image, transport)) if transport == "oci" => ("oci", image),
+                Some((image, _)) => ("registry", image),
+                None => ("registry", String::new()),
+            },
+        };
+        if transport == "registry" && imgref.starts_with(REGISTRY) {
+            registry_login(&mut self.runner)?;
+        }
+        self.receipt.set("image", &imgref);
+        let stage = Stage {
+            transport,
+            imgref,
+            expected: None,
+            no_reboot: args.no_reboot,
+        };
+        self.stage_and_boot(vm, endpoint, &facts, &stage)
+    }
+
+    /// rsync the layout into the VM; the bytes that crossed, when rsync says.
+    fn send_layout(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        layout: &Path,
+    ) -> Result<Option<u64>, CliError> {
+        if !on_path("rsync") {
+            return Err(CliError::ToolMissing {
+                tool: "rsync".into(),
+                purpose: "send the image's new layers to the VM".into(),
+            });
+        }
+        let rsync = imageup::rsync_command(layout, endpoint, vm.entry.key.as_deref());
+        let runner = &mut self.runner;
+        let sent = self.receipt.phase("transfer", || runner.output(&rsync))?;
+        if sent.success {
+            return Ok(imageup::rsync_sent_bytes(&sent.stdout));
+        }
+        // The remote side runs under flock; rsync reports a held lock only as
+        // a closed connection, so say what it most likely was.
+        let mut stderr = sent.stderr.trim().to_owned();
+        if stderr.contains("connection unexpectedly closed") {
+            stderr.push_str(
+                " (another vm upgrade of this VM may hold /var/lib/tilo-vm/locks/image.lock)",
+            );
+        }
+        Err(CliError::CommandFailed {
+            command: rsync.display(),
+            status: sent.status,
+            stderr,
+        })
+    }
+
+    /// `--from local`: the dev image build, which skips every cached step.
+    fn build_dev_image(
+        &mut self,
+        image: &str,
+        base: Option<&str>,
+        rebuild_base: bool,
+    ) -> Result<(), CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        let script = worktree.root.join(imageup::BUILD_SCRIPT);
+        if !script.is_file() {
+            return Err(CliError::Unsupported {
+                what: format!("--from local without {}", imageup::BUILD_SCRIPT),
+                alternative: "run from a Tilo worktree, or name an image already built: tilo-vm vm upgrade --from local:localhost/tilo-vm:<tag>".into(),
+            });
+        }
+        let base_build = if rebuild_base {
+            "1"
+        } else if base.is_some() {
+            "0"
+        } else {
+            "auto"
+        };
+        let mut command = CommandLine::new(&script.display().to_string(), &[])
+            .env("TILO_DEV_DISK", "0")
+            .env("TILO_DEV_IMAGE", image)
+            .env("TILO_DEV_BASE_BUILD", base_build);
+        if let Some(base) = base {
+            command = command.env("TILO_DEV_BASE", base);
+        }
+        eprintln!(
+            "tilo-vm: building {image} FROM {} ({}); podman's layer cache skips unchanged steps",
+            base.unwrap_or(imageup::LOCAL_BASE),
+            match base_build {
+                "1" => "rebuilding the base first",
+                "0" => "the base as it is",
+                _ => "the base is rebuilt only if its inputs changed",
+            }
+        );
+        self.runner.cwd = Some(worktree.root);
+        let runner = &mut self.runner;
+        let built = self
+            .receipt
+            .phase("image-build", || runner.interactive(&command))?;
+        if built {
+            Ok(())
+        } else {
+            Err(CliError::CommandFailed {
+                command: command.display(),
+                status: "build failed".into(),
+                stderr: "the build output above names the cause".into(),
+            })
+        }
+    }
+
+    /// Run `words` under the VM lock; exit 75 means another command holds it.
+    fn vm_locked(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        words: &[String],
+    ) -> Result<hypervisor::Output, CliError> {
+        let script = imageup::under_vm_lock(words);
+        let runner = &mut self.runner;
+        let output = self.receipt.phase("stage", || {
+            runner.output(&remote::ssh_command(
+                endpoint,
+                vm.entry.key.as_deref(),
+                &[script],
+                false,
+            ))
+        })?;
+        if !output.success && output.status.contains("75") {
+            return Err(CliError::Busy {
+                what: format!("VM {}", vm.name),
+            });
+        }
+        Ok(output)
+    }
+
+    /// Stage an image with bootc under the VM lock, reboot into it, wait for
+    /// SSH and tilo-vmd, and check the VM booted what was staged.
+    fn stage_and_boot(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        facts: &imageup::VmFacts,
+        stage: &Stage,
+    ) -> Result<Outcome, CliError> {
+        // The image is the VM's rollback deployment already (after rollback-image):
+        // bootc will not stage it again, but rolling back boots exactly it.
+        let reuse = facts.bootc.staged.is_none()
+            && stage.expected.is_some()
+            && facts.bootc.rollback.as_ref().map(|r| &r.digest) == stage.expected.as_ref();
+        let words = if reuse {
+            vec!["bootc".to_owned(), "rollback".to_owned()]
+        } else {
+            imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
+        };
+        let staged = self.vm_locked(vm, endpoint, &words)?;
+        if !staged.success {
+            if stage.transport == "registry" && is_auth_failure(&staged.stderr) {
+                return Err(CliError::RegistryLogin {
+                    place: format!("VM {}", vm.name),
+                    registry: REGISTRY.into(),
+                });
+            }
+            return Err(CliError::CommandFailed {
+                command: words.join(" "),
+                status: staged.status,
+                stderr: staged.stderr.trim().to_owned(),
+            });
+        }
+        let status = self.bootc_status(vm, endpoint)?;
+        let previous = status.booted;
+        let previous_text = previous
+            .as_ref()
+            .map_or_else(|| "(unknown)".into(), imageup::Deployment::describe);
+        let queued = if reuse {
+            facts.bootc.rollback.clone()
+        } else {
+            None
+        };
+        let Some(next) = status.staged.or(queued) else {
+            if stage.expected.is_none()
+                || previous.as_ref().map(|b| &b.digest) == stage.expected.as_ref()
+            {
+                return Ok(Outcome::new(
+                    format!(
+                        "VM {} already runs the newest {previous_text}; nothing to do",
+                        vm.name
+                    ),
+                    json!({ "vm": vm.name, "changed": false, "booted": previous.map(|p| p.digest) }),
+                )
+                .next(&["tilo-vm status"]));
+            }
+            return Err(CliError::CommandFailed {
+                command: words.join(" "),
+                status: "staged nothing".into(),
+                stderr: format!(
+                    "bootc reported no staged deployment; the VM still runs {previous_text}"
+                ),
+            });
+        };
+        if let Some(want) = &stage.expected
+            && &next.digest != want
+        {
+            return Err(CliError::CommandFailed {
+                command: words.join(" "),
+                status: "staged another image".into(),
+                stderr: format!("expected {want}, bootc staged {}", next.digest),
+            });
+        }
+        self.keep_esp_writable(vm, endpoint)?;
+        if stage.no_reboot {
+            return Ok(Outcome::new(
+                format!(
+                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  {}",
+                    next.describe(),
+                    vm.name,
+                    self.receipt.summary()
+                ),
+                json!({ "vm": vm.name, "changed": true, "staged": next.digest, "booted": previous.map(|p| p.digest) }),
+            )
+            .next(&["tilo-vm vm stop", "tilo-vm vm start"]));
+        }
+        let booted = self.reboot_into(vm, endpoint, &facts.boot_id, &next.digest)?;
+        self.warnings.extend(self.receipt.slow());
+        Ok(Outcome::new(
+            format!(
+                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  slots and layers are unchanged (they live in /var)\n  {}",
+                vm.name,
+                booted.describe(),
+                self.receipt.summary()
+            ),
+            json!({
+                "vm": vm.name,
+                "changed": true,
+                "image": stage.imgref,
+                "transport": stage.transport,
+                "digest": booted.digest,
+                "previous": previous.map(|p| p.digest),
+            }),
+        )
+        .next(&["tilo-vm status", "tilo-vm vm rollback-image"]))
+    }
+
+    /// So the shutdown can apply the staged deployment (see
+    /// `imageup::ESP_WRITABLE_UNTIL_BOOT`).
+    fn keep_esp_writable(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Result<(), CliError> {
+        let writable = self.vm_sh(vm, endpoint, imageup::ESP_WRITABLE_UNTIL_BOOT)?;
+        if !writable.success {
+            self.warnings.push(format!(
+                "could not make /boot writable in VM {} ({}); bootc may fail to apply the new image at shutdown",
+                vm.name,
+                writable.stderr.trim()
+            ));
+        }
+        Ok(())
+    }
+
+    fn bootc_status(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+    ) -> Result<imageup::BootcStatus, CliError> {
+        let output = self.vm_sh(vm, endpoint, &imageup::bootc_line(&["status", "--json"]))?;
+        imageup::parse_bootc_status(&output.stdout).map_err(|detail| CliError::CommandFailed {
+            command: "bootc status --json".into(),
+            status: output.status,
+            stderr: format!("{detail}; {}", output.stderr.trim()),
+        })
+    }
+
+    /// Reboot, wait for a new boot id over SSH, then for tilo-vmd, and check
+    /// that the booted image has `digest`.
+    fn reboot_into(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        old_boot: &str,
+        digest: &str,
+    ) -> Result<imageup::Deployment, CliError> {
+        if !self.json {
+            eprintln!(
+                "tilo-vm: rebooting VM {} into {}",
+                vm.name,
+                imageup::short_digest(digest)
+            );
+        }
+        // The connection drops as the VM goes down; its exit status says nothing.
+        let reboot = format!("{}; systemctl reboot", imageup::ESP_WRITABLE_UNTIL_BOOT);
+        let _ = self.vm_sh(vm, endpoint, &reboot);
+        let started = Instant::now();
+        let mut up = false;
+        while started.elapsed() < Duration::from_secs(600) {
+            std::thread::sleep(Duration::from_secs(2));
+            if let Ok(output) = self.vm_sh(vm, endpoint, "cat /proc/sys/kernel/random/boot_id")
+                && output.success
+                && !output.stdout.trim().is_empty()
+                && output.stdout.trim() != old_boot
+            {
+                up = true;
+                break;
+            }
+        }
+        self.receipt
+            .record("reboot", started.elapsed().as_secs_f64());
+        if !up {
+            let adapter = Self::adapter(vm)?;
+            return Err(CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into(),
+                debug: Self::debug_commands(adapter.as_ref(), &vm.name),
+            });
+        }
+        let started = Instant::now();
+        let mut daemon = None;
+        let mut missing = false;
+        while started.elapsed() < Duration::from_secs(60) {
+            match self.connect(vm) {
+                Ok(remote) => {
+                    daemon = Some(remote.hello.daemon_version.clone());
+                    break;
+                }
+                Err(CliError::DaemonMissing { .. }) => {
+                    missing = true;
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_secs(1)),
+            }
+        }
+        self.receipt
+            .record("ready", started.elapsed().as_secs_f64());
+        if missing {
+            self.warnings.push(format!(
+                "the new image has no tilo-vmd, so VM {} cannot host slots; tilo-vm vm rollback-image",
+                vm.name
+            ));
+        } else if daemon.is_none() {
+            self.warnings
+                .push("tilo-vmd did not answer within 60s of SSH; tilo-vm vm status".into());
+        }
+        self.receipt.set("daemon", &daemon);
+        let status = self.bootc_status(vm, endpoint)?;
+        let booted = status.booted.ok_or_else(|| CliError::CommandFailed {
+            command: "bootc status --json".into(),
+            status: "no booted deployment".into(),
+            stderr: String::new(),
+        })?;
+        if booted.digest != digest {
+            return Err(CliError::CommandFailed {
+                command: "bootc status --json".into(),
+                status: "booted another image".into(),
+                stderr: format!(
+                    "the VM booted {} instead of {digest}: the boot entry fell back; tilo-vm vm serial shows why",
+                    booted.describe()
+                ),
+            });
+        }
+        Ok(booted)
+    }
+
+    fn vm_rollback_image(
+        &mut self,
+        name: Option<&str>,
+        no_reboot: bool,
+    ) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(name)?;
+        let adapter = Self::adapter(&vm)?;
+        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let facts = self.vm_facts(&vm, &endpoint)?;
+        let Some(target) = facts.bootc.rollback.clone() else {
+            return Err(CliError::Unsupported {
+                what: format!("rolling back VM {}: it has no previous image", vm.name),
+                alternative: "bootc keeps one previous image, the one before the last upgrade, and there is none yet; tilo-vm vm upgrade makes one".into(),
+            });
+        };
+        let words = ["bootc".to_owned(), "rollback".to_owned()];
+        let output = self.vm_locked(&vm, &endpoint, &words)?;
         if !output.success {
             return Err(CliError::CommandFailed {
-                command: command.join(" "),
+                command: words.join(" "),
                 status: output.status,
                 stderr: output.stderr.trim().to_owned(),
             });
         }
+        let current = facts
+            .bootc
+            .booted
+            .as_ref()
+            .map_or_else(|| "(unknown)".into(), imageup::Deployment::describe);
+        if no_reboot {
+            return Ok(Outcome::new(
+                format!(
+                    "VM {} boots {} at its next restart (now running {current})",
+                    vm.name,
+                    target.describe()
+                ),
+                json!({ "vm": vm.name, "next": target.digest }),
+            )
+            .next(&["tilo-vm vm stop", "tilo-vm vm start"]));
+        }
+        let booted = self.reboot_into(&vm, &endpoint, &facts.boot_id, &target.digest)?;
         Ok(Outcome::new(
             format!(
-                "new image staged on {}; it takes effect at the next boot (slots survive in /var)",
-                vm.name
+                "VM {} rolled back to {}\n  {current} is now the previous image: rollback-image again returns to it\n  {}",
+                vm.name,
+                booted.describe(),
+                self.receipt.summary()
             ),
-            json!({ "vm": vm.name, "image": image, "output": output.stdout }),
+            json!({ "vm": vm.name, "digest": booted.digest, "previous": facts.bootc.booted.map(|b| b.digest) }),
         )
-        .next(&["tilo-vm vm stop", "tilo-vm vm start"]))
+        .next(&["tilo-vm status"]))
     }
 
     // ---- slots ----------------------------------------------------------------
@@ -2287,6 +2804,90 @@ impl App {
         }
         Ok(outcome)
     }
+}
+
+/// How `stage_and_boot` stages: bootc's transport and reference, and the
+/// manifest digest it must stage when that is known in advance.
+struct Stage {
+    transport: &'static str,
+    imgref: String,
+    expected: Option<String>,
+    no_reboot: bool,
+}
+
+/// `podman image inspect` plus a look inside: the facts `check_image` judges.
+fn local_image_facts(
+    runner: &mut SystemRunner,
+    image: &str,
+) -> Result<imageup::ImageFacts, CliError> {
+    let inspect = runner.output(&imageup::inspect_command(image))?;
+    if !inspect.success {
+        return Err(CliError::ImageRefused {
+            image: image.to_owned(),
+            problem: "is not in this host's podman storage".into(),
+            fix: "build it: tilo-vm vm upgrade --from local   |   or see what is there: podman images"
+                .into(),
+        });
+    }
+    let (id, flavour) =
+        imageup::parse_inspect(&inspect.stdout).map_err(|detail| CliError::CommandFailed {
+            command: imageup::inspect_command(image).display(),
+            status: "unreadable output".into(),
+            stderr: detail,
+        })?;
+    let mut facts = imageup::ImageFacts {
+        id,
+        flavour,
+        ..imageup::ImageFacts::default()
+    };
+    if facts.flavour.as_deref() == Some("dev") {
+        let probe = imageup::probe_command(&facts.id);
+        let output = runner.output(&probe)?;
+        if !output.success {
+            return Err(CliError::CommandFailed {
+                command: probe.display(),
+                status: output.status,
+                stderr: output.stderr.trim().to_owned(),
+            });
+        }
+        imageup::parse_probe(&output.stdout, &mut facts);
+    }
+    Ok(facts)
+}
+
+/// Write `image` into the VM's host-side OCI layout and drop what it no
+/// longer references; returns the manifest digest bootc will report.
+fn export_layout(
+    runner: &mut SystemRunner,
+    image: &str,
+    layout: &Path,
+) -> Result<String, CliError> {
+    if let Some(parent) = layout.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(CliError::io(format!("create {}", parent.display())))?;
+    }
+    let digest_file = layout.with_extension("digest");
+    let export = imageup::export_command(image, layout, &digest_file);
+    let output = runner.output(&export).map_err(|error| match error {
+        CliError::ToolMissing { .. } => CliError::ToolMissing {
+            tool: "skopeo".into(),
+            purpose: "copy the image's layers out of podman's storage".into(),
+        },
+        other => other,
+    })?;
+    if !output.success {
+        return Err(CliError::CommandFailed {
+            command: export.display(),
+            status: output.status,
+            stderr: output.stderr.trim().to_owned(),
+        });
+    }
+    let digest = std::fs::read_to_string(&digest_file)
+        .map_err(CliError::io(format!("read {}", digest_file.display())))?
+        .trim()
+        .to_owned();
+    imageup::prune_layout(layout).map_err(CliError::io(format!("prune {}", layout.display())))?;
+    Ok(digest)
 }
 
 /// SSH answered but refused the VM's recorded key: name the one-time step

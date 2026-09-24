@@ -171,6 +171,21 @@ pub enum CliError {
         running: String,
         detail: String,
     },
+    #[error("{image} {problem}")]
+    ImageRefused {
+        image: String,
+        problem: String,
+        fix: String,
+    },
+    #[error(
+        "{image} is built FROM {base}, created {new}, which is older than the base of the image the VM runs (created {running})"
+    )]
+    BaseOlder {
+        image: String,
+        base: String,
+        new: String,
+        running: String,
+    },
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -325,6 +340,10 @@ impl CliError {
             Self::KernelNotRunning { vm, .. } => format!(
                 "the VM fell back to its default boot entry. Watch the new kernel boot on the console: tilo-vm vm serial {vm}   (tilo-vm vm shot {vm} for the screen); fix it and swap again, or go back: tilo-vm rollback --slot vm"
             ),
+            Self::ImageRefused { fix, .. } => fix.clone(),
+            Self::BaseOlder { .. } => {
+                "rebuild the base from this worktree: tilo-vm vm upgrade --from local --rebuild-base   |   or rebase onto a newer commit   |   or, to go back on purpose: add --allow-older-base".into()
+            }
             Self::Io { .. } => "check the path and permissions named above; tilo-vm doctor checks the setup".into(),
         }
     }
@@ -356,6 +375,7 @@ impl CliError {
             | Self::UnknownApp { .. }
             | Self::MissingInImage { .. } => "swapping",
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
+            Self::ImageRefused { .. } | Self::BaseOlder { .. } => "images",
             Self::InvalidInput(_) => "driving",
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::Unreachable { .. }
@@ -598,6 +618,17 @@ mod tests {
                 what: "the VM".into(),
             },
             CliError::InvalidInput("bad".into()),
+            CliError::ImageRefused {
+                image: "localhost/tilo:latest".into(),
+                problem: "is not a dev image".into(),
+                fix: "tilo-vm vm upgrade --from local".into(),
+            },
+            CliError::BaseOlder {
+                image: "localhost/tilo-vm:latest".into(),
+                base: "localhost/tilo:latest".into(),
+                new: "2026-09-01T00:00:00+00:00".into(),
+                running: "2026-09-20T00:00:00+00:00".into(),
+            },
             CliError::Io {
                 context: "c".into(),
                 source: std::io::Error::other("e"),
@@ -623,6 +654,8 @@ mod tests {
                 | CliError::MissingInImage { .. }
                 | CliError::Busy { .. }
                 | CliError::InvalidInput(_)
+                | CliError::ImageRefused { .. }
+                | CliError::BaseOlder { .. }
                 | CliError::UnknownVm { .. }
                 | CliError::Config { .. }
                 | CliError::NotInWorktree
@@ -659,9 +692,11 @@ mod tests {
             assert!(json["hint"].as_str().is_some_and(|h| !h.is_empty()));
             assert!(error.render().contains("\nhint: "));
             if !matches!(error, CliError::Remote(_)) {
+                let see = error.see().unwrap_or_default();
+                let topic = see.strip_prefix("tilo-vm guide ");
                 assert!(
-                    error.see().is_some_and(|s| s.starts_with("tilo-vm guide ")),
-                    "{error:?} has no see: pointer"
+                    topic.is_some_and(|t| crate::guide::topic(t).is_some()),
+                    "{error:?} has no see: pointer to an existing guide topic ({see})"
                 );
             }
         }

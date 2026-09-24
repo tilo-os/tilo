@@ -3013,7 +3013,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // `set_selection` from the connection that owns the focused surface.
         #[cfg(target_os = "linux")]
         {
-            crate::clipboard::install_wayland_backend_from_display(event_loop);
+            crate::host::native::attach_display(event_loop);
         }
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.

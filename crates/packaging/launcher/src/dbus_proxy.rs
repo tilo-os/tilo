@@ -49,18 +49,22 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
 /// test suite (mock fixture) and installs that ship the binary
 /// somewhere non-standard.
-pub const PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
+///
+/// Honoured only by developer builds (see [`crate::dev_env`]): the proxy is
+/// what stands between an app and the unfiltered session bus.
+pub const PROXY_BIN_ENV: &str = crate::dev_env::DBUS_PROXY_BIN_ENV;
 
 /// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches. Production
 /// then leaves D-Bus unavailable; it never falls back to binding the raw
 /// session bus into an untrusted sandbox.
 ///
-/// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override),
+/// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override, developer
+/// builds only),
 /// `xdg-dbus-proxy` on `$PATH`,
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
 pub fn find_proxy_binary() -> Option<PathBuf> {
-    if let Some(bin) = std::env::var_os(PROXY_BIN_ENV) {
+    if let Some(bin) = crate::dev_env::dev_override(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
         return p.is_file().then_some(p);
     }

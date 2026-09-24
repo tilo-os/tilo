@@ -32,3 +32,9 @@ keep_targets = 2
 Downloaded dev disks are cached in the platform cache dir
 (`~/.cache/tilo-vm/disks/` on Linux). A VM's disk is a copy-on-write child
 of its cached disk, so keep that file while the VM exists.
+
+`tilo-vm vm upgrade --from local` keeps one uncompressed copy of the VM's image
+on the host (`~/.cache/tilo-vm/images/<vm>/`) and one in the VM
+(`/var/lib/tilo-vm/image`), so the next upgrade sends only new layers. Either
+can be deleted; the next upgrade then sends the whole image once
+(`tilo-vm guide images`).

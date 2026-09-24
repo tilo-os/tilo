@@ -100,8 +100,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
 # Cache mounts follow the production builder: cargo home and sccache under
-# /build, the target dir cleaned before fingerprinting. The target cache has its
-# own id, since a feature change rebuilds the same crates differently.
+# /build. The target cache has its own id, since a feature change rebuilds the
+# same crates differently. TILO_CARGO_FRESHNESS=clean (the default, and CI's)
+# cleans it before every compile and empties it after, as the production builder
+# does; `content` (local builds, os/dev/build-dev-image.sh) keeps it and lets
+# os/scripts/cargo-freshness.sh mark exactly the changed sources newer, so an
+# unchanged crate is neither recompiled nor relinked.
 FROM dev-toolchain AS dev-builder
 WORKDIR /build
 ENV CARGO_HOME=/build/.cargo-home \
@@ -110,9 +114,23 @@ ENV CARGO_HOME=/build/.cargo-home \
     CARGO_INCREMENTAL=0 \
     LC_ALL=C.UTF-8 \
     TZ=UTC
-COPY . /build
+# Only what cargo and the install manifest read, never the whole context: with
+# `COPY . /build`, editing a unit, an /etc file or os/dev-image/ re-ran this
+# stage's compile, although no binary depends on them. The two os/ files are the
+# manifest pair and the one data file a workspace crate includes.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
+COPY .cargo /build/.cargo
+COPY crates /build/crates
+COPY apps /build/apps
+COPY examples /build/examples
+COPY vendor /build/vendor
+COPY dist /build/dist
+COPY os/components.toml /build/os/components.toml
+COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
+COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 ARG TILO_CARGO_BUILD_JOBS=4
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
+ARG TILO_CARGO_FRESHNESS=clean
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,id=tilo-dev-image-target,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
@@ -121,7 +139,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          export RUSTC_WRAPPER=; \
          printf '%s\n' 'sccache unavailable; compiling normally' >&2; \
        fi \
-    && cargo clean --release \
+    && case "$TILO_CARGO_FRESHNESS" in \
+         clean) cargo clean --release ;; \
+         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+                    || cargo clean --release ;; \
+         *) printf 'TILO_CARGO_FRESHNESS must be clean or content\n' >&2; exit 1 ;; \
+       esac \
+    && started=$(date +%s) \
     && DEV_CARGO_ARGS="$(python3 os/scripts/install-components.py --dev --dry-run --format cargo)" \
     && DEV_BINS="$(python3 os/scripts/install-components.py --dev --dry-run --format bins)" \
     && [ -n "$DEV_CARGO_ARGS" ] && [ -n "$DEV_BINS" ] \
@@ -129,9 +153,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
        cargo build --release ${DEV_CARGO_ARGS} \
+    && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
     && mkdir -p /out \
     && for b in ${DEV_BINS}; do cp "target/release/$b" /out/; done \
-    && find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
+         find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
+       fi
 RUN /build/os/scripts/verify-elf-hardening.sh /out \
     && pinned="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)" \
     && actual="$(rustc --version | awk '{print $2}')" \
@@ -154,6 +181,7 @@ COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
 COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
 COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
 COPY os/dev-image/ /
 
@@ -161,11 +189,13 @@ COPY os/dev-image/ /
 # flavour marker; then proof that every piece above is really in place.
 ARG BASE_IMAGE
 ARG TILO_BASE_DIGEST=
+ARG TILO_BASE_CREATED=
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/finalize-dev-image.py \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
+      --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
-    && systemctl enable sshd.service systemd-sysext.service \
+    && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
