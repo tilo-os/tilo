@@ -406,9 +406,10 @@ jobs:
       # rebuilds the kernels against it, and that kernel pin merges too.
       - name: Propose the frozen snapshot pin through protected main
         env:
-          # The CI account opens the PR so the PR's own required checks run;
-          # the automatic job token is refused pull-request creation.
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          # The checkout's REGISTRY_TOKEN pushes the branch, but Forgejo answers
+          # its pull-request API calls with 404. RELEASE_TOKEN has repository
+          # scope; a PR it opens also triggers its own required checks.
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           ref="$(cat rpms-index.txt)"
