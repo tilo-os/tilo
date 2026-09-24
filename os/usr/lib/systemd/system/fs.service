@@ -93,7 +93,13 @@ KeyringMode=private
 # CAP_SYS_ADMIN: the FUSE mount, or on Tier 1 the fanotify filesystem mark,
 # pre-content group, Btrfs snapshots and the bind mount. CAP_DAC_READ_SEARCH:
 # open_by_handle_at, which turns fanotify's directory handles into paths.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+# CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE: on Tier 1 the room and every file
+# in it belong to the local person, not to the daemon, yet the daemon creates
+# remote files there and hands them to that person (chown), fills
+# placeholders and restores their mtime and residency xattr (owner-only
+# operations), and writes into directories the person owns. FUSE never needed
+# them because it presents ownership instead of storing it.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/fuse rw
