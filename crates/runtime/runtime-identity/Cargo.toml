@@ -51,6 +51,7 @@ tempfile.workspace = true
 # ceremony, so the loader rejects those records.
 sha2.workspace = true
 serial_test.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
