@@ -1,57 +1,42 @@
 //! Device location via the **XDG Desktop Portal**
-//! (`org.freedesktop.portal.Location`, through the [`ashpd`] crate).
+//! (`org.freedesktop.portal.Location`, through the [`ashpd`] crate) — the
+//! native [`crate::host::LocationProvider`], with the `portal` feature.
 //!
-//! Per the Tilo HIG (§5 system integration) an app prefers host/portal services
-//! over reinventing them: the *host desktop* (`GeoClue2` behind the portal on
-//! GNOME; the compositor's portal backend on Tilo) provides the fix and mediates
-//! the permission prompt — the portal is the security boundary. This module
-//! never fabricates a position: if the portal is missing, permission is denied,
-//! or no fix arrives in time, it returns an honest [`LocationOutcome::Unavailable`].
+//! The *host desktop* (`GeoClue2` behind the portal on GNOME; the compositor's
+//! portal backend on Tilo) provides the fix and mediates the permission prompt
+//! — the portal is the security boundary. This module never fabricates a
+//! position: if the portal is missing, permission is denied, or no fix arrives
+//! in time, it returns an honest [`LocationOutcome::Unavailable`].
 //!
 //! The portal call is asynchronous and mediated by a host permission prompt, so
-//! it must **never** run on the UI thread (HIG §6). [`request_location`] spawns
-//! a worker thread with its own small Tokio runtime, runs the D-Bus round-trip
-//! there, and hands the outcome back over an [`std::sync::mpsc`] channel. The
-//! app drains that channel once per frame; the UI thread never blocks.
-//!
-//! Because a real GPS/GeoClue fix depends on the host's location service and the
-//! user's permission, the coordinates cannot be verified headlessly. The result
-//! *handling* (setting the origin, re-routing, the honest failure states) is
-//! unit-tested via [`inject_for_test`], which feeds the exact per-frame drain
-//! path without touching D-Bus.
+//! it must **never** run on the UI thread. [`DesktopLocation`] spawns a worker
+//! thread with its own small Tokio runtime, runs the D-Bus round-trip there,
+//! and hands the outcome back over an [`std::sync::mpsc`] channel.
 
-use std::sync::mpsc::Receiver;
+#[cfg(all(feature = "portal", unix))]
 use std::time::Duration;
 
-/// The result of a location-portal interaction, delivered back to the UI thread
-/// over a channel.
-#[derive(Clone, Debug)]
-pub enum LocationOutcome {
-    /// A real fix from the host location service.
-    Located {
-        lat: f64,
-        lon: f64,
-        /// Reported horizontal accuracy in metres (0 when unknown).
-        accuracy_m: f64,
-    },
-    /// No position could be obtained: the portal was missing, the user denied
-    /// permission, or no fix arrived. Carries a human-readable reason so the UI
-    /// can say *why* rather than inventing a location.
-    Unavailable(String),
-}
+use crate::location::{LocationChannel, LocationOutcome};
 
-/// A pending location request: the receiver the UI thread drains each frame.
-pub type LocationChannel = Receiver<LocationOutcome>;
+/// The native location provider.
+pub struct DesktopLocation;
+
+impl crate::host::LocationProvider for DesktopLocation {
+    fn locate(&self) -> LocationChannel {
+        request_location()
+    }
+}
 
 /// How long to wait for the first location update before giving up. `GeoClue` can
 /// take a few seconds to acquire a fix; beyond this we report it unavailable
 /// rather than hanging the "Locating…" state forever.
+#[cfg(all(feature = "portal", unix))]
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Spawn the location request on a worker thread and return the receiver the
 /// caller drains each frame. The UI thread is never blocked: the D-Bus
 /// round-trip and the host permission prompt live entirely on the worker.
-pub fn request_location() -> LocationChannel {
+fn request_location() -> LocationChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     // A clone survives a failed spawn (the closure below, and the original
     // `tx` it owns, never runs in that case) so the honest Unavailable below
@@ -77,6 +62,7 @@ pub fn request_location() -> LocationChannel {
 
 /// Run the location session to completion on a private Tokio runtime. Blocking —
 /// only ever called on the worker thread from [`request_location`].
+#[cfg(all(feature = "portal", unix))]
 fn run_location_blocking() -> LocationOutcome {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -88,6 +74,7 @@ fn run_location_blocking() -> LocationOutcome {
 /// The async portal interaction: open the Location proxy, create a session,
 /// start it (which triggers the host permission prompt), and wait for the first
 /// `LocationUpdated` signal — all under a timeout.
+#[cfg(all(feature = "portal", unix))]
 async fn location_future() -> LocationOutcome {
     use ashpd::WindowIdentifier;
     use ashpd::desktop::location::{Accuracy, LocationProxy};
@@ -140,6 +127,7 @@ async fn location_future() -> LocationOutcome {
 
 /// Map a portal error to an honest, user-facing reason. A `Response` error is
 /// how the portal surfaces a denied/cancelled permission prompt.
+#[cfg(all(feature = "portal", unix))]
 fn portal_reason(e: ashpd::Error) -> String {
     match e {
         ashpd::Error::Response(_) => "permission denied".to_string(),
@@ -147,44 +135,11 @@ fn portal_reason(e: ashpd::Error) -> String {
     }
 }
 
-/// Test-only: build a channel and immediately deliver `outcome` on it, so a
-/// headless test can exercise the exact per-frame drain path the real portal
-/// worker feeds — without opening a D-Bus session. Mirrors [`request_location`].
-///
-/// # Panics
-///
-/// Panics if the just-created channel's receiver has already been dropped,
-/// which cannot happen since the caller always holds it.
-#[cfg(test)]
-pub fn inject_for_test(outcome: LocationOutcome) -> LocationChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    tx.send(outcome).expect("seed injected location outcome");
-    rx
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inject_delivers_located_immediately() {
-        let rx = inject_for_test(LocationOutcome::Located {
-            lat: 48.137,
-            lon: 11.575,
-            accuracy_m: 12.0,
-        });
-        match rx.try_recv() {
-            Ok(LocationOutcome::Located { lat, lon, .. }) => {
-                assert!((lat - 48.137).abs() < 1e-9);
-                assert!((lon - 11.575).abs() < 1e-9);
-            }
-            other => panic!("expected Located, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn inject_delivers_unavailable() {
-        let rx = inject_for_test(LocationOutcome::Unavailable("permission denied".into()));
-        assert!(matches!(rx.try_recv(), Ok(LocationOutcome::Unavailable(_))));
-    }
+/// Without the portal (the `portal` feature, on Unix) there is no location
+/// service to ask.
+#[cfg(not(all(feature = "portal", unix)))]
+fn run_location_blocking() -> LocationOutcome {
+    LocationOutcome::Unavailable(
+        "device location needs the real-desktop build (`--features portal`)".to_string(),
+    )
 }

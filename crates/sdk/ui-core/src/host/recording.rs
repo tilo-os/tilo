@@ -6,10 +6,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
-    FilePicker, HostServices, MediaSession, MediaSessionFactory, MediaSessionPublisher,
-    Notification, Notifier, NotifyError, SpeechFactory, UriOpener, answered,
+    FilePicker, HostServices, LocationProvider, MediaSession, MediaSessionFactory,
+    MediaSessionPublisher, Notification, Notifier, NotifyError, SpeechFactory, UriOpener, answered,
 };
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
@@ -29,6 +30,8 @@ struct Log {
     utterances: Vec<tts::Utterance>,
     notifications: Vec<Notification>,
     media_sessions: Vec<MprisConfig>,
+    location_requests: usize,
+    location_outcomes: VecDeque<LocationOutcome>,
     published: Vec<PlayerSnapshot>,
 }
 
@@ -36,7 +39,8 @@ struct Log {
 /// it will give.
 ///
 /// Copies round-trip through an in-process clipboard; pickers and launches
-/// answer queued outcomes, then `Cancelled` (launches: `Opened`); URIs, utterances
+/// answer queued outcomes, then `Cancelled` (launches: `Opened`); location
+/// requests answer queued fixes, then `Unavailable`; URIs, utterances
 /// and notifications are recorded; media sessions start and record what the
 /// player publishes.
 #[derive(Clone, Default)]
@@ -91,6 +95,16 @@ impl HostRecorder {
         self.log().launch_outcomes.push_back(outcome);
     }
 
+    /// Answer the next location request with `outcome`.
+    pub fn respond_to_location(&self, outcome: LocationOutcome) {
+        self.log().location_outcomes.push_back(outcome);
+    }
+
+    /// How many location fixes were requested.
+    pub fn location_requests(&self) -> usize {
+        self.log().location_requests
+    }
+
     /// Everything the screen reader was asked to say, in order.
     pub fn utterances(&self) -> Vec<tts::Utterance> {
         self.log().utterances.clone()
@@ -126,6 +140,7 @@ impl HostServices {
             speech: Arc::new(recorder.clone()),
             notifications: Arc::new(recorder.clone()),
             media_session: Arc::new(recorder.clone()),
+            location: Arc::new(recorder.clone()),
         };
         (services, recorder)
     }
@@ -259,6 +274,18 @@ impl MediaSessionFactory for HostRecorder {
             commands: receiver,
             publisher: Box::new(self.clone()),
         })
+    }
+}
+
+impl LocationProvider for HostRecorder {
+    fn locate(&self) -> LocationChannel {
+        let mut log = self.log();
+        log.location_requests += 1;
+        answered(
+            log.location_outcomes
+                .pop_front()
+                .unwrap_or_else(|| LocationOutcome::Unavailable("no location queued".to_string())),
+        )
     }
 }
 

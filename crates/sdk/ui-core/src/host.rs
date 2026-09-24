@@ -27,6 +27,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::clipboard::{ClipboardBackend, InProcessClipboard};
+use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisCommand, MprisConfig, PlayerSnapshot};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
@@ -121,6 +122,12 @@ pub trait Notifier: Send + Sync {
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError>;
 }
 
+/// Host-provided device location.
+pub trait LocationProvider: Send + Sync {
+    /// Request one fix. Answers over the channel, never blocking the caller.
+    fn locate(&self) -> LocationChannel;
+}
+
 /// Receives player state for the host's media controls.
 pub trait MediaSessionPublisher: Send {
     /// Publish the latest player state. Must not block.
@@ -153,12 +160,13 @@ pub struct HostServices {
     pub speech: Arc<dyn SpeechFactory>,
     pub notifications: Arc<dyn Notifier>,
     pub media_session: Arc<dyn MediaSessionFactory>,
+    pub location: Arc<dyn LocationProvider>,
 }
 
 impl HostServices {
     /// Services that never leave the process: an in-process clipboard, file
-    /// choosers that fail, no URI handler, silent speech, no notifications
-    /// and no media controls.
+    /// choosers that fail, no URI handler, silent speech, no notifications,
+    /// no media controls and no location.
     pub fn null() -> Self {
         Self {
             clipboard: Arc::new(InProcessClipboard::default()),
@@ -167,6 +175,7 @@ impl HostServices {
             speech: Arc::new(SilentSpeech),
             notifications: Arc::new(UnavailableNotifier),
             media_session: Arc::new(NoMediaSession),
+            location: Arc::new(NoLocation),
         }
     }
 
@@ -257,6 +266,16 @@ struct NoMediaSession;
 impl MediaSessionFactory for NoMediaSession {
     fn start(&self, _config: MprisConfig, _initial: PlayerSnapshot) -> Option<MediaSession> {
         None
+    }
+}
+
+struct NoLocation;
+
+impl LocationProvider for NoLocation {
+    fn locate(&self) -> LocationChannel {
+        answered(LocationOutcome::Unavailable(
+            "location is unavailable in this host".to_string(),
+        ))
     }
 }
 

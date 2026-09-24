@@ -63,7 +63,7 @@ mpris = ["native", "dep:zbus", "zbus/tokio"]
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["native", "dep:ashpd", "dep:windows", "dep:mime_guess"]
+portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_guess"]
 notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
@@ -257,6 +257,8 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional 
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
 ashpd = { workspace = true, optional = true }
+# Drives the location portal's update stream (`native::location`).
+futures-util = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
