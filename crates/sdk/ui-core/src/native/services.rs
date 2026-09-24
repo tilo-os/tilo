@@ -5,7 +5,8 @@
 //!   when neither exists;
 //! - files: the XDG Desktop Portal on Unix and the Common Item Dialogs on
 //!   Windows (with the `portal` feature; see [`crate::portal`]);
-//! - opener: the desktop's registered URI handler through `open`;
+//! - opener: the XDG `OpenURI` portal on Unix with the `portal` feature, the
+//!   desktop's registered URI handler through `open` elsewhere;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: Windows toasts (with the `notifications` feature);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -354,11 +355,19 @@ fn running_on_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
 
-/// Hands URIs to the desktop's registered handler. On Windows this uses
-/// `ShellExecute` rather than interpreting the URI as a command line.
+/// Hands URIs to the desktop's registered handler: the XDG `OpenURI` portal
+/// on Unix builds with the `portal` feature (inside the app sandbox there is
+/// no host `xdg-open` to spawn), the platform opener elsewhere. On Windows
+/// that is `ShellExecute` rather than interpreting the URI as a command line.
 struct DesktopOpener;
 
 impl UriOpener for DesktopOpener {
+    #[cfg(all(feature = "portal", unix))]
+    fn open(&self, uri: &str) -> std::io::Result<()> {
+        super::portal::open_uri(uri)
+    }
+
+    #[cfg(not(all(feature = "portal", unix)))]
     fn open(&self, uri: &str) -> std::io::Result<()> {
         open::that_detached(uri)
     }

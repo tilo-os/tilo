@@ -8756,7 +8756,6 @@ dependencies = [
  "chrono",
  "qdoc",
  "runtime-dylib",
- "runtime-portal-xdg",
  "serde",
  "serde_json",
  "taffy",
@@ -11878,7 +11877,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-rt",
  "tilo-test-env",
- "url",
 ]
 
 [[package]]
@@ -12681,7 +12679,6 @@ dependencies = [
  "runtime-dylib",
  "runtime-fs",
  "runtime-identity",
- "runtime-portal-xdg",
  "rustls",
  "serde",
  "serde_json",

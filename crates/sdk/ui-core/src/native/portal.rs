@@ -13,7 +13,7 @@ use std::path::Path;
 #[cfg(not(all(feature = "portal", unix)))]
 use crate::portal::spawn_worker;
 #[cfg(feature = "portal")]
-use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_uri};
+use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_selected_uri};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
@@ -60,7 +60,7 @@ impl crate::host::FilePicker for DesktopFilePicker {
                 Ok(uris) => match uris.into_iter().next() {
                     // Opening may block on a slow filesystem.
                     Some(uri) => tilo_rt::app()
-                        .spawn_blocking(move || open_uri(&uri))
+                        .spawn_blocking(move || open_selected_uri(&uri))
                         .await
                         .unwrap_or_else(|error| {
                             OpenFileOutcome::Failed(format!("could not open the file: {error}"))
@@ -155,7 +155,7 @@ fn single_open_file(req: PickRequest) -> OpenFileOutcome {
     }
     match windows::pick(req) {
         Ok(uris) => match uris.first() {
-            Some(uri) => open_uri(uri),
+            Some(uri) => open_selected_uri(uri),
             None => OpenFileOutcome::Cancelled,
         },
         Err(error) => error.into_open_file(),
@@ -219,6 +219,31 @@ async fn launch(req: LaunchRequest) -> LaunchOutcome {
         Ok(()) => LaunchOutcome::Opened,
         Err(error) => LaunchOutcome::Failed(error.to_string()),
     }
+}
+
+/// Hand `uri` to the XDG `OpenURI` portal, blocking until the desktop has
+/// launched its handler or refused the request.
+#[cfg(all(feature = "portal", unix))]
+pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
+    let uri = ashpd::Uri::parse(uri).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("bad URI: {error}"),
+        )
+    })?;
+    // The D-Bus round trip runs on the app runtime; callers are workers,
+    // never a thread of that runtime.
+    tilo_rt::try_app()
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                ashpd::desktop::open_uri::OpenFileRequest::default()
+                    .send_uri(&uri)
+                    .await
+                    .and_then(|request| request.response())
+            })
+        })
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)
 }
 
 #[cfg(all(feature = "portal", unix))]

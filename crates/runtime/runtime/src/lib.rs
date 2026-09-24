@@ -52,8 +52,8 @@ pub use runtime_collab as collab;
 pub use runtime_fs as fs;
 pub use runtime_identity as identity;
 pub use runtime_portal as portal;
-/// XDG desktop portal client (file-chooser, screencast, notifications,
-/// secret, open-uri); see [`runtime_portal_xdg`] for the degradation contract.
+/// XDG desktop portal client (screencast, notifications, secret); file
+/// choosing and open-uri are `ui::portal`. See [`runtime_portal_xdg`] for the degradation contract.
 pub use runtime_portal_xdg as portal_xdg;
 
 /// The shared error type: every fallible SDK entry point returns

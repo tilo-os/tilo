@@ -1273,6 +1273,9 @@ fn clicking_the_website_opens_it_through_the_link_widget() {
     // the production click path hermetically — no xdg-open side effect.
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
+    // The link opens through background work; pump it so the open is seen.
+    let work = ui::background::Pumped::new();
+    let _work = work.background().enter();
     let mut h = Harness::new(1280, 800);
     let id = h.app.selected.unwrap();
     let url = h.app.store.get(id).unwrap().website.clone();
@@ -1289,6 +1292,7 @@ fn clicking_the_website_opens_it_through_the_link_widget() {
         h.press_left(rect.center()),
         "clicking the website link is handled"
     );
+    work.run_pending();
     assert_eq!(
         recorder.opened_uris(),
         [url],
