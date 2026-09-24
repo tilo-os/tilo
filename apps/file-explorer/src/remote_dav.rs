@@ -3,16 +3,16 @@
 //! This is intentionally a small *transport*, not a second account store or
 //! a synthetic mount.  It reads one account and its sealed secret only while a
 //! caller is performing a requested operation, rejects credential-bearing
-//! redirects, and returns data for the app to materialise as resources.
+//! redirects, and returns data for the app to materialise as resources. The
+//! protocol itself (requests, bounded bodies, multistatus parsing) is the
+//! shared `tilo-dav` client; this module owns the account and path policy.
 
-use std::io::Read;
 use std::time::Duration;
 
 use accounts::{Account, AccountId, AccountSyncReporter, SecretVault};
-use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest::header::{CONTENT_TYPE, IF_MATCH, LOCATION};
-use reqwest::{Method, StatusCode, Url};
-use zeroize::Zeroizing;
+use tilo_dav::{
+    Credentials, DavClient, DavResponse, Depth, Limits, Precondition, StatusCode, Url, props,
+};
 
 use crate::remote_accounts::{NEXTCLOUD_TYPE, WEBDAV_TYPE};
 
@@ -23,6 +23,25 @@ const MAX_REMOTE_NAME_CHARS: usize = 255;
 const MAX_REMOTE_HREF_CHARS: usize = 2_048;
 const MAX_REMOTE_CONTENT_TYPE_CHARS: usize = 255;
 const MAX_REMOTE_ETAG_CHARS: usize = 1_024;
+
+/// A listing is bounded by bytes first; the response cap only has to stop a
+/// pathological document of empty responses, since Files keeps at most
+/// [`MAX_REMOTE_ENTRIES`] of them.
+const LISTING_LIMITS: Limits = Limits {
+    max_bytes: MAX_LISTING_BYTES,
+    max_responses: 65_536,
+    max_depth: 32,
+    max_nodes: 1_000_000,
+    max_href_bytes: 4 * MAX_REMOTE_HREF_CHARS,
+};
+
+const LISTING_PROPS: [tilo_dav::PropName; 5] = [
+    props::DISPLAYNAME,
+    props::GETCONTENTLENGTH,
+    props::GETCONTENTTYPE,
+    props::GETETAG,
+    props::RESOURCETYPE,
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteEntry {
@@ -67,14 +86,12 @@ impl DavError {
 
 /// A connection retains the secret only for the duration of one explicit
 /// Files operation. It is not serializable, searchable, logged, or copied to
-/// a UI string.
+/// a UI string; the client zeroizes it on drop.
 pub struct DavConnection {
     account_id: AccountId,
     origin: Url,
     root: Url,
-    username: String,
-    password: Zeroizing<String>,
-    client: Client,
+    client: DavClient,
 }
 
 impl DavConnection {
@@ -99,19 +116,11 @@ impl DavConnection {
             return Err(DavError::SignInRequired);
         }
         let origin = origin_of(&root).ok_or(DavError::InvalidConfiguration)?;
-        let client = tilo_net::http::blocking_client()
-            .timeout(Duration::from_secs(20))
-            .connect_timeout(Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("Tilo-Files/0.2")
-            .build()
-            .map_err(|_| DavError::RemoteFailure)?;
+        let client = client()?.with_credentials(Credentials::new(username, password));
         Ok(Self {
             account_id: account.id,
             origin,
             root,
-            username,
-            password: Zeroizing::new(password),
             client,
         })
     }
@@ -121,14 +130,11 @@ impl DavConnection {
     /// Returns an error for an invalid path, rejected request, or a response
     /// larger than the metadata bound.
     pub fn list(&self, path: &str) -> Result<Vec<RemoteEntry>, DavError> {
-        let url = self.url_for(path)?;
-        let method = Method::from_bytes(b"PROPFIND").map_err(|_| DavError::RemoteFailure)?;
-        let response = self.send(
-            method,
-            url,
-            Some(("Depth", "1")),
-            Some(PROPFIND_BODY.as_bytes()),
-        )?;
+        let response = self.checked(self.client.propfind(
+            self.url_for(path)?,
+            Depth::One,
+            &LISTING_PROPS,
+        ))?;
         let body = self.read_bounded(response, MAX_LISTING_BYTES)?;
         let entries = parse_listing(&body, &self.root)?;
         self.report_success();
@@ -140,7 +146,7 @@ impl DavConnection {
     /// Returns an error for an invalid path, rejected request, or a download
     /// larger than [`MAX_TRANSFER_BYTES`].
     pub fn download(&self, path: &str) -> Result<Vec<u8>, DavError> {
-        let response = self.send(Method::GET, self.url_for(path)?, None, None)?;
+        let response = self.checked(self.client.get(self.url_for(path)?))?;
         let body = self.read_bounded(response, MAX_TRANSFER_BYTES)?;
         self.report_success();
         Ok(body)
@@ -153,7 +159,7 @@ impl DavConnection {
     /// Returns the same failures as [`Self::download`], and rejects an URL
     /// outside this account's configured origin/root.
     pub fn download_url(&self, url: &str) -> Result<Vec<u8>, DavError> {
-        let response = self.send(Method::GET, self.known_url(url)?, None, None)?;
+        let response = self.checked(self.client.get(self.known_url(url)?))?;
         let body = self.read_bounded(response, MAX_TRANSFER_BYTES)?;
         self.report_success();
         Ok(body)
@@ -167,13 +173,12 @@ impl DavConnection {
         if bytes.len() > MAX_TRANSFER_BYTES {
             return Err(DavError::ResponseTooLarge);
         }
-        let mut request = self.authenticated(self.client.put(self.url_for(path)?));
-        if let Some(etag) = etag {
-            request = request.header(IF_MATCH, etag);
-        } else {
-            request = request.header("If-None-Match", "*");
-        }
-        let response = self.send_request(request.body(bytes.to_vec()))?;
+        let precondition = etag.map_or(Precondition::IfNoneMatchAny, Precondition::IfMatch);
+        let response =
+            self.checked(
+                self.client
+                    .put(self.url_for(path)?, bytes.to_vec(), None, precondition),
+            )?;
         self.expect_success(&response)?;
         self.report_success();
         Ok(())
@@ -183,8 +188,7 @@ impl DavConnection {
     ///
     /// Returns an error for an invalid path or rejected remote mutation.
     pub fn create_folder(&self, path: &str) -> Result<(), DavError> {
-        let method = Method::from_bytes(b"MKCOL").map_err(|_| DavError::RemoteFailure)?;
-        let response = self.send(method, self.url_for(path)?, None, None)?;
+        let response = self.checked(self.client.mkcol(self.url_for(path)?))?;
         self.expect_success(&response)?;
         self.report_success();
         Ok(())
@@ -195,19 +199,8 @@ impl DavConnection {
     /// Returns an error for invalid paths, a rejected remote mutation, or a
     /// conditional-write conflict.
     pub fn rename(&self, from: &str, to: &str, etag: Option<&str>) -> Result<(), DavError> {
-        let method = Method::from_bytes(b"MOVE").map_err(|_| DavError::RemoteFailure)?;
         let destination = self.url_for(to)?;
-        let mut request = self
-            .authenticated(self.client.request(method, self.url_for(from)?))
-            .header("Destination", destination.as_str())
-            .header("Overwrite", "F");
-        if let Some(etag) = etag {
-            request = request.header(IF_MATCH, etag);
-        }
-        let response = self.send_request(request)?;
-        self.expect_success(&response)?;
-        self.report_success();
-        Ok(())
+        self.move_to(self.url_for(from)?, &destination, etag)
     }
 
     /// # Errors
@@ -215,14 +208,7 @@ impl DavConnection {
     /// Returns an error for an invalid path, rejected remote mutation, or a
     /// conditional-write conflict.
     pub fn delete(&self, path: &str, etag: Option<&str>) -> Result<(), DavError> {
-        let mut request = self.authenticated(self.client.delete(self.url_for(path)?));
-        if let Some(etag) = etag {
-            request = request.header(IF_MATCH, etag);
-        }
-        let response = self.send_request(request)?;
-        self.expect_success(&response)?;
-        self.report_success();
-        Ok(())
+        self.delete_at(self.url_for(path)?, etag)
     }
 
     /// Rename a previously listed, canonical remote URL within this root.
@@ -252,18 +238,7 @@ impl DavConnection {
         let destination = parent
             .join(new_name)
             .map_err(|_| DavError::InvalidConfiguration)?;
-        let method = Method::from_bytes(b"MOVE").map_err(|_| DavError::RemoteFailure)?;
-        let mut request = self
-            .authenticated(self.client.request(method, source))
-            .header("Destination", destination.as_str())
-            .header("Overwrite", "F");
-        if let Some(etag) = etag {
-            request = request.header(IF_MATCH, etag);
-        }
-        let response = self.send_request(request)?;
-        self.expect_success(&response)?;
-        self.report_success();
-        Ok(())
+        self.move_to(source, &destination, etag)
     }
 
     /// Delete a previously listed, canonical remote URL.
@@ -273,11 +248,24 @@ impl DavConnection {
     /// Returns the same failures as [`Self::delete`], and rejects URLs outside
     /// this account's configured origin/root.
     pub fn delete_url(&self, url: &str, etag: Option<&str>) -> Result<(), DavError> {
-        let mut request = self.authenticated(self.client.delete(self.known_url(url)?));
-        if let Some(etag) = etag {
-            request = request.header(IF_MATCH, etag);
-        }
-        let response = self.send_request(request)?;
+        self.delete_at(self.known_url(url)?, etag)
+    }
+
+    fn move_to(&self, source: Url, destination: &Url, etag: Option<&str>) -> Result<(), DavError> {
+        let precondition = etag.map_or(Precondition::None, Precondition::IfMatch);
+        let response =
+            self.checked(
+                self.client
+                    .move_to(source, destination, false, precondition),
+            )?;
+        self.expect_success(&response)?;
+        self.report_success();
+        Ok(())
+    }
+
+    fn delete_at(&self, url: Url, etag: Option<&str>) -> Result<(), DavError> {
+        let precondition = etag.map_or(Precondition::None, Precondition::IfMatch);
+        let response = self.checked(self.client.delete(url, precondition))?;
         self.expect_success(&response)?;
         self.report_success();
         Ok(())
@@ -314,46 +302,22 @@ impl DavConnection {
             .ok_or(DavError::InvalidConfiguration)
     }
 
-    fn authenticated(&self, request: RequestBuilder) -> RequestBuilder {
-        request.basic_auth(&self.username, Some(self.password.as_str()))
-    }
-
-    fn send(
-        &self,
-        method: Method,
-        url: Url,
-        header: Option<(&str, &str)>,
-        body: Option<&[u8]>,
-    ) -> Result<Response, DavError> {
-        let mut request = self.authenticated(self.client.request(method, url));
-        if let Some((name, value)) = header {
-            request = request.header(name, value);
-        }
-        if let Some(body) = body {
-            request = request
-                .header(CONTENT_TYPE, "application/xml; charset=utf-8")
-                .body(body.to_vec());
-        }
-        self.send_request(request)
-    }
-
-    fn send_request(&self, request: RequestBuilder) -> Result<Response, DavError> {
-        let response = request.send().map_err(|_| {
+    fn checked(&self, sent: Result<DavResponse, tilo_dav::Error>) -> Result<DavResponse, DavError> {
+        let response = sent.map_err(|_| {
             let _ = AccountSyncReporter::new(self.account_id.clone()).offline();
             DavError::Offline
         })?;
         if response.status().is_redirection() {
-            // The request builder cannot be safely replayed without retaining
-            // arbitrary upload bytes. All methods therefore reject redirects;
-            // endpoint discovery belongs to Settings and no credential can
-            // cross an origin boundary by accident.
-            let _ = response.headers().get(LOCATION);
+            // A request cannot be safely replayed without retaining arbitrary
+            // upload bytes. All methods therefore reject redirects; endpoint
+            // discovery belongs to Settings and no credential can cross an
+            // origin boundary by accident.
             return Err(DavError::CrossOriginRedirect);
         }
         Ok(response)
     }
 
-    fn expect_success(&self, response: &Response) -> Result<(), DavError> {
+    fn expect_success(&self, response: &DavResponse) -> Result<(), DavError> {
         match response.status() {
             status if status.is_success() => Ok(()),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
@@ -368,23 +332,12 @@ impl DavConnection {
         }
     }
 
-    fn read_bounded(&self, response: Response, limit: usize) -> Result<Vec<u8>, DavError> {
+    fn read_bounded(&self, response: DavResponse, limit: usize) -> Result<Vec<u8>, DavError> {
         self.expect_success_status(response.status())?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > limit as u64)
-        {
-            return Err(DavError::ResponseTooLarge);
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(limit as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| DavError::Offline)?;
-        if bytes.len() > limit {
-            return Err(DavError::ResponseTooLarge);
-        }
-        Ok(bytes)
+        response.read_bounded(limit).map_err(|error| match error {
+            tilo_dav::Error::TooLarge => DavError::ResponseTooLarge,
+            _ => DavError::Offline,
+        })
     }
 
     fn expect_success_status(&self, status: StatusCode) -> Result<(), DavError> {
@@ -403,8 +356,15 @@ impl DavConnection {
     }
 }
 
-const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:"><D:prop><D:displayname/><D:getcontentlength/><D:getcontenttype/><D:getetag/><D:resourcetype/></D:prop></D:propfind>"#;
+fn client() -> Result<DavClient, DavError> {
+    DavClient::new(&tilo_dav::Options {
+        user_agent: Some("Tilo-Files/0.2"),
+        timeout: Duration::from_secs(20),
+        connect_timeout: Some(Duration::from_secs(8)),
+        redirects: tilo_dav::Redirects::Refuse,
+    })
+    .map_err(|_| DavError::RemoteFailure)
+}
 
 fn configured_root(account: &Account) -> Result<(Url, String), DavError> {
     let type_id = account.type_id.as_str();
@@ -472,24 +432,18 @@ fn same_origin(left: &Url, right: &Url) -> bool {
 }
 
 fn parse_listing(xml: &[u8], root: &Url) -> Result<Vec<RemoteEntry>, DavError> {
-    let text = std::str::from_utf8(xml).map_err(|_| DavError::InvalidRemoteResponse)?;
-    let doc = roxmltree::Document::parse(text).map_err(|_| DavError::InvalidRemoteResponse)?;
+    let listing =
+        tilo_dav::multistatus::parse_bytes(xml, &LISTING_LIMITS).map_err(|error| match error {
+            tilo_dav::XmlError::TooLarge => DavError::ResponseTooLarge,
+            _ => DavError::InvalidRemoteResponse,
+        })?;
     let mut entries = Vec::new();
-    for response in doc
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "response")
-    {
+    for response in &listing.responses {
         if entries.len() == MAX_REMOTE_ENTRIES {
             break;
         }
-        let href = response
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "href")
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .ok_or(DavError::InvalidRemoteResponse)?;
         let url = root
-            .join(href)
+            .join(&response.href)
             .map_err(|_| DavError::InvalidRemoteResponse)?;
         if !safe_response_url(&url, root)
             || !url.path().starts_with(root.path())
@@ -497,49 +451,33 @@ fn parse_listing(xml: &[u8], root: &Url) -> Result<Vec<RemoteEntry>, DavError> {
         {
             continue;
         }
-        let is_dir = response
-            .descendants()
-            .any(|node| node.is_element() && node.tag_name().name() == "collection");
         let name = response
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "displayname")
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
+            .prop_text("displayname")
             .map(ToOwned::to_owned)
             .or_else(|| {
+                // A collection href ends in `/`; its name is the last
+                // non-empty segment.
                 url.path_segments()
-                    .and_then(Iterator::last)
-                    .filter(|name| !name.is_empty())
+                    .and_then(|segments| segments.rev().find(|name| !name.is_empty()))
                     .map(ToOwned::to_owned)
             })
             .and_then(|name| bounded_server_text(&name, MAX_REMOTE_NAME_CHARS))
             .ok_or(DavError::InvalidRemoteResponse)?;
         let size = response
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "getcontentlength")
-            .and_then(|node| node.text())
-            .and_then(|value| value.trim().parse().ok());
+            .prop_text("getcontentlength")
+            .and_then(|value| value.parse().ok());
         let content_type = response
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "getcontenttype")
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .prop_text("getcontenttype")
             .and_then(|value| bounded_server_text(value, MAX_REMOTE_CONTENT_TYPE_CHARS));
         let etag = response
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "getetag")
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .prop_text("getetag")
             .and_then(|value| bounded_server_text(value, MAX_REMOTE_ETAG_CHARS));
         let href = bounded_server_text(url.as_str(), MAX_REMOTE_HREF_CHARS)
             .ok_or(DavError::InvalidRemoteResponse)?;
         entries.push(RemoteEntry {
             name,
             href,
-            is_dir,
+            is_dir: response.is_collection(),
             size,
             content_type,
             etag,
@@ -630,18 +568,61 @@ mod tests {
     }
 
     #[test]
+    fn nextcloud_listing_skips_the_root_and_reads_successful_props() {
+        let root = Url::parse("https://cloud.example/remote.php/dav/files/ada/").unwrap();
+        let xml = br#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+ <d:response><d:href>/remote.php/dav/files/ada/</d:href>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  <d:propstat><d:prop><d:getcontentlength/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
+ <d:response><d:href>/remote.php/dav/files/ada/Photos/</d:href>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:getetag>"p1"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  <d:propstat><d:prop><d:getcontentlength/><d:getcontenttype/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
+ <d:response><d:href>/remote.php/dav/files/ada/Notes%20and%20plans.md</d:href>
+  <d:propstat><d:prop><d:getcontentlength>1234</d:getcontentlength><d:getcontenttype>text/markdown</d:getcontenttype><d:resourcetype/><d:getetag>"n1"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>"#;
+        let entries = parse_listing(xml, &root).expect("valid listing");
+        assert_eq!(entries.len(), 2, "the listed root itself is not an entry");
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].name, "Photos");
+        assert_eq!(entries[0].size, None);
+        assert!(!entries[1].is_dir);
+        assert_eq!(entries[1].name, "Notes%20and%20plans.md");
+        assert_eq!(entries[1].size, Some(1234));
+        assert_eq!(entries[1].content_type.as_deref(), Some("text/markdown"));
+        assert_eq!(entries[1].etag.as_deref(), Some("\"n1\""));
+    }
+
+    #[test]
+    fn hostile_listings_are_invalid_responses() {
+        let root = Url::parse("https://cloud.example/dav/").unwrap();
+        let doctype = br#"<?xml version="1.0"?><!DOCTYPE d [<!ENTITY a "x">]><d:multistatus xmlns:d="DAV:"/>"#;
+        assert_eq!(
+            parse_listing(doctype, &root),
+            Err(DavError::InvalidRemoteResponse)
+        );
+        let html = b"<html><body>Sign in</body></html>";
+        assert_eq!(
+            parse_listing(html, &root),
+            Err(DavError::InvalidRemoteResponse)
+        );
+        let oversized = vec![b' '; MAX_LISTING_BYTES + 1];
+        assert_eq!(
+            parse_listing(&oversized, &root),
+            Err(DavError::ResponseTooLarge)
+        );
+    }
+
+    #[test]
     fn paths_cannot_escape_the_configured_root() {
         let root = Url::parse("https://cloud.example/dav/").unwrap();
         let connection = DavConnection {
             account_id: "id".into(),
             origin: origin_of(&root).unwrap(),
             root,
-            username: "u".into(),
-            password: Zeroizing::new("p".into()),
-            client: tilo_net::http::blocking_client()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap(),
+            client: client()
+                .unwrap()
+                .with_credentials(Credentials::new("u", "p")),
         };
         assert!(connection.url_for("../secret").is_err());
         assert!(connection.url_for("folder/file.txt").is_ok());
