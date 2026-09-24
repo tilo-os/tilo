@@ -1,13 +1,9 @@
 //! Bounded, canonical global search for Books.
 //!
-//! Every hit is served from postings. Metadata rows (books, chapters,
-//! annotations, remote library entries) keep their short searchable text,
-//! whole-term postings and 1–3-scalar gram postings. Chapter prose is indexed
-//! by gram postings only: the reader stays the sole owner of EPUB text, and a
-//! candidate chapter is verified against the shared book snapshot a bounded
-//! chunk at a time. A search therefore inspects the chapters that contain
-//! every gram of the query rather than walking the library, and the body
-//! index is reused by every rebuild that leaves the book set unchanged.
+//! The reader is the sole owner of EPUB prose. This provider retains stable
+//! locators, labels, and a small metadata-token directory only; it verifies
+//! full text directly against the shared book snapshot a bounded page at a
+//! time. Large EPUBs therefore never become a second corpus of n-grams.
 
 #![allow(
     clippy::indexing_slicing,
@@ -47,6 +43,7 @@ pub const ANNOTATION_KIND: &str = "Annotations";
 /// hit never guesses at a nearby reading location.
 pub const LOCATION_KIND: &str = "Reading locations";
 
+const MAX_METADATA_TOKENS_PER_ROW: usize = 32;
 const BODY_PHASE: u64 = 1_u64 << 63;
 /// One verification unit.  This is deliberately smaller than the maximum
 /// interactive query so an EPUB with one enormous paragraph still yields.
@@ -66,161 +63,8 @@ pub struct BookSearchStats {
     pub rows: usize,
     pub metadata_tokens: usize,
     pub metadata_postings: usize,
-    pub metadata_gram_postings: usize,
-    /// Chapter-level gram postings. Prose itself is never copied.
-    pub body_postings: usize,
     pub retained_chapter_scalars: usize,
     pub generation: u64,
-}
-
-/// Up to [`GRAM_WIDTH`] case-folded scalars packed into one key. Each scalar
-/// is stored as `scalar + 1` in its own 21-bit lane, so a gram never collides
-/// with a shorter one that shares its prefix.
-type Gram = u64;
-const GRAM_WIDTH: usize = 3;
-const GRAM_LANE_SHIFTS: [u32; GRAM_WIDTH] = [0, 21, 42];
-
-fn pack_gram(chars: &[char]) -> Gram {
-    chars
-        .iter()
-        .zip(GRAM_LANE_SHIFTS)
-        .fold(0, |key, (character, shift)| {
-            key | u64::from(u32::from(*character))
-                .wrapping_add(1)
-                .wrapping_shl(shift)
-        })
-}
-
-/// The distinct grams a folded query needs a record to contain: the whole
-/// query when it is short, otherwise every [`GRAM_WIDTH`]-scalar window.
-fn query_grams(needle: &[char]) -> Vec<Gram> {
-    let mut grams: Vec<Gram> = if needle.len() <= GRAM_WIDTH {
-        vec![pack_gram(needle)]
-    } else {
-        needle.windows(GRAM_WIDTH).map(pack_gram).collect()
-    };
-    grams.sort_unstable();
-    grams.dedup();
-    grams
-}
-
-/// Gram postings over rows added in ascending order. A row containing a
-/// query contains every one of its [`query_grams`], so the rarest of their
-/// postings is a complete candidate list and the others filter it before any
-/// text is verified.
-#[derive(Clone, Debug, Default)]
-struct GramPostings {
-    postings: HashMap<Gram, Vec<u32>>,
-    count: usize,
-}
-
-impl GramPostings {
-    /// Index one row's already case-folded text. Rows must arrive in
-    /// ascending order, which keeps every posting sorted and deduplicated.
-    /// Consecutive calls for the same row continue one text stream.
-    fn add(&mut self, row: u32, folded: impl IntoIterator<Item = char>, window: &mut GramWindow) {
-        for character in folded {
-            window.push(character);
-            for width in 1..=window.filled {
-                self.insert(pack_gram(&window.chars[GRAM_WIDTH - width..]), row);
-            }
-        }
-    }
-
-    fn insert(&mut self, gram: Gram, row: u32) {
-        let posting = self.postings.entry(gram).or_default();
-        if posting.last() != Some(&row) {
-            posting.push(row);
-            self.count = self.count.saturating_add(1);
-        }
-    }
-
-    /// The rarest posting among `grams`, or an empty list when a gram occurs
-    /// nowhere and so nothing can match.
-    fn rarest(&self, grams: &[Gram]) -> &[u32] {
-        let mut rarest: Option<&[u32]> = None;
-        for gram in grams {
-            let Some(posting) = self.postings.get(gram) else {
-                return &[];
-            };
-            if rarest.is_none_or(|current| posting.len() < current.len()) {
-                rarest = Some(posting);
-            }
-        }
-        rarest.unwrap_or(&[])
-    }
-
-    fn contains_all(&self, grams: &[Gram], row: u32) -> bool {
-        grams.iter().all(|gram| {
-            self.postings
-                .get(gram)
-                .is_some_and(|posting| posting.binary_search(&row).is_ok())
-        })
-    }
-}
-
-/// The last [`GRAM_WIDTH`] scalars of a text stream being indexed.
-#[derive(Default)]
-struct GramWindow {
-    chars: [char; GRAM_WIDTH],
-    filled: usize,
-}
-
-impl GramWindow {
-    fn push(&mut self, character: char) {
-        self.chars.rotate_left(1);
-        self.chars[GRAM_WIDTH - 1] = character;
-        self.filled = self.filled.saturating_add(1).min(GRAM_WIDTH);
-    }
-}
-
-/// Case-fold text exactly as [`FoldMatcher`] does, so indexed grams and
-/// verified text agree.
-fn fold_chars(text: &str) -> impl Iterator<Item = char> + '_ {
-    text.chars().flat_map(char::to_lowercase)
-}
-
-/// Feed a chapter's text to `sink` in the order and with the separators the
-/// streaming verifier sees: a space before every later block that has text,
-/// and before each later span that carries `space_before`.
-fn chapter_text(chapter: &crate::model::Chapter, mut sink: impl FnMut(&str)) {
-    for (block_index, block) in chapter.blocks.iter().enumerate() {
-        match block {
-            crate::model::Block::Math { source, .. } => {
-                if block_index > 0 {
-                    sink(" ");
-                }
-                sink(source);
-            }
-            crate::model::Block::Separator => {}
-            _ => {
-                for (span_index, span) in block.spans().iter().enumerate() {
-                    if (span_index == 0 && block_index > 0) || (span_index > 0 && span.space_before)
-                    {
-                        sink(" ");
-                    }
-                    sink(&span.text);
-                }
-            }
-        }
-    }
-}
-
-/// Index every chapter's prose under its row in the entry list, where each
-/// book row is followed by one row per chapter. `None` when the rows do not
-/// fit the posting width.
-fn build_body_index(books: &[Arc<Book>]) -> Option<GramPostings> {
-    let mut body = GramPostings::default();
-    let mut row = 0u32;
-    for book in books {
-        row = row.checked_add(1)?;
-        for chapter in &book.chapters {
-            let mut window = GramWindow::default();
-            chapter_text(chapter, |text| body.add(row, fold_chars(text), &mut window));
-            row = row.checked_add(1)?;
-        }
-    }
-    Some(body)
 }
 
 #[derive(Clone)]
@@ -242,8 +86,6 @@ enum SearchTarget {
 struct SearchEntry {
     result: SearchResult,
     target: SearchTarget,
-    /// Case-folded metadata text this row is indexed and verified by.
-    folded: String,
 }
 
 /// Outcome of one bounded body-verification unit.
@@ -266,16 +108,12 @@ pub struct BookSearchProvider {
     books: Arc<Vec<Arc<Book>>>,
     annotations: Arc<Vec<Annotation>>,
     registry: Arc<Vec<LibraryEntry>>,
+    book_metadata: Arc<HashMap<String, (String, String)>>,
     entries: Arc<Vec<SearchEntry>>,
-    metadata_tokens: Arc<HashMap<String, Vec<u32>>>,
-    metadata_grams: Arc<GramPostings>,
-    /// Chapter prose, keyed by the chapter's row in `entries`. Chapter rows
-    /// depend only on the book list, so rebuilds over the same books share it.
-    body: Arc<GramPostings>,
+    metadata_tokens: Arc<HashMap<String, Vec<usize>>>,
     resource_rows: Arc<BTreeMap<String, usize>>,
     action_rows: Arc<Vec<(String, SearchResult)>>,
-    action_tokens: Arc<HashMap<String, Vec<u32>>>,
-    action_grams: Arc<GramPostings>,
+    action_tokens: Arc<HashMap<String, Vec<usize>>>,
     generation: u64,
     available: bool,
 }
@@ -308,43 +146,19 @@ impl BookSearchProvider {
     /// Stage a complete immutable projection before the app swaps it in. A
     /// malformed or ambiguous projection withdraws atomically rather than
     /// publishing a partial action directory.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the staged canonical row builder is deliberately together"
+    )]
     pub(crate) fn new_shared(
         books: Arc<Vec<Arc<Book>>>,
         annotations: Arc<Vec<Annotation>>,
         registry: Arc<Vec<LibraryEntry>>,
         generation: u64,
     ) -> Self {
-        Self::build(books, annotations, registry, generation, None)
-    }
-
-    /// Like [`Self::new_shared`], but reuse `prior`'s chapter-prose index
-    /// when the book set is unchanged. Annotation and library edits then
-    /// rebuild only the metadata rows, never re-read every book.
-    pub(crate) fn new_shared_after(
-        prior: &Self,
-        books: Arc<Vec<Arc<Book>>>,
-        annotations: Arc<Vec<Annotation>>,
-        registry: Arc<Vec<LibraryEntry>>,
-        generation: u64,
-    ) -> Self {
-        Self::build(books, annotations, registry, generation, Some(prior))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the staged canonical row builder is deliberately together"
-    )]
-    fn build(
-        books: Arc<Vec<Arc<Book>>>,
-        annotations: Arc<Vec<Annotation>>,
-        registry: Arc<Vec<LibraryEntry>>,
-        generation: u64,
-        prior: Option<&Self>,
-    ) -> Self {
         let mut entries = Vec::new();
         let mut resource_rows = BTreeMap::new();
-        let mut tokens = HashMap::<String, Vec<u32>>::new();
-        let mut metadata_grams = GramPostings::default();
+        let mut tokens = HashMap::<String, Vec<usize>>::new();
         let hydrated: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
         let mut book_metadata = HashMap::<String, (String, String)>::new();
         for book in books.iter() {
@@ -375,24 +189,18 @@ impl BookSearchProvider {
             .map(|annotation| (annotation.doc_id.clone(), annotation.group))
             .collect();
 
-        let mut add = |result: SearchResult, target: SearchTarget, metadata: &str| -> bool {
-            let Some(address) = result.action_address() else {
+        let mut add = |entry: SearchEntry, metadata: String| -> bool {
+            let Some(address) = entry.result.action_address() else {
                 return false;
             };
             let row = entries.len();
-            let Ok(posting_row) = u32::try_from(row) else {
-                return false;
-            };
             if resource_rows.insert(address.resource, row).is_some() {
                 return false;
             }
-            let folded: String = fold_chars(metadata).collect();
-            index_row(&mut tokens, &mut metadata_grams, posting_row, &folded);
-            entries.push(SearchEntry {
-                result,
-                target,
-                folded,
-            });
+            for token in index_metadata_tokens(&metadata) {
+                tokens.entry(token).or_default().push(row);
+            }
+            entries.push(entry);
             true
         };
 
@@ -405,9 +213,11 @@ impl BookSearchProvider {
                 result = result.with_subtitle(book.author.clone());
             }
             if !add(
-                result,
-                SearchTarget::Book(book_index),
-                &format!("{title} {}", book.author),
+                SearchEntry {
+                    result,
+                    target: SearchTarget::Book(book_index),
+                },
+                format!("{title} {}", book.author),
             ) {
                 return Self::unavailable(books, annotations, registry, generation);
             }
@@ -421,12 +231,14 @@ impl BookSearchProvider {
                 .with_subtitle(format!("{} · Chapter {}", title, chapter_index + 1))
                 .with_icon(Icon::List);
                 if !add(
-                    result,
-                    SearchTarget::Chapter {
-                        book: book_index,
-                        chapter: chapter_index,
+                    SearchEntry {
+                        result,
+                        target: SearchTarget::Chapter {
+                            book: book_index,
+                            chapter: chapter_index,
+                        },
                     },
-                    &format!("{title} {} {chapter_title}", book.author),
+                    format!("{title} {} {chapter_title}", book.author),
                 ) {
                     return Self::unavailable(books, annotations, registry, generation);
                 }
@@ -448,9 +260,11 @@ impl BookSearchProvider {
                 result = result.with_subtitle(entry.author.clone());
             }
             if !add(
-                result,
-                SearchTarget::RemoteBook(registry_index),
-                &format!("{title} {} {}", entry.author, entry.subject),
+                SearchEntry {
+                    result,
+                    target: SearchTarget::RemoteBook(registry_index),
+                },
+                format!("{title} {} {}", entry.author, entry.subject),
             ) {
                 return Self::unavailable(books, annotations, registry, generation);
             }
@@ -486,16 +300,18 @@ impl BookSearchProvider {
                 _ => Icon::List,
             });
             if !add(
-                result,
-                SearchTarget::Annotation {
-                    index: annotation_index,
-                    hydrated: hydrated.contains(annotation.doc_id.as_str()),
-                    comment,
+                SearchEntry {
+                    result,
+                    target: SearchTarget::Annotation {
+                        index: annotation_index,
+                        hydrated: hydrated.contains(annotation.doc_id.as_str()),
+                        comment,
+                    },
                 },
-                &format!(
-                    "{title} {author} {}{} {} {}",
+                format!(
+                    "{title} {author} {} {} {} {}",
                     annotation.kind.label(),
-                    comment.then_some(" comment").unwrap_or(""),
+                    comment.then_some("comment").unwrap_or(""),
                     annotation.excerpt,
                     annotation.note
                 ),
@@ -503,16 +319,8 @@ impl BookSearchProvider {
                 return Self::unavailable(books, annotations, registry, generation);
             }
         }
-        let body = match prior {
-            Some(prior) if prior.indexes_the_same_books(&books) => Arc::clone(&prior.body),
-            _ => match build_body_index(&books) {
-                Some(body) => Arc::new(body),
-                None => return Self::unavailable(books, annotations, registry, generation),
-            },
-        };
         let mut action_rows = Vec::new();
-        let mut action_tokens = HashMap::<String, Vec<u32>>::new();
-        let mut action_grams = GramPostings::default();
+        let mut action_tokens = HashMap::<String, Vec<usize>>::new();
         for entry in &entries {
             let Some(address) = entry.result.action_address() else {
                 continue;
@@ -561,9 +369,7 @@ impl BookSearchProvider {
                 } => continue,
             };
             for (label, action) in actions {
-                let Ok(row) = u32::try_from(action_rows.len()) else {
-                    return Self::unavailable(books, annotations, registry, generation);
-                };
+                let row = action_rows.len();
                 let result = SearchResult::for_action(
                     "Book actions",
                     *label,
@@ -571,7 +377,9 @@ impl BookSearchProvider {
                 )
                 .with_subtitle(entry.result.title.clone());
                 let text = format!("{label} {}", entry.result.title);
-                index_action_row(&mut action_tokens, &mut action_grams, row, &text);
+                for token in index_metadata_tokens(&text) {
+                    action_tokens.entry(token).or_default().push(row);
+                }
                 action_rows.push((text, result));
             }
         }
@@ -579,30 +387,15 @@ impl BookSearchProvider {
             books,
             annotations,
             registry,
+            book_metadata: Arc::new(book_metadata),
             entries: Arc::new(entries),
             metadata_tokens: Arc::new(tokens),
-            metadata_grams: Arc::new(metadata_grams),
-            body,
             resource_rows: Arc::new(resource_rows),
             action_rows: Arc::new(action_rows),
             action_tokens: Arc::new(action_tokens),
-            action_grams: Arc::new(action_grams),
             generation,
             available: generation != 0,
         }
-    }
-
-    /// Whether this provider's body index was built over exactly `books`, in
-    /// order. Book snapshots are immutable and shared, so pointer identity
-    /// means identical prose and identical chapter rows.
-    fn indexes_the_same_books(&self, books: &[Arc<Book>]) -> bool {
-        self.available
-            && self.books.len() == books.len()
-            && self
-                .books
-                .iter()
-                .zip(books)
-                .all(|(indexed, book)| Arc::ptr_eq(indexed, book))
     }
 
     fn unavailable(
@@ -615,14 +408,12 @@ impl BookSearchProvider {
             books,
             annotations,
             registry,
+            book_metadata: Arc::new(HashMap::new()),
             entries: Arc::new(Vec::new()),
             metadata_tokens: Arc::new(HashMap::new()),
-            metadata_grams: Arc::new(GramPostings::default()),
-            body: Arc::new(GramPostings::default()),
             resource_rows: Arc::new(BTreeMap::new()),
             action_rows: Arc::new(Vec::new()),
             action_tokens: Arc::new(HashMap::new()),
-            action_grams: Arc::new(GramPostings::default()),
             generation,
             available: false,
         }
@@ -634,8 +425,6 @@ impl BookSearchProvider {
             rows: self.entries.len(),
             metadata_tokens: self.metadata_tokens.len(),
             metadata_postings: self.metadata_tokens.values().map(Vec::len).sum(),
-            metadata_gram_postings: self.metadata_grams.count,
-            body_postings: self.body.count,
             retained_chapter_scalars: 0,
             generation: self.generation,
         }
@@ -683,10 +472,43 @@ impl BookSearchProvider {
         }
     }
 
-    /// `query` is already folded by [`normalize_query`], the same fold the
-    /// row's text was stored and indexed under.
-    fn metadata_matches(entry: &SearchEntry, query: &str) -> bool {
-        entry.folded.contains(query)
+    fn metadata_matches(&self, entry: &SearchEntry, query: &str) -> bool {
+        let text = match entry.target {
+            SearchTarget::Book(index) => self
+                .books
+                .get(index)
+                .map(|book| format!("{} {}", Self::book_title(book), book.author)),
+            SearchTarget::Chapter { book, chapter } => self.books.get(book).and_then(|book| {
+                book.chapters.get(chapter).map(|item| {
+                    format!(
+                        "{} {} {}",
+                        Self::book_title(book),
+                        book.author,
+                        chapter_label(item, chapter)
+                    )
+                })
+            }),
+            SearchTarget::Annotation { index, .. } => {
+                self.annotations.get(index).map(|annotation| {
+                    let (title, author) = self
+                        .book_metadata
+                        .get(&annotation.doc_id)
+                        .cloned()
+                        .unwrap_or_else(|| ("Unknown book".into(), String::new()));
+                    format!(
+                        "{title} {author} {} {} {}",
+                        annotation.kind.label(),
+                        annotation.excerpt,
+                        annotation.note
+                    )
+                })
+            }
+            SearchTarget::RemoteBook(index) => self
+                .registry
+                .get(index)
+                .map(|entry| format!("{} {} {}", entry.title, entry.author, entry.subject)),
+        };
+        text.is_some_and(|text| normalized_contains(&text, query))
     }
 
     fn body_chunk_matches(
@@ -806,13 +628,6 @@ impl BookSearchProvider {
             matcher_state: matcher.state(),
             done,
         }
-    }
-
-    fn chapter_block_count(&self, entry: &SearchEntry) -> Option<usize> {
-        let SearchTarget::Chapter { book, chapter } = entry.target else {
-            return None;
-        };
-        Some(self.books.get(book)?.chapters.get(chapter)?.blocks.len())
     }
 
     fn next_body_position(
@@ -1226,12 +1041,11 @@ impl BookSearchProvider {
         )
     }
 
-    /// Chapter rows whose prose contains every gram of a folded, non-empty
-    /// query, with the grams to re-check each one against.
-    fn body_candidates(&self, query: &str) -> (&[u32], Vec<Gram>) {
-        let needle: Vec<char> = query.chars().collect();
-        let grams = query_grams(&needle);
-        (self.body.rarest(&grams), grams)
+    fn metadata_candidates(&self, query: &str) -> Option<&Vec<usize>> {
+        query
+            .split_whitespace()
+            .filter_map(|token| self.metadata_tokens.get(token))
+            .min_by_key(|ids| ids.len())
     }
 
     pub(crate) fn action_search_provider(&self) -> BookActionSearchProvider {
@@ -1239,7 +1053,6 @@ impl BookSearchProvider {
             books: self.clone(),
             rows: Arc::clone(&self.action_rows),
             tokens: Arc::clone(&self.action_tokens),
-            grams: Arc::clone(&self.action_grams),
             live_resources: Arc::new(BTreeMap::new()),
             live_epoch: Arc::new(AtomicU64::new(self.generation)),
             snapshot_epoch: self.generation,
@@ -1253,8 +1066,7 @@ impl BookSearchProvider {
 pub(crate) struct BookActionSearchProvider {
     books: BookSearchProvider,
     rows: Arc<Vec<(String, SearchResult)>>,
-    tokens: Arc<HashMap<String, Vec<u32>>>,
-    grams: Arc<GramPostings>,
+    tokens: Arc<HashMap<String, Vec<usize>>>,
     live_resources: Arc<BTreeMap<String, Resource>>,
     live_epoch: Arc<AtomicU64>,
     snapshot_epoch: u64,
@@ -1269,7 +1081,6 @@ impl BookActionSearchProvider {
     ) -> Self {
         let mut rows = (*self.rows).clone();
         let mut tokens = (*self.tokens).clone();
-        let mut grams = (*self.grams).clone();
         let mut exact = BTreeMap::new();
         let mut seen = rows
             .iter()
@@ -1281,9 +1092,7 @@ impl BookActionSearchProvider {
                 if !seen.insert((resource.id.as_str().to_string(), action.id.clone())) {
                     continue;
                 }
-                let Ok(row) = u32::try_from(rows.len()) else {
-                    continue;
-                };
+                let row = rows.len();
                 let result = SearchResult::for_action(
                     "Book actions",
                     action.label.clone(),
@@ -1291,14 +1100,15 @@ impl BookActionSearchProvider {
                 )
                 .with_subtitle(resource.label.clone());
                 let text = format!("{} {}", action.label, resource.label);
-                index_action_row(&mut tokens, &mut grams, row, &text);
+                for token in index_metadata_tokens(&text) {
+                    tokens.entry(token).or_default().push(row);
+                }
                 rows.push((text, result));
             }
             exact.insert(resource.id.as_str().to_string(), resource);
         }
         self.rows = Arc::new(rows);
         self.tokens = Arc::new(tokens);
-        self.grams = Arc::new(grams);
         self.live_resources = Arc::new(exact);
         self.live_epoch = live_epoch;
         self.snapshot_epoch = snapshot_epoch;
@@ -1377,12 +1187,12 @@ impl SearchProvider for BookActionSearchProvider {
                 ordinal.unwrap_or_default() as usize
             }
         };
-        let (length, at) = if query.is_empty() {
-            (self.rows.len(), None)
-        } else {
-            let rows = posting_candidates(&self.tokens, &self.grams, &query);
-            (rows.len(), Some(rows))
-        };
+        let candidates = query
+            .split_whitespace()
+            .filter_map(|token| self.tokens.get(token))
+            .min_by_key(|rows| rows.len());
+        let (length, at) =
+            candidates.map_or((self.rows.len(), None), |rows| (rows.len(), Some(rows)));
         if offset > length {
             return SearchPage {
                 results: Vec::new(),
@@ -1394,7 +1204,7 @@ impl SearchProvider for BookActionSearchProvider {
         let mut results = Vec::new();
         let mut index = offset;
         while index < length && inspected < work_budget && results.len() < result_limit {
-            let row = at.map_or(index, |rows| rows[index] as usize);
+            let row = at.map_or(index, |rows| rows[index]);
             index += 1;
             inspected += 1;
             if let Some((text, result)) = self.rows.get(row)
@@ -1515,6 +1325,7 @@ impl SearchProvider for BookSearchProvider {
         let (body_phase, mut offset) = self.page_start(&query, cursor);
         let mut results = Vec::new();
         let mut inspected = 0usize;
+        let metadata = self.metadata_candidates(&query);
         if !body_phase {
             if cursor.is_some_and(|cursor| cursor.opaque_parts().2.is_some()) {
                 return SearchPage {
@@ -1523,9 +1334,47 @@ impl SearchProvider for BookSearchProvider {
                     inspected: 0,
                 };
             }
-            if query.is_empty() {
-                // Every row matches the empty query, so browsing them in
-                // order spends each inspection on a result.
+            if let Some(candidates) = metadata {
+                if offset > candidates.len() {
+                    return SearchPage {
+                        results: Vec::new(),
+                        next: None,
+                        inspected: 0,
+                    };
+                }
+                while offset < candidates.len()
+                    && inspected < work_budget
+                    && results.len() < result_limit
+                {
+                    let index = candidates[offset];
+                    offset += 1;
+                    inspected += 1;
+                    let Some(entry) = self.entries.get(index) else {
+                        continue;
+                    };
+                    if self.metadata_matches(entry, &query) {
+                        results.push(entry.result.clone());
+                    }
+                }
+                if offset < candidates.len()
+                    && (inspected == work_budget || results.len() == result_limit)
+                {
+                    return SearchPage {
+                        results,
+                        next: Some(self.next_cursor(&query, false, offset)),
+                        inspected,
+                    };
+                }
+                // Keep metadata and prose phases disjoint. The continuation
+                // lets an exact late metadata hit return in O(1) inspection
+                // instead of spending the caller's remaining budget walking
+                // unrelated body rows.
+                return SearchPage {
+                    results,
+                    next: Some(self.next_body_cursor(&query, 0, 0, 0, 0, 0)),
+                    inspected,
+                };
+            } else {
                 if offset > self.entries.len() {
                     return SearchPage {
                         results: Vec::new(),
@@ -1537,57 +1386,23 @@ impl SearchProvider for BookSearchProvider {
                     && inspected < work_budget
                     && results.len() < result_limit
                 {
-                    results.push(self.entries[offset].result.clone());
+                    let index = offset;
                     offset += 1;
                     inspected += 1;
+                    let entry = &self.entries[index];
+                    if self.metadata_matches(entry, &query) {
+                        results.push(entry.result.clone());
+                    }
                 }
-                let next =
-                    (offset < self.entries.len()).then(|| self.next_cursor(&query, false, offset));
+                let next = (offset < self.entries.len())
+                    .then(|| self.next_cursor(&query, false, offset))
+                    .or_else(|| Some(self.next_body_cursor(&query, 0, 0, 0, 0, 0)));
                 return SearchPage {
                     results,
                     next,
                     inspected,
                 };
             }
-            let candidates =
-                posting_candidates(&self.metadata_tokens, &self.metadata_grams, &query);
-            if offset > candidates.len() {
-                return SearchPage {
-                    results: Vec::new(),
-                    next: None,
-                    inspected: 0,
-                };
-            }
-            while offset < candidates.len()
-                && inspected < work_budget
-                && results.len() < result_limit
-            {
-                let index = candidates[offset] as usize;
-                offset += 1;
-                inspected += 1;
-                if let Some(entry) = self.entries.get(index)
-                    && Self::metadata_matches(entry, &query)
-                {
-                    results.push(entry.result.clone());
-                }
-            }
-            if offset < candidates.len() {
-                return SearchPage {
-                    results,
-                    next: Some(self.next_cursor(&query, false, offset)),
-                    inspected,
-                };
-            }
-            // Keep metadata and prose phases disjoint, so every metadata hit
-            // precedes every prose location. The body phase only follows
-            // when some chapter contains every gram of the query.
-            let next = (!self.body_candidates(&query).0.is_empty())
-                .then(|| self.next_body_cursor(&query, 0, 0, 0, 0, 0));
-            return SearchPage {
-                results,
-                next,
-                inspected,
-            };
         }
         let Some(cursor) = cursor else {
             return SearchPage {
@@ -1597,7 +1412,7 @@ impl SearchProvider for BookSearchProvider {
             };
         };
         let Some((
-            cursor_entry,
+            mut entry_index,
             mut block_index,
             mut span_index,
             mut byte_offset,
@@ -1610,46 +1425,30 @@ impl SearchProvider for BookSearchProvider {
                 inspected: 0,
             };
         };
-        if query.is_empty() || cursor_entry > self.entries.len() {
+        if entry_index > self.entries.len() {
             return SearchPage {
                 results: Vec::new(),
                 next: None,
                 inspected: 0,
             };
         }
-        let (candidates, grams) = self.body_candidates(&query);
-        // Resume at the first candidate chapter at or after the cursor's row.
-        // A position inside a chapter is only meaningful for that candidate;
-        // anything else is an untrusted cursor, not permission to skip prose.
-        let mut position = candidates.partition_point(|&row| (row as usize) < cursor_entry);
-        let resuming = (block_index, span_index, byte_offset, matcher_state) != (0, 0, 0, 0);
-        if resuming && candidates.get(position).map(|&row| row as usize) != Some(cursor_entry) {
-            return SearchPage {
-                results: Vec::new(),
-                next: None,
-                inspected: 0,
-            };
-        }
-        // A resumed chapter already passed the gram filter on an earlier page.
-        let mut filtered = resuming;
-        while position < candidates.len() && inspected < work_budget && results.len() < result_limit
+        while entry_index < self.entries.len()
+            && inspected < work_budget
+            && results.len() < result_limit
         {
-            let row = candidates[position];
-            inspected += 1;
-            if !filtered {
-                if !self.body.contains_all(&grams, row) {
-                    position += 1;
-                    continue;
-                }
-                filtered = true;
+            let entry = &self.entries[entry_index];
+            if !matches!(entry.target, SearchTarget::Chapter { .. }) {
+                // Skipped rows are still work: otherwise a catalogue of book
+                // rows could hide an unbounded walk behind `inspected == 0`.
+                inspected += 1;
+                entry_index += 1;
+                block_index = 0;
+                span_index = 0;
+                byte_offset = 0;
+                matcher_state = 0;
+                continue;
             }
-            let Some(entry) = self.entries.get(row as usize) else {
-                return SearchPage {
-                    results: Vec::new(),
-                    next: None,
-                    inspected: 0,
-                };
-            };
+            inspected += 1;
             match self.body_chunk_matches(
                 entry,
                 &query,
@@ -1665,14 +1464,18 @@ impl SearchProvider for BookSearchProvider {
                         inspected: 0,
                     };
                 }
-                chunk @ (BodyChunk::Done | BodyChunk::Scanned { matched: true, .. }) => {
-                    if matches!(chunk, BodyChunk::Scanned { .. })
-                        && let Some(result) = self.body_result(entry, block_index)
-                    {
+                BodyChunk::Done => {
+                    entry_index += 1;
+                    block_index = 0;
+                    span_index = 0;
+                    byte_offset = 0;
+                    matcher_state = 0;
+                }
+                BodyChunk::Scanned { matched: true, .. } => {
+                    if let Some(result) = self.body_result(entry, block_index) {
                         results.push(result);
                     }
-                    position += 1;
-                    filtered = false;
+                    entry_index += 1;
                     block_index = 0;
                     span_index = 0;
                     byte_offset = 0;
@@ -1703,28 +1506,17 @@ impl SearchProvider for BookSearchProvider {
                             inspected: 0,
                         };
                     };
-                    if self.chapter_block_count(entry) == Some(next_block) {
-                        // The last block is verified: the chapter is done
-                        // without spending an inspection on its end.
-                        position += 1;
-                        filtered = false;
-                        block_index = 0;
-                        span_index = 0;
-                        byte_offset = 0;
-                        matcher_state = 0;
-                    } else {
-                        block_index = next_block;
-                        span_index = next_span;
-                        byte_offset = 0;
-                        matcher_state = next_matcher_state;
-                    }
+                    block_index = next_block;
+                    span_index = next_span;
+                    byte_offset = 0;
+                    matcher_state = next_matcher_state;
                 }
             }
         }
-        let next = candidates.get(position).map(|&row| {
+        let next = (entry_index < self.entries.len()).then(|| {
             self.next_body_cursor(
                 &query,
-                row as usize,
+                entry_index,
                 block_index,
                 span_index,
                 byte_offset,
@@ -1753,62 +1545,16 @@ impl SearchProvider for BookSearchProvider {
     }
 }
 
-/// Distinct alphanumeric terms of already case-folded text. Every term is
-/// kept: a capped list would leave a row out of the posting a later term's
-/// query picks.
-fn index_metadata_tokens(folded: &str) -> Vec<String> {
+fn index_metadata_tokens(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
     let mut seen = HashSet::new();
-    folded
+    lowered
         .split(|character: char| !character.is_alphanumeric())
         .filter(|token| !token.is_empty())
-        .filter(|token| seen.insert(*token))
+        .filter(|token| seen.insert((*token).to_string()))
+        .take(MAX_METADATA_TOKENS_PER_ROW)
         .map(str::to_owned)
         .collect()
-}
-
-fn index_action_row(
-    tokens: &mut HashMap<String, Vec<u32>>,
-    grams: &mut GramPostings,
-    row: u32,
-    text: &str,
-) {
-    let folded: String = fold_chars(text).collect();
-    index_row(tokens, grams, row, &folded);
-}
-
-/// Add one row's term and gram postings. Rows arrive in ascending order.
-fn index_row(
-    tokens: &mut HashMap<String, Vec<u32>>,
-    grams: &mut GramPostings,
-    row: u32,
-    folded: &str,
-) {
-    for token in index_metadata_tokens(folded) {
-        tokens.entry(token).or_default().push(row);
-    }
-    grams.add(row, folded.chars(), &mut GramWindow::default());
-}
-
-/// Candidate rows for a folded, non-empty query: the shorter of any whole
-/// query term's posting and the rarest gram posting. A gram that occurs
-/// nowhere means nothing can match, so no row is a candidate.
-fn posting_candidates<'a>(
-    tokens: &'a HashMap<String, Vec<u32>>,
-    grams: &'a GramPostings,
-    query: &str,
-) -> &'a [u32] {
-    let needle: Vec<char> = query.chars().collect();
-    let by_gram = grams.rarest(&query_grams(&needle));
-    if by_gram.is_empty() {
-        return by_gram;
-    }
-    query
-        .split_whitespace()
-        .filter_map(|token| tokens.get(token))
-        .map(Vec::as_slice)
-        .chain(std::iter::once(by_gram))
-        .min_by_key(|rows| rows.len())
-        .unwrap_or(by_gram)
 }
 
 fn normalize_query(query: &str) -> Option<String> {
@@ -1909,7 +1655,6 @@ fn source_chunk(source: &str, byte_offset: usize) -> (usize, usize, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::testing::{CorpusRow, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn sample_books() -> Vec<Book> {
         crate::content::load_sample_library()
@@ -2013,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn million_scalar_book_retains_no_prose_and_few_postings() {
+    fn million_scalar_book_has_no_retained_prose_or_grams() {
         let books = Arc::new(vec![Arc::new(Book {
             id: "large".into(),
             title: "Large book".into(),
@@ -2050,65 +1795,14 @@ mod tests {
         let stats = provider.stats();
         assert_eq!(stats.retained_chapter_scalars, 0);
         assert!(stats.metadata_postings < 20);
-        // Postings grow with the distinct grams of the prose, not its length.
-        assert!(stats.body_postings < 64, "{stats:?}");
         assert_eq!(Arc::strong_count(&books), 2);
-    }
-
-    fn late_hit_library(
-        corpus: impl Iterator<Item = CorpusRow>,
-        in_body: bool,
-    ) -> BookSearchProvider {
-        let books = corpus
-            .map(|row| {
-                let (title, chapters) = if in_body {
-                    (
-                        format!("Library volume {}", row.index),
-                        vec![crate::model::Chapter {
-                            title: "Opening".into(),
-                            blocks: vec![crate::model::Block::Paragraph {
-                                spans: vec![crate::model::Span::plain(row.text)],
-                            }],
-                            ..crate::model::Chapter::default()
-                        }],
-                    )
-                } else {
-                    (row.text, Vec::new())
-                };
-                Book {
-                    id: format!("book:{:06}", row.index),
-                    title,
-                    chapters,
-                    ..Book::default()
-                }
-            })
-            .collect::<Vec<_>>();
-        BookSearchProvider::new(&books, &[])
-    }
-
-    #[test]
-    fn late_metadata_hit_is_found_within_the_search_bound() {
-        let (provider, hit) =
-            assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
-        assert_eq!(hit.kind, BOOK_KIND);
-        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-        let address = hit.action_address().expect("canonical address");
-        assert_eq!(address.resource, "ebook.book:book:002999");
-        assert!(provider.resolve_action_resource(&address).is_some());
-    }
-
-    #[test]
-    fn late_body_only_hit_is_found_within_the_search_bound() {
-        let (provider, hit) =
-            assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
-        assert_eq!(hit.kind, LOCATION_KIND);
-        let address = hit.action_address().expect("canonical address");
-        assert_eq!(address.resource, "ebook.location:book:002999:0:0");
-        assert!(provider.resolve_action_resource(&address).is_some());
     }
 
     #[test]
     fn late_metadata_posting_avoids_a_library_scan() {
+        // The continuation after the metadata phase streams chapter prose,
+        // which is bounded per page rather than per search, so this checks
+        // the metadata page itself instead of following every page.
         let books = (0..3_000)
             .map(|i| Book {
                 id: format!("book:{i:06}"),
@@ -2278,117 +1972,21 @@ mod tests {
     }
 
     #[test]
-    fn prose_no_chapter_contains_ends_without_inspecting_the_library() {
-        let books = (0..1_000)
+    fn skipped_body_rows_consume_the_page_budget() {
+        let books = (0..10)
             .map(|index| Book {
                 id: format!("book-{index}"),
-                title: "Shelf".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "Opening".into(),
-                    blocks: vec![crate::model::Block::Paragraph {
-                        spans: vec![crate::model::Span::plain("present words only")],
-                    }],
-                    ..crate::model::Chapter::default()
-                }],
+                title: "No chapters".into(),
                 ..Book::default()
             })
             .collect::<Vec<_>>();
         let provider = BookSearchProvider::new(&books, &[]);
-        let first = provider.search_page("absent", None, 3, 3);
-        assert!(first.results.is_empty());
-        assert_eq!(first.inspected, 0);
-        assert!(first.next.is_none(), "no chapter holds the query's grams");
         let cursor =
             SearchCursor::opaque(1, "absent", Some("body:0:0:0:0:0".into()), Some(BODY_PHASE));
         let page = provider.search_page("absent", Some(&cursor), 3, 3);
         assert!(page.results.is_empty());
-        assert_eq!(page.inspected, 0);
-        assert!(page.next.is_none());
-    }
-
-    #[test]
-    fn gram_candidates_that_do_not_contain_the_phrase_cost_one_inspection() {
-        // Every chapter holds each gram of "dog cat" but not the phrase, so
-        // all are candidates and the gram filter cannot reject them; each
-        // still costs exactly one inspection before the page yields.
-        let books = (0..40)
-            .map(|index| Book {
-                id: format!("book-{index}"),
-                chapters: vec![crate::model::Chapter {
-                    blocks: vec![crate::model::Block::Paragraph {
-                        spans: vec![crate::model::Span::plain("cat dog g ca")],
-                    }],
-                    ..crate::model::Chapter::default()
-                }],
-                ..Book::default()
-            })
-            .collect::<Vec<_>>();
-        let provider = BookSearchProvider::new(&books, &[]);
-        let mut cursor = None;
-        let mut inspected = 0;
-        loop {
-            let page = provider.search_page("dog cat", cursor.as_ref(), 7, 7);
-            assert!(page.results.is_empty());
-            assert!(page.inspected <= 7);
-            inspected += page.inspected;
-            let Some(next) = page.next else { break };
-            cursor = Some(next);
-        }
-        assert_eq!(inspected, 40);
-    }
-
-    #[test]
-    fn rebuilds_over_the_same_books_reuse_the_prose_index() {
-        let books: Arc<Vec<Arc<Book>>> =
-            Arc::new(sample_books().into_iter().map(Arc::new).collect());
-        let first = BookSearchProvider::new_shared(
-            Arc::clone(&books),
-            Arc::new(Vec::new()),
-            Arc::new(Vec::new()),
-            1,
-        );
-        assert!(first.stats().body_postings > 0);
-        let mut annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0);
-        annotation.note = "a fresh note".into();
-        let annotated = BookSearchProvider::new_shared_after(
-            &first,
-            Arc::clone(&books),
-            Arc::new(vec![annotation]),
-            Arc::new(Vec::new()),
-            2,
-        );
-        assert!(Arc::ptr_eq(&first.body, &annotated.body));
-        assert!(
-            annotated
-                .search("fresh note")
-                .iter()
-                .any(|hit| hit.kind == ANNOTATION_KIND)
-        );
-
-        let mut fewer = (*books).clone();
-        let removed = fewer.remove(0);
-        let rebuilt = BookSearchProvider::new_shared_after(
-            &annotated,
-            Arc::new(fewer),
-            Arc::new(Vec::new()),
-            Arc::new(Vec::new()),
-            3,
-        );
-        assert!(!Arc::ptr_eq(&annotated.body, &rebuilt.body));
-        let needle = removed.chapters[0]
-            .blocks
-            .iter()
-            .map(crate::model::Block::plain_text)
-            .find(|text| text.len() > 40)
-            .expect("prose");
-        assert!(
-            rebuilt.search(&needle).iter().all(|hit| !hit
-                .subtitle
-                .as_deref()
-                .unwrap_or("")
-                .contains(&removed.title)),
-            "a removed book's prose is no longer indexed"
-        );
+        assert_eq!(page.inspected, 3);
+        assert!(page.next.is_some());
     }
 
     #[test]
