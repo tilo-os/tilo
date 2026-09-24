@@ -264,7 +264,11 @@ foreign distributions. The kernel checks in
 and hold (results there). The core of the Tier 1 data plane — probes, journal,
 capture epochs, content format and placeholder hydration — is implemented in
 `crates/system/fs-native`; `tilo-fs-native probe <store>` selects the tier on a
-given machine.
+given machine. The storage daemon serves it (`fs serve|mount --data-plane
+auto|fuse|native --store /var/lib/tilo/store`, `crates/system/fs/src/native/`):
+at startup it checks the store volume, runs the probes (0.3–2.8 s on a loaded
+host) and serves Tier 1 when they hold, else FUSE; what the implementation
+proved or disproved is in [§6.9](#69-what-the-daemon-integration-established).
 
 FUSE remains for Tier 2/3 only. Exact-share recipients use the same native
 materialisation as everyone else, because a device only materialises records
@@ -450,6 +454,10 @@ These are general conventions, not tool rules:
 - Special files are never synced.
 - A directory containing a `CACHEDIR.TAG` with the standard signature
   (Cargo's `target/`, many caches) defaults to LocalOnly.
+- A file or directory carrying the `user.tilo.local` xattr is LocalOnly,
+  with everything below it (implemented). This and `CACHEDIR.TAG` are the
+  marks app and tool authors use for derived state
+  ([`docs/device-local-state.md`](../device-local-state.md)).
 - A per-directory `.tiloignore` and a Files toggle let the user exclude more.
 
 Whether other rebuildable trees such as `node_modules` sync by default is
@@ -492,6 +500,104 @@ a tmpfs it mounted, never on the Btrfs store, and cannot create a
 pre-content group at all, so the journal and hydration need `CAP_SYS_ADMIN`
 (and `CAP_DAC_READ_SEARCH` for `open_by_handle_at`); unprivileged code gets
 directory inode marks and snapshots of subvolumes it owns.
+
+### 6.9 What the daemon integration established
+
+The storage daemon serves Tier 1 from `crates/system/fs/src/native/`
+(`plane.rs` wires it; `project.rs` materialises remote versions; `lease.rs`,
+`state.rs`, `fetch.rs`). Local changes become the daemon's existing signed
+record operations through path-level entry points shared with the FUSE
+callbacks (`crates/system/fs/src/fs/native_ops.rs`). End-to-end tests run two
+daemons on two loop-mounted Btrfs stores
+(`crates/system/fs/tests/native_tier1.rs`, gated on
+`TILO_FS_NATIVE_STORES` and `CAP_SYS_ADMIN`, mandatory with
+`TILO_REQUIRE_FANOTIFY=1`). Numbers below are from that suite on 7.2.1 with a
+release daemon on a host at load average ~70 on 16 cores, so they are upper
+bounds.
+
+**Held as designed**
+
+- *Startup order.* Room subvolume, pre-content group, re-adoption of every
+  placeholder from its xattr, journal, first epoch, and only then the bind at
+  the workspace path. A restarted peer re-adopted a never-read placeholder and
+  served its bytes; while the daemon is stopped nothing is reachable at the
+  workspace path. The bind is also detached by `ExecStopPost` after a crash.
+  Probing takes 0.26–2.8 s; the first epoch and projection of an empty room
+  3–60 ms.
+- *Crash recovery.* Each epoch is persisted in `meta.redb` (retained
+  snapshot, journal position, node table, materialised versions) after its
+  changeset is applied; the previous snapshot is deleted only then. After a
+  `SIGKILL` and three changes made while stopped, the restart published
+  exactly those three in 829 ms by comparing inode metadata against the
+  persisted snapshot. A full metadata walk is cheap enough that the Btrfs
+  generation search (§6.4 step 5) remains an optimisation, not a need.
+- *Placeholders.* A 3 MiB remote file appeared with exact size and mtime and
+  no bytes; a cold sequential read ran at 95 MB/s (missing chunks fetched 16
+  at a time over one connection, with fs-native read-ahead; 8.5 MB/s with a
+  debug daemon).
+- *Git with no git code.* Three commits made on one device appear on the
+  other after 45 s; there `git fsck --strict` is clean, `git status` is clean
+  and does not rewrite the index. The only git-aware piece is configuration
+  (§17, Q4).
+- *Leases.* Detected from behaviour, carried in the namespace, enforced with
+  pre-content events (§11.2). A second writer gets `EBUSY` while readers
+  read; the lease moved to the other device 0.73–1.05 s after the holder
+  closed the file.
+
+**Found by the implementation**
+
+- *Ordering on the receiving side is the projector's job.* V3 assumed a peer
+  receives one author's changes in order. Namespace deltas do arrive in
+  order, but a signed record's content revision arrives through the record
+  mesh per record, in no particular order, and a record whose revision is not
+  verified yet reads as an empty file. The projector therefore applies files
+  in the order of their versions' times and stops at the first one it cannot
+  verify (or, for a small file, whose bytes it cannot fetch); the next pass
+  continues. With that, the ref-before-objects check held in every run.
+- *Order key.* Peers order by the version's time, which the author now
+  publishes as the file's own mtime (so that stat caches match, §17). A
+  version written with an older mtime than the record's previous one keeps
+  the previous time: signed metadata never goes backwards.
+- *The residual window of §10 is real for git.* One epoch captured `git add`
+  and `git commit` together. The index was rewritten after the ref update, so
+  its only published version sorts after the ref; the peer briefly showed the
+  new `HEAD` with no index, and a `git status` running at that moment wrote an
+  index, which the peer then published. The repository converged, but a tool
+  that writes while syncing can publish a transient state. Next step: order a
+  path created within an epoch by its first journal position rather than its
+  last, and materialise new paths as placeholders before any content in the
+  pass (V3 step 1), so a file that existed before a later change never
+  appears after it.
+- *Hydration must not move mtime.* Filling a placeholder writes, which moved
+  its mtime; the hydrator now restores it after each fill. Without that, `ls
+  -l` changed on read and git re-hashed every hydrated file.
+- *Pre-content events do not tell reads from writes* (see §11.2). Writers are
+  recognised from `/proc/<pid>/fdinfo`.
+- *The record plane, not the data plane, bounds sync.* Publishing costs 30–60
+  ms per file on the author (signed envelopes, versions, history). The mesh
+  pull opens a connection per record stream (~170 ms each) and re-projected
+  the whole repository after every pulled record, so a 51-file burst took
+  quadratic time (the 51st reconciliation alone 7.2 s); it now reconciles
+  only the pulled record and the whole repository once per pass. The
+  transfer engine of §9 (one connection per peer, batched pulls) is what
+  removes the remaining per-record round trips.
+- *Content is still stored twice.* The daemon chunks the snapshot file into
+  its existing content store (gear CDC, v1 manifests); capture therefore runs
+  with `hash_content = false` and the FastCDC manifests of §7 are unused until
+  the file-backed `ChunkStore` (§7.4) replaces the blob copy.
+
+**Not yet representable**
+
+- A rename is published as a removal and a creation, so the record's
+  identity and history do not follow the file. Capture already pairs renames
+  by inode; the next step is emitting them as moves.
+- Symlinks stay on the device that has them, and permission bits are not
+  replicated (files materialise as 0644, directories as 0755): the record
+  plane has no field for either yet.
+- Materialised files belong to the room directory's owner (`--native-owner
+  UID:GID` overrides). Tilo OS has no store volume yet, so the shipped service
+  selects FUSE; the installer step that creates the volume (Q1) must also give
+  the room to the local person.
 
 ---
 
@@ -885,6 +991,37 @@ mmap-written). [R9]
   file is quiescent, and always at the last close. The history of a busy
   database is therefore a set of crash-consistent checkpoints, not every
   transaction.
+
+**Implemented on Tier 1** (`crates/system/fs/src/native/lease.rs`):
+
+- Lease-class detection: a file whose journal shows a write without a create
+  or rename, whose inode survived the epoch, and whose new version still
+  shares extents with the previous snapshot (FIEMAP). A truncate-and-rewrite
+  allocates new extents and is not lease-class.
+- The lease is a `WriteLease {holder, epoch, expires_ms}` carried in the
+  namespace (one root-level register per record), so every device sees it in
+  causal order with the file's changes. A change of holder raises the epoch;
+  a renewal does not; a release keeps holder and epoch with a past expiry.
+- A lease-class file nobody holds is gated with `WriteGate::Ask`: the first
+  write of a session reaches the daemon through `FAN_PRE_ACCESS`, which takes
+  the lease before answering, and the gate is then lifted so the holder's I/O
+  raises no events. A file another device holds is gated with
+  `Deny(EBUSY)`; a new version of it is gated before it is renamed into place.
+  The lease is renewed every 20 s while the journal shows writes, released at
+  `CLOSE_WRITE` or after 5 s without writes, and lapses after 60 s offline.
+- **Measured:** pre-content events do not say whether an access reads or
+  writes. The daemon decides from the accessing process's descriptor table
+  (`/proc/<pid>/fdinfo`): a process holding the file `O_WRONLY`/`O_RDWR` is a
+  writer. Consequence: such a process gets `EBUSY` for reads too, so SQLite
+  opened read-write on the non-holding device fails to open the database
+  while a process opening it read-only reads normally.
+- Not yet: there is no authority. Two devices that take a free lease in the
+  same instant both write until the namespace merge picks one holder
+  (Automerge's deterministic register order); the loser is then gated. Versions
+  do not yet carry the lease epoch, so the loser's versions are not fenced
+  into a conflict — the next step is a `lease_epoch` field on
+  `FileVersionV1`/`ContentRevisionV1` checked by the record materializer, and
+  the host's lease authority over the record protocol.
 
 ---
 
@@ -1315,6 +1452,15 @@ must be general too. Options:
 
 The recommendation is (a). It needs the owner's decision because it touches
 the "no special-casing" rule.
+
+**Decided and shipped: (a).** `/etc/gitconfig` on Tilo OS includes
+`/usr/share/tilo/git/synced-worktree.gitconfig` (`core.trustctime=false`,
+`core.checkStat=minimal`). For it to work, a synced file's mtime must match
+its author's: the native data plane publishes the file's own mtime as the
+version's signed `observed_at` (never earlier than the record's previous
+one), and peers materialise it. With both, `git status` on the receiving
+device is clean and does not rewrite the index (tested,
+`crates/system/fs/tests/native_tier1.rs`).
 
 ---
 
