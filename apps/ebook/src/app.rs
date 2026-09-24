@@ -14441,7 +14441,7 @@ mod local_interaction_tests {
     }
 
     /// A book chosen through the host file picker loads through the per-frame
-    /// portal drain (the result is injected — no real dialog).
+    /// portal drain (a recording host answers it — no real dialog).
     #[test]
     fn a_picked_book_is_imported_and_opened_via_the_frame_drain() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14453,7 +14453,11 @@ mod local_interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty(), "starts empty");
 
-        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        app.request_open_via_portal();
+        assert_eq!(recorder.pick_requests()[0].title(), "Open a book");
         app.sync(&mut doc, &automerge::ROOT);
         wait_for_import(&mut app, &mut doc);
 

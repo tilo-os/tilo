@@ -4576,9 +4576,13 @@ mod tests {
         let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
 
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_import(ConnKind::WireGuard));
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Import WireGuard tunnel"
+        );
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);
@@ -4612,10 +4616,9 @@ mod tests {
         let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
         let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_local_provision(id));
         assert!(app.drain_import(&mut doc));
         assert_eq!(
             app.vault.connections.len(),
@@ -4639,8 +4642,9 @@ mod tests {
     fn cancelled_setup_cannot_capture_a_later_generic_import() {
         let (mut app, _doc) = demo_with_doc();
         let id = app.vault.selected.expect("demo selection");
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.request_local_provision(id));
         let mut doc = AutoCommit::new();
         assert!(!app.drain_import(&mut doc));
         assert_eq!(app.provision_target, None);

@@ -3397,8 +3397,8 @@ mod tests {
     }
 
     /// The portal Open → edit → Save round trip through real files on disk,
-    /// driving the exact per-frame `drain_io` the host chooser feeds via
-    /// injected outcomes (no D-Bus dialog). Opening loads an arbitrary `.typ`
+    /// driving the exact per-frame `drain_io` the host chooser feeds, answered
+    /// by a recording host (no D-Bus dialog). Opening loads an arbitrary `.typ`
     /// into the editor's CRDT; saving writes the current source to a chosen
     /// path.
     #[test]
@@ -3409,11 +3409,11 @@ mod tests {
         let src_path = dir.join("imported.typ");
         std::fs::write(&src_path, "= Imported\nHello from disk\n").unwrap();
 
-        // Inject an Open outcome and sync: the file loads into the CRDT source.
-        app.io = Some((
-            PendingIo::OpenTyp,
-            ui::portal::inject_for_test(PortalOutcome::Opened(src_path)),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+
+        // Answer the Open request and sync: the file loads into the CRDT source.
+        recorder.respond_to_pick(PortalOutcome::Opened(src_path));
+        ui::host::scoped(&services, || app.open(&doc));
         app.sync(&mut doc, &ROOT);
         assert!(
             app.io.is_none(),
@@ -3425,13 +3425,17 @@ mod tests {
             "the opened file's text became the editor source: {loaded:?}"
         );
 
-        // Inject a Save outcome for a new path and sync: the source is written.
+        // Answer the Save request with a new path and sync: the source is written.
         let out_path = dir.join("saved.typ");
-        app.io = Some((
-            PendingIo::SaveTyp,
-            ui::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
-        ));
+        recorder.respond_to_pick(PortalOutcome::Opened(out_path.clone()));
+        ui::host::scoped(&services, || app.save(&doc));
         app.sync(&mut doc, &ROOT);
+        let titles: Vec<_> = recorder
+            .pick_requests()
+            .iter()
+            .map(|r| r.title().to_string())
+            .collect();
+        assert_eq!(titles, ["Open a Typst file", "Save Typst file"]);
         let written = std::fs::read_to_string(&out_path).expect("the save wrote the file");
         assert_eq!(
             written,
@@ -3447,10 +3451,9 @@ mod tests {
     fn portal_cancel_is_silent() {
         let (mut app, mut doc) = fresh();
         let before = app.read_source(&doc);
-        app.io = Some((
-            PendingIo::OpenTyp,
-            ui::portal::inject_for_test(PortalOutcome::Cancelled),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.open(&doc));
         app.sync(&mut doc, &ROOT);
         assert!(app.io.is_none());
         assert_eq!(app.read_source(&doc), before, "cancel loads nothing");
@@ -3579,10 +3582,8 @@ mod tests {
     fn pending_native_dialog_has_a_stable_non_animation_deadline() {
         let (mut app, mut doc) = fresh();
         assert!(app.next_wake_deadline().is_none());
-        app.io = Some((
-            PendingIo::OpenTyp,
-            ui::portal::inject_for_test(PortalOutcome::Cancelled),
-        ));
+        let (services, _recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || app.open(&doc));
         let deadline = app
             .next_wake_deadline()
             .expect("file dialogs must complete without animation or further input");

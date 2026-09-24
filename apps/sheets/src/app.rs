@@ -9571,7 +9571,8 @@ mod tests {
 
     /// The portal drain path: a Save outcome writes the active sheet, and an
     /// Open outcome imports it back — driving the exact per-frame `drain_io`
-    /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
+    /// the host file chooser feeds, answered by a recording host (no D-Bus
+    /// dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-portal-{}", std::process::id()));
@@ -9581,11 +9582,11 @@ mod tests {
 
         let (mut app, mut doc) = seeded_app();
 
-        // Inject a Save outcome as though the user picked `path`, then drain.
-        app.io = Some((
-            PendingIo::Export(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
-        ));
+        // Answer the Save dialog as though the user picked `path`, then drain.
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.begin_export(Interchange::Csv));
+        assert!(recorder.pick_requests()[0].suggested_name().is_some());
         app.drain_io(&mut doc);
         // The file codec runs on the bounded worker. Drive the same frame pump
         // as a live app and wait by elapsed time, not an arbitrary count of
@@ -9603,12 +9604,11 @@ mod tests {
             app.status
         );
 
-        // Inject an Open outcome for the same path and drain: it imports a sheet.
+        // Answer an Open dialog with the same path and drain: it imports a sheet.
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path)),
-        ));
+        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || app.begin_import(Interchange::Csv));
+        assert_eq!(recorder.pick_requests().len(), 2);
         app.drain_io(&mut doc);
         sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
         assert_eq!(
@@ -9630,10 +9630,10 @@ mod tests {
     fn portal_cancel_is_silent() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Xlsx),
-            ui::portal::inject_for_test(PortalOutcome::Cancelled),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
+        assert!(app.io.is_some(), "import asked the host chooser");
         app.drain_io(&mut doc);
         assert!(app.io.is_none());
         assert_eq!(

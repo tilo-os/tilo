@@ -960,9 +960,23 @@ mod tests {
     fn portal_selected_folder_enters_the_scan_pipeline() {
         let mut app = DiskUsageApp::new();
         let selected = PathBuf::from("/portal-selected-folder");
-        app.picker_rx = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(selected.clone()),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(selected.clone()));
+        let payload = serde_json::to_vec(&DiskUsageOperation::Choose).unwrap_or_default();
+        let handled = ui::host::scoped(&services, || {
+            app.invoke_resource_operation_v2(
+                OperationKind::Effect,
+                OPERATION_TYPE,
+                &payload,
+                &AutoCommit::new(),
+                &ObjId::Root,
+            )
+            .unwrap_or_default()
+        });
+        assert!(handled.is_some());
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1);
+        assert!(picks[0].is_directory());
         let mut document = AutoCommit::new();
         assert!(app.update(&mut document, &ObjId::Root));
         assert!(matches!(app.view, View::Loading(ref path) if path == &selected));

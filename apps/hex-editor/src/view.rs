@@ -300,13 +300,6 @@ impl HexView {
         self.path.as_deref()
     }
 
-    /// Test hook: feed a portal open/save outcome through the *real* drain
-    /// path, exactly as the worker thread would deliver it. Lets the e2e suite
-    /// exercise the production open flow without a live host file chooser.
-    pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
-        self.open_rx = Some(ui::portal::inject_for_test(outcome));
-    }
-
     /// Place the initial cursor at `offset`. Useful for opening a file
     /// "at" a field of interest. Clamped to the buffer.
     #[must_use]

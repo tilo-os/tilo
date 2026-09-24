@@ -385,8 +385,6 @@ pub struct MusicApp {
     pending_media_handoff: Option<PendingMediaHandoff>,
     local_file: Option<crate::local_file::LocalFile>,
     local_file_pick: Option<(tilo_actions::InvocationId, PortalChannel)>,
-    #[cfg(test)]
-    test_local_file_pick: Option<PortalOutcome>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -753,8 +751,6 @@ impl MusicApp {
             pending_media_handoff: None,
             local_file: device_profile.local_file,
             local_file_pick: None,
-            #[cfg(test)]
-            test_local_file_pick: None,
             cover_pick: None,
             cover_pick_for: None,
             cover_embed: None,
