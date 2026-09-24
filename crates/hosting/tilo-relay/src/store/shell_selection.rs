@@ -246,6 +246,9 @@ pub(crate) struct Selection {
     child: Option<fs::ReadDir>,
     active_lineage: Option<std::ffi::OsString>,
     old_scan: Option<File>,
+    // Originals the previous CURRENT already published as extras. A later
+    // serial prefix waiting for its own pairs must keep preserving them.
+    old_extras: std::collections::BTreeSet<[u8; 32]>,
     sorter: Sorter,
     inventory: Option<PathBuf>,
     input: Option<File>,
@@ -366,6 +369,7 @@ impl Selection {
             child: None,
             active_lineage: None,
             old_scan,
+            old_extras: std::collections::BTreeSet::new(),
             sorter: Sorter::new(scratch.join("shell-sort"))?,
             inventory: None,
             input: None,
@@ -596,7 +600,13 @@ impl Selection {
         }
     }
     fn stage_or_preserve_extra(&mut self, meta: &Meta, value: &Frame) -> Result<(), StoreError> {
-        if self.fallback && !self.staging_incomplete_pair {
+        // A serial prefix may wait durably for its missing checkpoint pairs,
+        // but an Original the previous CURRENT already published as an extra
+        // is no longer waiting: a later serial or maintenance selection in
+        // fallback must keep preserving it, or rewriting CURRENT drops it.
+        let waiting_pair =
+            self.staging_incomplete_pair && !self.old_extras.contains(&value.identity());
+        if self.fallback && !waiting_pair {
             if value.kind == RoomInput::Checkpoint
                 && !self.incoming.contains(&input_identity(
                     value.source,
@@ -673,11 +683,13 @@ impl Selection {
                 }
                 if let Some(file) = &mut self.old_scan {
                     if let Some(mut meta) = read_meta(file)? {
-                        if meta
-                            .key
-                            .first()
-                            .is_some_and(|v| v == "extra" || v == "tail")
-                        {
+                        if meta.key.first().is_some_and(|v| v == "extra") {
+                            if let Some(value) = self.read(&meta)? {
+                                self.old_extras.insert(value.identity());
+                            }
+                            return Ok(Step::More);
+                        }
+                        if meta.key.first().is_some_and(|v| v == "tail") {
                             return Ok(Step::More);
                         }
                         meta.key = vec!["0".into(), format!("{:016x}", self.ordinal).into()];

@@ -5779,7 +5779,10 @@ mod private_transport_tests {
         )
         .await
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), reached)
+        // A liveness guard, not a latency budget: this 32-record all-Original
+        // selection alone takes about 2 s in an unoptimized build, so a 2 s
+        // bound failed on timing whenever the machine was busy.
+        tokio::time::timeout(std::time::Duration::from_secs(30), reached)
             .await
             .unwrap_or_else(|_| {
                 let source_disconnect = match source_disconnected.try_recv() {
