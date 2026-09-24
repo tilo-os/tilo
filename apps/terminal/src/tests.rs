@@ -65,8 +65,8 @@ fn fake_device_id() -> winit::event::DeviceId {
 
 /// Construct a terminal widget with a writer that funnels bytes
 /// into a channel so tests can assert what was sent to the PTY.
-fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>) {
-    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
     impl Write for ChanWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.send(buf.to_vec());
@@ -76,9 +76,9 @@ fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>)
             Ok(())
         }
     }
-    let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
-    let (_pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+    let (_pty_out_tx, pty_out_rx) = std::sync::mpsc::channel();
     let widget = TerminalWidget::new(
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
@@ -93,10 +93,10 @@ fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>)
 /// snaps the scrollback viewport back to the live bottom on fresh output).
 fn build_test_widget_io() -> (
     TerminalWidget,
-    crossbeam_channel::Receiver<Vec<u8>>,
-    crossbeam_channel::Sender<Vec<u8>>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    std::sync::mpsc::Sender<Vec<u8>>,
 ) {
-    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
     impl Write for ChanWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.send(buf.to_vec());
@@ -106,9 +106,9 @@ fn build_test_widget_io() -> (
             Ok(())
         }
     }
-    let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
-    let (pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+    let (pty_out_tx, pty_out_rx) = std::sync::mpsc::channel();
     let widget = TerminalWidget::new(
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
@@ -142,7 +142,7 @@ fn embedded_terminal_only_requests_frames_for_queued_output() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
-fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
+fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
         out.extend_from_slice(&b);
@@ -401,7 +401,7 @@ fn test_terminal_grid_init() {
 
     let state = State::new();
     let mut doc = state.doc;
-    let (_output_tx, output_rx) = crossbeam_channel::unbounded();
+    let (_output_tx, output_rx) = std::sync::mpsc::channel();
     let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
     let mut widget = TerminalWidget::new(
@@ -746,7 +746,7 @@ fn terminal_widget_remembers_palette_after_inspection_hooks() {
         }
     }
 
-    let (_output_tx, output_rx) = crossbeam_channel::unbounded();
+    let (_output_tx, output_rx) = std::sync::mpsc::channel();
     let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
     let widget = TerminalWidget::new(

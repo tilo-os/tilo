@@ -84,8 +84,8 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-    use crossbeam_channel::Receiver;
     use portable_pty::{MasterPty, PtySize};
+    use std::sync::mpsc::Receiver;
     use taffy::{NodeId, TaffyTree};
     use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
@@ -130,7 +130,7 @@ mod tests {
     /// widget's own tests use — the real `handle_event` → `write_input` path runs
     /// unchanged.
     fn build_test_widget() -> (TerminalWidget, Receiver<Vec<u8>>) {
-        struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+        struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
         impl Write for ChanWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 let _ = self.0.send(buf.to_vec());
@@ -140,9 +140,9 @@ mod tests {
                 Ok(())
             }
         }
-        let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
-        let (_pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+        let (_pty_out_tx, pty_out_rx) = std::sync::mpsc::channel();
         let widget = TerminalWidget::new(
             Arc::new(Mutex::new(writer)),
             Arc::new(Mutex::new(Box::new(MockMaster))),
@@ -582,7 +582,7 @@ mod tests {
 
         let writer: Arc<Mutex<Box<dyn Write + Send>>> =
             Arc::new(Mutex::new(Box::new(FailingWriter)));
-        let (_out_tx, out_rx) = crossbeam_channel::unbounded();
+        let (_out_tx, out_rx) = std::sync::mpsc::channel();
         let mut widget =
             TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
         let doc = AutoCommit::new();
@@ -627,7 +627,7 @@ mod tests {
             let _guard = poison.lock().expect("writer lock before injected panic");
             panic!("inject poisoned PTY writer");
         }));
-        let (_out_tx, out_rx) = crossbeam_channel::unbounded();
+        let (_out_tx, out_rx) = std::sync::mpsc::channel();
         let mut widget =
             TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
         let doc = AutoCommit::new();
