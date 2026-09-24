@@ -45,6 +45,8 @@ mod concept_parity_spec;
 mod control_socket_test;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
+#[path = "dbus_runtime_context.rs"]
+mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
 #[path = "dmabuf_direct_capture_path.rs"]
