@@ -16,10 +16,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now;
 use zeroize::Zeroizing;
 
 use crate::{AccountId, Secret, SecretCustody, SecretVault};
@@ -86,7 +86,7 @@ impl SecretItem {
         username: impl Into<String>,
         password: impl Into<String>,
     ) -> Self {
-        let now = now_unix();
+        let now = unix_now();
         Self {
             id: SecretId::new(),
             kind: SecretItemKind::Login,
@@ -106,12 +106,6 @@ impl SecretItem {
         self.origins.insert(canonical_origin(origin)?);
         Ok(())
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// Typed password-manager view over the shared encrypted container.
@@ -170,7 +164,7 @@ impl SecretStore {
     }
 
     pub fn put(&mut self, item: &mut SecretItem) -> Result<(), BrokerError> {
-        item.updated_unix = now_unix();
+        item.updated_unix = unix_now();
         let payload =
             Zeroizing::new(serde_json::to_string(item).map_err(|_| BrokerError::CorruptItem)?);
         let key = AccountId::new(format!("{ITEM_PREFIX}{}", item.id.0));
@@ -327,7 +321,7 @@ impl CredentialGrant {
             app_id: key.app_id,
             item_id: key.item_id,
             origin: key.origin,
-            created_unix: now_unix(),
+            created_unix: unix_now(),
         }
     }
 

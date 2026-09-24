@@ -1,7 +1,7 @@
 //! Presentation and navigation helpers for retained shell history.
 
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use crate::shell::notification::{Notification, NotificationSeverity};
 
@@ -66,14 +66,6 @@ pub(super) fn clipboard_history_matches_query(
     query
         .split_whitespace()
         .all(|term| searchable.contains(term))
-}
-
-pub(super) fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 pub(super) fn notification_severity_label(severity: NotificationSeverity) -> &'static str {

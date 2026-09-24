@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now;
 
 /// Whether a layer survives the end of its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,7 +151,7 @@ impl Store {
             name: name.to_string(),
             base: base.to_string(),
             kind,
-            created: now_secs(),
+            created: unix_now(),
             stacked_on,
             note: String::new(),
         };
@@ -348,12 +349,6 @@ fn validate_name(name: &str) -> Result<()> {
         bail!("layer name may only contain letters, digits, '-', '_' and '.'");
     }
     Ok(())
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 fn dirs_data_home() -> Option<PathBuf> {

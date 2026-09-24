@@ -26,6 +26,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use tilo_clock::unix_now;
 
 /// The OAuth providers we preset for. Both are IMAP/SMTP mail providers that
 /// require OAuth rather than a password.
@@ -276,13 +277,6 @@ pub fn xoauth2_sasl(user: &str, access_token: &str) -> String {
 /// uses).
 pub fn base64_standard(input: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(input)
-}
-
-/// Wall-clock unix seconds (0 if the clock is before the epoch).
-pub fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// Exchange an authorization `code` for tokens at the provider's token

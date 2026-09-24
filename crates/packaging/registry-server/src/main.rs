@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
+use tilo_clock::unix_now;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -400,7 +401,7 @@ fn cmd_authorize_channel(
         pubkey_hex: hex::encode(publisher),
         can_add_new: row.can_add_new,
     }];
-    let now = now_unix();
+    let now = unix_now();
     if let Some(current) = storage.load_channel_authorization()? {
         if generation < current.generation {
             anyhow::bail!("channel authorization generation cannot move backwards");
@@ -588,7 +589,7 @@ where
     });
     let staged = StagedPromotion {
         publisher_pubkey_hex,
-        collected_at_unix: now_unix(),
+        collected_at_unix: unix_now(),
         submissions,
         artifacts,
     };
@@ -645,7 +646,7 @@ fn cmd_sign_delegated_snapshot(
     registry_types::verify_channel_authorization(
         &authorization,
         &identity.owner_pubkey_hex,
-        now_unix(),
+        unix_now(),
     )?;
     if valid_for_seconds == 0 || valid_for_seconds > authorization.max_snapshot_validity_seconds {
         anyhow::bail!("snapshot validity exceeds the delegated authorization");
@@ -722,7 +723,7 @@ fn cmd_publish_staged_first_party(
     registry_types::verify_channel_authorization(
         &authorization,
         &identity.owner_pubkey_hex,
-        now_unix(),
+        unix_now(),
     )?;
     if valid_for_seconds == 0 || valid_for_seconds > authorization.max_snapshot_validity_seconds {
         anyhow::bail!("snapshot validity exceeds the delegated authorization");
@@ -853,7 +854,7 @@ fn cmd_publish_staged_first_party(
         &journal.submissions,
         &journal.reviewer,
         &journal.reason,
-        now_unix(),
+        unix_now(),
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
@@ -956,7 +957,7 @@ fn unsigned_snapshot(
         ),
         None => (1, String::new()),
     };
-    let issued_at_unix = now_unix();
+    let issued_at_unix = unix_now();
     Ok(SignedRegistrySnapshot {
         protocol: SNAPSHOT_PROTOCOL,
         sequence,
@@ -1019,7 +1020,7 @@ fn cmd_sign_snapshot(
     publishers.sort_by(|left, right| left.pubkey_hex.cmp(&right.pubkey_hex));
     let mut entries = storage.load_entries()?;
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
-    let issued_at_unix = now_unix();
+    let issued_at_unix = unix_now();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: SNAPSHOT_PROTOCOL,
         sequence,
@@ -1086,7 +1087,7 @@ fn cmd_rollback_snapshot(
         }
     }
 
-    let issued_at_unix = now_unix();
+    let issued_at_unix = unix_now();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: SNAPSHOT_PROTOCOL,
         sequence: current
@@ -1256,7 +1257,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             let pending = require_pending(&moderation, &package_id)?;
             let _inspection = inspect_for_decision(&pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
-            let record = moderation.approve(&pending, reviewer, reason, now_unix(), &allowlist)?;
+            let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
@@ -1264,7 +1265,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
         } => {
-            let record = moderation.reject(&package_id, reviewer, reason, now_unix())?;
+            let record = moderation.reject(&package_id, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Quarantine {
@@ -1272,7 +1273,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
         } => {
-            let record = moderation.quarantine(&package_id, reviewer, reason, now_unix())?;
+            let record = moderation.quarantine(&package_id, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Restore {
@@ -1285,7 +1286,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                 &package_id,
                 reviewer,
                 reason,
-                now_unix(),
+                unix_now(),
                 &allowlist,
             )?;
             println!("{}", serde_json::to_string_pretty(&record)?);
@@ -1315,13 +1316,6 @@ fn inspect_for_decision(
         ..InspectionPolicy::default()
     };
     inspect_entry(&pending.change.entry, policy).map_err(Into::into)
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// `Cmd::Serve` — load the identity + allowlist and serve until ctrl-c.

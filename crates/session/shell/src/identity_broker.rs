@@ -20,9 +20,10 @@ use collab_types::{
 };
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
+use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
-use crate::shell::state::{RoomId, WorkspaceTreeHandle, now_unix};
+use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
 pub struct IdentityBrokerHandle {
     path: PathBuf,
@@ -197,7 +198,7 @@ fn sign(
             &resource,
             Verb::Write,
             &workspace.capabilities,
-            Some(now_unix()),
+            Some(unix_now()),
         ) == CapDecision::Allow
     };
     if !allowed {
@@ -330,7 +331,7 @@ fn sign_collaboration_op(
             &resource,
             required,
             &workspace.capabilities,
-            Some(now_unix()),
+            Some(unix_now()),
         );
         let role_allows = role_permits(role, ArtifactKind::Note, op.op_class);
         drop(tree);

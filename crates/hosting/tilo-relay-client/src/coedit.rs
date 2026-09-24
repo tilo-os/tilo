@@ -43,9 +43,9 @@
 //! any workspace-directory delta.
 
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_ns;
 
 use crate::client::RelayClient;
-use tilo_relay_protocol::auth::now_ns;
 use tilo_relay_protocol::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
@@ -272,7 +272,7 @@ impl RelayCoeditSession {
                 author_device_public_key: self.author,
                 // Metadata only: the host orders its pending queue by its
                 // own delivery seq.
-                authored_at_ns: now_ns(),
+                authored_at_ns: unix_now_ns(),
                 delta,
                 // The op-level signature (for the signed variant) lives
                 // inside the CoeditPayload; the envelope-level slot is

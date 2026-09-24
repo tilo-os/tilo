@@ -22,6 +22,7 @@ default = ["live-capture"]
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
+tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata

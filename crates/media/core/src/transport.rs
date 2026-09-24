@@ -25,8 +25,9 @@ use tilo_automerge::ApplyIncoming;
 pub const DRIFT_SEEK_THRESHOLD_MS: u64 = 500;
 
 /// A snapshot of collaborative playback state. `epoch_ms` is a wall-clock
-/// timestamp (unix millis via [`crate::now_ms`]) so followers on other machines
-/// can project the playhead forward to their own "now".
+/// timestamp in unix millis (`tilo_clock::unix_now_ms`), not a monotonic one,
+/// so followers on other machines can project the playhead forward to their
+/// own "now".
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransportState {
     /// Whether the host is playing (vs. paused).

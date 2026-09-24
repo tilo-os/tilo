@@ -14,12 +14,13 @@ use std::sync::{Arc, Mutex};
 
 use iroh::endpoint::{Connection, Endpoint};
 use iroh_base::EndpointAddr;
+use tilo_clock::unix_now_ns;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::frame::{FrameReader, read_frame, write_frame};
-use tilo_relay_protocol::auth::{self, AuthError, AuthenticatedPeer, Hello, HelloAck, now_ns};
+use tilo_relay_protocol::auth::{self, AuthError, AuthenticatedPeer, Hello, HelloAck};
 use tilo_relay_protocol::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
     DISCOVERY_ALPN, Envelope, HomePeerManagementRequest, HomePeerManagementResponse,
@@ -144,7 +145,13 @@ impl RelayClient {
         .await?;
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
-        auth::verify_hello_ack(&ack, &expected_server_user, &revocations, now_ns(), &nonce)?;
+        auth::verify_hello_ack(
+            &ack,
+            &expected_server_user,
+            &revocations,
+            unix_now_ns(),
+            &nonce,
+        )?;
         if ack.cert.device_public_key != expected_server_device {
             return Err(ClientError::Auth(AuthError::PolicyReject));
         }
@@ -302,8 +309,10 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => auth::verify_hello_ack(&ack, user, &revocations, now_ns(), &nonce)?,
-            None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns(), &nonce)?,
+            Some((user, _)) => {
+                auth::verify_hello_ack(&ack, user, &revocations, unix_now_ns(), &nonce)?
+            }
+            None => auth::verify_pinned_host_ack(&ack, &revocations, unix_now_ns(), &nonce)?,
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
@@ -480,7 +489,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now = now_ns();
+        let now = unix_now_ns();
         let relay_peer = match expected_server_user.as_ref() {
             Some(expected_user) => {
                 let relay_peer =

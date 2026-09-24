@@ -14,6 +14,7 @@ use std::time::Duration;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, PublicKey};
+use tilo_clock::{unix_now, unix_now_ms, unix_now_ns};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
@@ -30,7 +31,7 @@ use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::frame::{read_frame, write_frame};
 use crate::metrics::Metrics;
 use crate::peer::{
-    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns, run_peer,
+    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer,
 };
 use crate::policy::TrustPolicy;
 use crate::transport::{
@@ -58,20 +59,6 @@ fn full_replica_proof(path: &std::path::Path) -> Option<FullReplicaStatusProof> 
                 && !proof.filesystem_endpoints.is_empty()
                 && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
         })
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 /// Failure modes for `Relay::start`.
@@ -529,7 +516,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         ));
     }
     let mut collaborators = Vec::new();
-    let now = unix_now_secs();
+    let now = unix_now();
     for workspace in bundle.workspaces {
         let ticket = fs::Ticket::decode(&workspace.ticket)
             .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
@@ -1056,7 +1043,7 @@ fn spawn_home_peer_authority_refresh(
                 &live_policy,
                 &workspaces,
                 &mut state,
-                unix_now_secs(),
+                unix_now(),
             )
             .await;
         }
@@ -1129,7 +1116,7 @@ fn push_peer_relay_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: J
 }
 
 fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
-    verify_device_cert_at(&identity.device_cert, now_ns())
+    verify_device_cert_at(&identity.device_cert, unix_now_ns())
         .map_err(|error| RelayError::Identity(format!("invalid host certificate: {error}")))?;
     if identity.device_cert.user_public_key != identity.user_public_key {
         return Err(RelayError::Identity(
@@ -1231,7 +1218,7 @@ impl ProtocolHandler for ManagementProtocol {
             &self.own_user_pk,
             &TrustPolicy::AllowMatchingUser,
             &revocations,
-            crate::peer::now_ns(),
+            unix_now_ns(),
         )
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
@@ -1385,7 +1372,7 @@ impl ProtocolHandler for DiscoveryProtocol {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             &revocations,
-            crate::peer::now_ns(),
+            unix_now_ns(),
         )
         .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut nonce = [0; 32];
@@ -1538,7 +1525,7 @@ async fn handle_conn(
         .map_err(|e| RelayError::Iroh(format!("read hello: {e}")))?;
     let hello: Hello = postcard::from_bytes(&hello_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
-    let now_ns = crate::peer::now_ns();
+    let now_ns = unix_now_ns();
     let revs = ctx
         .revocations
         .read()
@@ -1883,7 +1870,7 @@ async fn handle_peer_relay_envelope(
             if let Some(ws) = ws {
                 let mut wr = ws.lock_owned().await;
                 let raw = delta.clone();
-                let seq = now_ns();
+                let seq = unix_now_ns();
                 let author = *author_device_public_key;
                 let env = env.clone();
                 // Persistence and the document merge block; see `handle_delta`.
@@ -1923,7 +1910,7 @@ async fn handle_peer_relay_envelope(
                     map.get(workspace_id).cloned()
                 };
                 if let Some(ws) = ws {
-                    let seq = now_ns();
+                    let seq = unix_now_ns();
                     let _ = ws
                         .lock()
                         .await
@@ -2831,7 +2818,7 @@ mod tests {
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: user.public_key,
             revoked_device_public_key: host.public_key,
-            revoked_at_ns: now_ns(),
+            revoked_at_ns: unix_now_ns(),
             reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };

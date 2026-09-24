@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tilo_clock::unix_now;
 
 use tilo_app_package::{
     BlobFetcher, BlobHash, BlobSink, HashingReader, PackageId, PackageMeta, Tapp, TappError,
@@ -66,12 +67,6 @@ pub struct Removed {
 #[derive(Clone, Debug)]
 pub struct PackageStore {
     layout: Layout,
-}
-
-pub(crate) fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Holds the store's exclusive lock until dropped.

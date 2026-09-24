@@ -2,6 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
+use tilo_clock::{unix_now, unix_now_i64};
 
 mod fs_authority;
 mod local_app_records;
@@ -429,16 +430,6 @@ pub struct GovernedPeerIdentity {
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
-/// Seconds since the Unix epoch — the clock this compositor answers
-/// capability expiry against. An unset clock reads as 0, making every
-/// `AtUnix` capability look live — safe for a *grant*, unsafe for a
-/// *restriction*, so write restrictions without an expiry.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// The model's authority questions answered at this machine's clock. The
 /// model takes `now` explicitly; this is the one place the compositor
 /// supplies it.
@@ -525,42 +516,42 @@ impl WorkspaceAuthority for Workspace {
         policy: desktop_policy::WorkspaceDefaultPolicy,
         resolver: &desktop_policy::DefaultAppResolver<'_>,
     ) -> Result<(), WorkspaceDefaultError> {
-        self.set_default_app_policy_as_at(actor, resource, policy, resolver, now_unix())
+        self.set_default_app_policy_as_at(actor, resource, policy, resolver, unix_now())
     }
     fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
-        self.app_capabilities_at(app_id, now_unix())
+        self.app_capabilities_at(app_id, unix_now())
     }
     fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        self.app_grants_snapshot_at(now_unix())
+        self.app_grants_snapshot_at(unix_now())
     }
     fn has_app_grants(&self) -> bool {
-        self.has_app_grants_at(now_unix())
+        self.has_app_grants_at(unix_now())
     }
     fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        self.app_grant_ids_at(app_id, now_unix())
+        self.app_grant_ids_at(app_id, unix_now())
     }
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        self.decide_at(actor, resource, verb, now_unix())
+        self.decide_at(actor, resource, verb, unix_now())
     }
     fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.allows_at(actor, resource, verb, now_unix())
+        self.allows_at(actor, resource, verb, unix_now())
     }
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        self.grant_as_at(grantor, cap, now_unix())
+        self.grant_as_at(grantor, cap, unix_now())
     }
     fn save_permission_profile_as(
         &mut self,
         actor: &UserId,
         profile: PermissionProfile,
     ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_at(actor, profile, now_unix())
+        self.save_permission_profile_as_at(actor, profile, unix_now())
     }
     fn save_permission_profile_as_actor(
         &mut self,
         actor: &Actor,
         profile: PermissionProfile,
     ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor_at(actor, profile, now_unix())
+        self.save_permission_profile_as_actor_at(actor, profile, unix_now())
     }
     fn assign_permission_profile_as(
         &mut self,
@@ -569,7 +560,7 @@ impl WorkspaceAuthority for Workspace {
         subject: &Subject,
         expiry: Expiry,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, now_unix())
+        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, unix_now())
     }
     fn assign_permission_profile_as_actor(
         &mut self,
@@ -578,34 +569,34 @@ impl WorkspaceAuthority for Workspace {
         subject: &Subject,
         expiry: Expiry,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, now_unix())
+        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, unix_now())
     }
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.revoke_as_at(revoker, id, now_unix())
+        self.revoke_as_at(revoker, id, unix_now())
     }
     fn may_administer(&self, user: &UserId) -> bool {
-        self.may_administer_at(user, now_unix())
+        self.may_administer_at(user, unix_now())
     }
     fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
-        self.transfer_owner_as_at(current_owner, new_owner, now_unix())
+        self.transfer_owner_as_at(current_owner, new_owner, unix_now())
     }
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        self.role_of_at(user, now_unix())
+        self.role_of_at(user, unix_now())
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        self.actor_for_person_at(user, now_unix())
+        self.actor_for_person_at(user, unix_now())
     }
     fn roster(&self) -> Vec<(UserId, CapRole)> {
-        self.roster_at(now_unix())
+        self.roster_at(unix_now())
     }
     fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, now_unix())
+        self.role_of_agent_at(agent, unix_now())
     }
     fn agent_members(&self) -> Vec<(String, CapRole)> {
-        self.agent_members_at(now_unix())
+        self.agent_members_at(unix_now())
     }
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        self.shares_of_at(resource, now_unix())
+        self.shares_of_at(resource, unix_now())
     }
 }
 
@@ -668,14 +659,6 @@ impl FreshId for StripId {
 pub struct NativeDocumentReference {
     pub provider_id: String,
     pub path: std::path::PathBuf,
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .unwrap_or_default()
 }
 
 fn bounded_receipt_text(value: &str, max: usize) -> String {
@@ -3071,7 +3054,7 @@ impl WorkspaceTree {
             actor,
             context,
             status,
-            unix_now(),
+            unix_now_i64(),
         )
     }
 
@@ -3149,7 +3132,7 @@ impl WorkspaceTree {
                     .map(|receipt| receipt.completed_at)
                     .max()
             })
-            .unwrap_or_else(unix_now)
+            .unwrap_or_else(unix_now_i64)
             .saturating_add(1);
         self.append_workspace_effect_receipt_at(
             workspace_id,
