@@ -27,10 +27,13 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
+use tilo_test_env::ScopedEnv;
+
+use crate::support::{isolated_options, roomtest_payload};
 
 const PACKAGE: &str = "so.tilo.envtest";
 
@@ -49,22 +52,6 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ),
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
-
-fn build_fixture(out_dir: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/roomtest/src/main.rs");
-    let bin = out_dir.join("bin").join("roomtest");
-    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-    let status = std::process::Command::new("rustc")
-        .arg("--edition=2021")
-        .arg("-O")
-        .arg(&src)
-        .arg("-o")
-        .arg(&bin)
-        .status()
-        .expect("invoke rustc");
-    assert!(status.success(), "rustc failed to build the fixture");
-    bin
-}
 
 fn manifest() -> MinimalManifest {
     MinimalManifest {
@@ -119,38 +106,16 @@ fn bwrap() -> PathBuf {
 /// Variables set on *this* process for the duration of one test, put
 /// back afterwards — what the launcher carries when it builds the
 /// launch is the whole subject here.
-struct ParentEnv {
-    previous: Vec<(String, Option<std::ffi::OsString>)>,
-}
-
-impl ParentEnv {
-    fn with(vars: &[(&str, &str)]) -> Self {
-        let mut previous = Vec::new();
-        for (k, v) in vars {
-            previous.push(((*k).to_string(), std::env::var_os(k)));
-            // SAFETY: every caller is in the `process_env` serial group, and
-            // `Drop` restores what was there.
-            unsafe { std::env::set_var(k, v) };
-        }
-        Self { previous }
+fn parent_env(vars: &[(&str, &str)]) -> ScopedEnv {
+    let mut env = ScopedEnv::new();
+    for (key, value) in vars {
+        env.set(key, value);
     }
+    env
 }
 
-impl Drop for ParentEnv {
-    fn drop(&mut self) {
-        for (k, previous) in self.previous.drain(..) {
-            // SAFETY: as above.
-            unsafe {
-                match previous {
-                    Some(v) => std::env::set_var(&k, v),
-                    None => std::env::remove_var(&k),
-                }
-            }
-        }
-    }
-}
-
-fn run(payload: &Path, argv: &[&str]) -> String {
+fn run(argv: &[&str]) -> String {
+    let data = tempfile::tempdir().unwrap();
     let opts = RunOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
@@ -159,9 +124,9 @@ fn run(payload: &Path, argv: &[&str]) -> String {
             command: "roomtest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
-        ..RunOptions::default()
+        ..isolated_options(data.path())
     };
-    let (status, out) = run_with_captured(&manifest(), payload, &opts).expect("launch");
+    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -171,8 +136,8 @@ fn run(payload: &Path, argv: &[&str]) -> String {
 }
 
 /// Every variable name the sandboxed process has, from its own `environ`.
-fn env_names_inside(payload: &Path) -> Vec<String> {
-    let line = run(payload, &["envall"]);
+fn env_names_inside() -> Vec<String> {
+    let line = run(&["envall"]);
     let names = line
         .strip_prefix("ENVALL ")
         .unwrap_or_else(|| panic!("fixture did not answer envall: {line:?}"));
@@ -185,14 +150,10 @@ fn env_names_inside(payload: &Path) -> Vec<String> {
 
 /// The launcher's environment does not become the app's.
 #[test]
-#[serial_test::serial(process_env)]
 fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
-
     let mut planted: Vec<(&str, &str)> = vec![(MARKER, "the-parent-was-here")];
     planted.extend_from_slice(SESSION_PRIVATE);
-    let _env = ParentEnv::with(&planted);
+    let _env = parent_env(&planted);
 
     // Without this the test would pass on a launcher that never had the
     // variable to leak in the first place.
@@ -203,7 +164,7 @@ fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
          tell a cleared environment from an empty one"
     );
 
-    let inside = env_names_inside(payload.path());
+    let inside = env_names_inside();
 
     assert!(
         !inside.iter().any(|k| k == MARKER),
@@ -226,12 +187,8 @@ fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
 /// the point, since the leak this closes was exactly a variable nobody
 /// had thought of.
 #[test]
-#[serial_test::serial(process_env)]
 fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
-
-    let _env = ParentEnv::with(&[
+    let _env = parent_env(&[
         ("EDITOR", "vi"),
         ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
         ("XDG_SESSION_TYPE", "wayland"),
@@ -286,7 +243,7 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
             .map(std::string::ToString::to_string),
     );
 
-    let inside = env_names_inside(payload.path());
+    let inside = env_names_inside();
     assert!(
         !inside.is_empty(),
         "the fixture reported no environment at all, which would make every \
@@ -309,14 +266,10 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
 /// not the session's — clearing the environment without putting the
 /// locale back would leave every app in the C locale.
 #[test]
-#[serial_test::serial(process_env)]
 fn the_users_locale_is_carried_across_explicitly() {
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
+    let _env = parent_env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
 
-    let _env = ParentEnv::with(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
-
-    let lang = run(payload.path(), &["env", "LANG"]);
+    let lang = run(&["env", "LANG"]);
     assert_eq!(
         lang, "ENV LANG=en_US.UTF-8",
         "the session's locale must reach the app; without it every app answers \
@@ -329,14 +282,10 @@ fn the_users_locale_is_carried_across_explicitly() {
 /// could name a writable directory that decides which binary the
 /// app's `exec` resolves to.
 #[test]
-#[serial_test::serial(process_env)]
 fn path_is_the_sandboxes_own() {
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
+    let _env = parent_env(&[("PATH", "/home/somebody/bin:/usr/bin")]);
 
-    let _env = ParentEnv::with(&[("PATH", "/home/somebody/bin:/usr/bin")]);
-
-    let path = run(payload.path(), &["env", "PATH"]);
+    let path = run(&["env", "PATH"]);
     assert_eq!(
         path,
         format!("ENV PATH={}", launcher::sandbox::SANDBOX_PATH),
@@ -348,14 +297,10 @@ fn path_is_the_sandboxes_own() {
 /// too: without `RUST_LOG` a sandboxed app falls back to errors only,
 /// its only account of what happened inside it.
 #[test]
-#[serial_test::serial(process_env)]
 fn the_sessions_logging_preference_reaches_the_app() {
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
+    let _env = parent_env(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
 
-    let _env = ParentEnv::with(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
-
-    let seen = run(payload.path(), &["env", "RUST_LOG"]);
+    let seen = run(&["env", "RUST_LOG"]);
     assert_eq!(
         seen, "ENV RUST_LOG=info,file_explorer::drag=debug",
         "the session's log filter must reach the app; without it every app \

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stand-in for xdg-dbus-proxy: invoked as `<bus-address> <socket> <filters...>`.
+# Creates the socket path the launcher waits for, then stays alive until
+# signalled. exec, not a backgrounded child: the guard signals and reaps
+# this pid, and a child of a shell it killed would be orphaned.
+: >"$2"
+if [ -x /usr/bin/sleep ]; then
+    exec /usr/bin/sleep infinity
+fi
+if [ -x /bin/sleep ]; then
+    exec /bin/sleep infinity
+fi
+exit 1
