@@ -379,6 +379,33 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+      # Pull requests usually compare with a main commit whose workspace-wide
+      # Clippy diagnostics the clippy-base job below already recorded. Bind the
+      # record to that exact commit, the builder image, the toolchain and the
+      # compiler flags; any miss makes clippy-diff.sh lint a fresh base checkout.
+      - name: Resolve the recorded Clippy base key
+        id: clippy-base-key
+        if: matrix.arch == 'x86_64'
+        continue-on-error: true
+        env:
+          CLIPPY_BASE: ${{ needs.select.outputs.base }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$CLIPPY_BASE" --image "$BUILDER_IMAGE")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          printf 'CLIPPY_BASE_CACHE=%s\nCLIPPY_BASE_CACHE_KEY=%s\n' \
+            "$PWD/target/ci/clippy-base.json" "$key" >> "$GITHUB_ENV"
+
+      - name: Restore the recorded Clippy base diagnostics
+        if: matrix.arch == 'x86_64' && steps.clippy-base-key.outputs.key != ''
+        continue-on-error: true
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: target/ci/clippy-base.json
+          key: ${{ steps.clippy-base-key.outputs.key }}
+
       # Lint the exact same reverse-dependency closure at the selected base and
       # at HEAD. Historical diagnostics in an otherwise untouched dependant do
       # not make an unrelated change impossible to merge, while compiler errors
@@ -432,6 +459,60 @@ jobs:
             /cargo-home/registry/cache
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+
+  # Record the complete workspace's Clippy diagnostics for each main commit.
+  # Pull requests based on that commit restore the record instead of linting a
+  # fresh base checkout (see tools/ci/clippy-diff.sh). The record only speeds
+  # later comparisons, so it is deliberately not part of the aggregate.
+  clippy-base:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [builder]
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Record workspace Clippy diagnostics
+        id: record
+        continue-on-error: true
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$GITHUB_SHA" --image "$BUILDER_IMAGE")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          bash tools/ci/measure.sh "clippy workspace record" -- \
+            bash scripts/ci-run.sh "Clippy workspace diagnostics record" -- \
+            tools/ci/clippy-diff.sh --export-base target/ci/clippy-base.json "$key"
+
+      - name: Save workspace Clippy diagnostics
+        if: steps.record.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: target/ci/clippy-base.json
+          key: ${{ steps.record.outputs.key }}
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache clippy-base" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     if: always()
