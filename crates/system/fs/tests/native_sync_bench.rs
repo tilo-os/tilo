@@ -576,6 +576,7 @@ fn one_large_file() {
         (std::fs::metadata(&target).ok()?.len() == size).then_some(())
     });
     let visible = t0.elapsed();
+    eprintln!("reading the large file cold on the peer");
     let t1 = Instant::now();
     {
         let mut f = std::fs::File::open(&target).unwrap();
