@@ -8750,6 +8750,7 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
+ "qdoc",
  "runtime-dylib",
  "runtime-portal-xdg",
  "serde",
