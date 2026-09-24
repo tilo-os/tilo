@@ -5,14 +5,20 @@ In-VM builds also keep one build dir per worktree.
 
 ```sh
 tilo-vm status              # free space, layer bytes, build dir bytes
-tilo-vm gc --dry-run        # what would go
+tilo-vm gc --dry-run        # what would go, and what stays and why
 tilo-vm gc                  # remove it
 tilo-vm gc --keep-targets 0 # also evict every build dir not in use
+tilo-vm gc --min-age 0      # also unreferenced layers younger than an hour
 ```
 
 `gc` keeps the current generation and the newest `keep_generations` (default
 5) of every slot, then deletes layers no kept generation references. Layers
-younger than an hour survive, because another agent may be about to swap one.
+younger than an hour survive, because another agent may be about to swap one;
+gc lists each one it kept that way, with its component and when it becomes
+eligible. `--min-age <age>` (`0`, `30m`, `1h`, `2d`) changes that limit for
+one run: `--min-age 0` clears your own orphaned layers (a build you never
+swapped, a slot you removed) at once, but only use it when no other agent is
+mid-swap on this VM.
 
 Build dirs (`/var/lib/tilo-vm/src/<worktree>/target`) are evicted least
 recently used first: all but the newest `keep_targets` (default 2), and more

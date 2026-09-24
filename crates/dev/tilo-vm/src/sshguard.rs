@@ -69,8 +69,8 @@ fn is_guarded(path: &str) -> bool {
 
 /// The path part of `host:/path` (scp, rsync) or `key=/path` (dd of=).
 fn path_of(word: &str) -> &str {
-    match word.find(['=', ':']) {
-        Some(at) if !word.starts_with('/') => &word[at + 1..],
+    match word.split_once(['=', ':']) {
+        Some((_, path)) if !word.starts_with('/') => path,
         _ => word,
     }
 }
@@ -78,7 +78,7 @@ fn path_of(word: &str) -> &str {
 /// Split at `;`, `&&`, `||`, `|`, `&`, newlines, backticks and parentheses;
 /// quotes are dropped so the inside of `sh -c '...'` is read as commands.
 fn segments(line: &str) -> Vec<Vec<String>> {
-    let mut spaced = String::with_capacity(line.len() * 2);
+    let mut spaced = String::with_capacity(line.len().saturating_mul(2));
     for c in line.chars() {
         match c {
             ';' | '|' | '&' | '\n' | '`' | '(' | ')' => {
@@ -102,11 +102,12 @@ fn segments(line: &str) -> Vec<Vec<String>> {
 
 /// A redirection into a guarded place: `> /etc/x`, `>>/usr/y`, `2>/boot/z`.
 fn redirect(words: &[String]) -> Option<String> {
-    words.iter().enumerate().find_map(|(i, word)| {
-        let at = word.find('>')?;
-        let target = word[at..].trim_start_matches(['>', '&', '|']);
+    let following = words.iter().skip(1).map(Some).chain([None]);
+    words.iter().zip(following).find_map(|(word, next)| {
+        let (_, after) = word.split_once('>')?;
+        let target = after.trim_start_matches(['>', '&', '|']);
         let target = if target.is_empty() {
-            words.get(i + 1).map_or("", String::as_str)
+            next.map_or("", String::as_str)
         } else {
             target
         };
@@ -123,6 +124,7 @@ fn operands(words: &[String]) -> Vec<&str> {
         .collect()
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per kind of writer")]
 fn simple_command(words: &[String]) -> Option<String> {
     if let Some(write) = redirect(words) {
         return Some(write);
@@ -131,18 +133,19 @@ fn simple_command(words: &[String]) -> Option<String> {
     let mut start = 0;
     while let Some(word) = words.get(start) {
         let name = word.rsplit('/').next().unwrap_or(word);
+        let after = start.saturating_add(1);
         if WRAPPERS.contains(&name) || (word.contains('=') && !word.starts_with('-')) {
-            start += 1;
+            start = after;
             while words.get(start).is_some_and(|w| w.starts_with('-')) {
-                start += 1;
+                start = start.saturating_add(1);
             }
-        } else if SHELLS.contains(&name) && words.get(start + 1).is_some_and(|w| w == "-c") {
-            start += 2;
+        } else if SHELLS.contains(&name) && words.get(after).is_some_and(|w| w == "-c") {
+            start = after.saturating_add(1);
         } else {
             break;
         }
     }
-    let words = &words[start..];
+    let words = words.get(start..)?;
     let program = words.first()?;
     let name = program.rsplit('/').next().unwrap_or(program).to_owned();
     let args: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
@@ -152,8 +155,10 @@ fn simple_command(words: &[String]) -> Option<String> {
     if COPIERS.contains(&name) {
         let target = args
             .windows(2)
-            .find(|w| w[0] == "-t" || w[0] == "--target-directory")
-            .map(|w| w[1])
+            .find_map(|pair| match pair {
+                [flag, dir] if *flag == "-t" || *flag == "--target-directory" => Some(*dir),
+                _ => None,
+            })
             .or_else(|| {
                 args.iter()
                     .find_map(|a| a.strip_prefix("--target-directory="))
