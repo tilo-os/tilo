@@ -133,7 +133,11 @@ pub enum CliError {
     #[error("building on the host needs Linux; this host runs {os}")]
     HostBuildUnsupported { os: String },
     #[error("the VM's image cannot build: it has no {}", missing.join(", "))]
-    VmCannotBuild { missing: Vec<String> },
+    VmCannotBuild {
+        missing: Vec<String>,
+        /// Whether the VM has bootc (so vm upgrade can bring a toolchain).
+        bootc: Option<bool>,
+    },
     #[error("no dev disk is published for tag '{tag}' ({url})")]
     NoDiskPublished {
         tag: String,
@@ -285,9 +289,13 @@ impl CliError {
             ),
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
-            Self::CommandFailed { .. } => {
-                "the command's own output above names the cause; rerun it by hand to iterate".into()
+            // A command that explained itself needs no advice beyond reading it.
+            Self::CommandFailed { stderr, .. } if !stderr.is_empty() => {
+                "the command's own message above names the cause".into()
             }
+            Self::CommandFailed { command, .. } => format!(
+                "it printed no reason here; rerun it by hand to see its full output: {command}"
+            ),
             Self::Unsupported { alternative, .. } => alternative.clone(),
             Self::NoManifest { .. } => {
                 "run from a Tilo worktree that has os/components.toml, or swap a prebuilt layer: --from layer:<hash>".into()
@@ -322,11 +330,17 @@ impl CliError {
             Self::HostBuildUnsupported { .. } => {
                 "build in the VM instead: tilo-vm swap <component> --builder vm   (the default)".into()
             }
-            Self::VmCannotBuild { .. } if cfg!(target_os = "linux") => {
-                "build on this host: tilo-vm swap <component> --builder host   |   or move the VM to a dev image with a toolchain: tilo-vm vm upgrade".into()
-            }
-            Self::VmCannotBuild { .. } => {
-                "move the VM to a dev image with a toolchain: tilo-vm vm upgrade   |   or swap a CI build: --from ci:<tag>".into()
+            Self::VmCannotBuild { bootc, .. } => {
+                let image = if *bootc == Some(true) {
+                    "move the VM to a dev image with a toolchain: tilo-vm vm upgrade"
+                } else {
+                    "use a VM created from a current dev image, which has the toolchain: tilo-vm vm create <name>"
+                };
+                if cfg!(target_os = "linux") {
+                    format!("build on this host: tilo-vm swap <component> --builder host   |   or {image}")
+                } else {
+                    format!("{image}   |   or swap a CI build: --from ci:<tag>")
+                }
             }
             Self::NoDiskPublished { tag, local_build, .. } if tag != "(any)" => format!(
                 "pick a published tag (tilo-vm vm create <name> without --tag takes the newest)   |   {}",
@@ -629,6 +643,16 @@ mod tests {
             CliError::HostBuildUnsupported { os: "macos".into() },
             CliError::VmCannotBuild {
                 missing: vec!["cargo".into()],
+                bootc: Some(true),
+            },
+            CliError::VmCannotBuild {
+                missing: vec!["cargo".into()],
+                bootc: Some(false),
+            },
+            CliError::CommandFailed {
+                command: "c".into(),
+                status: "1".into(),
+                stderr: "ls: cannot access '/x': No such file or directory".into(),
             },
             CliError::NoDiskPublished {
                 tag: "main-abc1234".into(),
@@ -925,6 +949,36 @@ mod tests {
             upgradable.contains("tilo-vm vm upgrade dev"),
             "{upgradable}"
         );
+    }
+
+    #[test]
+    fn only_a_silent_failure_is_worth_rerunning_by_hand() {
+        let failed = |stderr: &str| CliError::CommandFailed {
+            command: "rsync a b".into(),
+            status: "exit 1".into(),
+            stderr: stderr.into(),
+        };
+        let explained = failed("rsync: No such file or directory").hint();
+        assert!(!explained.contains("rerun"), "{explained}");
+        let silent = failed("").hint();
+        assert!(silent.contains("rerun it by hand"), "{silent}");
+        assert!(silent.contains("rsync a b"), "{silent}");
+    }
+
+    #[test]
+    fn a_vm_that_cannot_build_gets_vm_upgrade_only_with_bootc() {
+        let hint = |bootc| {
+            CliError::VmCannotBuild {
+                missing: vec!["cargo".into()],
+                bootc,
+            }
+            .hint()
+        };
+        assert!(hint(Some(true)).contains("tilo-vm vm upgrade"));
+        for bootc in [Some(false), None] {
+            assert!(!hint(bootc).contains("vm upgrade"), "{}", hint(bootc));
+            assert!(hint(bootc).contains("tilo-vm vm create <name>"));
+        }
     }
 
     #[test]
