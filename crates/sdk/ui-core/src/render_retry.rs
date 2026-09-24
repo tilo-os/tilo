@@ -2,8 +2,8 @@
 #[cfg(feature = "native")]
 use super::FrameOutcome;
 #[cfg(feature = "native")]
-use std::time::Duration;
-use std::time::Instant;
+use crate::time::Duration;
+use crate::time::Instant;
 
 #[cfg(feature = "native")]
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn occlusion_backoff_caps_and_eventually_probes_without_exposure() {
         let mut state = RenderRetryState::default();
-        let mut now = Instant::now();
+        let mut now = crate::time::now();
         for delay in [
             16_666_667,
             33_333_334,
@@ -189,7 +189,7 @@ mod tests {
     }
     #[test]
     fn non_occlusion_outcomes_preserve_cadence_and_reset_streak() {
-        let now = Instant::now();
+        let now = crate::time::now();
         for outcome in [
             FrameOutcome::Skipped,
             FrameOutcome::Reconfigured,
@@ -215,7 +215,7 @@ mod tests {
     }
     #[test]
     fn explicit_probe_survives_old_outcomes_and_buffer_deferral() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut state = RenderRetryState::default();
         for _ in 0..8 {
             state.observe(FrameOutcome::Occluded, now);
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn selected_wait_defers_each_render_demand_but_preserves_model_and_visible_sibling() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let retry = now + Duration::from_millis(250);
         for demand in [
             WakeDemand {
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn explicit_events_preserve_normal_idle_but_request_retry_recovery() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut state = RenderRetryState::default();
         assert!(
             !state.request_probe(),
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn visible_sibling_limits_retry_without_erasing_occlusion_history() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut state = RenderRetryState::default();
         for _ in 0..8 {
             state.observe(FrameOutcome::Occluded, now);
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn overdue_widget_timer_waits_for_probe_without_losing_deadline() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let retry = now + Duration::from_millis(250);
         assert_eq!(
             widget_deadline(Some(now - FRAME_INTERVAL), Some(retry)),

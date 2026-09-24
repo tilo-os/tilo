@@ -28,9 +28,9 @@
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
 
+use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -288,7 +288,7 @@ impl RichTextEditor {
         self.dirty = true;
         self.redraw = true;
         self.layout_dirty = true;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
     }
 
     /// `None` when the document write itself fails (e.g. `parent` turned out

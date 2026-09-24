@@ -15188,6 +15188,7 @@ dependencies = [
  "uuid",
  "vello",
  "vello_encoding",
+ "web-time",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",

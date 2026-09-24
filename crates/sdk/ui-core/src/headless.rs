@@ -77,7 +77,7 @@ pub enum Action {
     /// and asynchronous model delegates without timing sleeps.
     WaitForNamed {
         target: String,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
     },
     /// Require semantic output or state at this exact point in a scenario.
     Expect(SemanticExpectation),
@@ -143,7 +143,7 @@ fn semantic_action_name(action: &crate::a11y::Action) -> &'static str {
 pub struct SemanticExpectation {
     pub target: String,
     pub semantic_target: Option<String>,
-    pub timeout: Option<std::time::Duration>,
+    pub timeout: Option<crate::time::Duration>,
     pub role: Option<String>,
     pub name: Option<String>,
     pub name_contains: Option<String>,
@@ -178,7 +178,7 @@ impl SemanticExpectation {
     /// Drive live-equivalent frames until this assertion matches or the
     /// explicit bound expires. Without this, assertions are immediate.
     #[must_use]
-    pub fn within(mut self, timeout: std::time::Duration) -> Self {
+    pub fn within(mut self, timeout: crate::time::Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
@@ -1367,7 +1367,7 @@ impl FrameHarness {
         self.tick_records();
         self.root.update(&mut self.state.doc, &self.state.root);
         self.tick_records();
-        let t_sync = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
         self.root.sync(&mut self.state.doc, &self.state.root);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
@@ -1397,7 +1397,7 @@ impl FrameHarness {
         let view = self.root.view_state();
         let mut first = true;
         settle_widget_composition(viewport_changed, |rebuild| {
-            let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             // Preserve the existing action-driven relayout contract; additional
             // refreshes occur only for viewport or explicit structure changes.
             if first || rebuild {
@@ -1505,7 +1505,7 @@ impl FrameHarness {
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
-            let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_apply = self.profiler.as_ref().map(|_| crate::time::now());
             if self.history_chrome_enabled {
                 self.apply_history_frame();
             } else if let Some(history) = &mut self.history {
@@ -1574,7 +1574,7 @@ impl FrameHarness {
         // enabled state the user would see.
         self.publish_undo_status();
 
-        let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
         if let Some(history) = &mut self.history {
             history.draw(
@@ -1684,7 +1684,7 @@ impl FrameHarness {
     /// millisecond-scale tests.
     pub fn wait_until(
         &mut self,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         self.relayout();
@@ -1693,17 +1693,17 @@ impl FrameHarness {
         if condition(self) {
             return true;
         }
-        let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+        let Some(deadline) = crate::time::now().checked_add(timeout) else {
             return false;
         };
-        while std::time::Instant::now() < deadline {
+        while crate::time::now() < deadline {
             self.relayout();
             self.idle_control_tick();
             self.relayout();
             if condition(self) {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::time::Duration::from_millis(1));
         }
         false
     }
@@ -1713,7 +1713,7 @@ impl FrameHarness {
     /// # Errors
     /// Returns an error instead of capturing an unfinished placeholder when
     /// the work does not complete within `timeout`.
-    pub fn wait_for_visuals(&mut self, timeout: std::time::Duration) -> Result<(), String> {
+    pub fn wait_for_visuals(&mut self, timeout: crate::time::Duration) -> Result<(), String> {
         if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
             Ok(())
         } else {
@@ -1729,7 +1729,7 @@ impl FrameHarness {
     pub fn wait_for_named(
         &mut self,
         name: &str,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
     ) -> Result<(), String> {
         self.pump_component_wakes();
         if self.wait_until(timeout, |driver| driver.targets().contains_key(name)) {
@@ -2778,7 +2778,7 @@ impl FrameHarness {
         let standalone_input = self.history_event(event, &mut handled, &mut focus_target);
         history_input |= standalone_input;
         let _standalone_frame = FrameworkInputFrame::new(&self.framework_input, standalone_input);
-        let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_event = self.profiler.as_ref().map(|_| crate::time::now());
         if !standalone_input {
             if let Some(history) = &mut self.history {
                 history.route_event(
@@ -4101,12 +4101,12 @@ fn action_from_wire(action: tilo_headless_schema::Action) -> Action {
         Wire::Modifiers(modifiers) => Action::Modifiers(modifiers),
         Wire::WaitForNamed { target, timeout_ms } => Action::WaitForNamed {
             target,
-            timeout: std::time::Duration::from_millis(timeout_ms),
+            timeout: crate::time::Duration::from_millis(timeout_ms),
         },
         Wire::Expect(expected) => Action::Expect(SemanticExpectation {
             target: expected.target,
             semantic_target: expected.semantic_target,
-            timeout: expected.timeout_ms.map(std::time::Duration::from_millis),
+            timeout: expected.timeout_ms.map(crate::time::Duration::from_millis),
             role: expected.role,
             name: expected.name,
             name_contains: expected.name_contains,
@@ -4157,7 +4157,7 @@ fn drive_spec_actions(
     tilo_startup_metrics::mark("headless-actions-start");
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
-    if !driver.wait_until(std::time::Duration::from_secs(10), |driver| {
+    if !driver.wait_until(crate::time::Duration::from_secs(10), |driver| {
         !driver.root.has_pending_control_invocation()
             && driver.pending_control_invocations.is_empty()
             && driver.bound_invocations.is_empty()
@@ -5002,13 +5002,13 @@ mod tests {
         assert!(matches!(
             &spec.actions[8],
             Action::WaitForNamed { target, timeout }
-                if target == "result" && *timeout == std::time::Duration::from_millis(750)
+                if target == "result" && *timeout == crate::time::Duration::from_millis(750)
         ));
         assert!(matches!(
             &spec.actions[9],
             Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout: Some(timeout), .. })
                 if target == "result" && role == "static_text"
-                    && *timeout == std::time::Duration::from_secs(1)
+                    && *timeout == crate::time::Duration::from_secs(1)
         ));
         assert!(matches!(
             &spec.actions[10],
@@ -5143,14 +5143,14 @@ mod tests {
         driver
             .perform(&Action::WaitForNamed {
                 target: "ready".into(),
-                timeout: std::time::Duration::from_millis(10),
+                timeout: crate::time::Duration::from_millis(10),
             })
             .expect("an already-present target succeeds immediately");
 
         let error = driver
             .perform(&Action::WaitForNamed {
                 target: "never-appears".into(),
-                timeout: std::time::Duration::from_millis(1),
+                timeout: crate::time::Duration::from_millis(1),
             })
             .unwrap_err();
         assert!(error.contains("1 ms"), "{error}");
@@ -5195,7 +5195,7 @@ mod tests {
                 &SemanticExpectation::named("items-tree")
                     .semantic_target("node:2")
                     .name("Still wrong")
-                    .within(std::time::Duration::from_millis(2)),
+                    .within(crate::time::Duration::from_millis(2)),
             )
             .unwrap_err();
         assert!(timeout.contains("timed out after 2 ms"), "{timeout}");
@@ -5957,7 +5957,7 @@ mod tests {
                 actions: vec![
                     Action::WaitForNamed {
                         target: "record-ready".into(),
-                        timeout: std::time::Duration::from_secs(2),
+                        timeout: crate::time::Duration::from_secs(2),
                     },
                     Action::Perform {
                         target: "record-ready".into(),
@@ -6106,7 +6106,7 @@ mod tests {
                     actions: vec![
                         Action::WaitForNamed {
                             target: "record-ready".into(),
-                            timeout: std::time::Duration::from_secs(2),
+                            timeout: crate::time::Duration::from_secs(2),
                         },
                         Action::Perform {
                             target: "record-ready".into(),
@@ -6202,7 +6202,7 @@ mod tests {
                     let spec = Spec {
                         actions: vec![Action::WaitForNamed {
                             target: "record-ready".into(),
-                            timeout: std::time::Duration::from_secs(2),
+                            timeout: crate::time::Duration::from_secs(2),
                         }],
                         ..Spec::default()
                     };
@@ -6235,17 +6235,17 @@ mod tests {
             command.creation_flags(0x0800_0000);
         }
         let mut child = command.spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(45);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
             }
-            if std::time::Instant::now() >= deadline {
+            if crate::time::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 panic!("record restart regression timed out");
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         };
         assert!(
             status.success(),

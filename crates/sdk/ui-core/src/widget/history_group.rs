@@ -18,8 +18,8 @@
 //! and never split or extended automatically. Named ranges nest one level
 //! ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for concurrent naming.
 
+use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
 
 use collab_types::OpClass;
 
@@ -664,8 +664,8 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use collab_types::ArtifactKind;
-    use std::time::Duration;
 
     fn entry(id: u8, author: &str, secs: u64, op: OpClass) -> HistoryEntry {
         let mut bytes = [0u8; 16];

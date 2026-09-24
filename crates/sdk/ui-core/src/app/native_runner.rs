@@ -720,7 +720,7 @@ impl AppHandler {
                 | FrameOutcome::Reconfigured
                 | FrameOutcome::Skipped
                 | FrameOutcome::Occluded => {
-                    render.retry.observe(outcome, Instant::now());
+                    render.retry.observe(outcome, crate::time::now());
                 }
                 FrameOutcome::SurfaceGone => return false,
             }
@@ -728,7 +728,7 @@ impl AppHandler {
         match crate::render_thread::prepare_frame(
             &mut render.retry,
             &mut render.buffers,
-            Instant::now(),
+            crate::time::now(),
         ) {
             Ok(true) => {}
             Ok(false) => return true,
@@ -831,7 +831,7 @@ impl AppHandler {
                     .request_inner_size(native_floating_logical_size(rect));
             }
             existing.desktop_rect = rect;
-            existing.prepared_at = Instant::now();
+            existing.prepared_at = crate::time::now();
             existing.adopted = false;
             existing.suspended = false;
             existing.window.set_visible(true);
@@ -872,7 +872,7 @@ impl AppHandler {
             window,
             render: None,
             render_init: None,
-            prepared_at: Instant::now(),
+            prepared_at: crate::time::now(),
             adopted: false,
             suspended: false,
         });
@@ -1101,7 +1101,7 @@ impl AppHandler {
                 | FrameOutcome::Reconfigured
                 | FrameOutcome::Skipped
                 | FrameOutcome::Occluded => {
-                    render.retry.observe(outcome, Instant::now());
+                    render.retry.observe(outcome, crate::time::now());
                 }
                 FrameOutcome::SurfaceGone => return false,
             }
@@ -1109,7 +1109,7 @@ impl AppHandler {
         match crate::render_thread::prepare_frame(
             &mut render.retry,
             &mut render.buffers,
-            Instant::now(),
+            crate::time::now(),
         ) {
             Ok(true) => {}
             Ok(false) => return true,
@@ -1241,7 +1241,7 @@ impl AppHandler {
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
         let native_redraw_entry = self
             .native_input_origin
-            .map(|origin| (origin, Instant::now()));
+            .map(|origin| (origin, crate::time::now()));
         // Capture only the initial frame attempts, not steady-state redraws.
         // An early return leaves its final marker absent rather than inventing
         // a completed stage. A later successful submission ends capture.
@@ -1265,7 +1265,7 @@ impl AppHandler {
         }
         let visible_sibling = self.visible_auxiliary_needs_shared_root();
         if visible_sibling {
-            self.primary_retry.keep_shared_cadence(Instant::now());
+            self.primary_retry.keep_shared_cadence(crate::time::now());
         }
         let Some(render) = self.render.as_mut() else {
             return;
@@ -1281,14 +1281,14 @@ impl AppHandler {
                     self.last_primary_frame_presented = self.primary_frames_completed;
                     self.primary_retry.observe_for_shared_root(
                         outcome,
-                        Instant::now(),
+                        crate::time::now(),
                         visible_sibling,
                     );
                 }
                 FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
                     self.primary_retry.observe_for_shared_root(
                         outcome,
-                        Instant::now(),
+                        crate::time::now(),
                         visible_sibling,
                     );
                 }
@@ -1348,7 +1348,7 @@ impl AppHandler {
         match crate::render_thread::prepare_frame(
             &mut self.primary_retry,
             &mut render.buffers,
-            Instant::now(),
+            crate::time::now(),
         ) {
             Ok(true) => {}
             Ok(false) => return,
@@ -1401,7 +1401,7 @@ impl AppHandler {
         floating_content_changed |= record_changed;
         full_redraw_required |= record_changed;
 
-        let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
         // Drain model notifications and advance update-driven widgets before
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
@@ -1445,7 +1445,7 @@ impl AppHandler {
         // scroll fast path below.
         let structure_rebuilt = app.layout.structure_dirty;
         floating_content_changed |= structure_rebuilt;
-        let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let __prof_build = app.profiler.as_ref().map(|_| crate::time::now());
         if app.layout.structure_dirty {
             app.rebuild_structure();
         }
@@ -1456,11 +1456,7 @@ impl AppHandler {
         mark_first_frame("first-frame-build-layout-done");
 
         let perf = perf_enabled();
-        let t_frame_start = if perf {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
+        let t_frame_start = if perf { Some(crate::time::now()) } else { None };
         let Some(root_node) = app.layout.root_node else {
             tracing::error!("root_node unset during a redraw; skipping frame");
             return;
@@ -1489,7 +1485,7 @@ impl AppHandler {
 
         // Admission reserved this pair before state updates. Taking it cannot
         // wait on GPU work; aborted layouts retain it in the handle for retry.
-        let __prof_pool_wait = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
             tracing::error!("ui-render thread died; closing window");
             event_loop.exit();
@@ -1511,16 +1507,12 @@ impl AppHandler {
         // The worker resets scenes before returning them to this pool; the
         // pre-seeded scenes are empty too.
 
-        let t_draw_start = if perf {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
+        let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
 
-        let __prof_presence = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
 
         // A pointer that arrived on a desktop scope is the
@@ -1528,7 +1520,7 @@ impl AppHandler {
         // `presence::PointerOwner`. Only the *painting* has one
         // owner; the shell threads this same context into its own
         // overlay too.
-        let interaction_now = std::time::Instant::now();
+        let interaction_now = crate::time::now();
         app.presence_ctx.prune_interactions(interaction_now);
         crate::presence::draw_remote_presence(
             &mut scene,
@@ -1852,7 +1844,7 @@ impl AppHandler {
             window.request_redraw();
             return;
         }
-        let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
+        let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
         // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
         // want to see whether moves arrive at all.
@@ -1877,7 +1869,7 @@ impl AppHandler {
         if app.presence.broadcast_scope.is_some() {
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     if pointer_broadcast_allowed(
                         app.presence.last_pointer_broadcast,
                         now,
@@ -2374,7 +2366,11 @@ impl AppHandler {
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
             let target = app.tooltip_target_at(logical);
-            if app.input.tooltip_host.on_pointer(target, Instant::now()) {
+            if app
+                .input
+                .tooltip_host
+                .on_pointer(target, crate::time::now())
+            {
                 window.request_redraw();
             }
         }
@@ -2809,7 +2805,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // 60Hz while a visible auxiliary depends on its update/sync projection.
         // Only all-known-occluded surfaces receive full idle backoff.
         if self.visible_auxiliary_needs_shared_root() {
-            self.primary_retry.keep_shared_cadence(Instant::now());
+            self.primary_retry.keep_shared_cadence(crate::time::now());
         }
         // Once admission defers, periodic animation/startup demand must not
         // spin redraw events against the busy worker. Keep updating dirty state;
@@ -2829,14 +2825,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if let Some(deadline) = render.and_then(|render| render.retry.deadline()) {
                 auxiliary_retry_at =
                     Some(auxiliary_retry_at.map_or(deadline, |prior| prior.min(deadline)));
-                if deadline <= Instant::now() && auxiliary_redraw_allowed(render) {
+                if deadline <= crate::time::now() && auxiliary_redraw_allowed(render) {
                     aux_window.request_redraw();
                 }
             }
         }
         let auxiliary_retry_due =
-            auxiliary_retry_at.is_some_and(|deadline| deadline <= Instant::now());
-        let retry_now = Instant::now();
+            auxiliary_retry_at.is_some_and(|deadline| deadline <= crate::time::now());
+        let retry_now = crate::time::now();
         let primary_blocked_until = self
             .primary_retry
             .occlusion_blocked(retry_now)
@@ -2857,12 +2853,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
             });
         let retry_at = self.primary_retry.deadline();
-        let retry_due = retry_at.is_some_and(|deadline| deadline <= Instant::now());
+        let retry_due = retry_at.is_some_and(|deadline| deadline <= crate::time::now());
         let redraw_deferred = self
             .render
             .as_ref()
             .is_some_and(|render| render.buffers.redraw_deferred())
-            || retry_at.is_some_and(|deadline| Instant::now() < deadline);
+            || retry_at.is_some_and(|deadline| crate::time::now() < deadline);
         let request_primary_redraw = || {
             if !redraw_deferred {
                 window.request_redraw();
@@ -2963,7 +2959,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Keep pumping frames while any "just typed" highlighter mark is
         // still fading, so the taper animates instead of freezing.
-        let typing_now = Instant::now();
+        let typing_now = crate::time::now();
         app.presence_ctx.prune_typing(typing_now);
         let typing_active = app.presence_ctx.has_active_typing(typing_now);
         if typing_active {
@@ -3047,9 +3043,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget.next_wake_deadline(),
             app.close_admission.save_waiting,
-            Instant::now(),
+            crate::time::now(),
         );
-        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        let scheduled_due =
+            scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         if scheduled_due {
             app.needs_sync = true;
             request_primary_redraw();
@@ -3066,7 +3063,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // already paint their resting state.
         let needs_frame = app.root_widget.needs_animation_frame();
         let (animation_due, animation_deadline) = self.animation_schedule.poll(
-            Instant::now(),
+            crate::time::now(),
             any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
         );
         if animation_due {
@@ -3106,7 +3103,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 && surface
                     .render
                     .as_ref()
-                    .is_none_or(|render| !render.retry.occlusion_blocked(Instant::now()))
+                    .is_none_or(|render| !render.retry.occlusion_blocked(crate::time::now()))
         });
         let retry_at = retry_at.into_iter().chain(auxiliary_retry_at).min();
         // Widget deadlines are serviced by sync/redraw. While occluded they can
@@ -3123,7 +3120,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             retry_due: retry_due || auxiliary_retry_due,
         };
         match crate::render_thread::retry::next_wake(
-            Instant::now(),
+            crate::time::now(),
             primary_blocked_until,
             any_render_available,
             demand,

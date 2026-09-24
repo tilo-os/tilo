@@ -18,12 +18,12 @@ use super::{
     mpsc, presence_handle_env,
 };
 
+use crate::time::Duration;
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
@@ -2417,7 +2417,7 @@ async fn spawn_invocation_stream(
                 let channel = cancellation_channel.clone();
                 tokio::task::spawn_local(async move {
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(crate::time::Duration::from_millis(100)).await;
                         match channel.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
@@ -2579,11 +2579,11 @@ async fn spawn_presence_stream(
 static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-fn next_certified_document_seq(now: std::time::SystemTime) -> u64 {
+fn next_certified_document_seq(now: crate::time::SystemTime) -> u64 {
     use std::sync::atomic::Ordering;
 
     let wall = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(crate::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
         });
@@ -2629,7 +2629,7 @@ async fn send_document_mutation(
     else {
         return;
     };
-    let now = std::time::SystemTime::now();
+    let now = crate::time::wall();
     let author = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
@@ -3526,11 +3526,11 @@ mod tests {
     use super::*;
     use crate::collaboration::{SignedSendError, SigningIdentity};
 
+    use crate::time::Duration;
     use std::cell::RefCell;
     #[cfg(unix)]
     use std::os::fd::IntoRawFd;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
 
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -4503,7 +4503,7 @@ mod tests {
             host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx);
         let cluster_id = Uuid::new_v4();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let started = Instant::now();
+        let started = crate::time::now();
         let caller = thread::spawn(move || {
             let result = CollaborationManager::for_route_host_blocking(
                 connector,
@@ -4610,7 +4610,7 @@ mod tests {
     }
 
     fn drain_events(mgr: &mut CollaborationManager, deadline: Duration) -> Vec<CollabEvent> {
-        let start = Instant::now();
+        let start = crate::time::now();
         let mut events = Vec::new();
         while start.elapsed() < deadline {
             events.extend(mgr.poll());
@@ -4625,7 +4625,7 @@ mod tests {
     }
 
     fn wait_until<F: FnMut() -> bool>(mut cond: F, deadline: Duration) -> bool {
-        let start = Instant::now();
+        let start = crate::time::now();
         while start.elapsed() < deadline {
             if cond() {
                 return true;
@@ -4876,7 +4876,7 @@ mod tests {
             std::env::set_var("TILO_SVC_COLLAB_FD", fd.to_string());
         }
 
-        let started = Instant::now();
+        let started = crate::time::now();
         let mut mgr = CollaborationManager::new();
         let took = started.elapsed();
 
@@ -4976,7 +4976,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             1,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -5212,7 +5212,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             42,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -5259,7 +5259,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             43,
         );
         let event = signed_document_event(
@@ -5302,7 +5302,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             1,
             metadata,
         );
@@ -5318,7 +5318,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             2,
         );
         assert!(
@@ -5425,7 +5425,7 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let start = Instant::now();
+        let start = crate::time::now();
         let mut events = Vec::new();
         while events.len() < 7 && start.elapsed() < Duration::from_secs(2) {
             events.extend(mgr.poll());
@@ -5485,7 +5485,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             5,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);

@@ -12,7 +12,7 @@
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
-use std::time::Instant;
+use crate::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -608,7 +608,7 @@ impl ViewportState {
     /// delta lets a host layer smooth-scroll / kinetic motion on top without
     /// re-deriving the clock. The first call returns `0.0`.
     pub fn frame_dt(&mut self) -> f64 {
-        let now = Instant::now();
+        let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
         });
@@ -1622,7 +1622,7 @@ mod tests {
     fn frame_dt_first_call_is_zero_then_positive() {
         let mut v = kernel();
         assert_eq!(v.frame_dt(), 0.0, "first frame has no delta");
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(crate::time::Duration::from_millis(2));
         assert!(v.frame_dt() > 0.0, "subsequent frame has a positive delta");
     }
 

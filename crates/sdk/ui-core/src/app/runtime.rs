@@ -11,9 +11,9 @@ use super::{
 use crate::collaboration::CollaborationManager;
 use crate::presence::PresenceKey;
 use crate::theme::Theme;
+use crate::time::Instant;
 use crate::widget::Widget;
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 

@@ -21,9 +21,9 @@
 
 pub(crate) mod resource_trace;
 
+use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use vello::Scene;
@@ -275,7 +275,7 @@ struct HudLayout {
 impl FrameProfiler {
     fn new(hud: bool, dump: Option<DumpWriter>) -> Self {
         Self {
-            origin: Instant::now(),
+            origin: crate::time::now(),
             frame_index: 0,
             cur: FrameTiming::default(),
             pending_handle_event_us: 0,

@@ -120,6 +120,9 @@ vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+# `ui::time` clock types. On targets with a native clock it re-exports
+# `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
+web-time = "1"
 dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }

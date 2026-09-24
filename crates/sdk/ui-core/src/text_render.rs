@@ -5,7 +5,6 @@ use cosmic_text::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
@@ -2153,7 +2152,7 @@ impl TextRenderer {
         }
         self.shape_misses = self.shape_misses.saturating_add(1);
 
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let buffer = self.shape_buffer(text, max_width, style);
         let runs = self.flatten_glyph_runs(&buffer, style);
         self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());

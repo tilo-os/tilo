@@ -1,6 +1,6 @@
 use crate::permissions::UserId;
+use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime};
 
 mod geom;
 mod interaction;
@@ -21,7 +21,7 @@ pub use render::{
 };
 
 /// How long a "just typed" highlight lingers before fading out.
-pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
+pub const TYPING_FADE: crate::time::Duration = crate::time::Duration::from_millis(2500);
 
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
@@ -33,7 +33,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// How long after a remote text edit an advancing caret may still be read as
 /// that peer having written what it crossed — one network hop, no more, or a
 /// real edit would license markers for every caret that moves afterward.
-const EDIT_PULSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 /// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
 /// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
@@ -671,7 +671,7 @@ impl PresenceCtx {
     }
 
     pub fn set_pointer(&mut self, key: &PresenceKey, user: UserId, pos: (f32, f32)) {
-        self.set_pointer_at(key, user, pos, Instant::now());
+        self.set_pointer_at(key, user, pos, crate::time::now());
     }
 
     /// [`Self::set_pointer`] with the clock supplied, so retirement can be
@@ -1260,7 +1260,7 @@ impl PresenceCtx {
                 // Feed BOTH stores: in-app BlockEditor reads `carets`
                 // (set_caret); the cross-process overlay reads `remote_caret`.
                 let uid = UserId(user_id.clone());
-                let now = Instant::now();
+                let now = crate::time::now();
                 // Derive a typing mark from a caret that advanced under the
                 // same scope, not only from an explicit `Typing` payload —
                 // an agent/SDK peer publishing bare caret moves has no
@@ -1295,7 +1295,7 @@ impl PresenceCtx {
                     UserId(user_id),
                     key,
                     SelectionRange { start, end },
-                    Instant::now(),
+                    crate::time::now(),
                 );
             }
             Interaction(update) => {
@@ -1345,7 +1345,7 @@ impl PresenceCtx {
                                 } else {
                                     crate::live_collaboration::StatusOrigin::Manual
                                 },
-                                updated_at: SystemTime::now(),
+                                updated_at: crate::time::wall(),
                             },
                         );
                     }
@@ -1999,13 +1999,13 @@ mod string_id_wrapper_tests {
 
     #[test]
     fn typing_mark_fades_linearly_and_prunes() {
-        use std::time::Duration;
+        use crate::time::Duration;
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Index(0)],
         };
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         ctx.record_peer_typing(
             bob.clone(),
             key.clone(),
@@ -2046,7 +2046,7 @@ mod string_id_wrapper_tests {
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Index(1)],
         };
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         ctx.record_peer_typing(
             bob.clone(),
             key.clone(),
@@ -2085,11 +2085,17 @@ mod string_id_wrapper_tests {
             alice.clone(),
             key.clone(),
             SelectionRange { start: 0, end: 2 },
-            Instant::now(),
+            crate::time::now(),
         );
-        assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        assert!(
+            !ctx.active_typing(&alice, &key, crate::time::now())
+                .is_empty()
+        );
         ctx.unregister_peer("alice");
-        assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        assert!(
+            ctx.active_typing(&alice, &key, crate::time::now())
+                .is_empty()
+        );
         assert_eq!(
             ctx.display_name(&alice),
             "alice",
@@ -2412,7 +2418,7 @@ mod own_identity_tests {
     /// would vanish from the roster whenever it stops moving.
     #[test]
     fn a_pointer_nobody_restates_is_retired_and_nothing_else_is() {
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let horizon = Duration::from_secs(4);
         let room = PresenceKey::Workspace { id: "r".into() };
         let block = PresenceKey::Widget {
@@ -2498,7 +2504,7 @@ mod own_identity_tests {
     /// widget-scoped one (a position in a document, not on the desktop) does not.
     #[test]
     fn a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not() {
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let room = PresenceKey::Workspace { id: "r".into() };
         let block = PresenceKey::Widget {
             path: vec![PathSegment::Index(0)],

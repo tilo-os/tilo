@@ -2252,7 +2252,7 @@ mod tests {
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         assert!(pending.1 > 0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
             let acknowledged = store.0.borrow().open[&checkout.id]
                 .autosave
@@ -2265,10 +2265,10 @@ mod tests {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::time::now() < deadline,
                 "older writer acknowledgement missing"
             );
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(crate::time::Duration::from_millis(10));
         }
         assert_eq!(
             store.save_status(&checkout.id).unwrap(),

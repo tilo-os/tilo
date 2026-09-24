@@ -9,11 +9,11 @@
 //! keeps tests and hermetic offline builds deterministic. Decoding uses the
 //! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
 
+use crate::time::Duration;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -251,7 +251,7 @@ impl ImageStore {
     /// synchronous `--shots` pre-warm only — never call this on a live app's UI
     /// thread.
     pub fn block_until_idle(&self, timeout: Duration) {
-        let start = Instant::now();
+        let start = crate::time::now();
         while self.pending() > 0 && start.elapsed() < timeout {
             std::thread::sleep(Duration::from_millis(10));
         }
