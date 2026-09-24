@@ -31,6 +31,13 @@
 //!   property *and unit* so a target rate means the same thing everywhere, and
 //!   reports the choice as a [`Selection`] that reads as hardware only when one
 //!   was observed.
+//! * [`realtime`] — the low-latency path next to playback:
+//!   [`RealtimeEncoder`] (one frame in, its access unit out; forced keyframes,
+//!   live bitrate changes, zero-copy dmabuf import on VA-API) and
+//!   [`RealtimeDecoder`] (one access unit in, its picture out), both choosing
+//!   hardware first, then royalty-free software, then Cisco's system
+//!   `openh264`, from the tables in [`hw::realtime`]; plus the codec
+//!   negotiation peers use to agree on AV1, VP9 or H.264.
 //! * [`SessionPool`] / [`EngineSession`] / [`FrameCache`] — one decode
 //!   pipeline per source, shared between the preview and every thumbnail, with
 //!   a bounded LRU of decoded frames so stepping and short seeks do not
@@ -67,6 +74,7 @@ pub mod frame;
 pub mod handoff;
 pub mod hw;
 pub mod notification_sound;
+pub mod realtime;
 pub mod ring;
 pub mod session;
 pub mod source;
@@ -77,9 +85,14 @@ pub mod transport;
 #[cfg(feature = "decode")]
 pub mod gst_backend;
 
+/// Sample-to-[`Frame`] conversion shared by playback and the real-time
+/// decoder.
+#[cfg(any(feature = "decode", feature = "realtime"))]
+mod gst_frames;
+
 /// `GStreamer` itself, re-exported so consumers can configure the sink returned
 /// by [`MediaEngine::audio_sink`] without adding another `GStreamer` dependency.
-#[cfg(feature = "decode")]
+#[cfg(any(feature = "decode", feature = "realtime"))]
 pub use gstreamer as gst;
 
 pub use audio::{
@@ -99,7 +112,11 @@ pub use encode::{
 pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
-pub use hw::{DecoderKind, HwPolicy, HwReport};
+pub use hw::{DecoderKind, HwPolicy, HwReport, StreamCodec};
+pub use realtime::{
+    CodecCapabilities, DecodeOutput, DecodedPicture, DecoderConfig, EncodedUnit, EncoderConfig,
+    InputFormat, InputFrame, RealtimeDecoder, RealtimeEncoder, RealtimeError, StreamColor,
+};
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
 pub use session::{DEFAULT_FRAME_TIMEOUT, EngineSession, SessionPool};
 pub use source::{Source, WORKSPACE_ROOT};
