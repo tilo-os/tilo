@@ -2547,7 +2547,7 @@ pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::ColorPicker;
+pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
 pub use color_swatch::ColorSwatchFace;
 pub mod popover_widget;
 pub use popover_widget::PopoverWidget;
