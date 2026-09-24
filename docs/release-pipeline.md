@@ -233,9 +233,10 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - Desktop payload publication uses a package-write/repository-write integration
   restricted to `package-desktop.yml` scheduled/manual runs on `main`; store its audience in
   `TILO_DESKTOP_RELEASE_AUDIENCE`.
-- Dev VM disk publication uses a package-write integration restricted to
-  `dev-disk.yml` manual dispatches on `main` and `v*` tags; store its audience in
-  `TILO_VM_DISK_RELEASE_AUDIENCE`. Disk uploads go to
+- Dev VM disks are development artifacts, never release-signed, so
+  `dev-disk.yml` uploads them with the CI account's package token
+  (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
+  Authorized Integration, and needs no OIDC. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the
   in-cluster Forgejo service.
 - Keep remote actions pinned to full commit hashes.
