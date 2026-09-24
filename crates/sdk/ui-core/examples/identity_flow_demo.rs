@@ -23,7 +23,6 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -207,9 +206,9 @@ fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     // checked_add: SystemTime's Add<Duration> panics on overflow. One hour
     // from now never overflows; falling back to "now" keeps this a real
     // handled path rather than a panic if it somehow ever did.
-    let expires_at = SystemTime::now()
+    let expires_at = tilo_ui::time::wall()
         .checked_add(std::time::Duration::from_secs(3600))
-        .unwrap_or_else(SystemTime::now);
+        .unwrap_or_else(tilo_ui::time::wall);
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),
         "engineering",

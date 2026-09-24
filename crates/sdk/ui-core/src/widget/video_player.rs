@@ -7,8 +7,8 @@
 //! [`VideoPlayer::feed_frame`] in-process via openh264, kept working for
 //! callers still migrating onto the engine.
 
+use crate::time::{Duration, Instant};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
@@ -835,13 +835,13 @@ impl VideoPlayer {
     pub fn reveal_controls(&mut self) {
         // `checked_add` rather than `+`: `Instant` addition panics on
         // overflow, though `now + 1h` cannot realistically overflow.
-        self.controls_visible_until = Instant::now().checked_add(Duration::from_secs(3600));
+        self.controls_visible_until = crate::time::now().checked_add(Duration::from_secs(3600));
         self.dirty = true;
     }
 
     fn controls_visible_now(&self) -> bool {
         match self.controls_visible_until {
-            Some(deadline) => Instant::now() < deadline,
+            Some(deadline) => crate::time::now() < deadline,
             None => false,
         }
     }
@@ -855,7 +855,7 @@ impl VideoPlayer {
         let Some(deadline) = self.controls_visible_until else {
             return 0.0;
         };
-        let now = Instant::now();
+        let now = crate::time::now();
         if now >= deadline {
             return 0.0;
         }
@@ -879,7 +879,7 @@ impl VideoPlayer {
     }
 
     fn show_controls(&mut self) {
-        self.controls_visible_until = Instant::now().checked_add(CONTROLS_AUTO_HIDE);
+        self.controls_visible_until = crate::time::now().checked_add(CONTROLS_AUTO_HIDE);
     }
 
     fn controls_bar_rect(&self, theme: &Theme) -> Rect {
@@ -3183,7 +3183,7 @@ impl VideoPlayer {
                     .ok()
                     .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
                     .is_some_and(|seconds| {
-                        let millis = std::time::Duration::from_secs_f64(seconds).as_millis();
+                        let millis = crate::time::Duration::from_secs_f64(seconds).as_millis();
                         self.seek_to_ms(u64::try_from(millis).unwrap_or(u64::MAX));
                         true
                     }),

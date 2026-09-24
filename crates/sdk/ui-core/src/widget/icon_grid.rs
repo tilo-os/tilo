@@ -65,7 +65,7 @@ pub struct IconGrid {
     is_focused: bool,
     hover: Option<usize>,
     last_cursor: Point,
-    last_click: Option<(usize, std::time::Instant)>,
+    last_click: Option<(usize, crate::time::Instant)>,
 
     on_item_click: Option<ItemClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
@@ -470,7 +470,7 @@ impl Widget for IconGrid {
                     if let Some(cb) = &mut self.on_item_click {
                         cb(i, ctrl, shift);
                     }
-                    let now = std::time::Instant::now();
+                    let now = crate::time::now();
                     let is_double = matches!(
                         self.last_click,
                         Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()

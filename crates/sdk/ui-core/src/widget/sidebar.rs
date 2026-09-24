@@ -17,7 +17,7 @@
 //!
 //! The eased reveal uses the shared [`FlapState`] kernel.
 
-use std::time::Instant;
+use crate::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -593,7 +593,7 @@ impl SidebarDrawer {
     /// first tick establishes the clock (`dt == 0`, no jump); later deltas are
     /// clamped to [`MAX_FRAME_DT`]. Returns whether it is still animating.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {
-        let now = Instant::now();
+        let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
         });
@@ -1016,7 +1016,7 @@ mod tests {
         d.tick(false);
         assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
 
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(crate::time::Duration::from_millis(16));
         d.tick(false);
         let r = d.reveal();
         assert!(
@@ -1029,7 +1029,7 @@ mod tests {
         );
 
         for _ in 0..300 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::time::Duration::from_millis(1));
             d.tick(false);
             if !d.is_animating() {
                 break;

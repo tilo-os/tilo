@@ -199,6 +199,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+pub mod time;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;

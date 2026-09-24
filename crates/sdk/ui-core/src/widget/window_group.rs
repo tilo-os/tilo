@@ -4,6 +4,7 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{
@@ -11,7 +12,6 @@ use crate::widget::{
 };
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -96,14 +96,14 @@ fn spawn_anim_secs() -> f64 {
 }
 
 /// Test-only helper: an [`Instant`] `ms` milliseconds in the past, for
-/// backdating a timestamp instead of sleeping. Falls back to `Instant::now`
+/// backdating a timestamp instead of sleeping. Falls back to `crate::time::now`
 /// on the practically-unreachable case that the subtraction would underflow
 /// the clock's epoch.
 #[cfg(test)]
 fn instant_ago_ms(ms: u64) -> Instant {
-    Instant::now()
+    crate::time::now()
         .checked_sub(Duration::from_millis(ms))
-        .unwrap_or_else(Instant::now)
+        .unwrap_or_else(crate::time::now)
 }
 
 /// Narrows a screen-space coordinate, length or eased animation factor
@@ -385,7 +385,7 @@ impl WindowGroup {
     }
 
     pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(Instant::now());
+        self.spawned_at = Some(crate::time::now());
     }
 
     /// The same eased factor `draw` uses for alpha, scale and offset.
@@ -403,7 +403,7 @@ impl WindowGroup {
     }
 
     pub fn start_closing(&mut self) {
-        self.closing_at = Some(Instant::now());
+        self.closing_at = Some(crate::time::now());
     }
 
     pub fn is_closing(&self) -> bool {
@@ -832,7 +832,7 @@ impl WindowGroup {
         if let Some(close_id) = self.bar.take_close() {
             self.closing_hosts
                 .entry(close_id)
-                .or_insert_with(Instant::now);
+                .or_insert_with(crate::time::now);
         }
         true
     }
@@ -985,7 +985,7 @@ impl WindowGroup {
                 let _ = self.bar.take_close();
                 self.closing_hosts
                     .entry(active_id)
-                    .or_insert_with(Instant::now);
+                    .or_insert_with(crate::time::now);
                 if !self.pending_close_commit.contains(&active_id) {
                     self.pending_close_commit.push(active_id);
                 }
@@ -1090,7 +1090,7 @@ impl WindowGroup {
         if let Some(close_id) = self.bar.take_close() {
             self.closing_hosts
                 .entry(close_id)
-                .or_insert_with(Instant::now);
+                .or_insert_with(crate::time::now);
             if !self.pending_close_commit.contains(&close_id) {
                 self.pending_close_commit.push(close_id);
             }
@@ -1739,7 +1739,7 @@ impl Widget for WindowGroup {
         // before the app has drawn — without restarting it here the fade
         // would already have run its course against an invisible group.
         if std::mem::take(&mut self.held_back) {
-            self.spawned_at = Some(Instant::now());
+            self.spawned_at = Some(crate::time::now());
         }
         // Close checked first (mutually exclusive with spawn in practice):
         // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
@@ -3262,7 +3262,7 @@ mod tests {
         // Seed `closing_hosts` directly with tab id 1 to simulate the
         // leak: still present in `bar.tabs` and `hosts`, but the
         // side-table erroneously carries a fade timestamp.
-        g.closing_hosts.insert(1, Instant::now());
+        g.closing_hosts.insert(1, crate::time::now());
         assert!(
             g.closing_hosts.contains_key(&1),
             "precondition: closing_hosts carries the moved tab id",
@@ -3469,7 +3469,7 @@ mod tests {
             g.close_complete(),
             "close_complete must flip true after the fade window elapses",
         );
-        g.set_closing_at_for_tests(Instant::now());
+        g.set_closing_at_for_tests(crate::time::now());
         assert!(
             !g.close_complete(),
             "a just-latched close must not report complete",
@@ -3657,7 +3657,7 @@ mod tests {
         // Seed `closing_hosts` directly to simulate what `handle_event`
         // does after draining a `pending_close`, bypassing the full event
         // drive.
-        g.closing_hosts.insert(1, Instant::now());
+        g.closing_hosts.insert(1, crate::time::now());
         assert!(
             g.needs_animation_frame(),
             "a fresh closing host must pump the run loop",

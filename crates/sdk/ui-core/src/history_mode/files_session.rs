@@ -70,7 +70,7 @@ pub(super) struct FileController {
     pub live_updates: bool,
     active: bool,
     refreshing: bool,
-    next_poll: std::time::Instant,
+    next_poll: crate::time::Instant,
 }
 impl FileController {
     pub fn new(target: FileHistoryTarget) -> Self {
@@ -104,7 +104,7 @@ impl FileController {
             live_updates: false,
             active: true,
             refreshing: false,
-            next_poll: std::time::Instant::now(),
+            next_poll: crate::time::now(),
         }
     }
     fn run(&self, work: impl FnOnce(Arc<dyn FileHistoryTransport>) -> Reply + Send + 'static) {
@@ -121,7 +121,7 @@ impl FileController {
     pub fn has_results(&self) -> bool {
         self.inbox.borrow_mut().extend(self.rx.try_iter());
         !self.inbox.borrow().is_empty()
-            || self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll
+            || self.active && !self.refreshing && crate::time::now() >= self.next_poll
     }
     pub fn load(&mut self) {
         if self.refreshing {
@@ -165,7 +165,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
-        self.next_poll = std::time::Instant::now();
+        self.next_poll = crate::time::now();
         self.load();
     }
     /// Learned only from a successful authorized immutable metadata read.
@@ -274,7 +274,7 @@ impl FileController {
         >,
     ) {
         self.refreshing = false;
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         self.next_poll = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
         let wake = self.wake.clone();
         if self.active {
@@ -335,7 +335,7 @@ impl FileController {
                     }
                     self.review_changed = true;
                     self.refreshing = false;
-                    self.next_poll = std::time::Instant::now();
+                    self.next_poll = crate::time::now();
                 } else {
                     self.message =
                         "Invalid backend result; the exact request remains unresolved".into();
@@ -408,7 +408,7 @@ impl FileController {
                 Reply::Outcome(..) => {}
             }
         }
-        if self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll {
+        if self.active && !self.refreshing && crate::time::now() >= self.next_poll {
             self.load();
         }
         changed
@@ -931,12 +931,12 @@ mod tests {
         });
         let mut controller = controller();
         controller.target.transport = transport.clone();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::time::now() + Duration::from_secs(60);
         controller.load();
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
         controller.select(version.id, None);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_none() && std::time::Instant::now() < deadline {
+        let deadline = crate::time::now() + Duration::from_secs(2);
+        while controller.after.is_none() && crate::time::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -953,9 +953,9 @@ mod tests {
         );
         let calls = transport.calls.load(Ordering::SeqCst);
         transport.revoked.store(true, Ordering::SeqCst);
-        controller.next_poll = std::time::Instant::now();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_some() && std::time::Instant::now() < deadline {
+        controller.next_poll = crate::time::now();
+        let deadline = crate::time::now() + Duration::from_secs(2);
+        while controller.after.is_some() && crate::time::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -995,7 +995,7 @@ mod tests {
                 ),
             })
             .unwrap();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::time::now() + Duration::from_secs(60);
         controller.drain();
         assert!(
             controller.review.is_none(),

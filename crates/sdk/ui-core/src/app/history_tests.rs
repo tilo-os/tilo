@@ -278,7 +278,7 @@ fn routed_document(
             route.record.as_deref().unwrap_or(""),
         ),
         collab_types::OpClass::Splice,
-        std::time::SystemTime::UNIX_EPOCH,
+        crate::time::SystemTime::UNIX_EPOCH,
         0,
     )
 }

@@ -445,25 +445,25 @@ impl PairDeviceScreen {
         // Publication is one acknowledged, idempotent exchange. A transient
         // TLS timeout must not strand round 1 or round 2 while both screens
         // continue to say they are waiting for the other device.
-        let publish_deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(15))
+        let publish_deadline = crate::time::now()
+            .checked_add(crate::time::Duration::from_secs(15))
             .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
         loop {
             if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
                 break;
             }
-            if std::time::Instant::now() >= publish_deadline {
+            if crate::time::now() >= publish_deadline {
                 return Err(IdentityFlowError::DecodeFailed(
                     "pairing broker did not acknowledge the DKG exchange".into(),
                 ));
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         }
         // The pairer also needs the host's round-1 contribution, sent as the
         // host's own round-2 message; bounded-poll the broker mailbox for it.
         let mut host_reply: Option<EnrolmentRound2> = None;
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(15))
+        let deadline = crate::time::now()
+            .checked_add(crate::time::Duration::from_secs(15))
             .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
         loop {
             if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
@@ -475,10 +475,10 @@ impl PairDeviceScreen {
                 host_reply = Some(r);
                 break;
             }
-            if std::time::Instant::now() >= deadline {
+            if crate::time::now() >= deadline {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         }
         let host_reply = host_reply.ok_or_else(|| {
             IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())

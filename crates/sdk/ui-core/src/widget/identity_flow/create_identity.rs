@@ -37,7 +37,6 @@
 //! the accessibility tree and the headless driver all reach it by name.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use rand_core::OsRng;
@@ -243,7 +242,7 @@ impl CreateIdentityScreen {
             &id,
             self.name.value().trim(),
             self.selected_accent_color(),
-            SystemTime::now(),
+            crate::time::wall(),
         )?;
         store.save(&record)?;
         self.last_record = Some(record.clone());

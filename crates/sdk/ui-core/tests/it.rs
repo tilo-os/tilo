@@ -13,6 +13,10 @@
     clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests may time and wait on the real clock; the rule guards the library"
+)]
 
 #[path = "support/mod.rs"]
 mod support;

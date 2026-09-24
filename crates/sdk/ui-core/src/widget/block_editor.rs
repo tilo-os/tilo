@@ -640,7 +640,7 @@ pub struct BlockEditor {
     /// exact source, including newlines, without touching document state.
     code_copy_hits: Vec<(Rect, usize, usize)>,
     copied_code_start: Option<usize>,
-    copied_code_feedback: Option<(String, std::time::Instant)>,
+    copied_code_feedback: Option<(String, crate::time::Instant)>,
     /// A freshly typed fence edits its language until Enter. The language is
     /// canonical block metadata; this only remembers the local input mode.
     opening_code_fence: Option<(String, Option<String>)>,
@@ -3200,7 +3200,7 @@ impl BlockEditor {
             sources.push(source);
             let _ = store.get(source);
         }
-        store.block_until_idle(std::time::Duration::from_secs(2));
+        store.block_until_idle(crate::time::Duration::from_secs(2));
         !sources.is_empty()
             && sources
                 .into_iter()
@@ -3268,7 +3268,7 @@ impl BlockEditor {
         }
         clipboard_copy(&run.iter().map(Block::text).collect::<Vec<_>>().join("\n"));
         self.copied_code_start = Some(start);
-        self.copied_code_feedback = Some((first.id.clone(), std::time::Instant::now()));
+        self.copied_code_feedback = Some((first.id.clone(), crate::time::now()));
         self.dirty = true;
         true
     }
@@ -8461,7 +8461,7 @@ impl BlockEditor {
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
                 continue;

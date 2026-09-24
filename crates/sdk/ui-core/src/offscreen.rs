@@ -26,7 +26,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
 
 use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
@@ -1467,7 +1466,7 @@ impl OffscreenRenderer {
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             attempts = attempts.saturating_add(1);
             if timing.is_some() {
-                let start = Instant::now();
+                let start = crate::time::now();
                 self.renderer
                     .render_to_texture(
                         &device,
@@ -1514,7 +1513,7 @@ impl OffscreenRenderer {
             let dispatch_timestamp_submission =
                 self.dispatch_timestamp_submission_id(timing.is_some());
             if timing.is_some() {
-                let start = Instant::now();
+                let start = crate::time::now();
                 overflowed = self.renderer.settle_bump_budget(&device);
                 if let Some(profile) = timing.as_mut() {
                     profile.settle_wait_us = profile
@@ -1661,7 +1660,7 @@ impl OffscreenRenderer {
                 .expect("this renderer's device entry is missing from the shared RenderContext");
             (handle.device.clone(), handle.queue.clone())
         };
-        let setup_start = timing.is_some().then(Instant::now);
+        let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
         let regions = coalesce_regions(
             damage
@@ -1710,7 +1709,7 @@ impl OffscreenRenderer {
                 })
                 .collect();
             let sparse_setup_us = setup_start.map(|start| start.elapsed().as_micros());
-            let sparse_start = timing.is_some().then(Instant::now);
+            let sparse_start = timing.is_some().then(crate::time::now);
             if let Some(stats) = self
                 .renderer
                 .render_to_texture_with_damage(
@@ -1830,7 +1829,7 @@ impl OffscreenRenderer {
                         .saturating_add(stats.coarse_pixels);
                 }
                 let overflowed = if let Some(profile) = timing.as_mut() {
-                    let start = Instant::now();
+                    let start = crate::time::now();
                     let overflowed = self.renderer.settle_bump_budget(&device);
                     profile.settle_wait_us = profile
                         .settle_wait_us
@@ -1933,7 +1932,7 @@ impl OffscreenRenderer {
                 .damage_setup_us
                 .saturating_add(setup_start.elapsed().as_micros());
         }
-        let render_start = timing.is_some().then(Instant::now);
+        let render_start = timing.is_some().then(crate::time::now);
         let mut copy_encode_us = 0u128;
         self.renderer
             .render_to_texture_with_post_render(
@@ -1948,7 +1947,7 @@ impl OffscreenRenderer {
                     antialiasing_method: AaConfig::Area,
                 },
                 |encoder| {
-                    let copy_start = timing.is_some().then(Instant::now);
+                    let copy_start = timing.is_some().then(crate::time::now);
                     for region in &regions {
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
@@ -2003,7 +2002,7 @@ impl OffscreenRenderer {
         }
         self.coarse_pool_high_water_pixels = self.coarse_pool_high_water_pixels.max(raster_pixels);
         let overflowed = if let Some(timing) = timing.as_mut() {
-            let start = Instant::now();
+            let start = crate::time::now();
             let overflowed = self.renderer.settle_bump_budget(&device);
             timing.settle_wait_us = timing
                 .settle_wait_us

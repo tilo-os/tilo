@@ -13,8 +13,8 @@
 //! the field re-parses the link, whether typed, pasted, committed by an
 //! IME or set through an accessibility action.
 
+use crate::time::SystemTime;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
@@ -403,7 +403,7 @@ impl InviteAcceptScreen {
         );
         let when = chrono::DateTime::<chrono::Utc>::from(
             SystemTime::UNIX_EPOCH
-                .checked_add(std::time::Duration::from_secs(env.expires_unix))
+                .checked_add(crate::time::Duration::from_secs(env.expires_unix))
                 .unwrap_or(SystemTime::UNIX_EPOCH),
         )
         .to_rfc3339();
@@ -656,8 +656,8 @@ impl Widget for InviteAcceptScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
-    use std::time::Duration;
 
     fn fixture_url(now: SystemTime) -> String {
         use crate::widget::identity_flow::mint_invite;
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn pasting_valid_url_populates_parsed() {
-        let url = fixture_url(SystemTime::now());
+        let url = fixture_url(crate::time::wall());
         let mut s = InviteAcceptScreen::new();
         s.set_url(&url);
         assert!(s.parsed().is_some(), "parse error: {:?}", s.parse_error());
@@ -694,12 +694,12 @@ mod tests {
 
     #[test]
     fn accept_builds_attestation_event() {
-        let url = fixture_url(SystemTime::now());
+        let url = fixture_url(crate::time::wall());
         let mut s = InviteAcceptScreen::new();
         s.set_url(&url);
         let (_invitee_sk, invitee_pk) = generate_keypair();
         let event = s
-            .accept(invitee_pk, SystemTime::now())
+            .accept(invitee_pk, crate::time::wall())
             .expect("accept must succeed")
             .clone();
         match event {
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn decline_clears_state() {
-        let url = fixture_url(SystemTime::now());
+        let url = fixture_url(crate::time::wall());
         let mut s = InviteAcceptScreen::new();
         s.set_url(&url);
         s.decline();
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn tampered_url_fails_signature() {
-        let url = fixture_url(SystemTime::now());
+        let url = fixture_url(crate::time::wall());
         // Truncation exercises the parse_error path (doesn't decode cleanly).
         let mut chars: Vec<char> = url.chars().collect();
         for _ in 0..4 {
@@ -740,7 +740,7 @@ mod tests {
     /// the link on the next layout pass, exactly as typing did.
     #[test]
     fn an_edit_through_the_shared_field_reparses_the_link() {
-        let url = fixture_url(SystemTime::now());
+        let url = fixture_url(crate::time::wall());
         let mut s = InviteAcceptScreen::new();
         assert!(s.parsed().is_none());
         let mut doc = AutoCommit::new();
@@ -797,7 +797,7 @@ mod tests {
         let bad = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
         assert!(bad.status.is_some(), "a parse error has a row");
 
-        s.set_url(fixture_url(SystemTime::now()));
+        s.set_url(fixture_url(crate::time::wall()));
         let good = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
         let banner = good.banner.expect("a valid link shows its banner");
         let expires = good.expires.expect("and its expiry");

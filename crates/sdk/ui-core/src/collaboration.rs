@@ -672,7 +672,7 @@ impl SigningIdentity {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = std::time::SystemTime::now();
+        let timestamp = crate::time::wall();
         let sequence = self
             .seq
             .checked_add(1)

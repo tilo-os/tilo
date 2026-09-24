@@ -1415,11 +1415,11 @@ fn legacy_ui_restore_schedules_only_target_and_reopens_durable_result() {
             .unwrap(),
         "old"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-        && std::time::Instant::now() < deadline
+        && crate::time::now() < deadline
     {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(crate::time::Duration::from_millis(10));
     }
     assert_eq!(
         store.save_status(&first.id).unwrap(),
