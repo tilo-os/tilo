@@ -559,10 +559,11 @@ jobs:
           path: refs
       - name: Propose both kernel pins atomically through protected main
         env:
-          # The automatic job token pushes the branch but Forgejo answers its
-          # pull-request creation with 404; open the PR as the CI account,
-          # which also lets the PR's own required checks trigger.
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          # The automatic job token pushes the branch. Neither it nor
+          # REGISTRY_TOKEN may use the pull-request API (Forgejo answers 404),
+          # so open the PR with RELEASE_TOKEN, which has repository scope; a PR
+          # opened by a real account also triggers its own required checks.
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           x86="$(find refs -type f -name x86_64.env -print -quit)"
