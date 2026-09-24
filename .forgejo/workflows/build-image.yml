@@ -559,9 +559,18 @@ jobs:
               if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
                 with_browser=${REQUESTED_BROWSER:-1}
               elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
-                # The nightly release ships the same full image as a
-                # default manual publication.
-                with_browser=1
+                # The nightly release ships the same full image as a default
+                # manual publication once both architectures have a promoted
+                # WPE buildroot, so every child of a release carries the same
+                # apps. Until then it builds without the browser rather than
+                # failing every night; tags still require it.
+                . os/wpe-buildroot-snapshot.env
+                if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then
+                  with_browser=1
+                else
+                  with_browser=0
+                  echo '::warning::no promoted WPE buildroot for both architectures; the nightly image omits the browser until snapshot-wpe-buildroot promotes them'
+                fi
               else
                 with_browser=0
               fi
