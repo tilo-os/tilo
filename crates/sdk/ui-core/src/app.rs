@@ -4185,6 +4185,11 @@ impl App {
                 },
             },
         };
+        // A terminal must follow the document commands it covers: queue every
+        // changed owned record first, or retire the transport as uncertain.
+        if update.is_terminal() && !self.queue_documents_before_terminal() {
+            return;
+        }
         self.collaboration
             .manager
             .send(CollabRequest::UpdateInvocation { id, update });
