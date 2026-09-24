@@ -15,6 +15,11 @@
 //! | `auto` (default) | prefer hardware, fall back to software |
 //! | `off` | demote every hardware decoder; software only |
 //! | `va` / `nvcodec` / `v4l2` / `d3d11` / `vulkan` | force that family to the top |
+//!
+//! The real-time path (screen sharing, calls, recording) names its encoders
+//! and decoders outright instead of autoplugging; its element tables and the
+//! order they are tried in live in [`realtime`], under the same variables
+//! (`TILO_MEDIA_HWENC` for encoders, `TILO_MEDIA_HWDEC` for decoders).
 
 /// Which decoder family a chosen element belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
