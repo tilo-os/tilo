@@ -28,6 +28,19 @@ fn new_is_empty_schema_ready_and_instances_have_distinct_records() {
 // Catches mount/sync writes, empty-list seeding, or using disk data instead of the record.
 #[test]
 fn existing_rich_record_projects_real_resources_without_writing() {
+    fn collect(widget: &dyn Widget, doc: &AutoCommit, resources: &mut Vec<tilo_actions::Resource>) {
+        resources.extend(widget.resources(doc));
+        for child in widget.children() {
+            collect(child, doc, resources);
+        }
+    }
+    fn has_resource(widget: &dyn Widget, doc: &AutoCommit, id: &str) -> bool {
+        widget.resource(doc, id).is_some()
+            || widget
+                .children()
+                .iter()
+                .any(|child| has_resource(*child, doc, id))
+    }
     let f = LegacyFixture::rich();
     let checkout = imported(&f);
     // The accepted importer preserves one blank Markdown paragraph. Exercise
@@ -56,14 +69,15 @@ fn existing_rich_record_projects_real_resources_without_writing() {
         a.sync(&mut outer, &ROOT);
         b.sync(&mut outer, &ROOT);
     }
-    let resources = a.children()[0].resources(&outer);
+    let mut resources = Vec::new();
+    collect(&a, &outer, &mut resources);
     assert!(!resources.is_empty());
     for page in [f.root, f.child, f.empty] {
-        assert!(
-            a.children()[0]
-                .resource(&outer, &notes::actions::page_resource_id(page))
-                .is_some()
-        );
+        assert!(has_resource(
+            &a,
+            &outer,
+            &notes::actions::page_resource_id(page)
+        ));
     }
     f.records
         .read(&checkout.id, |doc| {

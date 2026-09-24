@@ -12,11 +12,12 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
@@ -439,13 +440,12 @@ impl Widget for NativeView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            self.mount_error
-                .as_ref()
-                .map_or(theme.tokens.colors.border_standard, |_| {
-                    theme.tokens.colors.semantic.danger
-                }),
+            self.mount_error.as_ref().map_or(
+                crate::surface::edge_on(theme.tokens.colors.surfaces.base),
+                |_| theme.tokens.colors.semantic.danger,
+            ),
             None,
-            &RoundedRect::from_rect(self.rect, radius),
+            &crate::surface::edge_outline(self.rect, radius),
         );
         let label = self
             .mount_error
@@ -459,7 +459,7 @@ impl Widget for NativeView {
         text_renderer.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.rect.x0 + 12.0, self.rect.y0 + 12.0).into()),
             Some(max_width),

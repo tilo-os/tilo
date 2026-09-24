@@ -77,36 +77,15 @@ pub fn load_installed() -> Vec<InstalledEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
+    use tilo_test_env::ScopedEnv;
 
-    /// Serialise the env-var writes across the two tests in this
-    /// module so cargo's parallel runner can't race the setter.
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    struct Guard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        prev: Option<std::ffi::OsString>,
-    }
-    impl Drop for Guard<'_> {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => unsafe { std::env::set_var("TILO_APPS_DATA_DIR", v) },
-                None => unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") },
-            }
-        }
-    }
-
-    fn scoped(td: &TempDir) -> Guard<'static> {
-        let lock = env_lock();
-        let prev = std::env::var_os("TILO_APPS_DATA_DIR");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", td.path()) };
-        Guard { _lock: lock, prev }
+    /// Point the apps data directory at `td` for as long as the returned
+    /// scope lives.
+    fn scoped(td: &TempDir) -> ScopedEnv {
+        let mut env = ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", td.path());
+        env
     }
 
     #[test]
@@ -122,7 +101,7 @@ mod tests {
         let _g = scoped(&td);
         let text = r#"
 [[entry]]
-id = "dev.tilo.notes"
+id = "so.tilo.notes"
 version = "0.1.0"
 package_id_hex = "abcdef"
 payload_root = "/var/tmp/notes"
@@ -134,7 +113,7 @@ attested_by = ""
 cli_commands = []
 
 [[entry]]
-id = "dev.tilo.terminal"
+id = "so.tilo.terminal"
 version = "0.2.0"
 package_id_hex = "beadfe"
 payload_root = "/var/tmp/term"
@@ -146,10 +125,10 @@ installed_at = 1_800_000_001
         std::fs::write(td.path().join("registry.toml"), text).unwrap();
         let entries = load_installed();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].id, "dev.tilo.notes");
+        assert_eq!(entries[0].id, "so.tilo.notes");
         assert_eq!(entries[0].version, "0.1.0");
         assert!(entries[0].pinned, "first entry is pinned = true");
-        assert_eq!(entries[1].id, "dev.tilo.terminal");
+        assert_eq!(entries[1].id, "so.tilo.terminal");
         assert!(!entries[1].pinned, "second entry is pinned = false");
     }
 }

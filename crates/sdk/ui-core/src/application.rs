@@ -63,6 +63,7 @@ pub struct HostContext {
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     closing: Rc<Cell<bool>>,
+    services: crate::host::HostServices,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -235,6 +236,7 @@ impl HostContext {
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
             closing: Rc::new(Cell::new(false)),
+            services: crate::host::current(),
         })
     }
     pub fn record(&self) -> &RecordCheckout {
@@ -251,6 +253,11 @@ impl HostContext {
     }
     pub fn wake_handle(&self) -> WakeHandle {
         self.wake_scope.handle()
+    }
+    /// The host services this component was prepared under — the ones
+    /// [`crate::host::current`] resolved when the host prepared it.
+    pub fn services(&self) -> &crate::host::HostServices {
+        &self.services
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -436,6 +443,7 @@ impl ApplicationDefinition {
 
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
     pub(crate) root: Option<Box<dyn AppWidget>>,
     registry: Option<tilo_actions::ActionRegistry>,
@@ -450,6 +458,57 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    /// Register presentation for this component's actual document custody. Every
+    /// domain scope reads that record; external scopes retain their stated reason.
+    /// This metadata carries no new authority and follows native/headless/tile mounts.
+    /// # Errors
+    /// Refuses missing, stale or foreign document custody and invalid scope metadata.
+    pub fn register_document_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        use crate::history_mode::{
+            HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
+        };
+        let owner = HistoryOwner::component(self.callback_binding());
+        let sources = definition
+            .scopes
+            .iter()
+            .map(|scope| match scope.presentation {
+                HistoryPresentation::Domain { .. }
+                | HistoryPresentation::DomainWithAssets { .. } => {
+                    HistorySourceRegistration::owned(scope.key, definition.app_id, owner.clone())
+                }
+                HistoryPresentation::External { reason } => {
+                    Ok(HistorySourceRegistration::Unversioned {
+                        scope: scope.key,
+                        reason,
+                    })
+                }
+                HistoryPresentation::CheckedFiles { .. } => {
+                    Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.history = Some(HistoryRegistration::new(definition, sources)?);
+        Ok(())
+    }
+    /// Install an explicit multi-owner bundle after the factory has established
+    /// its owners. The destination runner validates the complete settled tree.
+    /// # Errors
+    /// Refuses invalid registrations or a bundle belonging to another application.
+    pub fn register_history(
+        &mut self,
+        registration: crate::history_mode::HistoryRegistration,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        registration.validate()?;
+        if registration.definition.app_id != self.context.app_id {
+            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
+        }
+        self.history = Some(registration);
+        Ok(())
+    }
+
     /// Preserve every recovery owner while a runner still has custody of this component.
     pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
         let binding = self.callback_binding();
@@ -511,6 +570,7 @@ impl AppComponent {
     ) -> Self {
         let registry_owner = context.construction.clone();
         Self {
+            history: None,
             context,
             root: Some(root),
             registry: Some(registry),
@@ -682,7 +742,7 @@ impl AppComponent {
     }
 
     /// Persist the current document and view through their original owners.
-    /// Unlike close(), refusal leaves callbacks, publication and the live tree
+    /// Unlike `close()`, refusal leaves callbacks, publication and the live tree
     /// intact. Retry captures the latest view and document, not a stale snapshot.
     pub(crate) fn checkpoint_for_close(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.pending_reports);
@@ -740,6 +800,7 @@ impl AppComponent {
             view_retry: None,
             record_error: None,
             record_retry: None,
+            record_retry_target: None,
             teardown_error: None,
         };
         // Set the report before teardown: Drop must not fall back to a write.
@@ -767,6 +828,7 @@ impl AppComponent {
             view_retry: None,
             record_error: None,
             record_retry: None,
+            record_retry_target: None,
             teardown_error: None,
         };
         self.context.closing.set(true);
@@ -980,6 +1042,8 @@ pub struct ComponentCloseReport {
     pub view_retry: Option<Rc<InstanceViewStore>>,
     pub record_error: Option<String>,
     pub record_retry: Option<RecordStore>,
+    /// Exact legacy owner for scoped close/retry; None keeps component close behavior.
+    pub record_retry_target: Option<crate::RecordId>,
     /// Reserved for fallible lifecycle results. Arbitrary app panics propagate.
     pub teardown_error: Option<String>,
 }
@@ -989,10 +1053,13 @@ impl ComponentCloseReport {
     /// Returns the original owner's current persistence failure.
     pub fn retry_record(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
-            records
-                .try_flush()
-                .inspect_err(|error| self.record_error = Some(error.clone()))?;
+            match &self.record_retry_target {
+                Some(id) => records.try_flush_record(id),
+                None => records.try_flush(),
+            }
+            .inspect_err(|error| self.record_error = Some(error.clone()))?;
             self.record_retry = None;
+            self.record_retry_target = None;
             self.record_error = None;
         }
         Ok(())
@@ -1211,10 +1278,10 @@ mod bound_lifetime_tests {
     fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
@@ -1293,10 +1360,10 @@ mod bound_lifetime_tests {
     fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),

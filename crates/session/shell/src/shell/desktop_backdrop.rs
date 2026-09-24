@@ -354,7 +354,11 @@ impl DesktopBackdrop {
         );
         scene.pop_layer();
 
-        let line_color = Color::from_rgba8(128, 128, 128, 18); // 0.07 * 255 ≈ 18
+        // The grid is a hairline derived against the ground it sits on
+        // (HIG §9.5) — the backdrop's own first stop — so it stays faint on
+        // light and dark alike instead of a fixed mid-grey that reads darker
+        // on one and lighter on the other.
+        let line_color = ui::tokens::colors::Colors::hairline_on(stops.0, 18);
         let stroke = Stroke::new(1.0);
 
         scene.push_layer(
@@ -495,22 +499,13 @@ fn safe_cache_name(name: &str) -> bool {
 }
 
 fn read_normalised_wallpaper(path: &std::path::Path) -> Option<ImageData> {
-    let file = std::fs::File::open(path).ok()?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder.read_info().ok()?;
-    let size = reader.output_buffer_size()?;
-    let mut rgba = vec![0; size];
-    let info = reader.next_frame(&mut rgba).ok()?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return None;
-    }
-    rgba.truncate(info.buffer_size());
+    let decoded = ui::png::read_rgba8(path).ok()?;
     Some(ImageData {
-        data: Blob::new(Arc::new(rgba)),
+        data: Blob::new(Arc::new(decoded.rgba)),
         format: Format::Rgba8,
         alpha_type: ImageAlphaType::Alpha,
-        width: info.width,
-        height: info.height,
+        width: decoded.width,
+        height: decoded.height,
     })
 }
 

@@ -12,7 +12,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Autocomplete, AutocompleteOutcome, Suggestion, Widget};
+use ui::widget::{Autocomplete, AutocompleteOutcome, Button, ButtonFace, Suggestion, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -425,7 +425,24 @@ impl OfflinePanel {
         const MAX_ROWS: usize = 4;
         self.targets.clear();
         let colors = &theme.tokens.colors;
-        let text_scale = f64::from(theme.text_scale.max(1.0));
+        // One rhythm from the theme: an `s6` gutter, `s2` between a label
+        // and its control or between related rows, `s4` between sections,
+        // `s3` between the two action buttons.
+        let sp = &theme.tokens.spacing;
+        let (s2, s3, s4, gutter) = (
+            f64::from(sp.s2),
+            f64::from(sp.s3),
+            f64::from(sp.s4),
+            f64::from(sp.s6),
+        );
+        let scale = text.text_scale();
+        let line = |size: f32| ui::text_metrics::line_height_px(size, scale);
+        let (title_h, label_h, body_h, small_h) = (line(18.0), line(13.0), line(12.0), line(11.5));
+        let field_h = 36.0_f64.max(label_h + 12.0);
+        let stepper_h = 26.0_f64.max(line(18.0) + 8.0);
+        let bar_h = 8.0;
+        let row_h = 34.0_f64.max(line(13.0) + line(11.0) + 8.0);
+        let button_h = 38.0_f64.max(label_h + 12.0);
         draw::fill_rect(
             scene,
             transform,
@@ -437,12 +454,37 @@ impl OfflinePanel {
         let shown = frame.regions.len().min(MAX_ROWS);
         let overflow = frame.regions.len() > shown;
         let list_h = if frame.regions.is_empty() {
-            22.0 * text_scale
+            small_h
         } else {
-            shown as f64 * 42.0 * text_scale + if overflow { 18.0 * text_scale } else { 0.0 }
+            shown as f64 * (row_h + s2) - s2 + if overflow { s2 + small_h } else { 0.0 }
         };
-        let height = (350.0 * text_scale + list_h).min(frame.viewport.height() - 24.0);
-        let width = (440.0 + 180.0 * (text_scale - 1.0)).min(frame.viewport.width() - 40.0);
+        // The card is exactly the stack it holds — the same sums the painter
+        // advances by below — so nothing is clipped or left as dead space.
+        let stack_h = gutter
+            + title_h
+            + s2
+            + label_h
+            + s2
+            + field_h
+            + s2
+            + label_h
+            + s4
+            + stepper_h
+            + s2
+            + body_h
+            + s2
+            + bar_h
+            + s2
+            + body_h
+            + s4
+            + label_h
+            + s2
+            + list_h
+            + s4
+            + button_h
+            + gutter;
+        let height = stack_h.ceil().min(frame.viewport.height() - gutter);
+        let width = 440.0_f64.min(frame.viewport.width() - 2.0 * gutter);
         let center = frame.viewport.center();
         let card = Rect::new(
             center.x - width / 2.0,
@@ -450,20 +492,12 @@ impl OfflinePanel {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        draw::card(
-            scene,
-            transform,
-            card,
-            16.0,
-            colors.surfaces.raised,
-            colors.border_standard,
-        );
+        draw::card(scene, transform, card, 16.0, colors.surfaces.raised);
         self.targets.push((card, OfflineAction::Consume));
 
-        let horizontal_pad = 22.0 + 8.0 * (text_scale - 1.0);
-        let left = card.x0 + horizontal_pad;
-        let right = card.x1 - horizontal_pad;
-        let mut y = card.y0 + 20.0 * text_scale;
+        let left = card.x0 + gutter;
+        let right = card.x1 - gutter;
+        let mut y = card.y0 + gutter;
         draw::text_w(
             scene,
             text,
@@ -475,12 +509,12 @@ impl OfflinePanel {
             theme.text_primary,
             TextWeight::Bold,
         );
-        let close_size = 26.0 * text_scale;
+        // Close (×): a 26 px target centred on the title line.
         let close = Rect::new(
-            right - close_size,
-            card.y0 + 12.0 * text_scale,
+            right - stepper_h,
+            y + (title_h - stepper_h) / 2.0,
             right,
-            card.y0 + 12.0 * text_scale + close_size,
+            y + (title_h + stepper_h) / 2.0,
         );
         draw::text_center(
             scene,
@@ -489,12 +523,12 @@ impl OfflinePanel {
             "✕",
             close.x0,
             close.x1,
-            vmid_scaled(close.y0, close_size, 14.0, text_scale),
+            vmid_scaled(close.y0, stepper_h, 14.0, f64::from(scale)),
             14.0,
             theme.text_dim,
         );
         self.targets.push((close, OfflineAction::Close));
-        y += 30.0 * text_scale;
+        y += title_h + s2;
 
         draw::text_w(
             scene,
@@ -507,14 +541,13 @@ impl OfflinePanel {
             theme.text_primary,
             TextWeight::Semibold,
         );
-        y += 22.0 * text_scale;
-        let field_h = 36.0 * text_scale;
+        y += label_h + s2;
         let field = Rect::new(left, y, right, y + field_h);
         self.field_rect = Some(field);
         self.input.apply_layout_external(field);
         self.input
             .draw(scene, transform, text, theme, &PresenceCtx::empty());
-        y += 44.0 * text_scale;
+        y += field_h + s2;
 
         let request =
             self.download_request(frame.viewport_bounds, frame.viewport_zoom, frame.viewport);
@@ -557,45 +590,40 @@ impl OfflinePanel {
                 right - left,
             );
         }
-        y += 24.0 * text_scale;
+        y += label_h + s4;
 
+        // Detail row: the label sits on the stepper's centre line; the two
+        // stepper buttons are the shared face with the range between them.
+        let row = Rect::new(left, y, right, y + stepper_h);
         draw::text_w(
             scene,
             text,
             transform,
             "Detail (zoom levels)",
             left,
-            y,
+            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
             13.0,
             theme.text_primary,
             TextWeight::Semibold,
         );
-        let zoom_button = 26.0 * text_scale;
-        let zoom_gap = 32.0 * text_scale;
+        let range_w = 58.0;
+        let plus = Rect::new(right - stepper_h, row.y0, right, row.y1);
         let minus = Rect::new(
-            right - zoom_button * 2.0 - zoom_gap,
-            y - 4.0 * text_scale,
-            right - zoom_button - zoom_gap,
-            y - 4.0 * text_scale + zoom_button,
+            plus.x0 - range_w - stepper_h,
+            row.y0,
+            plus.x0 - range_w,
+            row.y1,
         );
-        let plus = Rect::new(
-            right - zoom_button,
-            y - 4.0 * text_scale,
-            right,
-            y - 4.0 * text_scale + zoom_button,
-        );
-        for (button, label) in [(minus, "–"), (plus, "+")] {
-            draw::fill_rrect(scene, transform, button, 7.0, colors.surfaces.base);
-            draw::text_center(
+        for (button, label, name) in [(minus, "–", "Less detail"), (plus, "+", "More detail")] {
+            Button::paint(
                 scene,
-                text,
                 transform,
-                label,
-                button.x0,
-                button.x1,
-                vmid_scaled(button.y0, zoom_button, 18.0, text_scale),
-                18.0,
-                theme.text_primary,
+                text,
+                theme,
+                &ButtonFace::new(button, label)
+                    .radius(7.0)
+                    .text_size(18.0)
+                    .accessible_name(name),
             );
         }
         draw::text_center(
@@ -605,13 +633,13 @@ impl OfflinePanel {
             &format!("z{}–z{}", request.z0, request.z1),
             minus.x1,
             plus.x0,
-            vmid_scaled(y - 4.0 * text_scale, zoom_button, 13.0, text_scale),
+            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
             13.0,
             theme.accent_primary,
         );
         self.targets.push((minus, OfflineAction::ZoomDelta(-1)));
         self.targets.push((plus, OfflineAction::ZoomDelta(1)));
-        y += 34.0 * text_scale;
+        y += stepper_h + s2;
 
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
         let readout = if frame.progress.is_active() {
@@ -629,7 +657,7 @@ impl OfflinePanel {
         } else {
             format!(
                 "≈ {estimate} tiles ({})",
-                fmt_bytes(u64::from(estimate) * 18_000)
+                ui::format::bytes_si(u64::from(estimate) * 18_000)
             )
         };
         draw::text(
@@ -642,12 +670,14 @@ impl OfflinePanel {
             12.0,
             theme.text_dim,
         );
-        y += 22.0 * text_scale;
-        let bar = Rect::new(left, y, right, y + 8.0 * text_scale);
-        draw::fill_rrect(scene, transform, bar, 4.0, colors.surfaces.base);
+        y += body_h + s2;
+        let bar = Rect::new(left, y, right, y + bar_h);
+        // The progress track is the base tier with its derived edge, so an
+        // empty bar still reads as a bar.
+        draw::edged(scene, transform, bar, bar_h / 2.0, colors.surfaces.base);
         let fraction = frame.progress.fraction();
         if fraction > 0.0 {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 transform,
                 Rect::new(
@@ -660,18 +690,18 @@ impl OfflinePanel {
                 theme.accent_primary,
             );
         }
-        y += 24.0 * text_scale;
+        y += bar_h + s2;
         draw::text(
             scene,
             text,
             transform,
-            &format!("Cached on disk: {}", fmt_bytes(self.cache_bytes)),
+            &format!("Cached on disk: {}", ui::format::bytes_si(self.cache_bytes)),
             left,
             y,
             12.0,
             theme.text_primary,
         );
-        y += 30.0 * text_scale;
+        y += body_h + s4;
 
         draw::text_w(
             scene,
@@ -684,7 +714,7 @@ impl OfflinePanel {
             theme.text_primary,
             TextWeight::Semibold,
         );
-        y += 24.0 * text_scale;
+        y += label_h + s2;
         if frame.regions.is_empty() {
             draw::text(
                 scene,
@@ -696,26 +726,32 @@ impl OfflinePanel {
                 11.5,
                 theme.text_dim,
             );
-            y += 22.0 * text_scale;
+            y += small_h;
         } else {
-            for region in frame.regions.iter().take(shown) {
-                let row_h = 34.0 * text_scale;
+            let (name_h, meta_h) = (line(13.0), line(11.0));
+            for (i, region) in frame.regions.iter().take(shown).enumerate() {
+                if i > 0 {
+                    y += s2;
+                }
                 let row = Rect::new(left, y, right, y + row_h);
-                draw::fill_rrect(scene, transform, row, 8.0, colors.surfaces.base);
+                // Each saved area is the base tier in the card with its
+                // derived edge; its text block centres on the row.
+                draw::edged(scene, transform, row, 8.0, colors.surfaces.base);
                 let trash = Rect::new(
-                    row.x1 - 34.0,
-                    row.center().y - 13.0 * text_scale,
-                    row.x1 - 8.0,
-                    row.center().y + 13.0 * text_scale,
+                    row.x1 - s2 - stepper_h,
+                    row.center().y - stepper_h / 2.0,
+                    row.x1 - s2,
+                    row.center().y + stepper_h / 2.0,
                 );
-                let available = (trash.x0 - row.x0 - 20.0).max(40.0);
+                let available = (trash.x0 - row.x0 - s3 - s2).max(40.0);
+                let name_y = row.y0 + (row_h - name_h - meta_h) / 2.0;
                 draw::text_clip(
                     scene,
                     text,
                     transform,
                     &region.name,
-                    row.x0 + 12.0,
-                    row.y0 + 5.0 * text_scale,
+                    row.x0 + s3,
+                    name_y,
                     13.0,
                     theme.text_primary,
                     available,
@@ -725,20 +761,28 @@ impl OfflinePanel {
                     text,
                     transform,
                     &format!("z{}–z{} · {} tiles", region.z0, region.z1, region.tiles),
-                    row.x0 + 12.0,
-                    row.y0 + 20.0 * text_scale,
+                    row.x0 + s3,
+                    name_y + name_h,
                     11.0,
                     theme.text_dim,
                     available,
                 );
-                draw::fill_rrect(scene, transform, trash, 7.0, colors.surfaces.raised);
-                draw::stroke_rrect(scene, transform, trash, 7.0, 1.0, colors.border_standard);
+                Button::paint(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &ButtonFace::new(trash, "")
+                        .radius(7.0)
+                        .accessible_name("Remove downloaded area"),
+                );
                 draw_trash(scene, transform, trash, colors.semantic.danger);
                 self.targets
                     .push((trash, OfflineAction::DeleteRegion(region.id.clone())));
-                y += 42.0 * text_scale;
+                y += row_h;
             }
             if overflow {
+                y += s2;
                 draw::text(
                     scene,
                     text,
@@ -749,46 +793,41 @@ impl OfflinePanel {
                     11.0,
                     theme.text_dim,
                 );
-                y += 18.0 * text_scale;
+                y += small_h;
             }
         }
-        y += 12.0 * text_scale;
+        y += s4;
 
-        let button_height = 38.0 * text_scale;
-        let button_width = (right - left - 10.0) / 2.0;
-        let download = Rect::new(left, y, left + button_width, y + button_height);
-        let clear = Rect::new(left + button_width + 10.0, y, right, y + button_height);
-        draw::fill_rrect(scene, transform, download, 9.0, theme.accent_primary);
+        let button_width = (right - left - s3) / 2.0;
+        let download = Rect::new(left, y, left + button_width, y + button_h);
+        let clear = Rect::new(left + button_width + s3, y, right, y + button_h);
         let label = self.pick.as_ref().map_or_else(
             || "Download current view".to_string(),
             |pick| format!("Download {}", pick.name),
         );
-        let label = draw::ellipsize(text, &label, 13.0, button_width - 20.0);
-        draw::text_center(
+        let label = text.elide_to_width(&label, 13.0, ui::num::f32_of_f64(button_width - 2.0 * s3));
+        Button::paint(
             scene,
-            text,
             transform,
-            &label,
-            download.x0,
-            download.x1,
-            vmid_scaled(download.y0, button_height, 13.0, text_scale),
-            13.0,
-            Color::WHITE,
+            text,
+            theme,
+            &ButtonFace::new(download, &label)
+                .primary()
+                .radius(9.0)
+                .text_size(13.0),
         );
         self.targets.push((download, OfflineAction::Download));
-        draw::fill_rrect(scene, transform, clear, 9.0, colors.surfaces.base);
-        draw::stroke_rrect(scene, transform, clear, 9.0, 1.0, colors.border_standard);
-        draw::text_center(
+        Button::paint(
             scene,
-            text,
             transform,
-            "Clear all",
-            clear.x0,
-            clear.x1,
-            vmid_scaled(clear.y0, button_height, 13.0, text_scale),
-            13.0,
-            colors.semantic.danger,
+            text,
+            theme,
+            &ButtonFace::new(clear, "Clear all")
+                .danger_outline()
+                .radius(9.0)
+                .text_size(13.0),
         );
+
         self.targets.push((clear, OfflineAction::ClearCache));
         self.input
             .draw_overlay(scene, transform, text, theme, &PresenceCtx::empty());
@@ -842,18 +881,6 @@ fn draw_trash(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
 
 fn vmid_scaled(y: f64, height: f64, size: f32, text_scale: f64) -> f64 {
     y + (height - f64::from(size) * text_scale) / 2.0 - 1.0
-}
-
-fn fmt_bytes(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
-    } else if bytes >= 1_000_000 {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1} KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 #[cfg(test)]

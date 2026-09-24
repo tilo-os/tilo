@@ -40,6 +40,17 @@ const CARD_PAD_Y: f64 = 7.0;
 const ROW_GAP: f64 = 8.0;
 /// Card height for a short, single-line formula.
 const BASE_ROW_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * CARD_PAD_Y;
+/// Left edge of the row prefix label inside a card (past the colour swatch).
+const PREFIX_X: f64 = 34.0;
+/// Gap between the measured prefix and the math field.
+const PREFIX_GAP: f64 = 4.0;
+/// Prefix slot before the first frame has measured it (the 1× design).
+const PREFIX_W_1X: f64 = 22.0;
+/// Panel header height before the first frame has measured it (the 1× design:
+/// 12 top pad + 24 title line + 20 subtitle line + 8 gap).
+const HEADER_H_1X: f64 = 64.0;
+/// The upright prefix every row paints ahead of its math field.
+const PREFIX_LABEL: &str = "z =";
 
 pub struct Graph3dScreen {
     pub panel: Rect,
@@ -66,6 +77,13 @@ pub struct Graph3dScreen {
     fields: Vec<MathField>,
     /// Per-row card (outer) heights, grown to fit each formula up to a max.
     card_heights: Vec<f64>,
+    /// Measured width of the row prefix (`y =` / `z =`) at this frame's
+    /// paint scale, so the math field starts past it at every text scale.
+    /// Measured during `draw`; `layout` reuses it on the event path.
+    prefix_w: f64,
+    /// Measured height of the panel header (title + subtitle lines) so the
+    /// first card starts below them at every text scale (64 px at 1×).
+    header_h: f64,
     /// Projected + depth-sorted geometry for ALL visible surfaces, rebuilt only
     /// when the surfaces, orbit/zoom, domain, or canvas size change — never on a
     /// theme or tab switch. Each cell carries its function's series index; the
@@ -98,6 +116,8 @@ impl Default for Graph3dScreen {
             hovered_row: None,
             fields: Vec::new(),
             card_heights: Vec::new(),
+            prefix_w: PREFIX_W_1X,
+            header_h: HEADER_H_1X,
             surface_cache: SurfaceCache::default(),
             zoom: ZoomAnim3d::new(crate::model::View3d::default().zoom),
         }
@@ -188,6 +208,21 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
+    /// Pure graph rendering for a frozen History model; no editing controls.
+    pub(crate) fn draw_history_canvas(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        model: &CalcModel,
+        area: Rect,
+    ) {
+        self.canvas = area;
+        self.zoom.settle(model.view3d.zoom);
+        draw::fill_rect(scene, t, area, theme.bg_primary);
+        self.draw_surfaces(scene, t, theme, model);
+    }
+
     /// Resolve docked-vs-overlay + panel / canvas / scrim / toggle rects from
     /// the current width. Re-derived every layout pass so a resize reflows.
     fn resolve_panel(&mut self, area: Rect) {
@@ -240,7 +275,7 @@ impl Graph3dScreen {
             self.add_rect = Rect::ZERO;
             return;
         }
-        let list_top = self.panel.y0 + 64.0;
+        let list_top = self.panel.y0 + self.header_h;
         let mut y = list_top;
         for i in 0..model.surfaces.len() {
             let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
@@ -261,7 +296,7 @@ impl Graph3dScreen {
             let delete = centered_square(delete_hit.center(), ROW_ACTION_ICON);
             // "z =" label at the left, the math field fills the rest up to the dot.
             let edit = Rect::new(
-                r.x0 + 60.0,
+                r.x0 + PREFIX_X + self.prefix_w + PREFIX_GAP,
                 r.y0 + CARD_PAD_Y,
                 delete_hit.x0 - 8.0,
                 r.y1 - CARD_PAD_Y,
@@ -288,6 +323,12 @@ impl Graph3dScreen {
     fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer, text_scale: f32) {
         self.sync_fields(model);
         self.card_heights.clear();
+        // The prefix slot and the header band follow the labels as this frame
+        // paints them, so the field never starts under `y =` and the first
+        // card never starts under the subtitle at any text scale.
+        self.prefix_w =
+            draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
+        self.header_h = Self::header_band(tr).2;
         for field in &mut self.fields {
             field.set_text_scale(text_scale);
             let content_h = if field.is_empty() {
@@ -427,9 +468,9 @@ impl Graph3dScreen {
         model: &CalcModel,
         area: Rect,
     ) {
-        draw::set_text_scale(theme.text_scale);
+        draw::set_text_scale(draw::paint_scale(tr, theme));
         // Measure formulas → grow cards, then lay out from them.
-        self.measure_cards(model, tr, theme.text_scale);
+        self.measure_cards(model, tr, draw::paint_scale(tr, theme));
         self.layout(area, model);
         let c = &theme.tokens.colors;
 
@@ -439,7 +480,14 @@ impl Graph3dScreen {
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_surfaces(scene, t, theme, model);
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+        draw::stroke_round(
+            scene,
+            t,
+            self.canvas,
+            0.0,
+            ui::surface::edge_on(c.neutral[0]),
+            1.0,
+        );
 
         // Collapsed overlay: only a floating toggle over the plot.
         if self.panel == Rect::ZERO {
@@ -454,7 +502,7 @@ impl Graph3dScreen {
                 scene,
                 t,
                 self.scrim_rect,
-                draw::with_alpha(Color::BLACK, 110),
+                draw::with_alpha(theme.tokens.colors.surfaces.scrim, 110),
             );
         }
 
@@ -489,14 +537,17 @@ impl Graph3dScreen {
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
-            c.border_standard,
-            if self.overlay { 1.5 } else { 1.0 },
+            ui::surface::edge_on(panel_bg),
+            1.0,
         );
+        // Title and subtitle stack on their measured line boxes (24 + 20 px at
+        // 1×); `layout` starts the first card below the same band.
+        let (head_h, sub_h, _) = Self::header_band(tr);
         let head = Rect::new(
             self.panel.x0 + 16.0,
             self.panel.y0 + 12.0,
             self.panel.x1 - 16.0,
-            self.panel.y0 + 36.0,
+            self.panel.y0 + 12.0 + head_h,
         );
         draw::text_in(
             scene,
@@ -511,9 +562,9 @@ impl Graph3dScreen {
         );
         let sub = Rect::new(
             self.panel.x0 + 16.0,
-            self.panel.y0 + 36.0,
+            head.y1,
             self.panel.x1 - 16.0,
-            self.panel.y0 + 56.0,
+            head.y1 + sub_h,
         );
         draw::text_in(
             scene,
@@ -526,6 +577,15 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Regular,
         );
+    }
+
+    /// `(title band, subtitle band, whole header)` heights from the measured
+    /// line boxes of the 16 px title and 12 px subtitle — 24 / 20 / 64 px at
+    /// 1× — so the header and the card list agree at every text scale.
+    fn header_band(tr: &mut TextRenderer) -> (f64, f64, f64) {
+        let head_h = draw::line_box(tr, 16.0) + 4.0;
+        let sub_h = draw::line_box(tr, 12.0) + 5.0;
+        (head_h, sub_h, 12.0 + head_h + sub_h + 8.0)
     }
 
     /// One row per saved surface: background, colour swatch, "z =" prefix,
@@ -552,16 +612,16 @@ impl Graph3dScreen {
             };
             let active = i == model.active_surface;
             if active {
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     r,
                     8.0,
                     draw::mix(c.surfaces.raised, c.accent[5], 0.18),
                 );
-                draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                draw::fill_rrect(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch (this surface's series colour)
             let sw = Rect::new(
@@ -571,7 +631,7 @@ impl Graph3dScreen {
                 r.center().y + 7.0,
             );
             let col = series_color(theme, i);
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 sw,
@@ -588,7 +648,7 @@ impl Graph3dScreen {
             } else {
                 c.text_dim
             };
-            let prefix = Rect::new(r.x0 + 34.0, r.y0, r.x0 + 60.0, r.y1);
+            let prefix = Rect::new(r.x0 + PREFIX_X, r.y0, r.x0 + PREFIX_X + self.prefix_w, r.y1);
             draw::text_in(
                 scene,
                 tr,
@@ -621,7 +681,7 @@ impl Graph3dScreen {
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
                 field.draw(scene, t, tr, theme, fld_col, active);
             }
-            draw::fill_rrect(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,
@@ -635,10 +695,10 @@ impl Graph3dScreen {
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_rrect(scene, t, inner, inner.height() / 2.0, vis_col);
+                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
             }
         }
     }
@@ -646,8 +706,7 @@ impl Graph3dScreen {
     /// The "+ Add surface" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
-        draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
             scene,
             tr,
@@ -672,19 +731,22 @@ impl Graph3dScreen {
     ) {
         let c = &theme.tokens.colors;
         let v = &model.view3d;
+        // Three 12 px lines stacked on their measured line boxes (20 px each
+        // at 1×, an 80 px card), so the read-out never overprints itself.
+        let line_h = draw::line_box(tr, 12.0) + 5.0;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
             self.panel.x0 + 16.0,
             info_y,
             self.panel.x1 - 16.0,
-            info_y + 80.0,
+            info_y + 3.0 * line_h + 20.0,
         );
-        draw::fill_rrect(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
         let l1 = Rect::new(
             info.x0 + 12.0,
             info.y0 + 6.0,
             info.x1 - 12.0,
-            info.y0 + 26.0,
+            info.y0 + 6.0 + line_h,
         );
         draw::text_in(
             scene,
@@ -703,9 +765,9 @@ impl Graph3dScreen {
         );
         let l2 = Rect::new(
             info.x0 + 12.0,
-            info.y0 + 28.0,
+            l1.y1 + 2.0,
             info.x1 - 12.0,
-            info.y0 + 48.0,
+            l1.y1 + 2.0 + line_h,
         );
         draw::text_in(
             scene,
@@ -718,12 +780,7 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Regular,
         );
-        let l3 = Rect::new(
-            info.x0 + 12.0,
-            info.y0 + 50.0,
-            info.x1 - 12.0,
-            info.y1 - 6.0,
-        );
+        let l3 = Rect::new(info.x0 + 12.0, l2.y1 + 2.0, info.x1 - 12.0, info.y1 - 6.0);
         draw::text_in(
             scene,
             tr,
@@ -746,7 +803,7 @@ impl Graph3dScreen {
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,
@@ -759,14 +816,14 @@ impl Graph3dScreen {
                 TextWeight::Semibold,
             );
         } else {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 r,
                 8.0,
                 draw::mix(c.surfaces.raised, c.accent[5], 0.20),
             );
-            draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             draw::text_in(
                 scene,
                 tr,

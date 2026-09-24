@@ -94,7 +94,7 @@ fn bookmark_key(url: &str) -> String {
 
 /// Context attached to durable Browser actions in workspace history.
 pub fn history_context(action: &BrowserAction) -> ActionContext {
-    let mut context = ActionContext::for_action("dev.tilo.browser", "Browser", action);
+    let mut context = ActionContext::for_action("so.tilo.browser", "Browser", action);
     let (label, id, kind, resource_label) = match action {
         BrowserAction::AddBookmark { url, title, .. } => (
             "Add bookmark",
@@ -142,7 +142,7 @@ fn ensure_v2_migrated(doc: &mut Doc) -> Result<(), ActionError> {
         let legacy = doc
             .get(&ROOT, LEGACY_BOOKMARKS_PATH)?
             .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.to_str().map(str::to_string))
+            .and_then(|value| value.as_str().map(str::to_string))
             .map_or_else(Bookmarks::default, |json| Bookmarks::from_json(&json));
         for entry in legacy.entries() {
             let Some(url) = normalized_bookmark_url(&entry.url) else {
@@ -189,7 +189,7 @@ fn read_string(doc: &Doc, parent: &ObjId, key: &str) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.to_str().map(str::to_string))
+        .and_then(|value| value.as_str().map(str::to_string))
 }
 
 /// Project the CRDT OR-set into the compact view model used by the chrome.
@@ -238,7 +238,7 @@ pub fn observed_bookmark_tags(doc: &Doc, url: &str) -> Vec<String> {
             .ok()
             .flatten()
             .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.to_str().map(str::to_string))
+            .and_then(|value| value.as_str().map(str::to_string))
             .map_or_else(Bookmarks::default, |json| Bookmarks::from_json(&json));
         return if legacy
             .entries()

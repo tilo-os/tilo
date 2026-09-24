@@ -10,7 +10,7 @@ name = "registry_types"
 path = "src/lib.rs"
 
 # Wire types for the Tilo app registry — the semi-federated
-# marketplace that advertises `.qpkg` bundles. This crate defines
+# marketplace that advertises `.tapp` bundles. This crate defines
 # the JSON shapes (`RegistryHandshake`, `RegistryEntry`,
 # `EntryChangeRequest`) plus the canonical byte encoding the
 # publisher signs over. Zero I/O and zero HTTP so both the
@@ -20,7 +20,7 @@ path = "src/lib.rs"
 # The canonical form for a publisher signature is
 # `blake3("tilo-registry-entry-v1\0" || postcard(entry-without-sig))`,
 # mirroring the domain-separation pattern used by
-# `crates/packaging/pkg::trust`.
+# `crates/packaging/tilo-app-package::trust`.
 
 [dependencies]
 serde.workspace = true
@@ -32,7 +32,7 @@ hex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-rand.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true

@@ -28,13 +28,19 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::chrome::{HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, chrome_hairline, panel_border, panel_ground};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
+use ui::tokens::colors::Colors;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Button, ButtonFace, SegmentedFace, SidebarDrawer, ToggleGroup, Widget};
+use ui::widget::{
+    Button, ButtonFace, ModalAction, ModalFrame, ModalSpec, SegmentedFace, SidebarDrawer, Toggle,
+    ToggleFace, ToggleGroup, Widget,
+};
 use ui::{card_column_width, card_columns};
 
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
@@ -45,23 +51,35 @@ use crate::model::{
 };
 use crate::paint;
 
-/// Shared custom-paint resources threaded through focused view helpers.
-struct DrawContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
-struct RecentActivityLabels<'a> {
-    when: &'a str,
-    action: &'a str,
-}
-
+// Fixed bands are the 1× *floors* of renderer-measured values: the top bar and
+// its tabs (`chrome_metrics`), the timeline's day header / snapshot row /
+// expanded detail (`draw_timeline_list`). At 1× the measured value equals the
+// constant; the band only grows once the accessibility text scale makes its
+// labels taller than the band was drawn for.
 const BAR_H: f64 = 52.0;
-const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
+
+// ---- spacing rhythm (HIG §7b) ------------------------------------------
+//
+// One rhythm for the dashboard, read from the unscaled token scale so every
+// gap here is a named step: `S1` between a row and the detail attached to
+// it, `S2` between related rows (rail rows, snapshot rows in a day), `S3`
+// between sibling cards and inside a card's separator inset, `S4` for card
+// padding and the gap between sections, `S6` before the next group.
+const S1: f64 = Spacing::BASE.s1 as f64;
+const S2: f64 = Spacing::BASE.s2 as f64;
+const S3: f64 = Spacing::BASE.s3 as f64;
+const S4: f64 = Spacing::BASE.s4 as f64;
+const S6: f64 = Spacing::BASE.s6 as f64;
+/// Window gutter and card padding.
+const PAD: f64 = S4;
+/// A view tab's pill sits `S1` inside its hit cell, so neighbouring pills
+/// keep an `S2` gap while the cells stay contiguous for hit-testing.
+const TAB_PILL_INSET: f64 = S1;
 const TAB_W: f64 = 132.0;
+/// Smallest usable view tab; the strip shrinks to the band it is given down
+/// to this target width instead of overrunning the primary action.
+const MIN_TAB_W: f64 = 44.0;
 const TAB_H: f64 = 34.0;
 const ROW_H: f64 = 46.0;
 const DETAIL_H: f64 = 70.0;
@@ -71,7 +89,9 @@ const DAY_H: f64 = 30.0;
 /// so content must never be placed underneath it.
 const STATUS_SAFE_BOTTOM: f64 = 56.0;
 /// Below this window width the Timeline source rail overlays (a summoned
-/// drawer) instead of docking beside the snapshot list.
+/// drawer) instead of docking beside the snapshot list. Both breakpoints are
+/// scaled by the text scale: an 800px window at 2× carries what a 400px
+/// window carries at 1×, so it takes the compact chrome.
 const RAIL_BREAKPOINT: f64 = 820.0;
 /// Below this width the top-bar chrome compacts (icon-only primary action,
 /// tighter tabs) and multi-column tile/card grids drop toward a single column.
@@ -85,6 +105,23 @@ const RECOVERY_SAFETY_COPY: &str = "Backups are paused until this location is re
 /// show as a mysterious sliver at the opposite edge of a phone window.
 fn should_paint_rail(drawer: &SidebarDrawer, rail: Rect) -> bool {
     rail.width() > 4.0 && drawer.reveal() > 0.001
+}
+
+/// The face a selected row takes on `ground`: `(fill, edge)`. `selection_tier`
+/// lifts `surfaces.base → raised`, which is invisible on a raised card on the
+/// light preset and a weak step on the dark one, so the fill is the derived
+/// edge colour of the ground used as a wash — `edge_on` climbs its alpha
+/// ladder until the step registers on that ground — and the ring is the
+/// panel-strength derived edge: a step, never an accent wash (HIG §9.3).
+///
+/// Open — needs coordinator: `ui::chrome::selection_tier_on(theme, state,
+/// ground)` once merged (the same helper lives in firewall, backups and
+/// remote).
+fn selected_on(ground: Color) -> (Color, Color) {
+    (
+        ui::surface::edge_on(ground),
+        ui::surface::edge_on_with(ground, PANEL_BORDER_ALPHA),
+    )
 }
 
 /// Greedily wraps recovery copy using the same renderer that paints it.
@@ -192,6 +229,14 @@ pub struct BackupsApp {
     timeline_scroll: f64,
     timeline_view: Rect,
     timeline_content_h: f64,
+    /// Scroll offset of the source rail's rows (the header band stays put)
+    /// and how far they can scroll, as the last frame measured them.
+    rail_scroll: f64,
+    rail_scroll_max: f64,
+    /// Top-bar band and tab height as the last frame measured them
+    /// (`chrome_metrics`); `BAR_H` / `TAB_H` floors.
+    bar_h: f64,
+    tab_h: f64,
     policy_focus: usize,
     toast: Option<(String, ToastKind, Instant)>,
     seeded: bool,
@@ -307,6 +352,10 @@ impl BackupsApp {
             timeline_scroll: 0.0,
             timeline_view: Rect::ZERO,
             timeline_content_h: 0.0,
+            rail_scroll: 0.0,
+            rail_scroll_max: 0.0,
+            bar_h: BAR_H,
+            tab_h: TAB_H,
             policy_focus: 0,
             toast: None,
             seeded: false,
@@ -379,12 +428,7 @@ impl BackupsApp {
     }
 
     fn config_path() -> Option<PathBuf> {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .map(|root| root.join("tilo/backups/config.json"))
+        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -404,15 +448,9 @@ impl BackupsApp {
         ) else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-            if fs::write(&temporary, bytes).is_ok() {
-                let _ = fs::rename(temporary, path);
-            }
+            let _ = atomic_file::write_creating_parent(&path, &bytes);
         }
     }
 
@@ -719,26 +757,48 @@ impl BackupsApp {
         self.catalog.sources.is_empty() && self.catalog.destinations.is_empty()
     }
 
+    /// Text scale the renderer is painting at; every breakpoint and fixed
+    /// band is scaled by it.
+    fn text_scale(tr: &TextRenderer) -> f64 {
+        f64::from(tr.text_scale())
+    }
+
+    /// Measure the top-bar chrome: the tab height carries its 13.5px label
+    /// plus the pill inset, the bar carries the tabs. Exactly `TAB_H` /
+    /// `BAR_H` at 1×.
+    fn chrome_metrics(&mut self, tr: &mut TextRenderer) {
+        let (_, label_h) = tr.measure("Hg", 13.5, None);
+        self.tab_h = TAB_H.max(f64::from(label_h) + 12.0);
+        self.bar_h = BAR_H.max(self.tab_h + 18.0);
+    }
+
     fn render(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
         let c = &theme.tokens.colors;
-        let bar_h = Self::bar_height(theme);
 
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        // Content spans to the window bottom; the tally lives in the floating
-        // status bubble, not a permanent bottom strip.
+        // Bands and breakpoints follow the text scale before anything is
+        // placed off them.
+        self.chrome_metrics(tr);
+        self.drawer
+            .set_breakpoint(RAIL_BREAKPOINT * Self::text_scale(tr));
+
+        // Reserve the transient status bubble's footprint so it never
+        // covers a dashboard control when a job finishes.
+        // The dashboard starts a section step (`S4`) under the bar, or under
+        // the progress banner when one is shown (`S2` under the bar, 34px).
         let progress_h = if self.job_status.is_some() {
-            42.0 * f64::from(theme.text_scale)
+            42.0 * Self::text_scale(tr)
         } else {
             0.0
         };
         let content = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + bar_h + 14.0 + progress_h,
+            self.rect.y0 + self.bar_h + S4 + progress_h,
             self.rect.x1 - PAD,
-            self.rect.y1 - 12.0 - STATUS_SAFE_BOTTOM,
+            self.rect.y1 - S3 - STATUS_SAFE_BOTTOM,
         );
 
         // Advance + resolve the Timeline source rail. Ticking eases the reveal
@@ -796,77 +856,15 @@ impl BackupsApp {
 
         // The confirmation sheet is deliberately above the dashboard and its
         // controls. It is the last non-transient surface before notifications.
+        // While it is open only its own controls exist for hit-testing and
+        // accessibility: nothing behind the scrim is exported, so a reader
+        // never lands on a row the scrim would swallow (`hit_at` agrees).
         if self.ui.restore_open {
+            self.hits.clear();
             self.draw_restore_modal(scene, t, tr, theme);
         }
 
         self.draw_toast(scene, t, tr, theme);
-    }
-
-    fn bar_height(theme: &Theme) -> f64 {
-        BAR_H * f64::from(theme.text_scale)
-    }
-
-    fn draw_compact_backup_tooltip(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.rect.width() >= NARROW_BREAKPOINT || self.hover != Some(Hit::BackupNow) {
-            return;
-        }
-        let Some((anchor, _)) = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(_, hit)| matches!(hit, Hit::BackupNow))
-        else {
-            return;
-        };
-        ui::widget::tooltip::draw_hover_tooltip(
-            scene,
-            t,
-            tr,
-            theme,
-            *anchor,
-            "Back up now",
-            self.rect,
-        );
-    }
-
-    /// Icon tabs preserve all four views at 200% text without turning their
-    /// labels into ambiguous initials. Their semantic names are always full;
-    /// this tooltip gives pointer users the same discoverability.
-    fn draw_compact_tab_tooltip(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if theme.text_scale < 1.5 {
-            return;
-        }
-        let Some((anchor, Hit::Tab(view))) = self
-            .hits
-            .iter()
-            .rev()
-            .find(|(_, hit)| matches!(hit, Hit::Tab(_)))
-            .filter(|(_, hit)| Some(hit) == self.hover.as_ref())
-        else {
-            return;
-        };
-        ui::widget::tooltip::draw_hover_tooltip(
-            scene,
-            t,
-            tr,
-            theme,
-            *anchor,
-            view.title(),
-            self.rect,
-        );
     }
 
     fn draw_job_progress(
@@ -880,15 +878,14 @@ impl BackupsApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        let bar_h = Self::bar_height(theme);
+        let scale = Self::text_scale(tr);
         let rect = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + bar_h + 8.0,
+            self.rect.y0 + self.bar_h + S2,
             self.rect.x1 - PAD,
-            self.rect.y0 + bar_h + 42.0 * scale,
+            self.rect.y0 + self.bar_h + 42.0 * scale,
         );
-        paint::fill_rrect(scene, t, rect, 8.0, c.surfaces.raised);
+        paint::card(scene, t, rect, 8.0, c.surfaces.raised);
         paint::text(
             scene,
             tr,
@@ -909,16 +906,11 @@ impl BackupsApp {
             rect.x0 + 132.0 * scale,
             rect.y0 + 10.0 * scale,
         );
-        let track = Rect::new(
-            rect.x0 + 12.0 * scale,
-            rect.y1 - 7.0 * scale,
-            rect.x1 - 12.0 * scale,
-            rect.y1 - 4.0 * scale,
-        );
-        paint::fill_rrect(scene, t, track, 2.0, c.neutral[4]);
+        let track = Rect::new(rect.x0 + S3, rect.y1 - 7.0, rect.x1 - S3, rect.y1 - 4.0);
+        paint::fill_round(scene, t, track, 2.0, c.surfaces.base);
         // Indeterminate progress is honest: traversal totals are not known before
         // walking the tree, so this communicates work without inventing a percent.
-        paint::fill_rrect(
+        paint::fill_round(
             scene,
             t,
             Rect::new(
@@ -934,97 +926,74 @@ impl BackupsApp {
 
     fn draw_top_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        let bar_h = Self::bar_height(theme);
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + bar_h,
+            self.rect.y0 + self.bar_h,
         );
-        paint::fill_rect(scene, t, bar, c.neutral[0]);
+        // Bar role: the raised tier with one derived hairline under it.
+        paint::fill_rect(scene, t, bar, c.surfaces.raised);
         paint::hline(
             scene,
             t,
             bar.x0,
             bar.x1,
-            bar.y1,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            bar.y1 - 0.5,
+            chrome_hairline(theme),
             1.0,
         );
 
-        let cy = bar.y0 + bar_h / 2.0;
-        let narrow = self.rect.width() < NARROW_BREAKPOINT;
+        let cy = bar.y0 + self.bar_h / 2.0;
+        let narrow = self.rect.width() < NARROW_BREAKPOINT * Self::text_scale(tr);
 
-        let brand_right = self.draw_top_bar_left_cluster(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            bar,
-            cy,
-            narrow,
-        );
-        // A phone-width primary action stays available but compacts to its
-        // familiar plus glyph.  Reserving the full text button here used to
-        // make the four view tabs overlap it at 390 px wide.
-        let action_width = if self.is_empty() {
+        let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
+        // The primary action compacts to an icon below the narrow breakpoint
+        // (as the breakpoint contract promises); with the full label the tab
+        // strip's minimum width overran the band and the last tab painted
+        // underneath the button at phone widths. The wide face is sized from
+        // its label so it never clips at a larger text scale.
+        let action_w = if self.is_empty() {
             0.0
         } else if narrow {
-            42.0 * scale
+            self.tab_h
         } else {
-            122.0 * scale
+            let (bw, _) = tr.measure("Backing up…", 14.0, None);
+            114.0_f64.max(f64::from(bw) + 28.0)
         };
+        let action_gap = if self.is_empty() { 0.0 } else { 8.0 };
         self.draw_top_bar_tabs(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
+            scene,
+            tr,
+            theme,
+            t,
             cy,
             brand_right,
-            bar.x1 - PAD - action_width,
+            bar.x1 - PAD - action_w - action_gap,
         );
         if !self.is_empty() {
-            let rect = if narrow {
-                Rect::new(
-                    bar.x1 - PAD - 34.0 * scale,
-                    cy - 17.0 * scale,
-                    bar.x1 - PAD,
-                    cy + 17.0 * scale,
-                )
+            let rect = Rect::new(bar.x1 - PAD - action_w, cy - 17.0, bar.x1 - PAD, cy + 17.0);
+            let busy = self.job.is_some() || self.job_status.is_some();
+            let label = if busy { "Backing up…" } else { "Back up now" };
+            let face = if narrow {
+                ButtonFace::new(rect, "")
+                    .icon(Icon::Archive)
+                    .accessible_name(label)
             } else {
-                Rect::new(
-                    bar.x1 - PAD - 114.0 * scale,
-                    cy - 17.0 * scale,
-                    bar.x1 - PAD,
-                    cy + 17.0 * scale,
-                )
+                ButtonFace::new(rect, label)
             };
             Button::paint(
                 scene,
                 t,
                 tr,
                 theme,
-                &ButtonFace::new(
-                    rect,
-                    if self.job.is_some() || self.job_status.is_some() {
-                        if narrow { "…" } else { "Backing up…" }
-                    } else if narrow {
-                        "+"
-                    } else {
-                        "Back up now"
-                    },
-                )
-                .primary()
-                .radius(9.0)
-                .disabled(self.job.is_some() || self.job_status.is_some())
-                .hovered(self.hover == Some(Hit::BackupNow)),
+                &face
+                    .primary()
+                    .radius(9.0)
+                    .disabled(busy)
+                    .hovered(self.hover == Some(Hit::BackupNow)),
             );
-            if self.job.is_none() && self.job_status.is_none() {
+            if !busy {
                 self.hits.push((rect, Hit::BackupNow));
             }
         }
@@ -1035,17 +1004,20 @@ impl BackupsApp {
     /// the x just past the label, so the tab strip can centre in the
     /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
     /// the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the top-bar cluster uses paint context, bar bounds, center line and narrow mode to place the drawer toggle and source tally"
+    )]
     fn draw_top_bar_left_cluster(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
         bar: Rect,
         cy: f64,
         narrow: bool,
     ) -> f64 {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         // A hamburger leads it whenever the Timeline rail isn't fully
         // docked-open (overlay, or a collapsed dock), so the source rail is
@@ -1081,59 +1053,56 @@ impl BackupsApp {
     /// The view segmented-tab control, centred between the left cluster and
     /// the backup button, with per-tab width clamped so all tabs always fit.
     /// Split out of [`Self::draw_top_bar`] to keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tab placement uses paint context and the center line plus the available gap between the left cluster and backup button"
+    )]
     fn draw_top_bar_tabs(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
         cy: f64,
         brand_right: f64,
         btn_x0: f64,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         // Segmented tab control, centred in the gap between the brand and the
         // button, with the per-tab width clamped so four tabs always fit.
         let band_x0 = brand_right + 14.0;
         let band_x1 = btn_x0 - 14.0;
-        // Retention is durable configuration regardless of whether this is a
-        // first-run, demo, or configured local repository.  Keeping this
-        // single view set prevents the live tab strip and keyboard traversal
-        // from silently hiding the policy editor after setup.
+        // Retention stays reachable after configuring a live repository.
         let views = &View::ALL;
         let n = views.len() as f64;
-        // Four compact labels fit cleanly on a phone.  The prior 58 px floor
-        // overflowed the available band and collided with the primary action.
-        let tab_w = ((band_x1 - band_x0) / n).clamp(40.0, TAB_W);
+        // The band decides the tab width: never wider than `TAB_W`, never
+        // below a usable target, and never a fixed floor that could overrun
+        // the band into the primary action.
+        let tab_w = ((band_x1 - band_x0) / n).clamp(MIN_TAB_W, TAB_W);
         let seg_total = tab_w * n;
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
         let seg = Rect::new(
             seg_x0,
-            cy - TAB_H / 2.0,
+            cy - self.tab_h / 2.0,
             seg_x0 + seg_total,
-            cy + TAB_H / 2.0,
+            cy + self.tab_h / 2.0,
         );
-        paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
-        paint::stroke_rrect(
-            scene,
-            t,
-            seg,
-            9.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
+        // The track is a well in the raised bar (window tier + derived edge)
+        // so the shared pills lift off it on both palettes.
+        paint::card(scene, t, seg, 9.0, c.surfaces.base);
         // The active tab floats as an inset pill inside the raised track; the
         // whole strip is one shared segmented control. Abbreviate the labels
         // once the tabs get too tight so "Destinations"/"Schedules" don't
         // collide with their neighbours — the abbreviation is content the app
         // owns; the pill fill + selection palette come from the shared control.
-        let narrow_tabs = tab_w < 96.0 * f64::from(theme.text_scale);
-        let icon_tabs = theme.text_scale >= 1.5 && tab_w < 96.0 * f64::from(theme.text_scale);
-        let ultra_narrow_tabs = tab_w < 58.0;
+        let narrow_tabs = tab_w < 96.0;
         let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
+        // A label that still does not fit its tab (340px windows, or a
+        // larger text scale) elides against the pill's inner width rather
+        // than clipping mid-glyph against its neighbour.
+        let label_max_w = (tab_w - 8.0 - 8.0).max(8.0) as f32;
         let mut pill_rects: Vec<Rect> = Vec::with_capacity(views.len());
-        let mut labels: Vec<&str> = Vec::with_capacity(views.len());
+        let mut labels: Vec<String> = Vec::with_capacity(views.len());
         for (i, v) in views.iter().enumerate() {
             let tab = Rect::new(
                 seg.x0 + i as f64 * tab_w,
@@ -1141,22 +1110,8 @@ impl BackupsApp {
                 seg.x0 + (i as f64 + 1.0) * tab_w,
                 seg.y1,
             );
-            pill_rects.push(Rect::new(
-                tab.x0 + 4.0,
-                tab.y0 + 4.0,
-                tab.x1 - 4.0,
-                tab.y1 - 4.0,
-            ));
-            labels.push(if icon_tabs {
-                ""
-            } else if ultra_narrow_tabs {
-                match v {
-                    View::Timeline => "Time",
-                    View::Sources => "Src",
-                    View::Destinations => "Dest",
-                    View::Schedules => "Plan",
-                }
-            } else if narrow_tabs {
+            pill_rects.push(tab.inset(-TAB_PILL_INSET));
+            let label = if narrow_tabs {
                 match v {
                     View::Timeline => "Timeline",
                     View::Sources => "Sources",
@@ -1165,51 +1120,24 @@ impl BackupsApp {
                 }
             } else {
                 v.title()
-            });
+            };
+            labels.push(tr.elide_to_width(label, fs, label_max_w));
             self.hits.push((tab, Hit::Tab(*v)));
         }
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = views.iter().position(|v| self.ui.view == *v).unwrap_or(0);
         let hovered = views.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
-        if icon_tabs {
-            for ((view, pill), is_hovered) in views
-                .iter()
-                .zip(&pill_rects)
-                .zip((0..views.len()).map(|index| hovered == Some(index)))
-            {
-                Button::paint(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    &ButtonFace::new(*pill, "")
-                        .icon(Self::view_icon(*view))
-                        .accessible_name(view.title())
-                        .radius(7.0)
-                        .hovered(is_hovered),
-                );
-            }
-        } else {
-            ToggleGroup::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &SegmentedFace::new(&pill_rects, &labels, selected)
-                    .pill()
-                    .hovered(hovered)
-                    .radius(7.0)
-                    .text_size(fs),
-            );
-        }
-    }
-
-    const fn view_icon(view: View) -> Icon {
-        match view {
-            View::Timeline => Icon::History,
-            View::Sources => Icon::Folder,
-            View::Destinations => Icon::HardDrive,
-            View::Schedules => Icon::Calendar,
-        }
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&pill_rects, &labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(7.0)
+                .text_size(fs),
+        );
     }
 
     /// Health signal (kept as text so the pill needs no bespoke tint) followed
@@ -1242,12 +1170,6 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // At 200% text a long status pill would be wider than a phone window.
-        // The dashboard's controls remain available, and the selected snapshot
-        // carries the same health detail, so avoid painting clipped text.
-        if theme.text_scale >= 1.5 {
-            return;
-        }
         let now = Instant::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
@@ -1300,6 +1222,10 @@ impl BackupsApp {
                 "Backup paused: the destination is unavailable. Reconnect it, then retry.",
             ),
             "restore" => self.shot_scenario = Some(ShotScenario::Restore),
+            // The other dashboard views, so every primary screen is capturable.
+            "sources" => self.ui.view = View::Sources,
+            "destinations" => self.ui.view = View::Destinations,
+            "schedules" => self.ui.view = View::Schedules,
             "unavailable" => {
                 self.catalog = Catalog::empty();
                 self.sync_search_index();
@@ -1352,13 +1278,14 @@ impl BackupsApp {
             content.center().x + card_w / 2.0,
             content.center().y + card_h / 2.0,
         );
-        paint::card(
+        paint::card(scene, t, card, 16.0, c.surfaces.raised);
+        paint::stroke_round(
             scene,
             t,
             card,
             16.0,
-            c.surfaces.raised,
             c.semantic.danger.with_alpha_factor(0.8),
+            1.0,
         );
         let title = if scale >= 1.5 {
             "Location unavailable"
@@ -1511,7 +1438,9 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
-        if theme.text_scale >= 1.5 {
+        // Narrow windows need recovery cards; a wide timeline still has room
+        // for the measured columns, whose rows grow with the renderer's type.
+        if theme.text_scale >= 1.5 && content.width() < NARROW_BREAKPOINT {
             self.draw_large_type_timeline(scene, t, tr, theme, content);
             return;
         }
@@ -1527,17 +1456,21 @@ impl BackupsApp {
         );
 
         // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
-        // they never crush at narrow widths.
-        let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
+        // they never crush at narrow widths; the minimum tile width and the
+        // tile band follow the text scale (label line + value line, 82px at 1×).
+        let cols = card_columns(main.width(), 156.0 * Self::text_scale(tr), 12.0).clamp(1, 4);
         let rows = 4usize.div_ceil(cols);
-        let tile_h = 82.0;
-        let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
+        let (_, label_h) = tr.measure("Hg", 11.5, None);
+        let (_, value_h) = tr.measure_weighted("Hg", 22.0, None, TextWeight::Bold);
+        // `PAD` above the label, `S2` to the value, `PAD` below it.
+        let tile_h = 82.0_f64.max(PAD + f64::from(label_h) + S2 + f64::from(value_h) + PAD);
+        let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * S3;
         let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tile_block_h);
         self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
 
-        // Timeline header.
+        // Timeline header: the next group, `S6` under the tile block.
         let c = &theme.tokens.colors;
-        let hy = tiles.y1 + 18.0;
+        let hy = tiles.y1 + S6;
         let scope = match &self.ui.sel_source {
             Some(id) => self
                 .catalog
@@ -1556,8 +1489,13 @@ impl BackupsApp {
             main.x0,
             hy,
         );
-        let (title_w, _) = tr.measure("Snapshot timeline", 15.0, None);
-        paint::text(
+        // Measure the title at the weight it is painted with; a regular-weight
+        // measurement under-reads the bold run and the scope crowded it. The
+        // scope and sort note then share the title's measured centre line.
+        let (title_w, title_h) =
+            tr.measure_weighted("Snapshot timeline", 15.0, None, TextWeight::Bold);
+        let title_h = f64::from(title_h);
+        paint::text_vc(
             scene,
             tr,
             t,
@@ -1565,20 +1503,23 @@ impl BackupsApp {
             12.5,
             theme.accent_primary,
             main.x0 + f64::from(title_w) + 14.0,
-            hy + 1.0,
+            hy,
+            title_h,
         );
-        paint::text_right(
+        let (sort_w, sort_h) = tr.measure("newest first", 11.5, None);
+        paint::text(
             scene,
             tr,
             t,
             "newest first",
             11.5,
             c.text_dim,
-            main.x1,
-            hy + 2.0,
+            main.x1 - f64::from(sort_w),
+            hy + (title_h - f64::from(sort_h)) / 2.0,
         );
 
-        let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
+        // The list starts `S2` under the title's measured line.
+        let list = Rect::new(main.x0, hy + title_h + S2, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
     }
 
@@ -1743,7 +1684,7 @@ impl BackupsApp {
             let thumb_h = (track_h * (track_h / self.timeline_content_h)).max(36.0);
             let thumb_y = list.y0 + (track_h - thumb_h) * (self.timeline_scroll / max_scroll);
             let thumb = Rect::new(list.x1 - 7.0, thumb_y, list.x1 - 2.0, thumb_y + thumb_h);
-            paint::fill_rrect(scene, t, thumb, 2.5, c.text_dim.with_alpha_factor(0.72));
+            paint::fill_round(scene, t, thumb, 2.5, c.text_dim.with_alpha_factor(0.72));
         }
     }
 
@@ -1765,17 +1706,18 @@ impl BackupsApp {
         } else {
             c.surfaces.raised
         };
-        paint::card(
+        paint::card(scene, t, card, 12.0, background);
+        paint::stroke_round(
             scene,
             t,
             card,
             12.0,
-            background,
             if selected {
                 theme.accent_primary.with_alpha_factor(0.7)
             } else {
                 ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
             },
+            1.0,
         );
         paint::dot(
             scene,
@@ -1811,29 +1753,6 @@ impl BackupsApp {
         );
     }
 
-    fn draw_rail_frame(&self, scene: &mut Scene, t: Affine, theme: &Theme, rail: Rect) {
-        let colors = &theme.tokens.colors;
-        if self.drawer.is_overlay() {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                colors.surfaces.raised,
-                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 51),
-            );
-        } else {
-            paint::card(
-                scene,
-                t,
-                rail,
-                14.0,
-                colors.surfaces.raised.with_alpha_factor(0.45),
-                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
-            );
-        }
-    }
-
     fn draw_rail(
         &mut self,
         scene: &mut Scene,
@@ -1843,75 +1762,48 @@ impl BackupsApp {
         rail: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let ground = self.rail_ground(theme);
         // Clip every rail pixel so a sliding overlay reveal never spills rows
         // over the snapshot list beside it.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rail);
-        // A translucent card when docked (matches the panel), a solid surface
-        // when the drawer floats over content in overlay mode.
-        self.draw_rail_frame(scene, t, theme, rail);
-        let pad = 14.0;
-        let mut y = rail.y0 + 14.0;
-        paint::text(scene, tr, t, "SOURCES", 10.5, c.text_dim, rail.x0 + pad, y);
-        // Docked-collapse affordance: a small toggle at the header's right edge
-        // when the rail is docked-open (the top-bar hamburger only reappears
-        // once it's collapsed).
-        if self.drawer.is_docked() && self.drawer.is_open() {
-            let cb = Rect::new(
-                rail.x1 - pad - 30.0,
-                rail.y0 + 10.0,
-                rail.x1 - pad,
-                rail.y0 + 40.0,
-            );
-            let hov = cb.contains(self.last_mouse);
-            self.drawer.draw_toggle(scene, t, theme, cb, hov);
-            self.hits.push((cb, Hit::ToggleRail));
+        // A raised card when docked, a Panel-role surface when the drawer
+        // floats over content in overlay mode; either way the edge derives
+        // from the fill it sits on.
+        if self.drawer.is_overlay() {
+            paint::fill_round(scene, t, rail, 14.0, ground);
+            paint::stroke_round(scene, t, rail.inset(-0.5), 13.5, panel_border(theme), 1.0);
+        } else {
+            paint::card(scene, t, rail, 14.0, ground);
         }
-        y += 20.0;
+        let rows_top = self.draw_rail_header(scene, t, tr, theme, rail);
+
+        // The rows scroll under the header band when the catalog is taller
+        // than the rail; their clip and their hit rects stop at the band.
+        let rows_clip = Rect::new(rail.x0, rows_top, rail.x1, rail.y1);
+        self.rail_scroll = self.rail_scroll.clamp(0.0, self.rail_scroll_max);
+        let first_row_hit = self.hits.len();
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_clip);
+        let mut y = rows_top - self.rail_scroll;
 
         // "All sources" pseudo-row + each source.
         let all_sel = self.ui.sel_source.is_none();
-        self.draw_source_row(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            rail,
-            &mut y,
-            all_sel,
-        );
+        self.draw_source_row(scene, t, tr, theme, rail, &mut y, None, all_sel);
         for i in 0..self.catalog.sources.len() {
             let Some(src) = self.catalog.sources.get(i) else {
                 continue;
             };
             let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
             let src = src.clone();
-            self.draw_source_row_real(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                rail,
-                &mut y,
-                &src,
-                sel,
-            );
+            self.draw_source_row_real(scene, t, tr, theme, rail, &mut y, &src, sel);
         }
 
-        y += 10.0;
-        paint::hline(
-            scene,
-            t,
-            rail.x0 + pad,
-            rail.x1 - pad,
-            y,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
-        y += 14.0;
+        // Next group: a derived separator inset `S3` (HIG §9.5) against the
+        // rail's own ground, `S4` above and below, then the caption and its
+        // rows `S2` apart.
+        y += S4 - S2;
+        paint::separator(scene, t, rail.x0, rail.x1, y, S3, ground);
+        y += S4;
+        let (_, cap_h) = tr.measure("DESTINATIONS", 10.5, None);
         paint::text(
             scene,
             tr,
@@ -1919,76 +1811,191 @@ impl BackupsApp {
             "DESTINATIONS",
             10.5,
             c.text_dim,
-            rail.x0 + pad,
+            rail.x0 + PAD,
             y,
         );
-        y += 22.0;
+        y += f64::from(cap_h) + S2;
         for i in 0..self.catalog.destinations.len() {
             let Some(d) = self.catalog.destinations.get(i).cloned() else {
                 continue;
             };
-            self.draw_dest_compact(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                rail,
-                &mut y,
-                &d,
-            );
+            self.draw_dest_compact(scene, t, tr, theme, rail, &mut y, &d);
         }
         scene.pop_layer();
+        self.finish_rail_rows(scene, t, theme, rows_clip, y, first_row_hit);
+        scene.pop_layer();
+    }
+
+    /// What the rail's rows sit on: the Panel ground while the drawer floats
+    /// over content, the raised card when docked. Every rail separator, hover
+    /// and selected face derives against this, never against `raised` blindly.
+    fn rail_ground(&self, theme: &Theme) -> Color {
+        if self.drawer.is_overlay() {
+            panel_ground(theme)
+        } else {
+            theme.tokens.colors.surfaces.raised
+        }
+    }
+
+    /// The rail's header band — the caption and, while the rail is
+    /// docked-open, the collapse toggle on one centre line (the top-bar
+    /// hamburger owns the overlay case, so the 30px toggle band is only
+    /// reserved when the toggle is drawn). Returns where the rows start: a
+    /// token step under the band. Split out of [`Self::draw_rail`].
+    fn draw_rail_header(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let show_toggle = self.drawer.is_docked() && self.drawer.is_open();
+        let toggle_h: f64 = 30.0;
+        let head_top = rail.y0 + PAD;
+        let (_, cap_h) = tr.measure("SOURCES", 10.5, None);
+        let cap_h = f64::from(cap_h);
+        let head_h = if show_toggle {
+            toggle_h.max(cap_h)
+        } else {
+            cap_h
+        };
+        let head_cy = head_top + head_h / 2.0;
+        paint::text(
+            scene,
+            tr,
+            t,
+            "SOURCES",
+            10.5,
+            c.text_dim,
+            rail.x0 + PAD,
+            head_cy - cap_h / 2.0,
+        );
+        if show_toggle {
+            let cb = Rect::new(
+                rail.x1 - PAD - toggle_h,
+                head_cy - toggle_h / 2.0,
+                rail.x1 - PAD,
+                head_cy + toggle_h / 2.0,
+            );
+            let hov = cb.contains(self.last_mouse);
+            self.drawer.draw_toggle(scene, t, theme, cb, hov);
+            self.hits.push((cb, Hit::ToggleRail));
+        }
+        head_top + head_h + S2
+    }
+
+    /// After the rail's rows are painted: their extent (the trailing `S2`
+    /// swapped for the card padding) against the space under the header
+    /// band decides the scroll range; a row that slid under the band is no
+    /// longer a target, so the hits pushed since `first_row_hit` are clipped
+    /// to `rows_clip`; and a scrollable rail shows a thumb. Split out of
+    /// [`Self::draw_rail`].
+    fn finish_rail_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        rows_clip: Rect,
+        y_end: f64,
+        first_row_hit: usize,
+    ) {
+        let content_h = y_end + self.rail_scroll - rows_clip.y0 - S2 + PAD;
+        self.rail_scroll_max = (content_h - rows_clip.height()).max(0.0);
+        let rows: Vec<(Rect, Hit)> = self.hits.drain(first_row_hit..).collect();
+        self.hits.extend(rows.into_iter().filter_map(|(r, hit)| {
+            let r = r.intersect(rows_clip);
+            (r.width() > 0.0 && r.height() > 0.0).then_some((r, hit))
+        }));
+        if self.rail_scroll_max <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let track_h = rows_clip.height();
+        let thumb_h = (track_h * (track_h / content_h)).max(28.0);
+        let thumb_y =
+            rows_clip.y0 + (track_h - thumb_h) * (self.rail_scroll / self.rail_scroll_max);
+        let thumb = Rect::new(
+            rows_clip.x1 - S1 - 3.0,
+            thumb_y,
+            rows_clip.x1 - S1,
+            thumb_y + thumb_h,
+        );
+        paint::fill_round(scene, t, thumb, 1.5, c.text_dim.with_alpha_factor(0.45));
+    }
+
+    /// The ring a selected card takes: the stronger, panel-strength derived
+    /// edge over the card's rest edge — selection as a step (HIG §9.3), never
+    /// an accent wash.
+    fn selected_ring(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
+        let c = &theme.tokens.colors;
+        paint::stroke_round(
+            scene,
+            t,
+            rect.inset(-0.5),
+            radius - 0.5,
+            ui::surface::edge_on_with(c.surfaces.raised, ui::chrome::PANEL_BORDER_ALPHA),
+            1.0,
+        );
     }
 
     /// Shared row highlight (selected / hovered) used by the rail rows.
     fn row_bg(
         scene: &mut Scene,
         t: Affine,
-        theme: &Theme,
         row: Rect,
         selected: bool,
         hovered: bool,
+        ground: Color,
     ) {
-        let c = &theme.tokens.colors;
+        // Selection is a step, not an accent wash (HIG §9.3). These rows sit
+        // on the rail (`ground`: the raised card, or the Panel ground in
+        // overlay mode), where `selection_tier`'s lift toward the raised tier
+        // would vanish, so both states are measured against the ground
+        // itself: the selected row takes the derived wash with the
+        // panel-strength ring (`selected_on`), hover half that wash.
         if selected {
-            paint::fill_rrect(
-                scene,
-                t,
-                row,
-                9.0,
-                theme.accent_primary.with_alpha_factor(0.18),
-            );
-            paint::stroke_rrect(
-                scene,
-                t,
-                row,
-                9.0,
-                theme.accent_primary.with_alpha_factor(0.6),
-                1.0,
-            );
+            let (wash, ring) = selected_on(ground);
+            paint::fill_round(scene, t, row, 9.0, wash);
+            paint::stroke_round(scene, t, row.inset(-0.5), 8.5, ring, 1.0);
         } else if hovered {
-            paint::fill_rrect(scene, t, row, 9.0, c.lift(0.35));
+            paint::fill_round(
+                scene,
+                t,
+                row,
+                9.0,
+                Colors::hairline_on(ground, HAIRLINE_ALPHA / 2),
+            );
         }
     }
 
     /// The "All sources" aggregate row.
-    fn draw_source_row(&mut self, ctx: &mut DrawContext<'_>, rail: Rect, y: &mut f64, sel: bool) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the aggregate source row uses paint context, rail bounds, a running vertical cursor and selection state"
+    )]
+    fn draw_source_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        y: &mut f64,
+        _src: Option<&Source>,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
         let h = 38.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
         Self::row_bg(
             scene,
             t,
-            theme,
             row,
             sel,
             self.hover == Some(Hit::Source(None)),
+            self.rail_ground(theme),
         );
         let cy = row.y0 + h / 2.0;
         paint::text_bold(
@@ -2013,31 +2020,30 @@ impl BackupsApp {
             cy - 7.0,
         );
         self.hits.push((row, Hit::Source(None)));
-        *y += h + 6.0;
+        *y += h + S2;
     }
 
     fn draw_source_row_real(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         rail: Rect,
         y: &mut f64,
         src: &Source,
         sel: bool,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let h = 50.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
         Self::row_bg(
             scene,
             t,
-            theme,
             row,
             sel,
             self.hover == Some(Hit::Source(Some(src.id.clone()))),
+            self.rail_ground(theme),
         );
         let ix = row.x0 + 22.0;
         let cy = row.y0 + h / 2.0;
@@ -2090,7 +2096,7 @@ impl BackupsApp {
             Self::health_color(theme, src.health),
         );
         self.hits.push((row, Hit::Source(Some(src.id.clone()))));
-        *y += h + 4.0;
+        *y += h + S2;
     }
 
     #[allow(
@@ -2099,27 +2105,43 @@ impl BackupsApp {
     )]
     fn draw_dest_compact(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         rail: Rect,
         y: &mut f64,
         d: &Destination,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
-        let h = 48.0;
-        let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
+        // The row is as tall as its three measured lines need — name, bar,
+        // usage — each a token step apart, so the usage caption never runs
+        // into the next row's name (the fixed 48px row clipped it by 1-3px).
+        let (_, name_h) = tr.measure("Hg", 12.5, None);
+        let (_, usage_h) = tr.measure("Hg", 10.5, None);
+        let bar_h = 6.0;
+        let name_top = *y + S1 + 2.0;
+        let bar_top = name_top + f64::from(name_h) + S1;
+        let usage_top = bar_top + bar_h + S1;
+        let h = usage_top + f64::from(usage_h) + S1 + 2.0 - *y;
+        let row = Rect::new(rail.x0 + S2, *y, rail.x1 - S2, *y + h);
         if self.hover == Some(Hit::Dest(d.id.clone())) {
-            paint::fill_rrect(scene, t, row, 9.0, c.lift(0.35));
+            // Hover is half the selected wash, measured against the rail.
+            let ground = self.rail_ground(theme);
+            paint::fill_round(
+                scene,
+                t,
+                row,
+                9.0,
+                Colors::hairline_on(ground, HAIRLINE_ALPHA / 2),
+            );
         }
         let ix = row.x0 + 18.0;
         Self::draw_dest_icon(
             scene,
             t,
             d.kind,
-            Point::new(ix, row.y0 + 12.0),
+            Point::new(ix, name_top + f64::from(name_h) / 2.0),
             8.0,
             Self::health_color(theme, d.health),
         );
@@ -2130,25 +2152,25 @@ impl BackupsApp {
             &d.name,
             12.5,
             c.text_primary,
-            ix + 16.0,
-            row.y0 + 5.0,
+            ix + S4,
+            name_top,
         );
         let frac = d.used_bytes as f64 / d.total_bytes as f64;
-        let bar = Rect::new(ix, row.y0 + 26.0, row.x1 - 12.0, row.y0 + 32.0);
+        let bar = Rect::new(ix, bar_top, row.x1 - S3, bar_top + bar_h);
         let barcol = if frac > 0.85 {
             c.semantic.warning
         } else {
             theme.accent_primary
         };
-        paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
+        paint::bar(scene, t, bar, frac, barcol, c.surfaces.base);
         let usage = format!(
             "{} / {}",
             ui::format::bytes(d.used_bytes),
             ui::format::bytes(d.total_bytes)
         );
-        paint::text(scene, tr, t, &usage, 10.5, c.text_dim, ix, row.y0 + 35.0);
+        paint::text(scene, tr, t, &usage, 10.5, c.text_dim, ix, usage_top);
         self.hits.push((row, Hit::Dest(d.id.clone())));
-        *y += h + 2.0;
+        *y += h + S2;
     }
 
     fn draw_summary_tiles(
@@ -2161,7 +2183,7 @@ impl BackupsApp {
         cols: usize,
     ) {
         let c = &theme.tokens.colors;
-        let gap = 12.0;
+        let gap = S3;
         let cols = cols.max(1);
         let tile_w = card_column_width(region.width(), cols, gap);
         let rows = 4usize.div_ceil(cols);
@@ -2211,17 +2233,10 @@ impl BackupsApp {
             let x0 = region.x0 + col as f64 * (tile_w + gap);
             let y0 = region.y0 + tile_row as f64 * (tile_h + gap);
             let tile = Rect::new(x0, y0, x0 + tile_w, y0 + tile_h);
-            paint::card(
-                scene,
-                t,
-                tile,
-                12.0,
-                c.surfaces.raised,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
-            // accent ticker on the left edge
-            let tick = Rect::new(tile.x0, tile.y0 + 10.0, tile.x0 + 3.0, tile.y1 - 10.0);
-            paint::fill_rrect(scene, t, tick, 1.5, *accent);
+            paint::card(scene, t, tile, 12.0, c.surfaces.raised);
+            // accent ticker on the left edge (live state colour)
+            let tick = Rect::new(tile.x0, tile.y0 + S3, tile.x0 + 3.0, tile.y1 - S3);
+            paint::fill_round(scene, t, tick, 1.5, *accent);
             paint::text(
                 scene,
                 tr,
@@ -2229,19 +2244,28 @@ impl BackupsApp {
                 label,
                 11.5,
                 c.text_dim,
-                tile.x0 + 16.0,
-                tile.y0 + 14.0,
+                tile.x0 + PAD,
+                tile.y0 + PAD,
             );
+            // The value follows the label's measured line by `S2` and elides
+            // against the tile instead of running out of it.
             let vsize = if value.len() > 11 { 17.0 } else { 22.0 };
+            let (_, label_h) = tr.measure("Hg", 11.5, None);
+            let shown = tr.elide_to_width_weighted(
+                value,
+                vsize,
+                (tile.width() - 2.0 * PAD).max(0.0) as f32,
+                TextWeight::Bold,
+            );
             paint::text_bold(
                 scene,
                 tr,
                 t,
-                value,
+                &shown,
                 vsize,
                 c.text_primary,
-                tile.x0 + 16.0,
-                tile.y0 + 36.0,
+                tile.x0 + PAD,
+                tile.y0 + PAD + f64::from(label_h) + S2,
             );
         }
     }
@@ -2266,24 +2290,32 @@ impl BackupsApp {
             .collect();
         let show_source = self.ui.sel_source.is_none();
 
-        if snaps.is_empty() {
-            self.timeline_content_h = 0.0;
-            self.timeline_scroll = 0.0;
-            Self::draw_timeline_empty_state(scene, t, tr, theme, list);
-            return;
-        }
+        // Row bands follow the measured type (`ROW_H` / `DAY_H` / `DETAIL_H`
+        // are their 1× floors): a snapshot row carries its size + meta stack,
+        // a day header its bold label, the detail its two metadata lines.
+        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Hg", size, None).1);
+        let (h12, h11_5, h13, h10_5, h12b) = (
+            line(tr, 12.0),
+            line(tr, 11.5),
+            line(tr, 13.0),
+            line(tr, 10.5),
+            f64::from(tr.measure_weighted("Hg", 12.0, None, TextWeight::Bold).1),
+        );
+        let row_h = ROW_H.max(h13 + h10_5 - 1.0 + 16.0);
+        let day_h = DAY_H.max(h12b + 15.0);
+        let detail_h = DETAIL_H.max(12.0 + h12 + 6.0 + h11_5 + 12.0);
 
         // First measure total content height (so we can clamp scroll).
         let mut content_h = 0.0;
         let mut last_day: Option<u32> = None;
         for s in &snaps {
             if last_day != Some(s.day) {
-                content_h += DAY_H;
+                content_h += day_h;
                 last_day = Some(s.day);
             }
-            content_h += ROW_H + 4.0;
+            content_h += row_h + S2;
             if self.ui.sel_snapshot.as_deref() == Some(s.id.as_str()) {
-                content_h += DETAIL_H;
+                content_h += detail_h + S1;
             }
         }
         self.timeline_content_h = content_h;
@@ -2296,8 +2328,10 @@ impl BackupsApp {
         last_day = None;
         for s in &snaps {
             if last_day != Some(s.day) {
-                // Day header.
-                if y + DAY_H > list.y0 && y < list.y1 {
+                // Day header: the label is centred in its band and the rule
+                // runs along the label's own centre line.
+                if y + day_h > list.y0 && y < list.y1 {
+                    let label_top = y + (day_h - h12b) / 2.0;
                     paint::text_bold(
                         scene,
                         tr,
@@ -2306,47 +2340,47 @@ impl BackupsApp {
                         12.0,
                         c.text_dim,
                         list.x0 + 2.0,
-                        y + 8.0,
+                        label_top,
                     );
-                    let label_w = 96.0;
-                    paint::hline(
+                    let (label_w, _) = tr.measure_weighted(
+                        &Catalog::day_label(s.day),
+                        12.0,
+                        None,
+                        TextWeight::Bold,
+                    );
+                    // The rule runs from `S3` after the label to the list
+                    // edge, derived against the window tier it lies on.
+                    paint::separator(
                         scene,
                         t,
-                        list.x0 + label_w,
+                        list.x0 + 2.0 + f64::from(label_w) + S3,
                         list.x1,
-                        y + 14.0,
-                        ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                        1.0,
+                        y + day_h / 2.0,
+                        0.0,
+                        c.surfaces.base,
                     );
                 }
-                y += DAY_H;
+                y += day_h;
                 last_day = Some(s.day);
             }
             let selected = self.ui.sel_snapshot.as_deref() == Some(s.id.as_str());
-            let row = Rect::new(list.x0, y, list.x1, y + ROW_H);
+            let row = Rect::new(list.x0, y, list.x1, y + row_h);
             let visible = row.y1 > list.y0 && row.y0 < list.y1;
             if visible {
-                self.draw_snapshot_row(
-                    &mut DrawContext {
-                        scene,
-                        transform: t,
-                        text: tr,
-                        theme,
-                    },
-                    row,
-                    s,
-                    selected,
-                    show_source,
-                );
+                self.draw_snapshot_row(scene, t, tr, theme, row, s, selected, show_source);
                 self.hits.push((row, Hit::Snap(s.id.clone())));
             }
-            y += ROW_H + 4.0;
+            y += row_h + S2;
             if selected {
-                let det = Rect::new(list.x0, y - 2.0, list.x1, y - 2.0 + DETAIL_H);
+                // The detail is attached to its row: `S1` under it (before,
+                // it started 2px under the row and read as touching), and
+                // the next row follows the detail by the ordinary `S2`.
+                let det_top = y - S2 + S1;
+                let det = Rect::new(list.x0, det_top, list.x1, det_top + detail_h);
                 if det.y1 > list.y0 && det.y0 < list.y1 {
                     self.draw_snapshot_detail(scene, t, tr, theme, det, s);
                 }
-                y += DETAIL_H;
+                y = det.y1 + S2;
             }
         }
         scene.pop_layer();
@@ -2357,7 +2391,7 @@ impl BackupsApp {
             let thumb_h = (track_h * (track_h / content_h)).max(28.0);
             let thumb_y = list.y0 + (track_h - thumb_h) * (self.timeline_scroll / max_scroll);
             let thumb = Rect::new(list.x1 - 4.0, thumb_y, list.x1 - 1.0, thumb_y + thumb_h);
-            paint::fill_rrect(scene, t, thumb, 2.0, c.neutral[3]);
+            paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.45));
         }
     }
 
@@ -2399,46 +2433,30 @@ impl BackupsApp {
 
     fn draw_snapshot_row(
         &self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         row: Rect,
         s: &Snapshot,
         selected: bool,
         show_source: bool,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let hovered = self.hover == Some(Hit::Snap(s.id.clone()));
+        // Every row is an edged card on the window tier; hover and selection
+        // are steps of the same lift (HIG §9.3), never an accent wash: a
+        // half lift at rest, the raised tier on hover, and the raised tier
+        // with the stronger panel-strength edge when selected.
         if selected {
-            paint::fill_rrect(
-                scene,
-                t,
-                row,
-                10.0,
-                theme.accent_primary.with_alpha_factor(0.16),
-            );
-            paint::stroke_rrect(
-                scene,
-                t,
-                row,
-                10.0,
-                theme.accent_primary.with_alpha_factor(0.6),
-                1.0,
-            );
+            paint::card(scene, t, row, 10.0, c.surfaces.raised);
+            Self::selected_ring(scene, t, theme, row, 10.0);
         } else if hovered {
-            paint::fill_rrect(scene, t, row, 10.0, c.lift(0.35));
+            paint::card(scene, t, row, 10.0, c.surfaces.raised);
         } else {
-            paint::fill_rrect(
-                scene,
-                t,
-                row,
-                10.0,
-                c.surfaces.raised.with_alpha_factor(0.55),
-            );
+            paint::card(scene, t, row, 10.0, c.lift(0.5));
         }
-        let cy = row.y0 + ROW_H / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         // Status dot.
         paint::dot(
             scene,
@@ -2447,7 +2465,8 @@ impl BackupsApp {
             4.0,
             Self::status_color(theme, s.status),
         );
-        // Time.
+        // Time (bold), centred on the row from its measured bold line.
+        let (time_w, time_h) = tr.measure_weighted(&s.time, 14.0, None, TextWeight::Bold);
         paint::text_bold(
             scene,
             tr,
@@ -2456,42 +2475,75 @@ impl BackupsApp {
             14.0,
             c.text_primary,
             row.x0 + 30.0,
-            cy - 8.0,
+            cy - f64::from(time_h) / 2.0,
         );
-        // Type + retention pills.
-        let mut px = row.x0 + 92.0;
+        // Type + retention pills follow the measured time label (the 92px
+        // column at 1×; wider once the time is). The `Auto` pill takes a
+        // dim-ink wash like the `Manual` pill takes an accent one, so it reads
+        // as a pill on the light theme too (a surface lift was invisible there).
+        let mut px = (row.x0 + 92.0).max(row.x0 + 30.0 + f64::from(time_w) + 12.0);
         let (tfg, tbg) = match s.kind {
             SnapType::Manual => (
                 theme.accent_primary,
                 theme.accent_primary.with_alpha_factor(0.18),
             ),
-            SnapType::Auto => (c.text_dim, c.lift(0.72)),
+            SnapType::Auto => (c.text_dim, c.text_dim.with_alpha_factor(0.18)),
         };
         px += paint::pill(scene, tr, t, px, cy, s.kind.label(), 11.0, tfg, tbg) + 6.0;
         let rc = Self::retention_color(theme, s.retention);
         px += paint::tag_pill(scene, tr, t, px, cy, s.retention.label(), 11.0, rc) + 8.0;
-        // Source path (only in "all" mode).
-        if show_source && let Some(src) = self.catalog.source(&s.source_id) {
-            paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
-        }
-        // Right side: files changed, delta, total.
+        // Right side: total over "+delta · files", the two-line stack centred
+        // on the row (its line boxes overlap by 1px, as at 1×) instead of the
+        // meta line crowding the row's bottom edge. Measured first so the
+        // source path can stop where the stack begins.
         let total_x = row.x1 - 16.0;
-        paint::text_right(
-            scene,
-            tr,
-            t,
-            &ui::format::bytes(s.size_bytes),
-            13.0,
-            c.text_primary,
-            total_x,
-            cy - 8.0,
-        );
+        let total = ui::format::bytes(s.size_bytes);
         let meta = format!(
             "+{} · {} files",
             ui::format::bytes(s.delta_bytes),
             s.files_changed
         );
-        paint::text_right(scene, tr, t, &meta, 10.5, c.text_dim, total_x, cy + 7.0);
+        let (size_w, size_h) = tr.measure(&total, 13.0, None);
+        let (meta_w, meta_h) = tr.measure(&meta, 10.5, None);
+        let stack_x0 = total_x - f64::from(size_w.max(meta_w));
+        // Source path (only in "all" mode), elided against the right stack.
+        if show_source && let Some(src) = self.catalog.source(&s.source_id) {
+            let path_max_w = (stack_x0 - 12.0 - px).max(24.0) as f32;
+            let shown = tr.elide_to_width(&src.path, 12.0, path_max_w);
+            paint::text_vc(
+                scene,
+                tr,
+                t,
+                &shown,
+                12.0,
+                c.text_dim,
+                px,
+                row.y0,
+                row.height(),
+            );
+        }
+        let stack_h = f64::from(size_h) + f64::from(meta_h) - 1.0;
+        let size_top = cy - stack_h / 2.0;
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &total,
+            13.0,
+            c.text_primary,
+            total_x,
+            size_top,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &meta,
+            10.5,
+            c.text_dim,
+            total_x,
+            size_top + f64::from(size_h) - 1.0,
+        );
     }
 
     fn draw_snapshot_detail(
@@ -2504,24 +2556,49 @@ impl BackupsApp {
         s: &Snapshot,
     ) {
         let c = &theme.tokens.colors;
-        paint::fill_rrect(
-            scene,
-            t,
-            detail_rect,
-            10.0,
-            c.neutral[0].with_alpha_factor(0.5),
-        );
+        // The detail reads as the quieter companion of its selected row: the
+        // same half lift the resting rows take, with its own derived edge.
+        paint::card(scene, t, detail_rect, 10.0, c.lift(0.5));
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
+        // Buttons are sized from their labels (the shared face paints at the
+        // 14px base size) so `Restore…` never clips at a larger text scale.
+        let (restore_w, _) = tr.measure("Restore…", 14.0, None);
+        let (verify_w, _) = tr.measure("Verify", 14.0, None);
+        let restore_w = 88.0_f64.max(f64::from(restore_w) + 28.0);
+        let verify_w = 84.0_f64.max(f64::from(verify_w) + 28.0);
+        let restore = Rect::new(
+            detail_rect.x1 - 8.0 - restore_w,
+            detail_rect.y0 + 25.0,
+            detail_rect.x1 - 8.0,
+            detail_rect.y1 - 8.0,
+        );
+        let verify = Rect::new(
+            restore.x0 - 8.0 - verify_w,
+            detail_rect.y0 + 25.0,
+            restore.x0 - 8.0,
+            detail_rect.y1 - 8.0,
+        );
+        // The metadata lines stop where the action buttons begin; at phone
+        // widths the second line otherwise ran underneath Verify. The second
+        // line follows the first's measured height.
+        let text_x = detail_rect.x0 + 16.0;
+        let text_max_w = ((verify.x0 - 12.0) - text_x).max(40.0) as f32;
+        let stored = tr.elide_to_width(
+            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            12.0,
+            text_max_w,
+        );
+        let (_, stored_h) = tr.measure("Hg", 12.0, None);
         paint::text(
             scene,
             tr,
             t,
-            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            &stored,
             12.0,
             c.text_dim,
-            detail_rect.x0 + 16.0,
+            text_x,
             detail_rect.y0 + 12.0,
         );
         let enc = if dest.is_some_and(|found| found.encrypted) {
@@ -2529,10 +2606,7 @@ impl BackupsApp {
         } else {
             "plaintext"
         };
-        paint::text(
-            scene,
-            tr,
-            t,
+        let meta = tr.elide_to_width(
             &format!(
                 "{} files · {} changed · {}",
                 s.files_changed,
@@ -2540,22 +2614,17 @@ impl BackupsApp {
                 enc
             ),
             11.5,
+            text_max_w,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &meta,
+            11.5,
             c.text_dim,
-            detail_rect.x0 + 16.0,
-            detail_rect.y0 + 33.0,
-        );
-
-        let verify = Rect::new(
-            detail_rect.x1 - 188.0,
-            detail_rect.y0 + 25.0,
-            detail_rect.x1 - 104.0,
-            detail_rect.y1 - 8.0,
-        );
-        let restore = Rect::new(
-            detail_rect.x1 - 96.0,
-            detail_rect.y0 + 25.0,
-            detail_rect.x1 - 8.0,
-            detail_rect.y1 - 8.0,
+            text_x,
+            detail_rect.y0 + 12.0 + f64::from(stored_h) + 6.0,
         );
         Button::paint(
             scene,
@@ -2590,97 +2659,107 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
-        Self::draw_sources_view_header(scene, t, tr, theme, content);
+        Self::draw_view_header(
+            scene,
+            t,
+            tr,
+            theme,
+            content,
+            "Backup sources",
+            "Folders captured on a schedule into your destinations.",
+        );
 
         // At narrow widths the three inline stat columns collapse to one line
         // beneath the path, so nothing is crushed against the toggle.
         let narrow = content.width() < 620.0;
-        let mut y = content.y0 + 50.0;
+        let mut y = Self::view_body_top(tr, content);
         let card_h = if narrow { 104.0 } else { 96.0 };
         for i in 0..self.catalog.sources.len() {
             let Some(src) = self.catalog.sources.get(i).cloned() else {
                 continue;
             };
-            self.draw_source_card(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                content,
-                y,
-                card_h,
-                narrow,
-                &src,
-            );
-            y += card_h + 12.0;
+            self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
+            y += card_h + S3;
         }
 
-        // Recent activity feed fills the remaining space.
-        let region = Rect::new(content.x0, y + 10.0, content.x1, content.y1);
+        // Recent activity feed — the next group — fills the remaining space
+        // `S6` under the last card.
+        let region = Rect::new(content.x0, y - S3 + S6, content.x1, content.y1);
         if region.height() > 80.0 {
             self.draw_recent_activity(scene, t, tr, theme, region);
         }
     }
 
-    /// The "Backup sources" title + subtitle. Split out of
-    /// [`Self::draw_sources_view`] to keep it under the line budget.
-    fn draw_sources_view_header(
+    /// Every view's title + subtitle group: the subtitle follows the title's
+    /// measured line by `S1` (a title and the line that explains it), and
+    /// the body starts `S4` under it ([`Self::view_body_top`]) — one header
+    /// rhythm for Sources, Destinations and Schedules.
+    fn draw_view_header(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
+        title: &str,
+        subtitle: &str,
     ) {
         let c = &theme.tokens.colors;
         paint::text_bold(
             scene,
             tr,
             t,
-            "Backup sources",
+            title,
             16.0,
             c.text_primary,
             content.x0,
             content.y0,
         );
+        let (_, title_h) = tr.measure_weighted(title, 16.0, None, TextWeight::Bold);
         paint::text(
             scene,
             tr,
             t,
-            "Folders captured on a schedule into your destinations.",
+            subtitle,
             12.5,
             c.text_dim,
             content.x0,
-            content.y0 + 24.0,
+            content.y0 + f64::from(title_h) + S1,
         );
+    }
+
+    /// Where a view's body starts under [`Self::draw_view_header`].
+    fn view_body_top(tr: &mut TextRenderer, content: Rect) -> f64 {
+        let (_, title_h) = tr.measure_weighted("Hg", 16.0, None, TextWeight::Bold);
+        let (_, sub_h) = tr.measure("Hg", 12.5, None);
+        content.y0 + f64::from(title_h) + S1 + f64::from(sub_h) + S4
     }
 
     /// One source card: icon + path + kind, the cadence/snapshots/protected
     /// stats, health + next-run, and the enable toggle. Split out of
     /// [`Self::draw_sources_view`] to keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "source cards combine paint context, responsive card geometry and source data for their header, stats and footer"
+    )]
     fn draw_source_card(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         content: Rect,
         y: f64,
         card_h: f64,
         narrow: bool,
         src: &Source,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let card = Rect::new(content.x0, y, content.x1, y + card_h);
         let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
-        let border = if sel {
-            theme.accent_primary.with_alpha_factor(0.6)
-        } else {
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
-        };
-        paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
+        paint::card(scene, t, card, 14.0, c.surfaces.raised);
+        if sel {
+            Self::selected_ring(scene, t, theme, card, 14.0);
+        }
         let ix = card.x0 + 34.0;
         Self::draw_source_icon(
             scene,
@@ -2718,49 +2797,31 @@ impl BackupsApp {
         );
 
         if narrow {
-            Self::draw_source_card_stats_narrow(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                &self.catalog,
-                card,
-                ix,
-                src,
-            );
+            Self::draw_source_card_stats_narrow(scene, t, tr, theme, &self.catalog, card, ix, src);
         } else {
             Self::draw_source_card_stats_wide(scene, t, tr, theme, &self.catalog, card, src);
         }
 
-        self.draw_source_card_footer(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            card,
-            card_h,
-            src,
-        );
+        self.draw_source_card_footer(scene, t, tr, theme, card, card_h, src);
     }
 
     /// The health dot, next-run label, and enable toggle at the bottom of a
     /// source card. Split out of [`Self::draw_source_card`] to keep it under
     /// the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the source footer combines paint context, card geometry and source health, next-run and enabled state"
+    )]
     fn draw_source_card_footer(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         card: Rect,
         card_h: f64,
         src: &Source,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::dot(
             scene,
@@ -2780,22 +2841,25 @@ impl BackupsApp {
             card.y0 + card_h - 24.0,
         );
 
-        // The current local engine has no scheduler daemon to mutate. Show
-        // the observed schedule state as status instead of painting a switch
-        // that looks actionable but cannot change the repository.
+        // Enable switch (shared Toggle look).
+        let tw = 52.0;
+        let tog = Rect::new(
+            card.x1 - 22.0 - tw,
+            card.y0 + card_h - 30.0,
+            card.x1 - 22.0,
+            card.y0 + card_h - 30.0 + 22.0,
+        );
+        let on = src.enabled;
+        Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
         paint::text_right(
             scene,
             tr,
             t,
-            if src.enabled { "Enabled" } else { "Paused" },
+            if on { "Enabled" } else { "Paused" },
             10.5,
-            if src.enabled {
-                Self::health_color(theme, Health::Ok)
-            } else {
-                c.text_dim
-            },
-            card.x1 - 22.0,
-            card.y0 + card_h - 24.0,
+            c.text_dim,
+            tog.x0 - 8.0,
+            tog.center().y - 5.0,
         );
 
         self.hits.push((card, Hit::Source(Some(src.id.clone()))));
@@ -2804,17 +2868,20 @@ impl BackupsApp {
     /// The single compact stats line shown for a source card at narrow
     /// widths. Split out of [`Self::draw_source_card`] to keep it under the
     /// line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compact source stats need paint context, card alignment, source details and catalog snapshot totals"
+    )]
     fn draw_source_card_stats_narrow(
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         catalog: &Catalog,
         card: Rect,
         ix: f64,
         src: &Source,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let stats = format!(
             "{} · {} snapshots · {}",
@@ -2894,14 +2961,7 @@ impl BackupsApp {
         region: Rect,
     ) {
         let c = &theme.tokens.colors;
-        paint::card(
-            scene,
-            t,
-            region,
-            14.0,
-            c.surfaces.raised.with_alpha_factor(0.45),
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
+        paint::card(scene, t, region, 14.0, c.surfaces.raised);
         paint::text_bold(
             scene,
             tr,
@@ -2909,8 +2969,8 @@ impl BackupsApp {
             "Recent activity",
             13.5,
             c.text_primary,
-            region.x0 + 18.0,
-            region.y0 + 14.0,
+            region.x0 + PAD,
+            region.y0 + PAD,
         );
         paint::text_right(
             scene,
@@ -2919,8 +2979,8 @@ impl BackupsApp {
             "last 7 events",
             11.0,
             c.text_dim,
-            region.x1 - 18.0,
-            region.y0 + 16.0,
+            region.x1 - PAD,
+            region.y0 + PAD + 2.0,
         );
 
         // Below this the fixed activity columns won't fit; the row folds to two
@@ -2934,7 +2994,9 @@ impl BackupsApp {
             .cloned()
             .collect();
         let row_h = if narrow { 46.0 } else { 38.0 };
-        let y0 = region.y0 + 44.0;
+        // Rows start `S2` under the card title's measured line.
+        let (_, title_h) = tr.measure_weighted("Hg", 13.5, None, TextWeight::Bold);
+        let y0 = region.y0 + PAD + f64::from(title_h) + S2;
         for (i, event) in events.iter().enumerate() {
             let ry = y0 + i as f64 * row_h;
             if ry + row_h > region.y1 - 8.0 {
@@ -2949,45 +3011,22 @@ impl BackupsApp {
             let when = format!("{} {}", Catalog::day_label(event.day), event.time);
             if narrow {
                 Self::draw_recent_activity_row_narrow(
-                    &mut DrawContext {
-                        scene,
-                        transform: t,
-                        text: tr,
-                        theme,
-                    },
-                    region,
-                    ry,
-                    event,
-                    &when,
-                    &action,
+                    scene, t, tr, theme, region, ry, event, &when, &action,
                 );
             } else {
                 self.draw_recent_activity_row_wide(
-                    &mut DrawContext {
-                        scene,
-                        transform: t,
-                        text: tr,
-                        theme,
-                    },
-                    region,
-                    ry,
-                    row_h,
-                    event,
-                    &RecentActivityLabels {
-                        when: &when,
-                        action: &action,
-                    },
+                    scene, t, tr, theme, region, ry, row_h, event, &when, &action,
                 );
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
-                paint::hline(
+                paint::separator(
                     scene,
                     t,
-                    region.x0 + 18.0,
-                    region.x1 - 18.0,
+                    region.x0,
+                    region.x1,
                     ry + row_h,
-                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                    1.0,
+                    S3,
+                    c.surfaces.raised,
                 );
             }
         }
@@ -2996,18 +3035,21 @@ impl BackupsApp {
     /// One narrow-layout recent-activity row: status dot, when + size on top,
     /// the action beneath. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compact activity rows combine paint context and row position with snapshot status, time and action labels"
+    )]
     fn draw_recent_activity_row_narrow(
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         region: Rect,
         ry: f64,
         event: &Snapshot,
         when: &str,
         action: &str,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         paint::dot(
             scene,
@@ -3051,19 +3093,23 @@ impl BackupsApp {
     /// One wide-layout recent-activity row: status dot, when, action, dest,
     /// status label, size. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wide activity rows combine paint context and row geometry with snapshot data, time and action labels"
+    )]
     fn draw_recent_activity_row_wide(
         &self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         region: Rect,
         ry: f64,
         row_h: f64,
         event: &Snapshot,
-        labels: &RecentActivityLabels<'_>,
+        when: &str,
+        action: &str,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let cy = ry + row_h / 2.0;
         paint::dot(
@@ -3077,7 +3123,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            labels.when,
+            when,
             12.5,
             c.text_primary,
             region.x0 + 36.0,
@@ -3087,7 +3133,7 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            labels.action,
+            action,
             12.0,
             c.text_dim,
             region.x0 + 168.0,
@@ -3146,38 +3192,28 @@ impl BackupsApp {
         content: Rect,
     ) {
         let c = &theme.tokens.colors;
-        paint::text_bold(
+        Self::draw_view_header(
             scene,
-            tr,
             t,
+            tr,
+            theme,
+            content,
             "Destinations",
-            16.0,
-            c.text_primary,
-            content.x0,
-            content.y0,
-        );
-        paint::text(
-            scene,
-            tr,
-            t,
             "Where snapshots are stored. Capacity is shown per repository.",
-            12.5,
-            c.text_dim,
-            content.x0,
-            content.y0 + 24.0,
         );
 
         // Reflow the repository cards into an aligned grid — tall gauge cards
         // when several fit abreast, compact horizontal cards in a single column
-        // when the window is too narrow for the ring layout.
+        // when the window is too narrow for the ring layout. Sibling cards
+        // sit `S3` apart, like the summary tiles.
         let n = self.catalog.destinations.len();
-        let gap = 16.0;
+        let gap = S3;
         let cols = card_columns(content.width(), 240.0, gap).clamp(1, n.max(1));
         let cw = card_column_width(content.width(), cols, gap);
-        let top = content.y0 + 52.0;
+        let top = Self::view_body_top(tr, content);
         let compact = cols == 1;
         let ch = if compact { 116.0 } else { 250.0 };
-        let row_gap = 16.0;
+        let row_gap = S3;
         let mut rows_used = 1usize;
         for i in 0..n {
             let Some(d) = self.catalog.destinations.get(i).cloned() else {
@@ -3193,40 +3229,12 @@ impl BackupsApp {
             if compact {
                 Self::draw_dest_card_compact(scene, t, tr, theme, card, &d, sel);
             } else {
-                Self::draw_dest_card_tall(
-                    &mut DrawContext {
-                        scene,
-                        transform: t,
-                        text: tr,
-                        theme,
-                    },
-                    card,
-                    &d,
-                    sel,
-                );
+                Self::draw_dest_card_tall(scene, t, tr, theme, card, &d, sel);
             }
             self.hits.push((card, Hit::Dest(d.id.clone())));
         }
 
-        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
-        self.draw_destination_capacity(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            content,
-            ay,
-        );
-    }
-
-    fn draw_destination_capacity(&self, ctx: &mut DrawContext<'_>, content: Rect, y: f64) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
-        let colors = &theme.tokens.colors;
+        // Aggregate bar across the bottom.
         let used: u64 = self.catalog.destinations.iter().map(|d| d.used_bytes).sum();
         let total: u64 = self
             .catalog
@@ -3234,28 +3242,26 @@ impl BackupsApp {
             .iter()
             .map(|d| d.total_bytes)
             .sum();
+        // The aggregate is the next group: `S6` under the last card row.
+        let ay = top + rows_used as f64 * (ch + row_gap) - row_gap + S6;
         paint::text_bold(
             scene,
             tr,
             t,
             "Total capacity",
             13.5,
-            colors.text_primary,
+            c.text_primary,
             content.x0,
-            y,
+            ay,
         );
-        let bar = Rect::new(content.x0, y + 24.0, content.x1, y + 38.0);
+        let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
         paint::bar(
             scene,
             t,
             bar,
-            if total == 0 {
-                0.0
-            } else {
-                used as f64 / total as f64
-            },
+            used as f64 / total as f64,
             theme.accent_primary,
-            colors.neutral[2],
+            c.lift(1.0),
         );
         paint::text(
             scene,
@@ -3268,13 +3274,13 @@ impl BackupsApp {
                 self.catalog.destinations.len()
             ),
             11.5,
-            colors.text_dim,
+            c.text_dim,
             content.x0,
-            y + 44.0,
+            ay + 44.0,
         );
 
         // Distribution: where the snapshots actually live.
-        self.draw_dest_distribution(scene, t, tr, theme, content, y + 76.0);
+        self.draw_dest_distribution(scene, t, tr, theme, content, ay + 76.0);
     }
 
     fn dest_color(theme: &Theme, id: &str) -> Color {
@@ -3283,23 +3289,29 @@ impl BackupsApp {
             "pool" => theme.accent_primary,
             "usb" => c.semantic.info,
             "b2" => c.semantic.success,
-            _ => c.neutral[5],
+            _ => c.text_dim,
         }
     }
 
     /// The full repository card: a big capacity ring plus used/free figures.
-    fn draw_dest_card_tall(ctx: &mut DrawContext<'_>, card: Rect, d: &Destination, sel: bool) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the repository card combines paint context and bounds with destination capacity data and selection state"
+    )]
+    fn draw_dest_card_tall(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+        sel: bool,
+    ) {
         let c = &theme.tokens.colors;
-        let border = if sel {
-            theme.accent_primary.with_alpha_factor(0.6)
-        } else {
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
-        };
-        paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
+        paint::card(scene, t, card, 16.0, c.surfaces.raised);
+        if sel {
+            Self::selected_ring(scene, t, theme, card, 16.0);
+        }
 
         Self::draw_dest_card_tall_header(scene, t, tr, theme, card, d);
         Self::draw_dest_card_tall_ring(scene, t, tr, theme, card, d);
@@ -3367,7 +3379,7 @@ impl BackupsApp {
         } else {
             theme.accent_primary
         };
-        paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.neutral[2]);
+        paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.surfaces.base);
         paint::text_center(
             scene,
             tr,
@@ -3487,12 +3499,10 @@ impl BackupsApp {
         sel: bool,
     ) {
         let c = &theme.tokens.colors;
-        let border = if sel {
-            theme.accent_primary.with_alpha_factor(0.6)
-        } else {
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
-        };
-        paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
+        paint::card(scene, t, card, 14.0, c.surfaces.raised);
+        if sel {
+            Self::selected_ring(scene, t, theme, card, 14.0);
+        }
         Self::draw_dest_card_compact_header(scene, t, tr, theme, card, d);
         Self::draw_dest_card_compact_body(scene, t, tr, theme, card, d);
     }
@@ -3580,7 +3590,7 @@ impl BackupsApp {
         } else {
             theme.accent_primary
         };
-        paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
+        paint::bar(scene, t, bar, frac, barcol, c.surfaces.base);
         paint::text(
             scene,
             tr,
@@ -3668,13 +3678,13 @@ impl BackupsApp {
 
         // Stacked proportional bar.
         let bar = Rect::new(content.x0, y0 + 22.0, content.x1, y0 + 40.0);
-        paint::fill_rrect(scene, t, bar, 9.0, c.neutral[2]);
+        paint::fill_round(scene, t, bar, 9.0, c.lift(1.0));
         let mut bar_x = bar.x0;
         for (id, _, count) in &counts {
             let bar_w = bar.width() * (*count as f64 / total as f64);
             if bar_w > 1.0 {
                 let seg = Rect::new(bar_x, bar.y0, (bar_x + bar_w).min(bar.x1), bar.y1);
-                paint::fill_rrect(scene, t, seg, 9.0, Self::dest_color(theme, id));
+                paint::fill_round(scene, t, seg, 9.0, Self::dest_color(theme, id));
             }
             bar_x += bar_w;
         }
@@ -3712,44 +3722,33 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
-        let scale = f64::from(theme.text_scale);
-        // Large text needs the same horizontal budget as a narrow viewport.
-        // The old physical-width-only breakpoint left 200% labels underneath
-        // the retention steppers even on a wide window.
+        // Below this the editor + summary stack vertically instead of a 60/40 split.
+        let scale = Self::text_scale(tr);
         let stacked = Self::schedules_stack_for(content, scale);
         Self::draw_schedules_header(scene, t, tr, theme, content, stacked);
 
-        let panel = Self::schedules_panel_rect(content, stacked, scale);
+        let top = Self::view_body_top(tr, content);
+        let panel = Self::schedules_panel_rect(content, top, stacked, scale);
         let c = &theme.tokens.colors;
-        paint::card(
-            scene,
-            t,
-            panel,
-            16.0,
-            c.surfaces.raised,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
+        paint::card(scene, t, panel, 16.0, c.surfaces.raised);
 
         let p = self.ui.policy;
         self.draw_schedules_editor_rows(scene, t, tr, theme, panel, p);
 
         // Summary of effective retention — beside the editor when wide, stacked
         // beneath it when narrow.
-        let side = Self::schedules_side_rect(content, panel, stacked, scale);
-        // Custom-painted views do not get an implicit scroll container. Avoid
-        // beginning a summary card that cannot fully fit below large-text
-        // controls; a clipped heading suggests content is missing rather than
-        // simply below the current viewport.
+        let side = Self::schedules_side_rect(content, top, panel, stacked);
         if side.y1 <= content.y1 {
             Self::draw_schedules_summary(scene, t, tr, theme, side, p);
+        }
 
-            // Retention ruler — one lane per class, dots = snapshots kept.
-            // It sits below whichever of {editor, stacked summary} is lowest.
-            let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0 * scale;
-            let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0 * scale);
-            if ruler.y1 < content.y1 {
-                Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
-            }
+        // Retention ruler — one lane per class, dots = snapshots kept. The
+        // next group: `S6` below whichever of {editor, stacked summary} is
+        // lowest.
+        let ruler_top = if stacked { side.y1 } else { panel.y1 } + S6;
+        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0);
+        if ruler.y1 < content.y1 {
+            Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
         }
     }
 
@@ -3767,54 +3766,32 @@ impl BackupsApp {
         content: Rect,
         stacked: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        paint::text_bold(
-            scene,
-            tr,
-            t,
-            "Retention policy",
-            16.0,
-            c.text_primary,
-            content.x0,
-            content.y0,
-        );
         let desc = if stacked {
             "Snapshots kept per class before pruning."
         } else {
             "How many snapshots to keep in each class before pruning. Applies to every source."
         };
-        paint::text(
-            scene,
-            tr,
-            t,
-            desc,
-            12.5,
-            c.text_dim,
-            content.x0,
-            content.y0 + 24.0 * scale,
-        );
+        Self::draw_view_header(scene, t, tr, theme, content, "Retention policy", desc);
     }
 
     /// The editor panel's rect: full width when stacked, 60% when
     /// side-by-side with the summary. Split out of
     /// [`Self::draw_schedules_view`] to keep it under the line budget.
-    fn schedules_panel_rect(content: Rect, stacked: bool, scale: f64) -> Rect {
+    fn schedules_panel_rect(content: Rect, top: f64, stacked: bool, scale: f64) -> Rect {
         let panel_w = if stacked {
             content.width()
         } else {
             content.width() * 0.6
         };
-        // Large type needs more breathing room than the title's baseline but
-        // not a linear doubling of every historical gap; this leaves all four
-        // controls clear of the bottom status-safe inset at 200%.
-        let header_space = 52.0 + (scale - 1.0) * 30.0;
-        let row_step = 64.0 + (scale - 1.0) * 52.0;
+        // Four 56px rows `S2` apart inside `PAD` of padding.
         Rect::new(
             content.x0,
-            content.y0 + header_space,
+            top,
             content.x0 + panel_w,
-            content.y0 + header_space + 4.0 * row_step + 16.0 * scale,
+            top + PAD
+                + 4.0 * (56.0 + (scale - 1.0) * 44.0)
+                + 3.0 * (S2 + (scale - 1.0) * 8.0)
+                + PAD,
         )
     }
 
@@ -3833,64 +3810,40 @@ impl BackupsApp {
         for (i, field) in PolicyField::ALL.iter().enumerate() {
             // `vals` and `PolicyField::ALL` both have exactly 4 entries.
             let value = vals.get(i).copied().unwrap_or(0);
-            self.draw_schedules_editor_row(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                panel,
-                i,
-                *field,
-                value,
-            );
+            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
         }
     }
 
     /// One retention-class row: focus highlight, dot + label + unit, and the
     /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
     /// to keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "retention rows combine paint context and panel position with the policy field and its current value"
+    )]
     fn draw_schedules_editor_row(
         &mut self,
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         panel: Rect,
         i: usize,
         field: PolicyField,
         value: u32,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        let row_step = 64.0 + (scale - 1.0) * 52.0;
+        let scale = Self::text_scale(tr);
+        // Rows are `S2` apart inside the panel's `PAD`; keyboard focus is the
+        // focus ring token, like every other focused control.
         let row_h = 56.0 + (scale - 1.0) * 44.0;
-        let ry = panel.y0 + 14.0 * scale + i as f64 * row_step;
-        let row = Rect::new(
-            panel.x0 + 12.0 * scale,
-            ry,
-            panel.x1 - 12.0 * scale,
-            ry + row_h,
-        );
+        let row_step = row_h + S2 + (scale - 1.0) * 8.0;
+        let ry = panel.y0 + PAD + i as f64 * row_step;
+        let row = Rect::new(panel.x0 + S3, ry, panel.x1 - S3, ry + row_h);
         let focused = self.policy_focus == i;
         if focused {
-            paint::fill_rrect(
-                scene,
-                t,
-                row,
-                10.0,
-                theme.accent_primary.with_alpha_factor(0.12),
-            );
-            paint::stroke_rrect(
-                scene,
-                t,
-                row,
-                10.0,
-                theme.accent_primary.with_alpha_factor(0.5),
-                1.0,
-            );
+            paint::fill_round(scene, t, row, 10.0, c.lift(0.5));
+            paint::stroke_round(scene, t, row, 10.0, c.border_focus, 2.0);
         }
         let rc = Self::retention_color(
             theme,
@@ -3905,7 +3858,7 @@ impl BackupsApp {
             scene,
             t,
             Point::new(row.x0 + 18.0 * scale, row.center().y),
-            5.0 * scale,
+            5.0,
             rc,
         );
         paint::text_bold(
@@ -3929,22 +3882,7 @@ impl BackupsApp {
             row.y0 + 32.0 * scale,
         );
 
-        self.draw_schedule_stepper(ctx, row, field, value, scale);
-    }
-
-    fn draw_schedule_stepper(
-        &mut self,
-        ctx: &mut DrawContext<'_>,
-        row: Rect,
-        field: PolicyField,
-        value: u32,
-        scale: f64,
-    ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
-        let colors = &theme.tokens.colors;
+        // Stepper: [-]  value  [+]
         let cy = row.center().y;
         let plus = Rect::new(
             row.x1 - 44.0 * scale,
@@ -3959,35 +3897,15 @@ impl BackupsApp {
             valx0 - 8.0 * scale,
             cy + 18.0 * scale,
         );
-        self.draw_stepper(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            minus,
-            "–",
-            Hit::Policy(field, -1),
-        );
-        self.draw_stepper(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            plus,
-            "+",
-            Hit::Policy(field, 1),
-        );
+        self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
+        self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
         paint::text_center(
             scene,
             tr,
             t,
             &format!("{value}"),
             20.0,
-            colors.text_primary,
+            c.text_primary,
             valx0 - 8.0 * scale,
             plus.x0,
             cy - 12.0 * scale,
@@ -3997,22 +3915,13 @@ impl BackupsApp {
     /// The side summary panel's rect: beside the editor when wide, stacked
     /// beneath it when narrow. Split out of [`Self::draw_schedules_view`] to
     /// keep it under the line budget.
-    fn schedules_side_rect(content: Rect, panel: Rect, stacked: bool, scale: f64) -> Rect {
+    fn schedules_side_rect(content: Rect, top: f64, panel: Rect, stacked: bool) -> Rect {
+        // The editor and its summary are sections `S4` apart, whichever way
+        // they are arranged.
         if stacked {
-            Rect::new(
-                content.x0,
-                panel.y1 + 16.0 * scale,
-                content.x1,
-                panel.y1 + 16.0 * scale + 210.0 * scale,
-            )
+            Rect::new(content.x0, panel.y1 + S4, content.x1, panel.y1 + S4 + 210.0)
         } else {
-            let header_space = 52.0 + (scale - 1.0) * 30.0;
-            Rect::new(
-                panel.x1 + 18.0 * scale,
-                content.y0 + header_space,
-                content.x1,
-                panel.y1,
-            )
+            Rect::new(panel.x1 + S4, top, content.x1, panel.y1)
         }
     }
 
@@ -4027,15 +3936,7 @@ impl BackupsApp {
         p: RetentionPolicy,
     ) {
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        paint::card(
-            scene,
-            t,
-            side,
-            16.0,
-            c.surfaces.raised.with_alpha_factor(0.5),
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
+        paint::card(scene, t, side, 16.0, c.surfaces.raised);
         paint::text_bold(
             scene,
             tr,
@@ -4043,8 +3944,8 @@ impl BackupsApp {
             "Effective window",
             13.5,
             c.text_primary,
-            side.x0 + 16.0 * scale,
-            side.y0 + 14.0 * scale,
+            side.x0 + 16.0,
+            side.y0 + 14.0,
         );
         let total = p.hourly + p.daily + p.weekly + p.monthly;
         let lines = [
@@ -4061,18 +3962,18 @@ impl BackupsApp {
                 line,
                 12.0,
                 c.text_dim,
-                side.x0 + 16.0 * scale,
-                side.y0 + 44.0 * scale + i as f64 * 24.0 * scale,
+                side.x0 + 16.0,
+                side.y0 + 44.0 + i as f64 * 24.0,
             );
         }
-        paint::hline(
+        paint::separator(
             scene,
             t,
-            side.x0 + 16.0 * scale,
-            side.x1 - 16.0 * scale,
-            side.y0 + 150.0 * scale,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            side.x0,
+            side.x1,
+            side.y0 + 150.0,
+            S3,
+            c.surfaces.raised,
         );
         paint::text(
             scene,
@@ -4081,8 +3982,8 @@ impl BackupsApp {
             "Snapshots retained",
             11.5,
             c.text_dim,
-            side.x0 + 16.0 * scale,
-            side.y0 + 162.0 * scale,
+            side.x0 + 16.0,
+            side.y0 + 162.0,
         );
         paint::text_bold(
             scene,
@@ -4091,8 +3992,8 @@ impl BackupsApp {
             &format!("up to {total}"),
             20.0,
             theme.accent_primary,
-            side.x0 + 16.0 * scale,
-            side.y0 + 180.0 * scale,
+            side.x0 + 16.0,
+            side.y0 + 180.0,
         );
     }
 
@@ -4109,14 +4010,7 @@ impl BackupsApp {
         p: RetentionPolicy,
     ) {
         let c = &theme.tokens.colors;
-        paint::card(
-            scene,
-            t,
-            region,
-            16.0,
-            c.surfaces.raised.with_alpha_factor(0.4),
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
+        paint::card(scene, t, region, 16.0, c.surfaces.raised);
         paint::text_bold(
             scene,
             tr,
@@ -4193,37 +4087,32 @@ impl BackupsApp {
         }
     }
 
-    fn draw_stepper(&mut self, ctx: &mut DrawContext<'_>, b: Rect, glyph: &str, hit: Hit) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
-        let c = &theme.tokens.colors;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stepper painting takes paint context, button bounds, glyph and hit action so hover and hit registration agree"
+    )] // see `draw_source_row` above.
+    fn draw_stepper(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        b: Rect,
+        glyph: &str,
+        hit: Hit,
+    ) {
+        // The shared button face: rest edge, hover and ink contrast come with
+        // it instead of a hand-painted ramp fill.
         let hovered = self.hover.as_ref() == Some(&hit);
-        let fill = if hovered {
-            theme.accent_primary
-        } else {
-            c.neutral[2]
-        };
-        paint::fill_rrect(scene, t, b, 8.0, fill);
-        paint::stroke_rrect(
+        Button::paint(
             scene,
             t,
-            b,
-            8.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
-        paint::text_center(
-            scene,
             tr,
-            t,
-            glyph,
-            18.0,
-            c.text_primary,
-            b.x0,
-            b.x1,
-            b.center().y - 11.0,
+            theme,
+            &ButtonFace::new(b, glyph)
+                .radius(8.0)
+                .text_size(18.0)
+                .hovered(hovered),
         );
         self.hits.push((b, hit));
     }
@@ -4246,147 +4135,108 @@ impl BackupsApp {
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
 
-        let (m, narrow_modal) = Self::draw_restore_modal_frame(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            self.rect,
-            &snap,
-            src,
-        );
-        let (contents, safety) = Self::draw_restore_modal_layout(m, narrow_modal);
-        Self::draw_restore_contents(
-            &mut DrawContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            contents,
-            &snap,
-        );
-        Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
-        self.draw_restore_footer_buttons(scene, t, tr, theme, m);
-    }
-
-    /// The modal's scrim, card frame, and title/subtitle. Returns the modal
-    /// rect and whether it's in the narrow (stacked) layout. Split out of
-    /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    fn draw_restore_modal_frame(
-        ctx: &mut DrawContext<'_>,
-        window: Rect,
-        snap: &Snapshot,
-        src: Option<&Source>,
-    ) -> (Rect, bool) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
-        let c = &theme.tokens.colors;
-        paint::fill_rect(scene, t, window, c.surfaces.overlay);
-        // Clamp the modal to the window so it never overflows a small screen.
-        // When it's too narrow for two columns it stacks, and needs more height
-        // so the options don't crowd the footer buttons.
-        let modal_w = 760.0_f64.min(window.width() - 40.0).max(300.0);
-        let narrow_modal = modal_w < 620.0;
-        let target_h: f64 = if narrow_modal { 620.0 } else { 460.0 };
-        let modal_h = target_h.min(window.height() - 40.0).max(300.0);
-        let m = Rect::new(
-            window.center().x - modal_w / 2.0,
-            window.center().y - modal_h / 2.0,
-            window.center().x + modal_w / 2.0,
-            window.center().y + modal_h / 2.0,
-        );
-        paint::card(
-            scene,
-            t,
-            m,
-            18.0,
-            c.surfaces.raised,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-        );
-
-        let inner_w = (m.width() - 48.0).max(0.0) as f32;
-        if narrow_modal {
+        // The shared modal chrome (scrim, card, title row, action row) frames
+        // the sheet; the app paints only its body. The width the sheet used
+        // to size itself (760, or the window less its margin) still decides
+        // whether the body stacks.
+        let narrow_modal = 760.0_f64.min(self.rect.width() - 40.0) < 620.0;
+        let title = if narrow_modal {
             // A long local path or localized date must not squeeze a recovery
-            // warning off a phone-sized sheet. Keep the narrow heading short,
-            // put the bounded provenance beneath it, then reserve a separate
-            // safety line for the operation's real contract.
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                "Restore snapshot",
-                15.0,
-                c.text_primary,
-                m.x0 + 24.0,
-                m.y0 + 16.0,
-            );
-            let metadata = Self::narrow_restore_metadata(src, snap);
-            let metadata = tr.elide_to_width(&metadata, 11.5, inner_w);
-            let contract = tr.elide_to_width(
-                "Complete snapshot · choose a new or empty folder",
-                11.5,
-                inner_w,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &metadata,
-                11.5,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 37.0,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &contract,
-                11.5,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 55.0,
-            );
+            // warning off a phone-sized sheet: the short heading here, the
+            // bounded provenance and the contract as body lines.
+            "Restore snapshot".to_string()
         } else {
-            let title = format!(
+            format!(
                 "Restore  ·  {}  @  {} {}",
                 src.map_or("Unknown source", |source| source.path.as_str()),
                 Catalog::day_label(snap.day),
                 snap.time
-            );
-            let title = tr.elide_to_width_weighted(&title, 17.0, inner_w, TextWeight::Bold);
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                &title,
-                17.0,
-                c.text_primary,
-                m.x0 + 24.0,
-                m.y0 + 20.0,
-            );
-            let detail = tr.elide_to_width(
-                "Recover the complete snapshot into a new or empty folder. Existing files are never replaced.",
-                12.0,
-                inner_w,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &detail,
-                12.0,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 46.0,
-            );
+            )
+        };
+        let intro: Vec<String> = if narrow_modal {
+            vec![
+                Self::narrow_restore_metadata(src, &snap),
+                "Complete snapshot · choose a new or empty folder".to_string(),
+            ]
+        } else {
+            vec![
+                "Recover the complete snapshot into a new or empty folder. Existing files are never replaced."
+                    .to_string(),
+            ]
+        };
+        let actions = [
+            ModalAction::secondary("Cancel").hovered(self.hover == Some(Hit::RestoreCancel)),
+            ModalAction::primary("Choose empty folder…")
+                .hovered(self.hover == Some(Hit::RestoreConfirm)),
+        ];
+        // Cancel (and Escape) is the visible way out. The frame's own close
+        // control would be a second cancel the sheet's two-control contract
+        // does not want, and a stray backdrop click must not dismiss a
+        // recovery sheet — the scrim still swallows it (`hit_at`).
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .body_height(if narrow_modal { 500.0 } else { 350.0 })
+            .max_width(760.0)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        let layout = ModalFrame::layout(self.rect, &spec, tr, theme);
+        ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
+
+        let (contents, safety) =
+            Self::draw_restore_intro(scene, t, tr, theme, layout.body, narrow_modal, &intro);
+        Self::draw_restore_contents(scene, t, tr, theme, contents, &snap);
+        Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
+        ModalFrame::paint_actions(scene, t, tr, theme, &layout, &spec);
+
+        // The hit rects are the frame's own action rects, in authored order,
+        // so a press lands exactly where the face was painted.
+        if let [cancel, confirm] = layout.actions.as_slice() {
+            self.hits.push((*confirm, Hit::RestoreConfirm));
+            self.hits.push((*cancel, Hit::RestoreCancel));
         }
-        (m, narrow_modal)
+    }
+
+    /// The body's intro lines (the recovery contract, or the provenance +
+    /// contract when stacked) under the frame's title row, then the split of
+    /// the remaining body into the contents preview and the safety summary:
+    /// side by side when wide, stacked when the sheet is too narrow for two
+    /// readable columns.
+    fn draw_restore_intro(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        body: Rect,
+        narrow_modal: bool,
+        intro: &[String],
+    ) -> (Rect, Rect) {
+        let (_, dim) = ModalFrame::ink(theme);
+        let size = if narrow_modal { 11.5 } else { 12.0 };
+        let (_, line_h) = tr.measure("Hg", size, None);
+        let line_h = f64::from(line_h);
+        let mut y = body.y0;
+        for line in intro {
+            let shown = tr.elide_to_width(line, size, body.width() as f32);
+            paint::text(scene, tr, t, &shown, size, dim, body.x0, y);
+            y += line_h + 3.0;
+        }
+        let body_y = y + 11.0;
+        let body_bottom = body.y1;
+        if narrow_modal {
+            // Give the safety summary enough height for its four factual rows
+            // and the estimate line, so nothing overlaps.
+            let mid = body_y + (body_bottom - body_y) * 0.46;
+            (
+                Rect::new(body.x0, body_y, body.x1, mid - 8.0),
+                Rect::new(body.x0, mid + 10.0, body.x1, body_bottom),
+            )
+        } else {
+            let split = body.x0 + body.width() * 0.58;
+            (
+                Rect::new(body.x0, body_y, split - 12.0, body_bottom),
+                Rect::new(split + 12.0, body_y, body.x1, body_bottom),
+            )
+        }
     }
 
     /// Phone-width provenance deliberately uses a source kind, never an
@@ -4401,47 +4251,24 @@ impl BackupsApp {
         )
     }
 
-    /// Split the modal body into the contents preview and safety summary: side
-    /// by side when wide, stacked when the modal is too narrow for two readable
-    /// columns. Split out of
-    /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    fn draw_restore_modal_layout(m: Rect, narrow_modal: bool) -> (Rect, Rect) {
-        let body_y = m.y0 + if narrow_modal { 92.0 } else { 74.0 };
-        let body_bottom = m.y1 - 76.0;
-        if narrow_modal {
-            // Give the safety summary enough height for its four factual rows
-            // and the estimate line, so nothing overlaps.
-            let mid = body_y + (body_bottom - body_y) * 0.46;
-            (
-                Rect::new(m.x0 + 24.0, body_y, m.x1 - 24.0, mid - 8.0),
-                Rect::new(m.x0 + 24.0, mid + 10.0, m.x1 - 24.0, body_bottom),
-            )
-        } else {
-            let split = m.x0 + m.width() * 0.58;
-            (
-                Rect::new(m.x0 + 24.0, body_y, split - 12.0, body_bottom),
-                Rect::new(split + 12.0, body_y, m.x1 - 24.0, body_bottom),
-            )
-        }
-    }
-
     /// A non-interactive contents preview. The restore engine currently
     /// restores whole snapshots, so these rows intentionally are not selectable
     /// and never imply a per-file restore capability.
-    fn draw_restore_contents(ctx: &mut DrawContext<'_>, tree: Rect, snap: &Snapshot) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the snapshot preview keeps paint context, tree bounds and snapshot contents explicit"
+    )]
+    fn draw_restore_contents(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tree: Rect,
+        snap: &Snapshot,
+    ) {
         let c = &theme.tokens.colors;
-        paint::card(
-            scene,
-            t,
-            tree,
-            12.0,
-            c.neutral[0].with_alpha_factor(0.5),
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
+        // A well inside the sheet: the window tier with its derived edge.
+        paint::card(scene, t, tree, 12.0, c.surfaces.base);
         paint::text(
             scene,
             tr,
@@ -4453,9 +4280,13 @@ impl BackupsApp {
             tree.y0 + 10.0,
         );
 
+        // Rows carry their 12.5px name (30px at 1×) and start under the
+        // caption's measured line.
         let files = &snap.files;
-        let row_h = 30.0;
-        let ty0 = tree.y0 + 30.0;
+        let (_, name_h) = tr.measure("Hg", 12.5, None);
+        let (_, caption_h) = tr.measure("Hg", 11.0, None);
+        let row_h = 30.0_f64.max(f64::from(name_h) + 12.0);
+        let ty0 = tree.y0 + 10.0 + f64::from(caption_h) + 6.25;
         // No indexer yet on the live app: a real snapshot without an indexed
         // listing shows an honest empty state rather than fabricated files.
         if files.is_empty() {
@@ -4477,35 +4308,27 @@ impl BackupsApp {
             if ry + row_h > tree.y1 - 4.0 {
                 break;
             }
-            Self::draw_restore_content_row(
-                &mut DrawContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                tree,
-                ry,
-                row_h,
-                f,
-            );
+            Self::draw_restore_content_row(scene, t, tr, theme, tree, ry, row_h, f);
         }
     }
 
     /// One informational row in the snapshot preview. It deliberately has no
     /// hover, selection, hit target, or checkbox because recovery is all-or-
     /// nothing at this engine boundary.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "preview rows combine paint context and row geometry with file metadata for depth, icon and label"
+    )]
     fn draw_restore_content_row(
-        ctx: &mut DrawContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         tree: Rect,
         ry: f64,
         row_h: f64,
         f: &SnapFile,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
         let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
@@ -4517,7 +4340,7 @@ impl BackupsApp {
         if f.is_dir {
             // folder glyph
             let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
-            paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
+            paint::fill_round(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
         } else {
             let fr = Rect::new(
                 ix + 1.0,
@@ -4525,7 +4348,7 @@ impl BackupsApp {
                 ix + 11.0,
                 row.center().y + 6.0,
             );
-            paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
+            paint::stroke_round(scene, t, fr, 2.0, icol, 1.3);
         }
         paint::text_vc(
             scene,
@@ -4579,26 +4402,42 @@ impl BackupsApp {
             "Never replaces existing files",
             "Verifies every restored file",
         ];
+        // Facts start under the heading's measured line and step by their own
+        // (28px at 1×); the bullet rides each fact's centre.
+        let (_, head_h) = tr.measure_weighted("Hg", 13.5, None, TextWeight::Bold);
+        let (_, fact_h) = tr.measure("Hg", 12.5, None);
+        let facts_top = opt.y0 + 8.0 + f64::from(head_h) + 13.0;
+        let pitch = 28.0_f64.max(f64::from(fact_h) + 12.0);
         for (i, fact) in facts.iter().enumerate() {
-            let oy = opt.y0 + 38.0 + i as f64 * 28.0;
+            let oy = facts_top + i as f64 * pitch;
             paint::dot(
                 scene,
                 t,
-                Point::new(opt.x0 + 5.0, oy + 7.0),
+                Point::new(opt.x0 + 5.0, oy + f64::from(fact_h) / 2.0),
                 2.5,
                 theme.accent_primary,
             );
-            paint::text(scene, tr, t, fact, 12.5, c.text_primary, opt.x0 + 16.0, oy);
+            let shown = tr.elide_to_width(fact, 12.5, (opt.width() - 16.0).max(0.0) as f32);
+            paint::text(
+                scene,
+                tr,
+                t,
+                &shown,
+                12.5,
+                c.text_primary,
+                opt.x0 + 16.0,
+                oy,
+            );
         }
-        // Size summary.
-        paint::hline(
+        // Size summary, under a rule derived against the sheet.
+        paint::separator(
             scene,
             t,
             opt.x0,
             opt.x1,
             opt.y1 - 40.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            0.0,
+            c.surfaces.raised,
         );
         paint::text(
             scene,
@@ -4620,46 +4459,6 @@ impl BackupsApp {
             opt.x1,
             opt.y1 - 32.0,
         );
-    }
-
-    /// Footer Restore/Cancel buttons. Split out of [`Self::draw_restore_modal`]
-    /// to keep it under the line budget.
-    fn draw_restore_footer_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: Rect,
-    ) {
-        let by = m.y1 - 56.0;
-        let bh = 38.0;
-        let confirm = Rect::new(m.x1 - 24.0 - 192.0, by, m.x1 - 24.0, by + bh);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(confirm, "Choose empty folder…")
-                .primary()
-                .radius(9.0)
-                .weight(TextWeight::Regular)
-                .hovered(self.hover == Some(Hit::RestoreConfirm)),
-        );
-        self.hits.push((confirm, Hit::RestoreConfirm));
-
-        let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + bh);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(cancel, "Cancel")
-                .radius(9.0)
-                .weight(TextWeight::Regular)
-                .hovered(self.hover == Some(Hit::RestoreCancel)),
-        );
-        self.hits.push((cancel, Hit::RestoreCancel));
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -4751,7 +4550,7 @@ impl BackupsApp {
                 }
             }
             SourceKind::Workspace => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7),
@@ -4769,7 +4568,7 @@ impl BackupsApp {
                 );
             }
             SourceKind::Custom => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r, x + r, y + r),
@@ -4794,7 +4593,7 @@ impl BackupsApp {
             DestKind::LocalBtrfs => {
                 for k in 0..3 {
                     let yy = y - r + f64::from(k) * r;
-                    paint::stroke_rrect(
+                    paint::stroke_round(
                         scene,
                         t,
                         Rect::new(x - r, yy, x + r, yy + r * 0.7),
@@ -4805,7 +4604,7 @@ impl BackupsApp {
                 }
             }
             DestKind::LocalFolder => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7),
@@ -4815,7 +4614,7 @@ impl BackupsApp {
                 );
             }
             DestKind::External => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.6, x + r, y + r * 0.6),
@@ -4843,11 +4642,19 @@ impl BackupsApp {
 
     fn hit_at(&self, p: Point) -> Option<Hit> {
         // Last pushed wins (topmost), so iterate in reverse.
-        self.hits
+        let hit = self
+            .hits
             .iter()
             .rev()
             .find(|(r, _)| r.contains(p))
-            .map(|(_, h)| h.clone())
+            .map(|(_, h)| h.clone());
+        // A modal is modal: while the restore sheet is open only its own
+        // controls are reachable, so a press on the scrim can neither select
+        // a snapshot behind it nor switch views.
+        if self.ui.restore_open && !matches!(hit, Some(Hit::RestoreConfirm | Hit::RestoreCancel)) {
+            return None;
+        }
+        hit
     }
 
     fn dispatch(&mut self, hit: Hit, doc: &mut AutoCommit, root: &ObjId) {
@@ -5079,14 +4886,28 @@ impl Widget for BackupsApp {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
                     self.dispatch(hit, state, path);
                     *handled = true;
+                } else if self.ui.restore_open {
+                    // The sheet's scrim swallows the press; nothing behind a
+                    // modal may activate.
+                    *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.ui.view == View::Timeline && self.timeline_view.contains(self.last_mouse) {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                        MouseScrollDelta::PixelDelta(p) => -p.y,
-                    };
+            WindowEvent::MouseWheel { delta, .. } if self.ui.view == View::Timeline => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(p) => -p.y,
+                };
+                // The source rail takes the wheel first: in overlay mode it
+                // floats over the list, and its rows scroll only once the
+                // catalog is taller than the rail (`rail_scroll_max`).
+                let rail = self.drawer.sidebar_rect();
+                if self.rail_scroll_max > 0.0
+                    && should_paint_rail(&self.drawer, rail)
+                    && rail.contains(self.last_mouse)
+                {
+                    self.rail_scroll = (self.rail_scroll + dy).clamp(0.0, self.rail_scroll_max);
+                    *handled = true;
+                } else if self.timeline_view.contains(self.last_mouse) {
                     let max = (self.timeline_content_h - self.timeline_view.height()).max(0.0);
                     self.timeline_scroll = (self.timeline_scroll + dy).clamp(0.0, max);
                     *handled = true;
@@ -5335,10 +5156,18 @@ impl Widget for BackupsApp {
                         AccessState::new().focusable(true),
                     ),
                 };
+                // A tab's accessible bounds are its painted pill, not the
+                // contiguous hit cell, so neighbouring tabs report the gap
+                // that is on screen.
+                let bounds = if matches!(hit, Hit::Tab(_)) {
+                    rect.inset(-TAB_PILL_INSET)
+                } else {
+                    *rect
+                };
                 AccessNode::new(role)
                     .with_name(name)
                     .with_state(state)
-                    .with_bounds(*rect)
+                    .with_bounds(bounds)
                     .with_action_target(format!("backups.hit:{hit:?}"))
             })
             .collect();
@@ -5562,6 +5391,67 @@ mod tests {
         assert!(!should_paint_rail(&drawer, rail));
     }
 
+    /// A short window's rail cannot show the whole catalog: its rows scroll
+    /// under the fixed header band by the wheel, the band's toggle stays put,
+    /// and a row that slid under the band is no longer a hit target.
+    #[test]
+    fn short_rail_scrolls_its_rows_under_a_fixed_header() {
+        let mut f = Frame::demo_sized(1280.0, 480.0);
+        assert!(f.app.drawer.is_docked());
+        assert!(
+            f.app.rail_scroll_max > 0.0,
+            "the demo catalog overflows a 480px window's rail"
+        );
+        let toggle = f.rect_of(|h| matches!(h, Hit::ToggleRail));
+        let all_before = f.rect_of(|h| matches!(h, Hit::Source(None)));
+        assert!(
+            all_before.y0 >= toggle.y1,
+            "rows start under the header band"
+        );
+        let rows_top = all_before.y0;
+
+        let rail = f.app.drawer.sidebar_rect();
+        f.wheel(rail.center(), 2.0);
+        assert!(
+            f.app.rail_scroll > 0.0,
+            "the wheel over the rail scrolls its rows"
+        );
+        assert_eq!(
+            f.rect_of(|h| matches!(h, Hit::ToggleRail)),
+            toggle,
+            "the header band does not move"
+        );
+        for (r, h) in &f.app.hits {
+            if matches!(h, Hit::Source(_) | Hit::Dest(_)) {
+                assert!(
+                    r.y0 >= rows_top - 1e-6,
+                    "{h:?} is clipped to the rows' band"
+                );
+                assert!(r.height() > 0.0 && r.width() > 0.0);
+            }
+        }
+        if f.has_hit(|h| matches!(h, Hit::Source(None))) {
+            assert!(f.rect_of(|h| matches!(h, Hit::Source(None))).y1 < all_before.y1);
+        }
+
+        // The wheel over the snapshot list scrolls the timeline, not the rail.
+        let list_centre = f.app.timeline_view.center();
+        let rail_scroll = f.app.rail_scroll;
+        f.wheel(list_centre, 1.0);
+        assert!((f.app.rail_scroll - rail_scroll).abs() < f64::EPSILON);
+        // And back to the top.
+        f.wheel(rail.center(), -20.0);
+        assert!(f.app.rail_scroll.abs() < f64::EPSILON);
+    }
+
+    /// At 1280×800 the whole catalog fits the rail: nothing scrolls.
+    #[test]
+    fn tall_rail_does_not_scroll() {
+        let f = Frame::demo();
+        assert!(f.app.rail_scroll_max.abs() < f64::EPSILON);
+        assert!(f.app.rail_scroll.abs() < f64::EPSILON);
+    }
+
     /// A headless harness that drives the **production** widget path: it draws a
     /// real frame (populating the hit map exactly as the live app does), then
     /// synthesises the pointer events a real click produces and feeds them
@@ -5578,10 +5468,14 @@ mod tests {
 
     impl Frame {
         fn demo() -> Self {
+            Self::demo_sized(1280.0, 800.0)
+        }
+
+        fn demo_sized(width: f64, height: f64) -> Self {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut app = BackupsApp::new_demo();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.rect = Rect::new(0.0, 0.0, width, height);
             let mut f = Self {
                 app,
                 state: ui::State::new(),
@@ -5597,6 +5491,7 @@ mod tests {
         /// Re-run the live frame cycle: sync from the CRDT, then draw (which
         /// repopulates `hits` from the current state).
         fn draw(&mut self) {
+            self.tr.set_text_scale(self.theme.text_scale);
             self.app.sync(&mut self.state.doc, &self.state.root);
             let mut scene = Scene::new();
             self.app
@@ -5664,6 +5559,41 @@ mod tests {
             self.click(c);
         }
 
+        /// Move the pointer to `p` and turn the wheel `notches` lines
+        /// (positive scrolls the content up) through the real event path,
+        /// then redraw.
+        fn wheel(&mut self, p: Point, notches: f32) {
+            use winit::dpi::PhysicalPosition;
+            use winit::event::{DeviceId, Modifiers, TouchPhase};
+            let m = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            for ev in [
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(p.x, p.y),
+                },
+                WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -notches),
+                    phase: TouchPhase::Moved,
+                },
+            ] {
+                self.app.handle_event(
+                    &ev,
+                    1.0,
+                    &m,
+                    &mut self.state.doc,
+                    &self.state.root,
+                    &mut handled,
+                    &mut focus,
+                    self.node,
+                    &self.taffy,
+                );
+            }
+            self.draw();
+        }
+
         fn key(&mut self, key: &Key) {
             let mut handled = false;
             self.app
@@ -5674,6 +5604,43 @@ mod tests {
 
         fn view(&self) -> View {
             self.app.ui.view
+        }
+    }
+
+    /// At phone width the four view tabs and the primary action share a 390px
+    /// bar. Every tab must stay a distinct, reachable target that ends before
+    /// the action begins; with the full-width label the Schedules tab used to
+    /// be painted underneath "Back up now".
+    #[test]
+    fn phone_width_keeps_every_tab_clear_of_the_primary_action() {
+        for width in [390.0, 340.0] {
+            let f = Frame::demo_sized(width, 844.0);
+            let action = f.rect_of(|h| matches!(h, Hit::BackupNow));
+            let tabs: Vec<Rect> = View::ALL
+                .iter()
+                .map(|v| f.rect_of(|h| matches!(h, Hit::Tab(t) if t == v)))
+                .collect();
+            assert_eq!(tabs.len(), 4);
+            for (i, tab) in tabs.iter().enumerate() {
+                assert!(
+                    tab.x1 <= action.x0,
+                    "tab {i} ({tab:?}) must end before the action ({action:?}) at {width}"
+                );
+                assert!(
+                    tab.width() >= MIN_TAB_W,
+                    "tab {i} keeps a usable target width at {width}"
+                );
+                for other in &tabs[i + 1..] {
+                    assert!(
+                        tab.intersect(*other).is_zero_area(),
+                        "tabs are pairwise disjoint"
+                    );
+                }
+            }
+            assert!(
+                action.x1 <= f.app.rect.x1 - PAD + 0.5,
+                "action stays inside the bar gutter at {width}"
+            );
         }
     }
 
@@ -5938,6 +5905,87 @@ mod tests {
         assert_eq!(f.view(), View::Destinations);
     }
 
+    /// Snapshot rows, day headers and the expanded detail keep their 1× bands
+    /// exactly and grow with the text scale, and the hit rect of every row is
+    /// the rect it was painted at: consecutive rows never overlap.
+    #[test]
+    fn timeline_rows_follow_the_text_scale_without_overlapping() {
+        let rows_of = |f: &Frame| -> Vec<Rect> {
+            let mut rows: Vec<Rect> = f
+                .app
+                .hits
+                .iter()
+                .filter_map(|(r, h)| matches!(h, Hit::Snap(_)).then_some(*r))
+                .collect();
+            rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            rows
+        };
+        let mut f = Frame::demo_sized(1280.0, 800.0);
+        let one = rows_of(&f);
+        assert!(one.len() > 3, "the demo timeline paints several rows");
+        assert!(one.iter().all(|r| (r.height() - ROW_H).abs() < 1e-6));
+        assert!((f.app.bar_h - BAR_H).abs() < 1e-6 && (f.app.tab_h - TAB_H).abs() < 1e-6);
+
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.draw();
+        let two = rows_of(&f);
+        let (_, h13) = f.tr.measure("Hg", 13.0, None);
+        let (_, h10_5) = f.tr.measure("Hg", 10.5, None);
+        let want = ROW_H.max(f64::from(h13) + f64::from(h10_5) - 1.0 + 16.0);
+        assert!(want > ROW_H, "2× type needs more than the 1× row");
+        assert!(two.iter().all(|r| (r.height() - want).abs() < 1e-6));
+        for pair in two.windows(2) {
+            assert!(pair[1].y0 >= pair[0].y1, "rows never overlap at 2×");
+        }
+        assert!(f.app.bar_h > BAR_H && f.app.tab_h > TAB_H);
+        // The first row starts under the (taller) top bar and content chrome.
+        assert!(two[0].y0 >= f.app.bar_h + 14.0);
+    }
+
+    /// The restore sheet is framed by the shared modal chrome: its two
+    /// controls sit on one action line inside the window, and while it is
+    /// open nothing behind the scrim can activate.
+    #[test]
+    fn restore_sheet_uses_the_shared_modal_frame_and_swallows_the_scrim() {
+        let mut f = Frame::demo();
+        // Where the Sources tab is painted; the sheet does not move it.
+        let tab = f.rect_of(|hit| matches!(hit, Hit::Tab(View::Sources)));
+        f.click_hit(|hit| matches!(hit, Hit::RestoreOpen));
+        assert!(f.app.ui.restore_open);
+        let confirm = f.rect_of(|hit| matches!(hit, Hit::RestoreConfirm));
+        let cancel = f.rect_of(|hit| matches!(hit, Hit::RestoreCancel));
+        assert!((confirm.y0 - cancel.y0).abs() < 1e-6 && (confirm.y1 - cancel.y1).abs() < 1e-6);
+        assert!(cancel.x1 <= confirm.x0, "Cancel leads the primary action");
+        assert!(f.app.rect.contains(confirm.center()) && f.app.rect.contains(cancel.center()));
+        assert!(
+            confirm.height() >= 32.0,
+            "actions are real buttons, not badges"
+        );
+        // While the sheet is open nothing behind the scrim is exported: not
+        // for hit-testing and not to a screen reader.
+        assert!(
+            !f.has_hit(|hit| matches!(hit, Hit::Tab(_) | Hit::Snap(_) | Hit::Source(_))),
+            "controls behind the scrim are not exported while the sheet is open"
+        );
+
+        // A press on a view tab behind the scrim is swallowed.
+        let before = f.view();
+        f.click(tab.center());
+        assert_eq!(
+            f.view(),
+            before,
+            "the scrim swallows presses behind the sheet"
+        );
+        assert!(
+            f.app.ui.restore_open,
+            "a scrim press does not dismiss a recovery sheet"
+        );
+
+        // Cancel is still the visible way out.
+        f.click(cancel.center());
+        assert!(!f.app.ui.restore_open);
+    }
+
     #[test]
     fn real_storage_effects_are_reachable_from_the_timeline() {
         let mut f = Frame::demo();
@@ -6089,5 +6137,65 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let fitted = renderer.elide_to_width(&metadata, 11.5, 342.0);
         assert!(renderer.measure(&fitted, 11.5, None).0 <= 342.0);
+    }
+}
+
+impl BackupsApp {
+    fn draw_compact_backup_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.rect.width() >= NARROW_BREAKPOINT || self.hover != Some(Hit::BackupNow) {
+            return;
+        }
+        let Some((anchor, _)) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::BackupNow))
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            "Back up now",
+            self.rect,
+        );
+    }
+    fn draw_compact_tab_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if theme.text_scale < 1.5 {
+            return;
+        }
+        let Some((anchor, Hit::Tab(view))) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::Tab(_)))
+            .filter(|(_, hit)| Some(hit) == self.hover.as_ref())
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            view.title(),
+            self.rect,
+        );
     }
 }

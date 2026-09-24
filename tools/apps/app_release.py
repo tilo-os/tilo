@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan independently buildable qpkg app releases and named collections."""
+"""Plan independently buildable tapp app releases and named collections."""
 
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ FULL_REBUILD_PREFIXES = (
     "tools/apps/",
 )
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
-# A change reaching their graph affects the shared runtime or every emitted qpkg.
-FLEET_BUILD_PACKAGES = {"runtime-dylib", "pkg-cli", "runtime-bundle"}
+# A change reaching their graph affects the shared runtime or every emitted tapp.
+FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
 OS_INTEGRATED_APPS = {"browser"}
 
 
@@ -161,20 +161,6 @@ def changed_paths(base: str, root: Path = ROOT) -> list[str]:
     return ci_select.changed_files(root, base, "HEAD")
 
 
-def _lock_packages(raw: bytes) -> dict[tuple[str, str, str], dict]:
-    parsed = tomllib.loads(raw.decode("utf-8"))
-    return {
-        (package["name"], package["version"], package.get("source", "")): package
-        for package in parsed.get("package", [])
-    }
-
-
-def _lock_dependency_name(spec: str) -> str:
-    # Cargo.lock package names cannot contain whitespace. The remaining package
-    # id, when present, is a version and source used to disambiguate duplicates.
-    return spec.split(maxsplit=1)[0]
-
-
 def lockfile_affected_packages(
     base: str,
     metadata: dict,
@@ -186,7 +172,7 @@ def lockfile_affected_packages(
     ``cargo metadata --no-deps`` result contains each workspace package's direct
     dependencies. Joining the two by Cargo package name lets a lockfile-only
     update select the workspace reverse closure instead of every app. Duplicate
-    external versions deliberately collapse to one name, which can over-select
+    external versions collapse to one name in the join, which can over-select
     but cannot omit another version's consumers.
 
     ``None`` means the comparison could not be proved. Callers retain the old
@@ -202,27 +188,16 @@ def lockfile_affected_packages(
     if before.returncode:
         return None
     try:
-        old = _lock_packages(before.stdout)
-        new = _lock_packages((root / "Cargo.lock").read_bytes())
-    except (KeyError, OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        after = (root / "Cargo.lock").read_bytes()
+    except OSError:
         return None
-
-    changed_names = {
-        key[0] for key in old.keys() | new.keys() if old.get(key) != new.get(key)
-    }
-    if not changed_names:
-        return set()
-
-    # Propagate through both graphs so removing a dependency is attributed to
-    # its former consumers and adding one is attributed to its new consumers.
-    reverse_names: dict[str, set[str]] = {}
-    for package in [*old.values(), *new.values()]:
-        consumer = package["name"]
-        for dependency in package.get("dependencies", []):
-            reverse_names.setdefault(_lock_dependency_name(dependency), set()).add(consumer)
-    affected_names = ci_select.closure(changed_names, reverse_names)
-
     packages, _ = ci_select.package_maps(metadata, root)
+    change = ci_select.lockfile_change(before.stdout, after, packages)
+    if change is None:
+        return None
+    affected_names = change.reached | change.seeds
+    if not affected_names:
+        return set()
     workspace_seeds = {
         name
         for name, package in packages.items()
@@ -259,7 +234,7 @@ def input_classification(paths: list[str], metadata: dict | None = None,
             owner = ci_select.owner_for(path, by_dir)
             if owner is not None:
                 affected = ci_select.closure({owner}, reverse)
-                packaging = bool(affected & {"pkg-cli", "runtime-bundle"})
+                packaging = bool(affected & {"tilo-app-package-cli", "runtime-bundle"})
                 if packaging:
                     classified["packaging"].append(path)
                 if not packaging or affected & (app_packages | {"runtime-dylib"}):
@@ -370,7 +345,7 @@ def plan(args: argparse.Namespace) -> dict:
     integrated = set(selected).intersection(OS_INTEGRATED_APPS)
     if integrated:
         raise ValueError(
-            "OS-integrated apps cannot use the generic qpkg builder: "
+            "OS-integrated apps cannot use the generic tapp builder: "
             + ", ".join(sorted(integrated))
         )
     features = cfg.get("features", {})

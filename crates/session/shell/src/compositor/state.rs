@@ -124,7 +124,7 @@ fn output_presentation_owner_is_live(
         return false;
     };
     let client = audience_surface >> 32;
-    tree.workspaces.iter().any(|workspace| {
+    tree.desktop.workspaces.iter().any(|workspace| {
         workspace.strips.iter().any(|strip| {
             strip.window_groups.iter().any(|group| {
                 group.tabs.iter().any(|tab| {
@@ -878,7 +878,7 @@ impl State {
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
         // not. Sandboxed apps only see the public Wayland socket. Even a
-        // process spoofing `dev.tilo.osk` there cannot bind either privileged
+        // process spoofing `so.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
         // dedicated socket acceptor.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
@@ -2909,7 +2909,8 @@ impl CompositorHandler for State {
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
             let tree = self.workspace_tree.read();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .any(|ws| ws.is_surface_shared(surface_id))
                 || self.active_sessions.contains_key(&surface_id)
@@ -4487,7 +4488,7 @@ mod osk_identity_tests {
     fn only_private_socket_plus_exact_app_id_is_trusted() {
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
-        assert!(!osk_identity_is_trusted(Some("dev.tilo.lookalike"), true));
+        assert!(!osk_identity_is_trusted(Some("so.tilo.lookalike"), true));
         assert!(!osk_identity_is_trusted(None, true));
     }
 
@@ -4501,16 +4502,16 @@ mod osk_identity_tests {
     fn launcher_attribution_overrides_missing_app_id_and_rejects_spoofing() {
         let room = crate::shell::state::RoomId::new();
         let client = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             workspace_id: Some(room.to_string()),
             confined: true,
         });
         assert_eq!(
             authenticated_toplevel_identity(Some(&client), None),
-            Ok((Some("dev.tilo.notes".into()), Some(room)))
+            Ok((Some("so.tilo.notes".into()), Some(room)))
         );
         assert!(
-            authenticated_toplevel_identity(Some(&client), Some("dev.tilo.file-explorer".into()))
+            authenticated_toplevel_identity(Some(&client), Some("so.tilo.file-explorer".into()))
                 .is_err()
         );
     }
@@ -4519,7 +4520,7 @@ mod osk_identity_tests {
     fn stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible() {
         let attributed =
             ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 workspace_id: Some("not-a-room".into()),
                 confined: true,
             });
@@ -4557,10 +4558,10 @@ mod osk_identity_tests {
             None
         );
         assert_eq!(
-            floating_capability_token("dev.tilo.shell-float.predictable"),
+            floating_capability_token("so.tilo.shell-float.predictable"),
             None
         );
-        assert_eq!(floating_capability_token("dev.tilo.chat"), None);
+        assert_eq!(floating_capability_token("so.tilo.chat"), None);
     }
 }
 
@@ -4628,29 +4629,29 @@ mod tick_hook_tests {
 
     #[test]
     fn audience_identity_is_narrow_and_does_not_match_the_presenter() {
-        assert!(is_output_presentation_app_id("dev.tilo.slides.audience"));
-        assert!(!is_output_presentation_app_id("dev.tilo.slides"));
+        assert!(is_output_presentation_app_id("so.tilo.slides.audience"));
+        assert!(!is_output_presentation_app_id("so.tilo.slides"));
         assert!(!is_output_presentation_app_id(".audience"));
     }
 
     #[test]
     fn audience_role_requires_an_exact_same_client_presenter() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.tilo.slides".into()));
+        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("so.tilo.slides".into()));
         assert!(output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.tilo.slides.audience"
+            "so.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (10_u64 << 32) | 2,
-            "dev.tilo.slides.audience"
+            "so.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.tilo.evil.audience"
+            "so.tilo.evil.audience"
         ));
     }
 
@@ -4664,6 +4665,7 @@ mod tick_hook_tests {
         let presenter_groups = state
             .workspace_tree
             .read()
+            .desktop
             .active_workspace()
             .unwrap()
             .strips[0]
@@ -4673,7 +4675,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 77,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::ZERO,
             });
@@ -4685,6 +4687,7 @@ mod tick_hook_tests {
             state
                 .workspace_tree
                 .read()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .strips[0]
@@ -4702,7 +4705,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 88,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4724,7 +4727,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: id,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4738,7 +4741,7 @@ mod tick_hook_tests {
         state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
         assert!(!state.promote_output_presentation_toplevel(
             (44_u64 << 32) | 2,
-            "dev.tilo.evil.audience".into()
+            "so.tilo.evil.audience".into()
         ));
         assert!(state.output_presentation_surfaces.is_empty());
     }
@@ -4750,7 +4753,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: (8_u64 << 32) | 5,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4775,7 +4778,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4783,7 +4786,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live + 1,
-                app_id: "dev.tilo.slides.audience".into(),
+                app_id: "so.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(3),
                 rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
             });

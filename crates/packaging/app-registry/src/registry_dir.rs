@@ -6,7 +6,7 @@
 //! ```text
 //! <dir>/
 //!   index.json     # the signed RegistryIndex (served as-is over file://)
-//!   blobs/         # iroh-blobs FsStore of the published qpkg blobs
+//!   blobs/         # iroh-blobs FsStore of the published tapp blobs
 //! ```
 //!
 //! A long-lived provider node ([`crate::transport::BlobNode::persistent`]

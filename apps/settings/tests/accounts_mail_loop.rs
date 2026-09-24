@@ -18,12 +18,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-
 use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 
+use settings::accounts::AccountRoot;
 use settings::panes::accounts::{ADD_MAIL_KEY, AccountsPane};
 use ui::widget::Widget;
 
@@ -39,33 +37,12 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
-/// A process-unique temp config root so this test never collides with a real
-/// `~/.config/tilo` or a parallel run.
-fn unique_config_root() -> PathBuf {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "tilo-settings-mailloop-{}-{}",
-        std::process::id(),
-        n
-    ))
-}
-
 #[test]
 fn adding_an_email_account_in_settings_is_read_by_mail() {
-    let root_dir = unique_config_root();
-    let _ = std::fs::remove_dir_all(&root_dir);
-    std::fs::create_dir_all(&root_dir).unwrap();
-
-    // Point every shared-store path resolver (Settings' write + Mail's read)
-    // at the throwaway config root. `set_var` is `unsafe` on edition 2024;
-    // this dedicated test binary owns the environment mutation.
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &root_dir);
-    }
-
-    // The shared crate resolves `<XDG_CONFIG_HOME>/tilo` as its config root.
-    let tilo_root = root_dir.join("tilo");
+    // Settings writes and Mail reads the same explicit config root, so the
+    // test never touches the user's accounts and needs no environment.
+    let root_dir = tempfile::tempdir().unwrap();
+    let tilo_root = root_dir.path().join("tilo");
 
     // A fresh install: no accounts yet.
     assert!(
@@ -74,7 +51,8 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     );
 
     // Drive the real Settings pane exactly as the UI would.
-    let mut pane = AccountsPane::new().with_account_tester(std::sync::Arc::new(AcceptAccount));
+    let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
+        .with_account_tester(std::sync::Arc::new(AcceptAccount));
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
 
@@ -129,10 +107,4 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
         acct.config.password, "s3cret-app-password",
         "Mail rehydrates the password from the shared secret vault"
     );
-
-    // Cleanup.
-    unsafe {
-        std::env::remove_var("XDG_CONFIG_HOME");
-    }
-    let _ = std::fs::remove_dir_all(&root_dir);
 }

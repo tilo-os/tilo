@@ -27,6 +27,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::read_str_or_text;
 
 /// Which top-level section is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,17 +121,6 @@ impl ViewDoc {
         }
     }
 
-    fn get_str(doc: &AutoCommit, map: &ObjId, key: &str) -> Option<String> {
-        match doc.get(map, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
-            _ => None,
-        }
-    }
-
     fn put_str(doc: &mut AutoCommit, map: &ObjId, key: &str, value: &str) {
         let _ = doc.put(map, key, value);
     }
@@ -150,7 +140,7 @@ impl ViewDoc {
 
     pub fn section(doc: &mut AutoCommit) -> Section {
         let m = Self::view_map(doc);
-        Section::parse(&Self::get_str(doc, &m, "section").unwrap_or_default())
+        Section::parse(&read_str_or_text(doc, &m, "section").unwrap_or_default())
     }
 
     pub fn set_section(doc: &mut AutoCommit, section: Section) {
@@ -160,7 +150,7 @@ impl ViewDoc {
 
     pub fn selected(doc: &mut AutoCommit) -> Option<String> {
         let m = Self::view_map(doc);
-        Self::get_str(doc, &m, "selected").filter(|s| !s.is_empty())
+        read_str_or_text(doc, &m, "selected").filter(|s| !s.is_empty())
     }
 
     pub fn set_selected(doc: &mut AutoCommit, id: Option<&str>) {
@@ -170,7 +160,7 @@ impl ViewDoc {
 
     pub fn tab(doc: &mut AutoCommit) -> DetailTab {
         let m = Self::view_map(doc);
-        DetailTab::parse(&Self::get_str(doc, &m, "tab").unwrap_or_default())
+        DetailTab::parse(&read_str_or_text(doc, &m, "tab").unwrap_or_default())
     }
 
     pub fn set_tab(doc: &mut AutoCommit, tab: DetailTab) {

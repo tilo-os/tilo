@@ -21,15 +21,19 @@
 //! the spatial model depends on; the role is accepted and recorded so
 //! the protocol stays honest, and the picture is the compositor's.
 
+use std::io::Cursor;
+use std::sync::Arc;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
+use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-/// Height of the chip that names what is being carried.
-const CHIP_H: f64 = 30.0;
+/// Height of the chip that names what is being carried — the Selector
+/// height from HIG §9.6, so it matches every other pill the shell paints.
+const CHIP_H: f64 = 28.0;
 /// Padding inside the chip, left and right of the label.
 const CHIP_PAD: f64 = 12.0;
 /// The chip sits below-right of the hotspot so the cursor stays legible.
@@ -37,6 +41,41 @@ const CHIP_DX: f64 = 14.0;
 const CHIP_DY: f64 = 16.0;
 /// Cursor arrow, in units of its own height.
 const CURSOR_H: f64 = 20.0;
+const PREVIEW_MAX_W: f64 = 280.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MAX_H: f64 = 190.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_W: f64 = 180.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_H: f64 = 112.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_ALPHA: f32 = 0.42;
+const HANDLE_ALPHA: f32 = 0.5;
+
+/// Pixel or semantic content carried by a Wayland drag. Payload reads and
+/// decoding happen on workers; the frame thread only clones and paints this
+/// bounded result.
+#[derive(Clone, Debug)]
+pub enum DragPreview {
+    Image {
+        rgba: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+    },
+    Text(String),
+    Kind(DragKind),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragKind {
+    Image,
+    Video,
+    Audio,
+    Document,
+    File,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DragVisual {
+    pub label: Option<String>,
+    pub preview: Option<DragPreview>,
+}
 
 /// Draw the pointer and, when one is in flight, what it is carrying.
 ///
@@ -47,17 +86,34 @@ const CURSOR_H: f64 = 20.0;
 pub fn draw(
     scene: &mut Scene,
     cursor: Point,
-    label: Option<&str>,
+    visual: &DragVisual,
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    if let Some(label) = label {
+    if let Some(preview) = visual.preview.as_ref() {
+        draw_preview(scene, cursor, preview, theme, text);
+    }
+    if let Some(label) = visual.label.as_deref() {
+        // Theme type tokens already carry the user's text scale; the chip
+        // paints with those resolved sizes, so the renderer must not scale
+        // them again (HIG §7a) — reset for this pass, as the shell's
+        // immediate-mode chrome passes do, and restore afterwards.
+        let renderer_scale = text.text_scale();
+        text.set_text_scale(1.0);
         draw_chip(scene, cursor, label, theme, text);
+        text.set_text_scale(renderer_scale);
     }
     draw_cursor(scene, cursor, theme);
 }
 
 /// The carried-item chip: a rounded card with the item's name in it.
+///
+/// Deliberately not [`ui::widget::Chip::draw_at`]: a chip is a Selector
+/// that sits *inside* a Panel and paints a veneer fill (`surface_white_5`),
+/// which over arbitrary app content would let whatever is being dragged
+/// across show through the label. The carried item is an Object off the
+/// surface — it needs an opaque ground, an elevation shadow and the Control
+/// radius, none of which the chip painter offers. Nothing hit-tests it.
 fn draw_chip(
     scene: &mut Scene,
     cursor: Point,
@@ -65,25 +121,25 @@ fn draw_chip(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    let size = 13.0_f32;
-    let (tw, _) = text.measure(label, size, None);
+    // Control label scale (HIG §9.6), measured with the style it is drawn
+    // in so the label is centred on its real line box rather than on a
+    // `size * 1.3` guess. The caller has reset the renderer for this pass.
+    let size = theme.tokens.typography.scale.sm;
+    let (tw, th) = text.measure(label, size, None);
     let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
-    let rect = RoundedRect::new(x, y, x + w, y + CHIP_H, 8.0);
-    // A shadow under the chip, so it reads as lifted off whatever window
-    // it happens to be over rather than as part of it.
+    let bounds = Rect::new(x, y, x + w, y + CHIP_H);
+    // Control role: a pressable-looking chip takes `radii.lg`, and a carried
+    // object is genuinely lifted, so its shadow comes from the elevation
+    // token rather than a literal black offset copy (HIG §9.3).
+    let radius = ui::chrome::ChromeRole::Control.radius(theme, CHIP_H);
+    let rect = RoundedRect::from_rect(bounds, radius);
+    ui::chrome::shell::panel_shadow(scene, Affine::IDENTITY, bounds, radius, theme, 1.0);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::from_rgba8(0, 0, 0, 90),
-        None,
-        &RoundedRect::new(x + 1.0, y + 2.0, x + w + 1.0, y + CHIP_H + 3.0, 8.0),
-    );
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        theme.bg_primary,
+        theme.bg_primary.with_alpha_factor(HANDLE_ALPHA),
         None,
         &rect,
     );
@@ -99,9 +155,203 @@ fn draw_chip(
         label,
         size,
         theme.text_primary,
-        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(size) * 1.3) / 2.0)),
+        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(th)) / 2.0)),
         None,
     );
+}
+
+fn preview_rect(cursor: Point, preview: &DragPreview) -> Rect {
+    let (w, h) = match preview {
+        DragPreview::Image { width, height, .. } if *width > 0 && *height > 0 => {
+            let source_w = f64::from(*width);
+            let source_h = f64::from(*height);
+            let maximum_scale = (PREVIEW_MAX_W / source_w).min(PREVIEW_MAX_H / source_h);
+            let preferred_scale = (PREVIEW_MIN_W / source_w)
+                .max(PREVIEW_MIN_H / source_h)
+                .max(1.0);
+            let scale = preferred_scale.min(maximum_scale) * 0.96;
+            (source_w * scale, source_h * scale)
+        }
+        DragPreview::Text(_) | DragPreview::Kind(_) | DragPreview::Image { .. } => {
+            (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96)
+        }
+    };
+    let x0 = cursor.x + CHIP_DX;
+    let y0 = cursor.y + CHIP_DY + CHIP_H + 6.0;
+    Rect::new(x0, y0, x0 + w, y0 + h)
+}
+
+fn draw_preview(
+    scene: &mut Scene,
+    cursor: Point,
+    preview: &DragPreview,
+    theme: &Theme,
+    text: &mut TextRenderer,
+) {
+    let rect = preview_rect(cursor, preview);
+    let radius = f64::from(theme.tokens.radii.xl);
+    ui::surface::shadow(
+        scene,
+        Affine::IDENTITY,
+        rect,
+        radius,
+        &theme.tokens.elevation.e4,
+    );
+    let shape = RoundedRect::from_rect(rect, radius);
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        PREVIEW_ALPHA,
+        Affine::IDENTITY,
+        &shape,
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.tokens.colors.surfaces.window_card,
+        None,
+        &shape,
+    );
+    match preview {
+        DragPreview::Image {
+            rgba,
+            width,
+            height,
+        } if *width > 0 && *height > 0 => {
+            let image = ImageData {
+                data: Blob::new(rgba.clone()),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width: *width,
+                height: *height,
+            };
+            let sx = rect.width() / f64::from(*width);
+            let sy = rect.height() / f64::from(*height);
+            let brush = ImageBrush::new(image).with_extend(Extend::Pad);
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine multiplication is finite floating-point transform composition"
+            )]
+            let image_transform =
+                Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sy);
+            scene.fill(
+                Fill::NonZero,
+                image_transform,
+                &brush,
+                None,
+                &Rect::new(0.0, 0.0, f64::from(*width), f64::from(*height)),
+            );
+        }
+        DragPreview::Text(value) => draw_text_preview(scene, rect, value, theme, text),
+        DragPreview::Kind(kind) => draw_kind_preview(scene, rect, *kind, theme),
+        DragPreview::Image { .. } => {}
+    }
+    scene.pop_layer();
+}
+
+fn draw_text_preview(
+    scene: &mut Scene,
+    rect: Rect,
+    value: &str,
+    theme: &Theme,
+    text: &mut TextRenderer,
+) {
+    let size = theme.tokens.typography.scale.sm;
+    let line_h = f64::from(size) * 1.45;
+    let mut y = rect.y0 + f64::from(theme.tokens.spacing.s3);
+    for source_line in value.lines().filter(|line| !line.trim().is_empty()).take(5) {
+        let line: String = source_line.chars().take(34).collect();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "text layout accepts f32 widths and the bounded preview is at most 560 px"
+        )]
+        let max_width = (rect.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
+        text.draw_text(
+            scene,
+            &line,
+            size,
+            theme.tokens.colors.text_primary,
+            Affine::translate((rect.x0 + f64::from(theme.tokens.spacing.s3), y)),
+            Some(max_width),
+        );
+        y += line_h;
+        if y + line_h > rect.y1 {
+            break;
+        }
+    }
+}
+
+fn draw_kind_preview(scene: &mut Scene, rect: Rect, kind: DragKind, theme: &Theme) {
+    let icon = match kind {
+        DragKind::Image => ui::icons::Icon::Image,
+        DragKind::Video => ui::icons::Icon::Play,
+        DragKind::Audio => ui::icons::Icon::Music,
+        DragKind::Document => ui::icons::Icon::FileText,
+        DragKind::File => ui::icons::Icon::File,
+    };
+    let side = rect.height().min(rect.width()) * 0.42;
+    let centre = rect.center();
+    ui::icons::draw_icon(
+        scene,
+        Affine::IDENTITY,
+        Rect::new(
+            centre.x - side / 2.0,
+            centre.y - side / 2.0,
+            centre.x + side / 2.0,
+            centre.y + side / 2.0,
+        ),
+        icon,
+        theme.tokens.colors.accent[6],
+        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+}
+
+/// Immediate semantic fallback while a worker fetches richer content.
+pub fn preview_for_mimes(mimes: &[String]) -> DragPreview {
+    let has = |prefix: &str| mimes.iter().any(|mime| mime.starts_with(prefix));
+    if has("image/") {
+        DragPreview::Kind(DragKind::Image)
+    } else if has("video/") {
+        DragPreview::Kind(DragKind::Video)
+    } else if has("audio/") {
+        DragPreview::Kind(DragKind::Audio)
+    } else if mimes.iter().any(|mime| mime == "text/uri-list") {
+        DragPreview::Kind(DragKind::File)
+    } else if has("text/") {
+        DragPreview::Kind(DragKind::Document)
+    } else {
+        DragPreview::Kind(DragKind::File)
+    }
+}
+
+/// Decode a bounded raster preview off the compositor thread. The decoder's
+/// allocation and dimension limits make an untrusted drag offer unable to turn
+/// a thumbnail into an unbounded allocation.
+pub fn image_preview(bytes: &[u8]) -> Option<DragPreview> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes));
+    reader = reader.with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().ok()?;
+    let image = if image.width() > 560 || image.height() > 380 {
+        image.thumbnail(560, 380).to_rgba8()
+    } else {
+        image.to_rgba8()
+    };
+    let (width, height) = image.dimensions();
+    Some(DragPreview::Image {
+        rgba: Arc::new(image.into_raw()),
+        width,
+        height,
+    })
+}
+
+pub fn text_preview(bytes: &[u8]) -> Option<DragPreview> {
+    let value = String::from_utf8_lossy(bytes).trim().to_string();
+    (!value.is_empty()).then(|| DragPreview::Text(value.chars().take(512).collect()))
 }
 
 /// A plain arrow pointer, hotspot at its tip.
@@ -185,28 +435,9 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
         Some(i) => path.get(i..).unwrap_or(path),
     };
     let last = path.rsplit('/').find(|s| !s.is_empty())?;
-    let name = percent_decode(last);
+    // A path segment: RFC 3986 rules, so a literal `+` stays a plus.
+    let name = ui::uri::decode(last);
     (!name.is_empty()).then_some(name)
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut rest = bytes;
-    while let Some((&first, tail)) = rest.split_first() {
-        if first == b'%'
-            && let Some(hex) = tail.get(..2)
-            && let Ok(hex_str) = std::str::from_utf8(hex)
-            && let Ok(v) = u8::from_str_radix(hex_str, 16)
-        {
-            out.push(v);
-            rest = tail.get(2..).unwrap_or(&[]);
-            continue;
-        }
-        out.push(first);
-        rest = tail;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A readable name for a set of paths the compositor itself is carrying.
@@ -225,6 +456,81 @@ pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn mime_fallback_is_visual_before_payload_arrives() {
+        assert!(matches!(
+            preview_for_mimes(&["image/png".into()]),
+            DragPreview::Kind(DragKind::Image)
+        ));
+        assert!(matches!(
+            preview_for_mimes(&["video/mp4".into()]),
+            DragPreview::Kind(DragKind::Video)
+        ));
+        assert!(matches!(
+            preview_for_mimes(&["application/octet-stream".into()]),
+            DragPreview::Kind(DragKind::File)
+        ));
+        assert!(matches!(
+            preview_for_mimes(&["text/uri-list".into()]),
+            DragPreview::Kind(DragKind::File)
+        ));
+    }
+
+    #[test]
+    fn raster_payload_becomes_a_bounded_real_preview() {
+        let source = image::RgbaImage::from_pixel(32, 18, image::Rgba([12, 90, 220, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture");
+        let DragPreview::Image {
+            rgba,
+            width,
+            height,
+        } = image_preview(encoded.get_ref()).expect("decode preview")
+        else {
+            panic!("image bytes must produce image pixels")
+        };
+        assert_eq!((width, height), (32, 18));
+        assert_eq!(rgba.len(), 32 * 18 * 4);
+        let rect = preview_rect(
+            Point::new(20.0, 20.0),
+            &DragPreview::Image {
+                rgba,
+                width,
+                height,
+            },
+        );
+        assert!(rect.width() <= PREVIEW_MAX_W && rect.height() <= PREVIEW_MAX_H);
+        assert!((rect.width() / rect.height() - 32.0 / 18.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn raster_payload_is_downscaled_to_the_decode_bound() {
+        let source = image::RgbaImage::from_pixel(800, 500, image::Rgba([12, 90, 220, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture");
+        let DragPreview::Image { width, height, .. } =
+            image_preview(encoded.get_ref()).expect("decode preview")
+        else {
+            panic!("image bytes must produce image pixels")
+        };
+        assert!(width <= 560 && height <= 380);
+        assert_eq!((width, height), (560, 350));
+    }
+
+    #[test]
+    fn text_payload_keeps_content_not_only_a_type_label() {
+        let DragPreview::Text(text) = text_preview(b"A sentence selected in the editor")
+            .expect("text payload must produce a visual")
+        else {
+            panic!("text bytes must remain text")
+        };
+        assert!(text.contains("selected in the editor"));
+    }
 
     /// The chip has to say something for every drag, including one whose
     /// offer says nothing recognisable — an empty chip is worse than a
@@ -256,6 +562,16 @@ mod tests {
             name_from_uri_list(b"file:///home/me/my%20photo%231.png\r\n").as_deref(),
             Some("my photo#1.png"),
             "a name a URI had to escape shows as the user wrote it"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/C++%20notes%2.txt\r\n").as_deref(),
+            Some("C++ notes%2.txt"),
+            "a plus is literal and a malformed escape is kept verbatim"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///tmp/caf%C3%A9%FF.txt\r\n").as_deref(),
+            Some("caf\u{e9}\u{fffd}.txt"),
+            "invalid UTF-8 is replaced, not dropped"
         );
         assert_eq!(
             name_from_uri_list(b"file://localhost/tmp/scan.jpg\r\n").as_deref(),

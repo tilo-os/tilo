@@ -6,9 +6,9 @@
 //! Expand/select/focus state lives on the widget; `on_select` is how the
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
+use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -27,6 +27,10 @@ use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+};
+use crate::widget::EventCtx;
+use crate::widget::data_table::{
+    RowType, centered_text_top, renderer_type_size, row_estimate, text_band, type_line_height,
 };
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
@@ -641,6 +645,22 @@ pub struct TreeView<T, M = TreeNode<T>> {
     transitions: KeyedTransitionSet<TreeRowKey, TreeTransitionPayload>,
     transition_duration: Duration,
     reduce_motion: bool,
+    /// Disclosure column, resolved from the theme's label line at layout
+    /// time so the glyph never overlaps the label at larger text scales
+    /// (`DISCLOSURE_WIDTH` at the default scale).
+    disclosure_w: f64,
+    /// The estimated row height the host authored through `set_viewport`,
+    /// if any. Honoured as written at the default text scale and raised only
+    /// once the label line itself would not fit; the unauthored default
+    /// follows the type with its 1× padding.
+    authored_row_height: Option<f64>,
+    /// The label type seen at the last layout; `None` until then, when the
+    /// estimate is exactly the authored or default height.
+    row_type: Option<RowType>,
+    /// Indent per depth level, the theme's `s4` (16 px at 1×). Paint and
+    /// hit-testing read the same value so the disclosure column a click
+    /// lands in is the one that was drawn.
+    indent_px: f64,
     requested_slots: HashSet<TreeSlot>,
     row_delegate: Option<TreeRowDelegate<M>>,
     slot_delegate: Option<TreeSlotDelegate<M>>,
@@ -665,6 +685,12 @@ pub struct TreeView<T, M = TreeNode<T>> {
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
 const DISCLOSURE_WIDTH: f64 = 16.0;
+/// Indent per depth before a theme is seen: the `s4` step, unscaled.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const DEFAULT_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
 const ROW_HEIGHT: f64 = 22.0;
 const WHEEL_LINE_PX: f64 = 60.0;
 const MAX_TRANSITION_ROWS: usize = 512;
@@ -775,6 +801,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
             transitions: KeyedTransitionSet::new(),
             transition_duration: Duration::from_millis(210),
             reduce_motion: false,
+            disclosure_w: DISCLOSURE_WIDTH,
+            authored_row_height: None,
+            row_type: None,
+            indent_px: DEFAULT_INDENT,
             requested_slots: HashSet::new(),
             row_delegate: None,
             slot_delegate: None,
@@ -1264,7 +1294,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.transitions.reconcile(
             &old_snapshot,
             &new_snapshot,
-            Instant::now(),
+            crate::time::now(),
             self.transition_duration,
             crate::animation::Curve::EaseInOut,
             self.reduce_motion,
@@ -1292,8 +1322,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// the tree keeps its historical content-sized layout and can be wrapped
     /// in an outer `Scrollable`.
     pub fn set_viewport(&mut self, height_px: f32, estimated_row_height_px: f32) {
-        self.viewport
-            .set_estimated_height(f64::from(estimated_row_height_px));
+        self.authored_row_height = Some(f64::from(estimated_row_height_px));
+        self.refresh_row_estimate();
         self.viewport.set_viewport(f64::from(height_px));
         self.viewport
             .set_overscan(self.viewport.estimated_height() * 2.0);
@@ -1401,6 +1431,43 @@ impl<T, M: TreeModel> TreeView<T, M> {
         }
     }
 
+    /// Size the estimated row height and the disclosure column from the
+    /// theme's label line. At the default text scale they resolve to the
+    /// pinned `ROW_HEIGHT` / `DISCLOSURE_WIDTH`; at 2× they grow with the type
+    /// so a label keeps its 1× padding and the glyph column still clears it.
+    /// An estimate the host authored through [`Self::set_viewport`] is kept as
+    /// written and raised only once the line plus the smallest step would not
+    /// fit; heights set per row (`set_row_height`, delegates) are never
+    /// touched.
+    fn apply_type_metrics(&mut self, theme: &Theme) {
+        let tokens = &theme.tokens;
+        let line = type_line_height(tokens.typography.scale.sm);
+        self.disclosure_w = text_band(DISCLOSURE_WIDTH, line, 0.0);
+        self.indent_px = f64::from(tokens.spacing.s4);
+        let pad = f64::from(tokens.spacing.s1);
+        self.row_type = Some(RowType {
+            line,
+            default_pad: pad,
+            authored_pad: pad,
+        });
+        self.refresh_row_estimate();
+    }
+
+    /// The one place the viewport's estimated row height is set, from the
+    /// authored estimate and the label type seen so far (see
+    /// [`row_estimate`]). Called when either input changes.
+    fn refresh_row_estimate(&mut self) {
+        let estimate = row_estimate(self.authored_row_height, ROW_HEIGHT, self.row_type);
+        let before = self.viewport.estimated_height();
+        self.viewport.set_estimated_height(estimate);
+        if self.viewport.estimated_height().to_bits() != before.to_bits() {
+            self.viewport
+                .set_overscan(self.viewport.estimated_height() * 2.0);
+            self.mark_delegate_window_dirty();
+            self.refresh_anchor();
+        }
+    }
+
     fn reorder_destination_parent(&self, target: &DropTarget<NodeId>) -> Option<NodeId> {
         match target.placement {
             DropPlacement::Inside => Some(target.key),
@@ -1446,7 +1513,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         } else {
             DropPlacement::Inside
         };
-        let indent = idx_to_f64(depth) * DISCLOSURE_WIDTH;
+        let indent = idx_to_f64(depth) * self.indent_px;
         let preview = match placement {
             DropPlacement::Before => Rect::new(
                 self.rect.x0 + indent,
@@ -1485,10 +1552,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let (TreeRowKey::Node(id), depth) = self.index.row_at(&self.model, index)? else {
             return None;
         };
-        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * DISCLOSURE_WIDTH;
+        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * self.indent_px;
         (!(self.model.is_branch(id)
             && cursor.x >= glyph_x0
-            && cursor.x < glyph_x0 + DISCLOSURE_WIDTH))
+            && cursor.x < glyph_x0 + self.disclosure_w))
             .then_some(id)
     }
 
@@ -1589,11 +1656,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some((key, depth)) = self.index.row_at(&self.model, index) else {
             return false;
         };
-        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * DISCLOSURE_WIDTH;
+        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * self.indent_px;
         match key {
             TreeRowKey::Node(id) => {
                 let is_branch = self.model.is_branch(id);
-                if is_branch && pt.x >= glyph_x0 && pt.x < glyph_x0 + DISCLOSURE_WIDTH {
+                if is_branch && pt.x >= glyph_x0 && pt.x < glyph_x0 + self.disclosure_w {
                     self.toggle_expand(id);
                 } else {
                     self.apply_selection_gesture(id, toggle, extend);
@@ -1632,7 +1699,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 -position.y
             }
         };
-        self.last_tick = Some(Instant::now());
+        self.last_tick = Some(crate::time::now());
         let before = self.viewport.offset();
         self.set_scroll_offset(before + dy);
         let moved = self.viewport.offset().to_bits() != before.to_bits();
@@ -1998,7 +2065,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         if received_changes {
             self.notify_model_changes(&model_changes);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed = self
             .last_tick
             .replace(now)
@@ -2049,16 +2116,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             self.transitions.clear();
             self.momentum.stop();
         }
+        self.apply_type_metrics(theme);
         self.reconcile_mounted_rows();
         let height = self.body_height();
+        let disclosure_w = self.disclosure_w;
+        let indent_px = self.indent_px;
         let mut children = Vec::with_capacity(self.mounted_rows.len());
         for row in &mut self.mounted_rows {
             let child = row.widget.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(child).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
-            style.inset.left = length(px(idx_to_f64(row.depth)
-                * f64::from(theme.tokens.spacing.s4)
-                + DISCLOSURE_WIDTH));
+            style.inset.left = length(px(idx_to_f64(row.depth) * indent_px + disclosure_w));
             style.inset.right = length(0.0_f32);
             style.inset.top = length(px(self
                 .viewport
@@ -2132,10 +2200,15 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) {
         self.request_visible_rows();
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
-        let indent_px = f64::from(tokens.spacing.s4);
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        // Every label and disclosure glyph is one line of this style, so one
+        // measured line box centres every row identically.
+        let (_, line_h) = text_renderer.measure("\u{25B6}", text_size, None);
+        // The indent and disclosure column hit-testing uses, resolved from
+        // this theme at layout.
+        let indent_px = self.indent_px;
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
-        let now = Instant::now();
+        let now = crate::time::now();
 
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2196,12 +2269,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
 
             if matches!(key, TreeRowKey::Node(id) if self.selection.is_selected(&id)) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.3 * opacity),
-                    None,
-                    &row_rect,
+                crate::widget::data_table::paint_selected_row(
+                    scene, transform, theme, row_rect, opacity,
                 );
             }
 
@@ -2217,8 +2286,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
 
             let depth_px = idx_to_f64(depth) * indent_px;
             let glyph_x = self.rect.x0 + depth_px;
-            let label_x = glyph_x + DISCLOSURE_WIDTH;
-            let text_y = y0 + (row_height - f64::from(text_size)) / 2.0;
+            let label_x = glyph_x + self.disclosure_w;
+            let text_y = centered_text_top(y0, row_height, line_h);
 
             if is_branch {
                 let TreeRowKey::Node(id) = key else {
@@ -2263,7 +2332,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         }
         for row in &mut self.mounted_rows {
             let settled_top = self.viewport.item_view_top(row.index).unwrap_or_default();
-            let settled_height = self.viewport.item_height(row.index).unwrap_or(ROW_HEIGHT);
+            let settled_height = self
+                .viewport
+                .item_height(row.index)
+                .unwrap_or_else(|| self.viewport.estimated_height());
             let visual = self.transitions.visual(
                 &row.key,
                 RowGeometry::new(settled_top, settled_height),
@@ -2294,16 +2366,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let y0 = self.rect.y0 + visual.geometry.top;
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + visual.geometry.height);
             if payload.selected {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.3 * opacity),
-                    None,
-                    &row_rect,
+                crate::widget::data_table::paint_selected_row(
+                    scene, transform, theme, row_rect, opacity,
                 );
             }
             let glyph_x = self.rect.x0 + idx_to_f64(payload.depth) * indent_px;
-            let text_y = y0 + (visual.geometry.height - f64::from(text_size)) / 2.0;
+            let text_y = centered_text_top(y0, visual.geometry.height, line_h);
             if payload.is_branch {
                 let glyph = if payload.expanded { "▼" } else { "▶" };
                 #[allow(
@@ -2330,7 +2398,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 reason = "kurbo Affine composition is finite screen-space matrix math"
             )]
             let label_transform =
-                transform * Affine::translate((glyph_x + DISCLOSURE_WIDTH, text_y));
+                transform * Affine::translate((glyph_x + self.disclosure_w, text_y));
             text_renderer.draw_text(
                 scene,
                 &payload.label,
@@ -2365,18 +2433,15 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         clippy::too_many_lines,
         reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let scale_factor = ctx.scale_factor;
+        let modifiers = ctx.modifiers;
+        let state = &mut *ctx.state;
+        let path = ctx.path;
+        let handled = &mut *ctx.handled;
+        let focus_target = &mut *ctx.focus_target;
+        let node_id = ctx.node_id;
+        let taffy = ctx.taffy;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(Point::new(
                 position.x / scale_factor,
@@ -2401,7 +2466,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         match event {
             WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
                 if let Some(cursor) = self.last_cursor {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     self.update_reorder_pointer(cursor, now);
                     self.last_tick = Some(now);
                     *handled = self.reorder.is_active();
@@ -2409,7 +2474,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
             WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
                 if let Some(cursor) = self.last_cursor {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     if let Some(update) = self.drag_scroll.update(cursor.y, now) {
                         self.momentum.stop();
                         self.set_scroll_offset(update.target_offset);
@@ -2432,13 +2497,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
                     *handled = self.on_left_press(node_id, focus_target, toggle, extend);
                     self.reorder.begin(source, cursor);
-                    self.last_tick = Some(Instant::now());
+                    self.last_tick = Some(crate::time::now());
                     *handled = true;
                 } else if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                 {
                     self.drag_scroll
-                        .begin(cursor.y, self.scroll_offset(), Instant::now());
+                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
                     *focus_target = Some(node_id);
                     *handled = true;
                 }
@@ -2458,13 +2523,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 button: MouseButton::Left,
                 ..
             } if self.drag_scroll.is_tracking() => {
-                if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
                             self.momentum.stop();
                         } else {
                             self.momentum.fling(drag.velocity);
-                            self.last_tick = Some(Instant::now());
+                            self.last_tick = Some(crate::time::now());
                         }
                     } else {
                         let toggle =
@@ -2549,7 +2614,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.momentum.is_active()
             || self.model.needs_poll()
             || self.reorder.is_active()
-            || self.transitions.is_active(Instant::now())
+            || self.transitions.is_active(crate::time::now())
             || self
                 .mounted_rows
                 .iter()
@@ -3356,18 +3421,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<taffy::NodeId>,
-            _node_id: taffy::NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -3383,7 +3437,7 @@ mod tests {
                 )
             {
                 self.presses.set(self.presses.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -3504,6 +3558,48 @@ mod tests {
             taffy,
         );
         handled
+    }
+
+    /// At 2× text the disclosure column is painted at the `sm` line width
+    /// (30 px), not the 1× 16 px. A press between the two must toggle the
+    /// branch: the hit zone is the painted column, not the pinned constant.
+    #[test]
+    fn disclosure_hit_zone_is_the_painted_column_at_two_x() {
+        let root = TreeNode::branch(1, "crates", (), vec![TreeNode::leaf(2, "main.rs", ())]);
+        let mut view = TreeView::new(root);
+        let mut doc = AutoCommit::new();
+        view.sync(&mut doc, &automerge::ROOT);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(320.0),
+                    height: taffy::AvailableSpace::Definite(px(view.body_height())),
+                },
+            )
+            .unwrap();
+        view.apply_layout(&taffy, node, Point::ZERO);
+        assert!(
+            view.disclosure_w > DISCLOSURE_WIDTH,
+            "2x resolves a wider disclosure column: {}",
+            view.disclosure_w
+        );
+        assert!(view.viewport.estimated_height() > ROW_HEIGHT);
+        assert!(!view.expanded.contains(&1));
+
+        let x = f64::midpoint(DISCLOSURE_WIDTH, view.disclosure_w);
+        let y = view.viewport.estimated_height() / 2.0;
+        dispatch_laid_out(&mut view, &cursor_moved(x, y), &taffy, node);
+        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+        assert!(
+            view.expanded.contains(&1),
+            "a press at x={x} inside the painted disclosure column toggles the branch"
+        );
     }
 
     #[test]
@@ -3873,7 +3969,7 @@ mod tests {
         assert_eq!(immediate, 60.0);
         assert!(view.needs_animation_frame());
         view.last_tick = Some(
-            Instant::now()
+            crate::time::now()
                 .checked_sub(Duration::from_millis(16))
                 .expect("a 16 ms earlier instant is representable"),
         );
@@ -4529,7 +4625,7 @@ mod tests {
         view.refresh_transition_snapshot();
 
         assert!(view.set_expanded(2, true));
-        let now = Instant::now();
+        let now = crate::time::now();
         let anchor_index = view.visible_index_of(3).unwrap();
         let settled = RowGeometry::new(
             view.viewport.item_view_top(anchor_index).unwrap(),
@@ -4554,7 +4650,7 @@ mod tests {
         assert!(view.set_expanded(2, false));
         assert!(
             view.transitions
-                .exiting(Instant::now())
+                .exiting(crate::time::now())
                 .any(|(key, payload, visual)| {
                     *key == TreeRowKey::Node(20)
                         && payload.label == "hidden child"
@@ -4572,7 +4668,7 @@ mod tests {
         view.refresh_transition_snapshot();
 
         assert!(view.set_expanded(2, true));
-        let now = Instant::now();
+        let now = crate::time::now();
         assert!(!view.transitions.is_active(now));
         assert_eq!(view.transitions.exiting(now).count(), 0);
         let child = view.visible_index_of(20).unwrap();
@@ -4602,7 +4698,7 @@ mod tests {
         assert_eq!(view.scroll_y(), 60.0_f32);
         assert!(!view.momentum.is_active());
 
-        let now = Instant::now();
+        let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
         let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
         view.drag_scroll

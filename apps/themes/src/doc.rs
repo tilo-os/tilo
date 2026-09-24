@@ -5,7 +5,8 @@
 
 use crate::model::{FONTS, ThemeSpec, TokenId, hex, parse_hex, presets};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
+use ui::doc::{read_bool, read_number, read_str, read_text};
 
 pub const KEY_CATALOG: &str = "catalog";
 pub const KEY_THEMES: &str = "themes";
@@ -17,32 +18,6 @@ const MAX_ID_LEN: usize = 128;
 const MAX_NAME_LEN: usize = 128;
 const MAX_FONT_LEN: usize = 64;
 
-pub fn get_str(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key).ok().flatten() {
-        Some((Value::Scalar(v), _)) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-pub fn get_text(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key).ok().flatten() {
-        Some((Value::Object(ObjType::Text), id)) => doc.text(&id).ok(),
-        _ => None,
-    }
-}
-pub fn get_f64(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
-    match doc.get(root, key).ok().flatten() {
-        Some((Value::Scalar(v), _)) => match v.as_ref() {
-            ScalarValue::F64(f) => Some(*f),
-            ScalarValue::Int(i) => Some(*i as f64),
-            ScalarValue::Uint(u) => Some(*u as f64),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 pub fn put_str(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
     let _ = ui::doc::put_if_changed(doc, root, key, val);
 }
@@ -90,18 +65,9 @@ fn valid_name(s: &str) -> bool {
 fn valid_font(s: &str) -> bool {
     s.len() <= MAX_FONT_LEN && FONTS.contains(&s)
 }
-fn get_bool(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(root, key).ok().flatten() {
-        Some((Value::Scalar(v), _)) => match v.as_ref() {
-            ScalarValue::Boolean(x) => Some(*x),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 fn is_tombstoned(doc: &AutoCommit, root: &ObjId, id: &str) -> bool {
     map(doc, root, KEY_THEME_TOMBSTONES)
-        .and_then(|m| get_bool(doc, &m, id))
+        .and_then(|m| read_bool(doc, &m, id))
         .unwrap_or(false)
 }
 fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
@@ -114,26 +80,48 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
         _ => None,
     }
 }
+/// Materialize only the addressed valid legacy record for an explicit edit.
+/// Validation of the requested field happens before this function is called.
+fn editable_record(doc: &mut AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
+    if let Some(row) = record(doc, root, id) {
+        return Some(row);
+    }
+    if !valid_id(id) || is_tombstoned(doc, root, id) || presets().iter().any(|s| s.id == id) {
+        return None;
+    }
+    // A malformed or competing native entry is never replaced by legacy data.
+    if map(doc, root, KEY_THEMES).is_some_and(|m| doc.get(&m, id).ok().flatten().is_some()) {
+        return None;
+    }
+    let spec = legacy_customs(doc, root).into_iter().find(|s| s.id == id)?;
+    if !spec.radius_norm.is_finite() || !spec.spacing_norm.is_finite() {
+        return None;
+    }
+    if !create_custom_theme(doc, root, &spec) {
+        return None;
+    }
+    record(doc, root, id)
+}
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
-    let name = get_str(doc, r, "name")?;
-    let font = get_str(doc, r, "font")?;
+    let name = read_str(doc, r, "name")?;
+    let font = read_str(doc, r, "font")?;
     if !valid_id(id) || !valid_name(&name) || !valid_font(&font) {
         return None;
     }
-    let c = |t: TokenId| get_str(doc, r, t.key()).and_then(|x| parse_hex(&x));
-    let radius = get_f64(doc, r, "radius_norm")? as f32;
-    let spacing = get_f64(doc, r, "spacing_norm")? as f32;
+    let c = |t: TokenId| read_str(doc, r, t.key()).and_then(|x| parse_hex(&x));
+    let radius = read_number(doc, r, "radius_norm")? as f32;
+    let spacing = read_number(doc, r, "spacing_norm")? as f32;
     if !radius.is_finite() || !spacing.is_finite() {
         return None;
     }
-    let order = get_f64(doc, r, "order")
+    let order = read_number(doc, r, "order")
         .filter(|x| x.is_finite() && *x >= 0.0 && *x <= f64::from(u32::MAX))
         .map_or(u32::MAX, |x| x as u32);
     Some(ThemeSpec {
         id: id.into(),
         name,
         builtin: false,
-        dark_base: get_bool(doc, r, "dark_base").unwrap_or(true),
+        dark_base: read_bool(doc, r, "dark_base").unwrap_or(true),
         accent: c(TokenId::Accent)?,
         accent_hover: c(TokenId::AccentHover)?,
         surface_base: c(TokenId::SurfaceBase)?,
@@ -203,7 +191,7 @@ pub fn set_name(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bo
     if !valid_name(value) {
         return false;
     }
-    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
+    editable_record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
 }
 pub fn set_token(
     doc: &mut AutoCommit,
@@ -212,26 +200,28 @@ pub fn set_token(
     token: TokenId,
     value: [u8; 3],
 ) -> bool {
-    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
+    editable_record(doc, root, id)
+        .is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
 }
 pub fn set_radius(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && record(doc, root, id).is_some_and(|r| {
+        && editable_record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "radius_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && record(doc, root, id).is_some_and(|r| {
+        && editable_record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
     valid_font(value)
-        && record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
+        && editable_record(doc, root, id)
+            .is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
 }
 pub fn delete_custom_theme(doc: &mut AutoCommit, root: &ObjId, id: &str) -> bool {
-    if record(doc, root, id).is_none() {
+    if editable_record(doc, root, id).is_none() {
         return false;
     }
     ensure_map(doc, root, KEY_THEME_TOMBSTONES)
@@ -239,7 +229,7 @@ pub fn delete_custom_theme(doc: &mut AutoCommit, root: &ObjId, id: &str) -> bool
 }
 
 fn legacy_customs(doc: &AutoCommit, root: &ObjId) -> Vec<ThemeSpec> {
-    get_text(doc, root, KEY_CATALOG)
+    read_text(doc, root, KEY_CATALOG)
         .and_then(|x| serde_json::from_str::<Vec<ThemeSpec>>(&x).ok())
         .unwrap_or_default()
         .into_iter()
@@ -294,6 +284,77 @@ pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
         let _ = create_custom_theme(doc, root, s);
     }
 }
+/// Validate the authored catalog without migration, seeding, or OS-store access.
+pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
+    use ui::history_mode::adapter::map_collection;
+    let root = &automerge::ROOT;
+    if let Some(map) = map_collection(doc, KEY_THEMES)? {
+        for id in doc.keys(&map) {
+            let Some((Value::Object(ObjType::Map), row)) =
+                doc.get(&map, &id).map_err(|e| e.to_string())?
+            else {
+                return Err("Invalid theme record".into());
+            };
+            if read_record(doc, &id, &row).is_none() {
+                return Err("Incomplete or invalid theme record".into());
+            }
+            for key in doc.keys(&row) {
+                if TokenId::ALL.iter().any(|t| t.key() == key)
+                    || [
+                        "name",
+                        "font",
+                        "radius_norm",
+                        "spacing_norm",
+                        "order",
+                        "dark_base",
+                    ]
+                    .contains(&key.as_str())
+                {
+                } else {
+                    return Err(format!("Unknown theme field: {key}"));
+                }
+                if key == "dark_base" && read_bool(doc, &row, &key).is_none() {
+                    return Err("Invalid dark_base".into());
+                }
+                if key == "order"
+                    && !read_number(doc, &row, &key)
+                        .is_some_and(|v| v.is_finite() && v >= 0. && v <= f64::from(u32::MAX))
+                {
+                    return Err("Invalid order".into());
+                }
+            }
+        }
+    }
+    if let Some(map) = map_collection(doc, KEY_THEME_TOMBSTONES)? {
+        for id in doc.keys(&map) {
+            if !valid_id(&id) || read_bool(doc, &map, &id).is_none() {
+                return Err("Invalid theme tombstone".into());
+            }
+        }
+    }
+    if let Some((value, obj)) = doc.get(root, KEY_CATALOG).map_err(|e| e.to_string())? {
+        if value != Value::Object(ObjType::Text) {
+            return Err("Legacy catalog must be Text".into());
+        }
+        let specs: Vec<ThemeSpec> =
+            serde_json::from_str(&doc.text(&obj).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        for s in specs {
+            if !valid_id(&s.id)
+                || !valid_name(&s.name)
+                || !valid_font(&s.font)
+                || !s.radius_norm.is_finite()
+                || !s.spacing_norm.is_finite()
+                || !ids.insert(s.id)
+            {
+                return Err("Invalid legacy theme".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

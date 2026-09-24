@@ -16,14 +16,17 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use shell::shell::topbar_chrome::TopBarChrome;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -80,7 +83,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         strips: vec![strip],
         // Everything else comes from the builder, so a field added to
         // `Workspace` does not break this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -89,11 +92,14 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
     active_group.insert(strip_id, group_ids[0]);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     (tree, strip_id, group_ids.to_vec())
@@ -103,7 +109,7 @@ struct Layout {
     taffy: TaffyTree<()>,
     #[allow(
         dead_code,
-        reason = "retaining the root node keeps the full Taffy fixture explicit even though event routing begins at its child"
+        reason = "the fixture retains the complete Taffy tree even when a test inspects only child geometry"
     )]
     root_node: NodeId,
     child_node: NodeId,
@@ -168,6 +174,26 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         root_node,
         child_node: child,
     }
+}
+
+fn laid_out_topbar_height(chrome: Chrome) -> f64 {
+    let tree = chrome.borrow().tree().clone();
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+        )
+        .expect("compute top-bar layout");
+    bar.apply_layout(&taffy, node, Point::ORIGIN);
+    bar.get_rect().height()
 }
 
 fn dispatch_with_modifiers(
@@ -301,7 +327,7 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     {
         let st = chrome.borrow();
         let tree = st.tree();
-        let g = &tree.workspaces[0].strips[0].window_groups;
+        let g = &tree.desktop.workspaces[0].strips[0].window_groups;
         assert_approx_eq!(g[0].width.resolve(usable), start_px);
         assert_approx_eq!(g[1].width.resolve(usable), start_px);
     }
@@ -327,7 +353,7 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let groups = &tree.workspaces[0].strips[0].window_groups;
+    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(
@@ -397,7 +423,7 @@ fn shift_resize_handle_redistributes_width_between_neighbours() {
 fn resize_handle_drag_clamps_at_max_width_without_squeezing_its_neighbour() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
     // Start both at Narrow so the resized group's full clamp range is visible.
-    for g in &mut tree.workspaces[0].strips[0].window_groups {
+    for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -426,7 +452,7 @@ fn resize_handle_drag_clamps_at_max_width_without_squeezing_its_neighbour() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let groups = &tree.workspaces[0].strips[0].window_groups;
+    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(
@@ -481,7 +507,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     {
         let st = chrome.borrow();
         let tree = st.tree();
-        let order: Vec<u64> = tree.workspaces[0].strips[0]
+        let order: Vec<u64> = tree.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .map(|g| g.id)
@@ -506,7 +532,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let order: Vec<u64> = tree.workspaces[0].strips[0]
+    let order: Vec<u64> = tree.desktop.workspaces[0].strips[0]
         .window_groups
         .iter()
         .map(|g| g.id)
@@ -532,7 +558,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("pointer reorder writes a reconstructable layout");
     assert_eq!(
-        restarted.workspaces[0].strips[0]
+        restarted.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .map(|group| group.id)
@@ -595,7 +621,7 @@ fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
     {
         let state = chrome.borrow();
         let tree = state.tree();
-        let strip = &tree.workspaces[0].strips[0];
+        let strip = &tree.desktop.workspaces[0].strips[0];
         assert_eq!(
             strip
                 .window_groups
@@ -617,7 +643,7 @@ fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
 
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("the combined interaction writes a reconstructable layout");
-    let strip = &restarted.workspaces[0].strips[0];
+    let strip = &restarted.desktop.workspaces[0].strips[0];
     assert_eq!(
         strip
             .window_groups
@@ -674,11 +700,10 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     );
 }
 
-/// Clicking a tab's Expand chip must go full screen: sidebar
-/// wheel and top bar both get out of the way, and the promoted group
-/// covers the whole output.
+/// Clicking a tab's Expand chip maximizes it inside the desktop work area:
+/// the top bar stays available while the sidebar wheel gets out of the way.
 #[test]
-fn expand_takes_the_group_genuinely_fullscreen() {
+fn expand_maximizes_beneath_the_top_bar() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
@@ -713,8 +738,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     );
     assert!(
         chrome.borrow().is_fullscreen(),
-        "an expanded window must hold the whole output, so the shell suppresses \
-         the wheel + top bar (both gate on ChromeState::is_fullscreen)",
+        "the promoted group must still suppress the sidebar wheel",
     );
 
     // The sidebar wheel must now be zero-area so nothing paints over the
@@ -728,6 +752,11 @@ fn expand_takes_the_group_genuinely_fullscreen() {
         0.0,
         "the radial workspace switcher must be collapsed to zero area while a \
          window is expanded; got {sidebar:?}",
+    );
+    let topbar_height = laid_out_topbar_height(chrome);
+    assert!(
+        topbar_height > 10.0,
+        "maximize must preserve the OS-owned top bar; got height {topbar_height}",
     );
     let _ = &layout2;
 }
@@ -745,7 +774,7 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let width_in_tree = |chrome: &shell::shell::chrome_state::Chrome| -> f64 {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.workspaces[0].strips[0].window_groups[0]
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
             .width
             .resolve(usable)
     };
@@ -803,7 +832,7 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     // One full-width group fills the strip, so a second starts past the
     // right edge — the geometry a newly launched app lands in.
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
+    tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let _ = &layout;
@@ -815,7 +844,7 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
         let mut t = st.tree_mut();
         let id = 9_100_u64;
         let tab_id = 9_101_u64;
-        t.workspaces[0].strips[0]
+        t.desktop.workspaces[0].strips[0]
             .window_groups
             .push(shell::shell::state::WindowGroup {
                 id,
@@ -831,7 +860,7 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        t.set_active_group(strip_id, id);
+        t.desktop.set_active_group(strip_id, id);
         id
     };
     chrome.borrow_mut().bump();
@@ -886,7 +915,7 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     // Three tabs so there are gaps to drop into.
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
     {
-        let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         g.tabs = vec![
             Tab {
                 id: 1,
@@ -921,7 +950,7 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     let tab_order = |chrome: &shell::shell::chrome_state::Chrome| -> Vec<u64> {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.workspaces[0].strips[0].window_groups[0]
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .map(|t| t.id)
@@ -1005,10 +1034,10 @@ fn switching_workspace_swaps_the_rendered_strips() {
             name: "Main".into(),
             window_groups: vec![group_300, group_400],
         }],
-        ..Workspace::test_default(ws_b_id, "Second")
+        ..Workspace::new(ws_b_id, "Second")
     };
-    tree.workspaces.push(ws_b);
-    tree.active_strip.insert(ws_b_id, strip_b);
+    tree.desktop.workspaces.push(ws_b);
+    tree.desktop.active_strip.insert(ws_b_id, strip_b);
 
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let _layout = lay_out_host(&mut host);
@@ -1046,7 +1075,7 @@ fn switching_workspace_swaps_the_rendered_strips() {
     // And switching back re-renders A without leaking B's rows.
     {
         let st = chrome.borrow();
-        let home = st.tree().workspaces[0].id;
+        let home = st.tree().desktop.workspaces[0].id;
         st.tree_mut().set_active(home);
     }
     chrome.borrow_mut().bump();
@@ -1103,6 +1132,48 @@ fn wheel_over_strip_does_not_move_it() {
 }
 
 #[test]
+fn streamed_three_finger_pan_moves_the_live_strip_and_settles_overpull() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
+    let active_group = tree.desktop.active_group_for(strip_id);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    assert!(host.update_active_strip_pan(320.0, true));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        320.0,
+        "the live row must track total three-finger travel 1:1",
+    );
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip_id),
+        active_group,
+        "panning the canvas must not silently change focused app",
+    );
+
+    let legal_end = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .pan_max_scroll_x();
+    assert!(host.update_active_strip_pan(legal_end + 500.0, false));
+    let held = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
+    assert!(
+        held > legal_end && held < legal_end + 500.0,
+        "overpull must keep moving with resistance: legal={legal_end}, held={held}"
+    );
+
+    let released = std::time::Instant::now();
+    assert!(host.end_active_strip_pan(released));
+    host.group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .tick_snap_at(released + std::time::Duration::from_millis(220));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        legal_end,
+        "release must settle the live strip to its legal trailing rest",
+    );
+}
+
+#[test]
 fn focusing_offscreen_group_scrolls_it_into_view() {
     // Four Normal (600 px) groups overflow the 1280 px viewport, so the last
     // starts off the right edge at scroll_x = 0.
@@ -1128,7 +1199,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.set_active_group(strip_id, last_id);
+        tree.desktop.set_active_group(strip_id, last_id);
     }
     host.tick_scroll_active_into_view_for_tests();
     // The pan is eased on the snap curve, not teleported — advance the
@@ -1173,7 +1244,9 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
     let tabs_before = {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.workspaces[0].strips[0].window_groups[0].tabs.len()
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len()
     };
 
     // Drop a `.ts` file through the `WindowEvent::DroppedFile` entry.
@@ -1184,7 +1257,7 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let group = &tree.workspaces[0].strips[0].window_groups[0];
+    let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
     assert_eq!(
         group.tabs.len(),
         tabs_before + 1,
@@ -1224,7 +1297,7 @@ fn dropping_a_folder_opens_files_app() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let group = &tree.workspaces[0].strips[0].window_groups[0];
+    let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
     let new_tab = group.tabs.iter().find(|t| t.id == tab_id).unwrap();
     match &new_tab.tile {
         TileContent::AppPlaceholder { kind, .. } => assert_eq!(

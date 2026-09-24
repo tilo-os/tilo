@@ -10,9 +10,7 @@
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::filesystem_metadata as xattr;
-use crate::history_panel::{
-    HistoryPanel, format_timestamp, read_current_text_preview, text_diff_lines,
-};
+use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
@@ -22,7 +20,6 @@ use crate::{config, favorites, fileops, templates};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -60,7 +57,6 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 /// deliberately small; an exact item is materialised from the live snapshot
 /// by [`FileExplorerWidget::resource`] when a caller addresses it directly.
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
-type HistoryPreviewResult = Arc<std::sync::Mutex<Option<(String, Option<String>)>>>;
 type MergePreflightResult = Arc<
     std::sync::Mutex<
         Option<(
@@ -181,17 +177,14 @@ enum CollabPanelAction {
     },
 }
 
+/// Lower-case hex of the first `count` bytes (all of them when shorter).
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
-    let mut output = String::with_capacity(count.saturating_mul(2));
-    for byte in bytes.iter().take(count) {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    hex::encode(bytes.get(..count).unwrap_or(bytes))
 }
 
 fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"dev.tilo.files.nearby-action-locator.v1\0");
+    hasher.update(b"so.tilo.files.nearby-action-locator.v1\0");
     hasher.update(kind.as_bytes());
     hasher.update([0]);
     hasher.update(bytes);
@@ -221,6 +214,16 @@ fn short_fingerprint(key: &[u8; 32]) -> String {
 fn short_uuid(id: uuid::Uuid) -> String {
     let simple = id.simple().to_string();
     simple.get(..8).unwrap_or(&simple).to_string()
+}
+
+fn format_timestamp(timestamp_ms: u64) -> String {
+    i64::try_from(timestamp_ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map_or_else(
+            || t("files-time-unknown"),
+            |timestamp| crate::i18n::format_datetime(timestamp.with_timezone(&chrono::Local)),
+        )
 }
 
 fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) -> String {
@@ -347,6 +350,8 @@ enum FileServices {
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
+    framework_history: ui::history_mode::checked_files::FileHistorySource,
+    framework_history_binding: Option<(PathBuf, collab_types::FileRecordId)>,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
@@ -527,7 +532,7 @@ pub struct FileExplorerWidget {
     history_result: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
     history_pending_path: Option<PathBuf>,
     history_pending_success: Option<String>,
-    history_preview_result: HistoryPreviewResult,
+
     merge_preflight_result: MergePreflightResult,
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
@@ -624,11 +629,11 @@ impl FileExplorerWidget {
             );
         }
         self.show_collab_panel(CollabPanel {
+            history: None,
             title,
             summary: "Remote account details".into(),
             lines,
             action: None,
-            history: None,
         });
     }
 
@@ -838,10 +843,12 @@ impl FileExplorerWidget {
             share_result: Arc::new(std::sync::Mutex::new(None)),
             share_pending_path: None,
             trusted_humans,
+            framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
+            framework_history_binding: None,
             history_result: Arc::new(std::sync::Mutex::new(None)),
             history_pending_path: None,
             history_pending_success: None,
-            history_preview_result: Arc::new(std::sync::Mutex::new(None)),
+
             merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
             merge_preflight_pending: None,
             resource_invocation: None,
@@ -1196,7 +1203,15 @@ impl FileExplorerWidget {
             return;
         }
         if can_retry {
-            EmptyState::paint(
+            // The shared empty state lays out the action as part of its
+            // centred stack (measured title, detail and label, so the pill
+            // clears the detail line at every text scale) and returns that
+            // rect; the retained shared Button — which owns hover, focus,
+            // keyboard activation and the typed Refresh command — is then
+            // painted over it, so the geometry has one author and the
+            // behaviour keeps the production control. Hover is suppressed on
+            // the underlay because the Button draws its own.
+            let action_rect = EmptyState::paint(
                 scene,
                 transform,
                 text_renderer,
@@ -1205,13 +1220,17 @@ impl FileExplorerWidget {
                 Some(ui::icons::Icon::FolderOpen),
                 &title,
                 Some(&detail),
-                None,
+                Some(&t("files-try-again")),
                 Point::new(-1.0, -1.0),
             );
-            let button_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(rect.center().x, rect.center().y + 86.0),
-                (128.0, 36.0),
-            );
+            let button_rect = action_rect.map_or(vello::kurbo::Rect::ZERO, |r| {
+                // Never narrower than four minimum pointer targets, so a short
+                // localized label still gets a comfortable retry button; widen
+                // symmetrically so the Button still covers the underlay pill.
+                let min_w = 4.0 * f64::from(theme.tokens.metrics.min_pointer_target);
+                let w = r.width().max(min_w);
+                vello::kurbo::Rect::from_center_size(r.center(), (w, r.height()))
+            });
             self.state_retry.apply_layout_external(button_rect);
             self.state_retry
                 .draw(scene, transform, text_renderer, theme, presence);
@@ -1396,9 +1415,11 @@ impl FileExplorerWidget {
         if label.is_empty() {
             return;
         }
-        let text_size = 12.0f32;
+        // `pill_size` / `draw_pill` hand the size to a scaling renderer, so
+        // unscale the theme token once or the bubble paints at 4× at 200 %.
+        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
+        let margin = f64::from(theme.tokens.spacing.s4);
         let rect = vello::kurbo::Rect::new(
             self.rect.x1 - margin - w,
             self.rect.y1 - margin - h,
@@ -2005,6 +2026,7 @@ impl FileExplorerWidget {
                 });
                 if !safety_refusals.is_empty() {
                     self.show_collab_panel(CollabPanel {
+                        history: None,
                         title: t("files-destructive-eviction-title"),
                         summary: t_args(
                             "files-destructive-eviction-summary",
@@ -2016,7 +2038,6 @@ impl FileExplorerWidget {
                             t("files-destructive-eviction-protected"),
                         ],
                         action: Some(CollabPanelAction::DestructiveEviction(safety_refusals)),
-                        history: None,
                     });
                 }
                 self.refresh_metadata_preserving_view();
@@ -2221,6 +2242,7 @@ impl FileExplorerWidget {
                         ));
                     }
                     self.show_collab_panel(CollabPanel {
+                        history: None,
                         title: t_args("files-properties-title", &[arg("name", entry.name)]),
                         summary: if entry.record_id.is_some() {
                             t("files-properties-collab-summary")
@@ -2229,7 +2251,6 @@ impl FileExplorerWidget {
                         },
                         lines,
                         action: None,
-                        history: None,
                     });
                 }
                 true
@@ -2287,11 +2308,11 @@ impl FileExplorerWidget {
                         )
                     });
                     self.show_collab_panel(CollabPanel {
+                        history: None,
                         title: t_args("files-availability-title", &[arg("name", entry.name)]),
                         summary: residency,
                         lines: vec![policy, replicas, transfer],
                         action: None,
-                        history: None,
                     });
                 }
                 true
@@ -2535,6 +2556,7 @@ impl FileExplorerWidget {
                         lines
                     };
                     self.show_collab_panel(CollabPanel {
+                        history: None,
                         title: t_args("files-sharing-title", &[arg("name", entry.name)]),
                         summary: t_args(
                             "files-sharing-summary",
@@ -2542,139 +2564,38 @@ impl FileExplorerWidget {
                         ),
                         lines,
                         action: None,
-                        history: None,
                     });
                 }
                 true
             }
-            FileCommand::ShowHistory => {
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                if let Some(entry) = entry
-                    && let Some(history) = entry.history
-                {
-                    let mut lines = Vec::new();
-                    if history.versions_truncated {
-                        lines.push(t("files-history-older"));
-                    }
-                    for conflict in &history.conflicts {
-                        let state = match conflict.status {
-                            collab_types::ConflictStatus::Open => t("files-conflict-needs-review"),
-                            collab_types::ConflictStatus::Resolved => {
-                                conflict.resolution.as_ref().map_or_else(
-                                    || t("files-conflict-resolved"),
-                                    |resolution| {
-                                        t_args(
-                                            "files-conflict-resolved-strategy",
-                                            &[arg(
-                                                "strategy",
-                                                conflict_strategy_label(resolution.strategy),
-                                            )],
-                                        )
-                                    },
-                                )
-                            }
-                        };
-                        lines.push(t_args(
-                            "files-conflict-line",
-                            &[
-                                arg("conflict", short_uuid(conflict.id)),
-                                arg("count", fluent_count(conflict.versions.len())),
-                                arg("state", state),
-                            ],
-                        ));
-                        if conflict.status == collab_types::ConflictStatus::Open {
-                            lines.push(t("files-conflict-resolve-hint"));
-                            lines.push(t("files-conflict-unsupported-hint"));
-                        }
-                    }
-                    let current_preview = read_current_text_preview(&entry.path);
-                    self.show_collab_panel(CollabPanel {
-                        title: t_args("files-history-title", &[arg("name", entry.name)]),
-                        summary: t_args(
-                            "files-history-summary",
-                            &[
-                                arg(
-                                    "versions",
-                                    i64::try_from(history.total_versions).unwrap_or(i64::MAX),
-                                ),
-                                arg("heads", fluent_count(history.heads.len())),
-                            ],
-                        ),
-                        lines,
-                        action: None,
-                        history: Some(HistoryPanel {
-                            record_id: history.record_id,
-                            path: entry.path,
-                            versions: history.versions.into_iter().rev().collect(),
-                            heads: history.heads,
-                            selected: 0,
-                            compare: false,
-                            selected_preview: current_preview.clone(),
-                            current_preview,
-                            preview_loading: false,
-                        }),
-                    });
-                }
+            FileCommand::ShowHistory | FileCommand::ToggleHistoryCompare => {
+                self.refresh_framework_history_target();
+                self.close_collab_panel();
+                self.framework_history.open(None);
                 true
             }
             FileCommand::SelectHistoryVersion { version_id } => {
-                let mut request = None;
-                if let Some(history) = self
-                    .collab_panel
-                    .as_mut()
-                    .and_then(|panel| panel.history.as_mut())
-                    && let Some(index) = history.versions.iter().position(|version| {
-                        uuid::Uuid::parse_str(&version.id).ok() == Some(version_id.0)
-                    })
-                {
-                    history.selected = index;
-                    history.compare = false;
-                    history.selected_preview = if history.selected_is_current() {
-                        history.current_preview.clone()
-                    } else {
-                        None
-                    };
-                    history.preview_loading = history.selected_preview.is_none();
-                    if history.preview_loading {
-                        request = Some((history.path.clone(), version_id));
-                    }
-                    self.structure_dirty = true;
-                }
-                if let Some((path, version)) = request {
-                    self.request_history_preview(path, version);
-                }
-                true
-            }
-            FileCommand::ToggleHistoryCompare => {
-                if let Some(history) = self
-                    .collab_panel
-                    .as_mut()
-                    .and_then(|panel| panel.history.as_mut())
-                {
-                    history.compare = !history.compare;
-                    self.structure_dirty = true;
-                }
+                self.refresh_framework_history_target();
+                self.close_collab_panel();
+                self.framework_history.open(Some(version_id));
                 true
             }
             FileCommand::ShowInWorkspaceActivity {
                 record_id,
                 version_id,
             } => {
-                let selected = self
-                    .collab_panel
-                    .as_ref()
-                    .and_then(|panel| panel.history.as_ref())
-                    .and_then(|history| {
-                        history
-                            .versions
-                            .iter()
-                            .find(|version| version.id == version_id.0.to_string())
-                            .cloned()
-                            .map(|version| (version, history.path.clone()))
-                    });
+                let selected = self.displayed_entries().iter().find_map(|entry| {
+                    let history = entry.history.as_ref()?;
+                    if history.record_id != record_id {
+                        return None;
+                    }
+                    history
+                        .versions
+                        .iter()
+                        .find(|version| version.id == version_id.0.to_string())
+                        .cloned()
+                        .map(|version| (version, entry.path.clone()))
+                });
                 let entry = selected.map(|(version, path)| {
                     let person = collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
                     let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
@@ -2726,28 +2647,11 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::RestoreVersion { version_id } => {
-                if self.history_pending_path.is_some() {
-                    self.status = Some(t("files-history-change-pending"));
-                    return true;
-                }
-                let entry = self
-                    .selection
-                    .primary()
-                    .and_then(|index| self.displayed_entries().get(index).cloned());
-                let Some(entry) = entry.filter(|entry| entry.history.is_some()) else {
-                    self.status = Some(t("files-select-file-with-history"));
-                    return true;
-                };
-                self.history_pending_path = Some(entry.path.clone());
-                self.history_pending_success = Some(t("files-version-restored"));
-                self.status = Some(t("files-restoring-version"));
-                let result = Arc::clone(&self.history_result);
-                std::thread::spawn(move || {
-                    let outcome = crate::history_control::restore_version(&entry.path, version_id);
-                    if let Ok(mut slot) = result.lock() {
-                        *slot = Some(outcome);
-                    }
-                });
+                // This legacy menu intent now selects the immutable version in
+                // shared History. Only its reviewed confirmation can write.
+                self.refresh_framework_history_target();
+                self.close_collab_panel();
+                self.framework_history.open(Some(version_id));
                 true
             }
             FileCommand::ReviewConflictMerge {
@@ -2768,6 +2672,7 @@ impl FileExplorerWidget {
                 // before publishing, so reopening an old menu can never commit
                 // a merge whose members or base have changed.
                 self.show_collab_panel(CollabPanel {
+                    history: None,
                     title: t_args("files-merge-review-title", &[arg("name", entry.name)]),
                     summary: t("files-merge-review-checking"),
                     lines: vec![
@@ -2778,7 +2683,6 @@ impl FileExplorerWidget {
                         t("files-merge-review-checking-detail"),
                     ],
                     action: None,
-                    history: None,
                 });
                 self.request_merge_preflight(entry.path, conflict_id, version_id);
                 true
@@ -3041,6 +2945,7 @@ impl FileExplorerWidget {
                 // Hold the exact paths in the modal action so a changed
                 // selection cannot silently change what gets destroyed.
                 self.show_collab_panel(CollabPanel {
+                    history: None,
                     title: t_args(
                         "files-permanent-delete-title",
                         &[arg("count", fluent_count(paths.len()))],
@@ -3051,7 +2956,6 @@ impl FileExplorerWidget {
                     ),
                     lines: vec![t("files-permanent-delete-loss")],
                     action: Some(CollabPanelAction::PermanentDelete(paths)),
-                    history: None,
                 });
             } else {
                 // Trash implementations may choose a mount-local store or
@@ -3166,6 +3070,7 @@ impl FileExplorerWidget {
             return true;
         }
         self.show_collab_panel(CollabPanel {
+            history: None,
             title: t("files-empty-trash-title"),
             summary: t_args(
                 "files-empty-trash-summary",
@@ -3173,7 +3078,6 @@ impl FileExplorerWidget {
             ),
             lines: vec![t("files-permanent-delete-loss")],
             action: Some(CollabPanelAction::EmptyTrash),
-            history: None,
         });
         true
     }
@@ -3723,61 +3627,37 @@ impl FileExplorerWidget {
         self.structure_dirty = true;
     }
 
-    /// Deterministic visual-review fixture for the dedicated history sheet.
-    /// Production still enters through `ShowHistory` and bounded FUSE
-    /// metadata; this only avoids depending on host xattr support in shots.
+    /// Ask the owning framework host to open the selected real file history.
+    /// A standalone widget without a managed host cannot render History.
     #[doc(hidden)]
     pub fn debug_open_history_demo(&mut self) {
-        let older = crate::model::HistoryVersion {
-            id: "11111111-1111-4111-8111-111111111111".into(),
-            record_id: "launch-brief-record".into(),
-            parents: Vec::new(),
-            actor: crate::model::HistoryActor {
-                person: [1; 32],
-                device: [2; 32],
-            },
-            timestamp_ms: 1_788_300_000_000,
-            content_hash: Some([3; 32]),
-            metadata_hash: [4; 32],
-            provenance: serde_json::Value::String("Create".into()),
-        };
-        let current = crate::model::HistoryVersion {
-            id: "22222222-2222-4222-8222-222222222222".into(),
-            record_id: "launch-brief-record".into(),
-            parents: vec![older.id.clone()],
-            actor: crate::model::HistoryActor {
-                person: [5; 32],
-                device: [6; 32],
-            },
-            timestamp_ms: 1_788_386_400_000,
-            content_hash: Some([7; 32]),
-            metadata_hash: [8; 32],
-            provenance: serde_json::Value::String(String::from_iter(['E', 'd', 'i', 't'])),
-        };
-        self.show_collab_panel(CollabPanel {
-            title: t_args("files-history-title", &[arg("name", "Launch brief.md")]),
-            summary: t_args(
-                "files-history-summary",
-                &[arg("versions", 2_i64), arg("heads", 1_i64)],
-            ),
-            lines: Vec::new(),
-            action: None,
-            history: Some(HistoryPanel {
-                record_id: "launch-brief-record".into(),
-                path: self.current_path.join("Launch brief.md"),
-                versions: vec![current.clone(), older],
-                heads: vec![current.id],
-                selected: 1,
-                compare: true,
-                selected_preview: Some(
-                    "# Launch brief\n\nDraft audience: design partners\nShip: Friday\n".into(),
-                ),
-                current_preview: Some(
-                    "# Launch brief\n\nAudience: all customers\nShip: Monday\nOwner: Ada\n".into(),
-                ),
-                preview_loading: false,
-            }),
+        self.refresh_framework_history_target();
+        self.framework_history.open(None);
+    }
+
+    fn refresh_framework_history_target(&mut self) {
+        let entry = self
+            .selection
+            .primary()
+            .and_then(|index| self.displayed_entries().get(index).cloned());
+        let selected = entry.and_then(|entry| {
+            let id = entry
+                .history
+                .as_ref()
+                .and_then(|h| uuid::Uuid::parse_str(&h.record_id).ok())?;
+            Some((entry.path, collab_types::FileRecordId(id), entry.name))
         });
+        let identity = selected
+            .as_ref()
+            .map(|(path, record, _)| (path.clone(), *record));
+        if identity == self.framework_history_binding {
+            return;
+        }
+        let target = selected.and_then(|(path, record, label)| {
+            crate::framework_history::target(&path, record, label).ok()
+        });
+        self.framework_history_binding = if target.is_some() { identity } else { None };
+        self.framework_history.set_target(target);
     }
 
     fn primary_path(&self) -> Option<PathBuf> {
@@ -3957,8 +3837,8 @@ impl FileExplorerWidget {
     /// read, focuses the document if it is already open, and launches —
     /// all in one place, shared with every other surface that can open a
     /// file. Only when no host installed a route (a standalone run, off a
-    /// Tilo session) does this fall back to the desktop default handler
-    /// (`open::that`, via `CommandRunner::open_default`).
+    /// Tilo session) does this fall back to the host's default handler
+    /// (its URI opener, via `CommandRunner::open_default`).
     ///
     /// A refusal from the host is shown in the status bar naming the
     /// file; activation never silently does nothing.
@@ -4125,7 +4005,11 @@ impl FileExplorerWidget {
         let tokens = &theme.tokens;
         let dim = tokens.colors.text_dim;
         let icon_px = 40.0_f64;
-        let size = tokens.typography.scale.base;
+        // The theme token is already text-scaled and the renderer scales
+        // again, so hand it the nominal size (one scale rule, see
+        // `crate::text_layout`).
+        let text_scale = text_renderer.text_scale();
+        let size = tokens.typography.scale.base / text_scale;
         let (tw, _) = text_renderer.measure(&msg, size, None);
         let cx = rect.x0 + rect.width() / 2.0;
         let cy = rect.y0 + rect.height() / 2.0;
@@ -4140,7 +4024,12 @@ impl FileExplorerWidget {
             dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(cy, f64::from(size), size);
+        let ty = crate::text_layout::centered_text_y(
+            cy,
+            f64::from(size) * f64::from(text_scale),
+            size,
+            text_scale,
+        );
         text_renderer.draw_text(
             scene,
             &msg,
@@ -4152,17 +4041,6 @@ impl FileExplorerWidget {
     }
 
     fn collab_panel_rect(&self) -> vello::kurbo::Rect {
-        if self
-            .collab_panel
-            .as_ref()
-            .is_some_and(|panel| panel.history.is_some())
-        {
-            let width = (self.rect.width() - 32.0).clamp(280.0, 888.0);
-            let height = (self.rect.height() - 32.0).clamp(360.0, 648.0);
-            let x0 = self.rect.x0 + (self.rect.width() - width) / 2.0;
-            let y0 = self.rect.y0 + (self.rect.height() - height) / 2.0;
-            return vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height);
-        }
         let line_count = self
             .collab_panel
             .as_ref()
@@ -4196,442 +4074,11 @@ impl FileExplorerWidget {
         ))
     }
 
-    fn history_timeline_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.history.as_ref()?;
-        let panel = self.collab_panel_rect();
-        if panel.width() < 620.0 {
-            Some(vello::kurbo::Rect::new(
-                panel.x0 + 20.0,
-                panel.y0 + 78.0,
-                panel.x1 - 20.0,
-                (panel.y0 + 198.0).min(panel.y1 - 230.0),
-            ))
-        } else {
-            Some(vello::kurbo::Rect::new(
-                panel.x0 + 20.0,
-                panel.y0 + 88.0,
-                panel.x0 + panel.width() * 0.44,
-                panel.y1 - 22.0,
-            ))
-        }
-    }
-
-    fn history_version_rect(&self, index: usize) -> Option<vello::kurbo::Rect> {
-        let timeline = self.history_timeline_rect()?;
-        let y0 = timeline.y0 + index as f64 * 58.0;
-        (y0 + 52.0 <= timeline.y1)
-            .then(|| vello::kurbo::Rect::new(timeline.x0, y0, timeline.x1, y0 + 52.0))
-    }
-
-    fn history_restore_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.history.as_ref()?;
-        let panel = self.collab_panel_rect();
-        let x0 = if panel.width() < 620.0 {
-            panel.x0 + 20.0
-        } else {
-            panel.x0 + panel.width() * 0.48
-        };
-        Some(vello::kurbo::Rect::new(
-            x0,
-            panel.y1 - 54.0,
-            panel.x1 - 20.0,
-            panel.y1 - 18.0,
-        ))
-    }
-
-    fn history_compare_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.history.as_ref()?;
-        let panel = self.collab_panel_rect();
-        let x0 = if panel.width() < 620.0 {
-            panel.x0 + 20.0
-        } else {
-            panel.x0 + panel.width() * 0.48
-        };
-        Some(vello::kurbo::Rect::new(
-            x0,
-            panel.y1 - 98.0,
-            panel.x1 - 20.0,
-            panel.y1 - 62.0,
-        ))
-    }
-
-    fn history_activity_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.history.as_ref()?;
-        let panel = self.collab_panel_rect();
-        let x0 = if panel.width() < 620.0 {
-            panel.x0 + 20.0
-        } else {
-            panel.x0 + panel.width() * 0.48
-        };
-        Some(vello::kurbo::Rect::new(
-            x0,
-            panel.y1 - 142.0,
-            panel.x1 - 20.0,
-            panel.y1 - 106.0,
-        ))
-    }
-
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "history painting keeps render context, bounded rows, and shared panel geometry together"
+        reason = "modal painting keeps scene, transform, text and theme together while deriving geometry and hit targets in one pass"
     )]
-    fn draw_history_panel_content(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        panel: &CollabPanel,
-    ) {
-        use ui::ColorCompat;
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
-        let Some(history) = panel.history.as_ref() else {
-            return;
-        };
-        let (Some(timeline), Some(activity_button), Some(compare_button), Some(restore_button)) = (
-            self.history_timeline_rect(),
-            self.history_activity_rect(),
-            self.history_compare_rect(),
-            self.history_restore_rect(),
-        ) else {
-            return;
-        };
-        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let panel_rect = self.collab_panel_rect();
-        let narrow = panel_rect.width() < 620.0;
-        let divider = if narrow {
-            Rect::new(
-                timeline.x0,
-                timeline.y1 + 8.0,
-                timeline.x1,
-                timeline.y1 + 8.0,
-            )
-        } else {
-            Rect::new(
-                timeline.x1 + 10.0,
-                timeline.y0,
-                timeline.x1 + 10.0,
-                timeline.y1,
-            )
-        };
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &divider,
-        );
-        for (index, version) in history.versions.iter().enumerate() {
-            let Some(row) = self.history_version_rect(index) else {
-                break;
-            };
-            let selected = index == history.selected;
-            let shape = RoundedRect::from_rect(row, 8.0);
-            if selected {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.16),
-                    None,
-                    &shape,
-                );
-                scene.stroke(&Stroke::new(1.25), transform, accent, None, &shape);
-            }
-            // A small, deterministic avatar treatment: identity remains the
-            // certified person label; colour is not used as identity.
-            let avatar = Rect::new(row.x0 + 10.0, row.y0 + 12.0, row.x0 + 34.0, row.y0 + 36.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent.with_alpha_factor(0.72),
-                None,
-                &RoundedRect::from_rect(avatar, 12.0),
-            );
-            let person = collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
-            let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
-            let initial = person_label
-                .chars()
-                .next()
-                .unwrap_or('?')
-                .to_uppercase()
-                .to_string();
-            text_renderer.draw_text(
-                scene,
-                &initial,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((avatar.x0 + 8.0, avatar.y0 + 5.0)),
-                Some(12.0),
-            );
-            let action = t(version.provenance_key());
-            let title = if history.heads.contains(&version.id) {
-                t_args("files-history-current-version", &[arg("action", action)])
-            } else {
-                action
-            };
-            text_renderer.draw_text(
-                scene,
-                &title,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((row.x0 + 44.0, row.y0 + 8.0)),
-                Some((row.width() - 52.0) as f32),
-            );
-            let detail = t_args(
-                "files-history-timeline-detail",
-                &[
-                    arg("person", person_label),
-                    arg("time", format_timestamp(version.timestamp_ms)),
-                ],
-            );
-            text_renderer.draw_text(
-                scene,
-                &detail,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((row.x0 + 44.0, row.y0 + 29.0)),
-                Some((row.width() - 52.0) as f32),
-            );
-        }
-
-        let detail_x = if narrow {
-            panel_rect.x0 + 20.0
-        } else {
-            panel_rect.x0 + panel_rect.width() * 0.48
-        };
-        let detail_w = panel_rect.x1 - detail_x - 20.0;
-        let Some(selected) = history.selected_version() else {
-            return;
-        };
-        let person = collab_types::Ed25519PublicKey::from_bytes(selected.actor.person);
-        let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
-        let heading = if history.compare {
-            t("files-history-compare-title")
-        } else {
-            t("files-history-preview-title")
-        };
-        text_renderer.draw_text(
-            scene,
-            &heading,
-            theme.tokens.typography.scale.base,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    detail_x,
-                    if narrow {
-                        timeline.y1 + 18.0
-                    } else {
-                        panel_rect.y0 + 92.0
-                    },
-                )),
-            Some(detail_w as f32),
-        );
-        let mut facts = vec![
-            t_args(
-                "files-history-selected-action",
-                &[arg("action", t(selected.provenance_key()))],
-            ),
-            t_args("files-history-selected-by", &[arg("person", person_label)]),
-            t_args(
-                "files-history-selected-at",
-                &[arg("time", format_timestamp(selected.timestamp_ms))],
-            ),
-            t_args(
-                "files-history-version-id",
-                &[arg(
-                    "id",
-                    short_uuid(
-                        uuid::Uuid::parse_str(&selected.id).unwrap_or_else(|_| uuid::Uuid::nil()),
-                    ),
-                )],
-            ),
-            t_args(
-                "files-history-content-identity",
-                &[arg(
-                    "hash",
-                    selected.content_hash.map_or_else(
-                        || t("files-history-no-content"),
-                        |hash| hex_prefix(&hash, 8),
-                    ),
-                )],
-            ),
-            t_args(
-                "files-history-metadata-identity",
-                &[arg("hash", hex_prefix(&selected.metadata_hash, 8))],
-            ),
-        ];
-        if history.compare
-            && let Some(current) = history.current_version()
-        {
-            let content_same = current.content_hash == selected.content_hash;
-            let metadata_same = current.metadata_hash == selected.metadata_hash;
-            facts.push(t_args(
-                "files-history-compare-content",
-                &[arg(
-                    "state",
-                    if content_same {
-                        t("files-history-same")
-                    } else {
-                        t("files-history-different")
-                    },
-                )],
-            ));
-            facts.push(t_args(
-                "files-history-compare-metadata",
-                &[arg(
-                    "state",
-                    if metadata_same {
-                        t("files-history-same")
-                    } else {
-                        t("files-history-different")
-                    },
-                )],
-            ));
-        }
-        let mut y = if narrow {
-            timeline.y1 + 46.0
-        } else {
-            panel_rect.y0 + 124.0
-        };
-        let fact_limit = if narrow { 2 } else { facts.len() };
-        for fact in facts.into_iter().take(fact_limit) {
-            text_renderer.draw_text(
-                scene,
-                &fact,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((detail_x, y)),
-                Some(detail_w as f32),
-            );
-            y += 24.0;
-        }
-        if history.compare {
-            let diff_bottom = self
-                .history_activity_rect()
-                .map_or(panel_rect.y1 - 154.0, |rect| rect.y0 - 10.0);
-            if y + 22.0 < diff_bottom {
-                text_renderer.draw_text(
-                    scene,
-                    if history.preview_loading {
-                        "Loading immutable preview…"
-                    } else {
-                        "Content diff"
-                    },
-                    theme.tokens.typography.scale.sm,
-                    theme.tokens.colors.text_primary,
-                    transform * Affine::translate((detail_x, y + 2.0)),
-                    Some(detail_w as f32),
-                );
-                y += 24.0;
-                if let (Some(before), Some(after)) =
-                    (&history.selected_preview, &history.current_preview)
-                {
-                    for (kind, line) in text_diff_lines(before, after)
-                        .into_iter()
-                        .filter(|(kind, _)| *kind != ' ')
-                    {
-                        if y + 18.0 > diff_bottom {
-                            break;
-                        }
-                        let color = if kind == '+' {
-                            theme.tokens.colors.semantic.success
-                        } else {
-                            theme.tokens.colors.semantic.danger
-                        };
-                        text_renderer.draw_text(
-                            scene,
-                            &format!("{kind} {line}"),
-                            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-                            color,
-                            transform * Affine::translate((detail_x + 4.0, y)),
-                            Some((detail_w - 4.0) as f32),
-                        );
-                        y += 18.0;
-                    }
-                } else if !history.preview_loading {
-                    text_renderer.draw_text(
-                        scene,
-                        "Content preview is unavailable for this binary or remote-only version.",
-                        (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-                        theme.tokens.colors.text_dim,
-                        transform * Affine::translate((detail_x, y)),
-                        Some(detail_w as f32),
-                    );
-                }
-            }
-        }
-        let draw_button =
-            |rect: vello::kurbo::Rect,
-             label: String,
-             emphasized: bool,
-             scene: &mut vello::Scene,
-             text_renderer: &mut ui::text_render::TextRenderer| {
-                let color = if emphasized {
-                    accent
-                } else {
-                    theme.tokens.colors.text_dim
-                };
-                let shape = RoundedRect::from_rect(rect, 8.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color.with_alpha_factor(if emphasized { 0.16 } else { 0.08 }),
-                    None,
-                    &shape,
-                );
-                scene.stroke(&Stroke::new(1.0), transform, color, None, &shape);
-                let (width, _) = text_renderer.measure(
-                    &label,
-                    theme.tokens.typography.scale.sm,
-                    Some((rect.width() - 16.0) as f32),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    &label,
-                    theme.tokens.typography.scale.sm,
-                    color,
-                    transform
-                        * Affine::translate((
-                            rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                            rect.y0 + 9.0,
-                        )),
-                    Some((rect.width() - 16.0) as f32),
-                );
-            };
-        draw_button(
-            activity_button,
-            t("files-history-show-activity"),
-            false,
-            scene,
-            text_renderer,
-        );
-        draw_button(
-            compare_button,
-            if history.compare {
-                t("files-history-hide-compare")
-            } else {
-                t("files-history-compare")
-            },
-            false,
-            scene,
-            text_renderer,
-        );
-        let restore_label = if history.selected_is_current() {
-            t("files-history-current-version-label")
-        } else {
-            t("files-history-restore-selected")
-        };
-        draw_button(
-            restore_button,
-            restore_label,
-            !history.selected_is_current(),
-            scene,
-            text_renderer,
-        );
-    }
-
     // Drawing the modal as one routine keeps geometry, focus, and action hit
     // targets derived from the same bounded panel state.
     #[allow(
@@ -4659,20 +4106,26 @@ impl FileExplorerWidget {
             &self.rect,
         );
         let rect = self.collab_panel_rect();
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the sheet is the same material as every
+        // other floating Panel — `panel_ground` under the derived Panel
+        // border, with its elevation — not a raised slot stroked with a
+        // declared border that vanishes on the dark preset.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+        let shape = RoundedRect::from_rect(rect, radius);
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            ui::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(rect, radius),
         );
         let x = rect.x0 + 24.0;
         text_renderer.draw_text(
@@ -4691,24 +4144,7 @@ impl FileExplorerWidget {
             transform * Affine::translate((x, rect.y0 + 53.0)),
             Some((rect.width() - 48.0) as f32),
         );
-        if panel.history.is_some() {
-            self.draw_history_panel_content(scene, transform, text_renderer, theme, panel);
-            let close_rect = Rect::new(
-                rect.x1 - 42.0,
-                rect.y0 + 12.0,
-                rect.x1 - 14.0,
-                rect.y0 + 40.0,
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                close_rect,
-                ui::icons::Icon::X,
-                theme.tokens.colors.text_dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            return;
-        }
+
         let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let mut y = rect.y0 + 88.0;
         for line in panel.lines.iter().take(14) {
@@ -4735,46 +4171,20 @@ impl FileExplorerWidget {
         if let Some(action_rect) = self.collab_panel_action_rect()
             && let Some(label) = self.collab_panel_action_label()
         {
-            let action_color = match panel.action.as_ref() {
+            // The shared button face (HIG §8): the outlined destructive style
+            // for the irreversible actions, the primary for a safe merge.
+            let face = ui::widget::ButtonFace::new(action_rect, &label)
+                .text_size(theme.tokens.typography.scale.sm)
+                .wrap_label();
+            let face = match panel.action.as_ref() {
                 Some(
                     CollabPanelAction::ApplySafeMerge { .. }
                     | CollabPanelAction::ChooseNearbyDestination { .. }
                     | CollabPanelAction::RetryNearby { .. },
-                ) => accent,
-                _ => theme.tokens.colors.semantic.danger,
+                ) => face.primary(),
+                _ => face.danger_outline(),
             };
-            let action_shape = RoundedRect::from_rect(action_rect, 8.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                action_color.with_alpha_factor(0.14),
-                None,
-                &action_shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                action_color,
-                None,
-                &action_shape,
-            );
-            let (label_width, _) = text_renderer.measure(
-                &label,
-                theme.tokens.typography.scale.sm,
-                Some((action_rect.width() - 24.0) as f32),
-            );
-            text_renderer.draw_text(
-                scene,
-                &label,
-                theme.tokens.typography.scale.sm,
-                action_color,
-                transform
-                    * Affine::translate((
-                        action_rect.x0 + (action_rect.width() - f64::from(label_width)) / 2.0,
-                        action_rect.y0 + 9.0,
-                    )),
-                Some((action_rect.width() - 24.0) as f32),
-            );
+            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
         }
         let close_rect = Rect::new(
             rect.x1 - 42.0,
@@ -4843,9 +4253,16 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
+        // A live drop target is state the user did not choose and must notice
+        // (HIG §9.4), so the accent is the right ink here. The face matches
+        // the row highlight's insets so the two never disagree by a pixel.
         let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let inset = Rect::new(rect.x0 + 6.0, rect.y0 + 2.0, rect.x1 - 6.0, rect.y1 - 2.0);
-        let shape = RoundedRect::from_rect(inset, 8.0);
+        let (ix, iy) = (
+            f64::from(theme.tokens.spacing.s2),
+            f64::from(theme.tokens.spacing.s1) / 2.0,
+        );
+        let inset = Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
+        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4866,8 +4283,7 @@ impl FileExplorerWidget {
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
+        use vello::kurbo::{Affine, Rect};
         let Some(path) = &self.pin_drag else { return };
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
@@ -4880,28 +4296,27 @@ impl FileExplorerWidget {
             )
         };
         let tokens = &theme.tokens;
-        let size = tokens.typography.scale.base;
-        let (tw, _) = text_renderer.measure(&label, size, None);
-        let (pad, icon, gap, h) = (10.0_f64, 16.0_f64, 8.0_f64, 30.0_f64);
+        let text_scale = text_renderer.text_scale();
+        let size = tokens.typography.scale.base / text_scale;
+        let (tw, th) = text_renderer.measure(&label, size, None);
+        let (pad, icon, gap) = (10.0_f64, 16.0_f64, 8.0_f64);
+        // The pill grows with its measured label so enlarged text stays inside it.
+        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s1)).max(30.0);
         let w = pad + icon + gap + f64::from(tw) + pad;
         // Offset from the cursor so the ghost sits beside, not under, the pointer.
         let x0 = self.last_cursor.x + 14.0;
         let y0 = self.last_cursor.y + 6.0;
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        let shape = RoundedRect::from_rect(rect, f64::from(tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        // The ghost is genuinely off the surface (HIG §9.3): it casts the
+        // Panel shadow and its edge derives from its own raised face.
+        let radius = f64::from(tokens.radii.md);
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
+        ui::surface::card(
+            scene,
             transform,
+            rect,
+            radius,
             tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &shape,
         );
         let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let iy = y0 + (h - icon) / 2.0;
@@ -4913,7 +4328,7 @@ impl FileExplorerWidget {
             accent,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(y0, h, size);
+        let ty = crate::text_layout::centered_text_y(y0, h, size, text_scale);
         text_renderer.draw_text(
             scene,
             &label,
@@ -5048,7 +4463,13 @@ impl CommandRunner for SystemRunner {
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
-        open::that(path)
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the desktop opener takes UTF-8 paths",
+            )
+        })?;
+        ui::host::current().opener.open(path)
     }
 }
 
@@ -6344,11 +5765,11 @@ impl FileExplorerWidget {
                 };
                 self.status = Some(format!("Loaded {} remote item(s)", entries.len()));
                 self.show_collab_panel(CollabPanel {
+                    history: None,
                     title: format!("{label} files"),
                     summary: "Remote folder".into(),
                     lines,
                     action: None,
-                    history: None,
                 });
             }
             Ok(RemoteDavResult::Downloaded(path)) => {
@@ -6366,45 +5787,6 @@ impl FileExplorerWidget {
             self.resource_result = lifecycle;
         }
         true
-    }
-
-    fn request_history_preview(&self, path: PathBuf, version: collab_types::FileVersionId) {
-        let result = Arc::clone(&self.history_preview_result);
-        std::thread::spawn(move || {
-            let preview = crate::model::read_history_text_preview(&path, version);
-            *result
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((version.0.to_string(), preview));
-        });
-    }
-
-    fn poll_history_preview(&mut self) -> bool {
-        let result = self
-            .history_preview_result
-            .lock()
-            .ok()
-            .and_then(|mut result| result.take());
-        let Some((version, preview)) = result else {
-            return false;
-        };
-        let Some(history) = self
-            .collab_panel
-            .as_mut()
-            .and_then(|panel| panel.history.as_mut())
-        else {
-            return false;
-        };
-        if history
-            .selected_version()
-            .is_some_and(|selected| selected.id == version)
-        {
-            history.selected_preview = preview;
-            history.preview_loading = false;
-            self.structure_dirty = true;
-            return true;
-        }
-        false
     }
 
     fn request_merge_preflight(
@@ -6474,7 +5856,7 @@ impl FileExplorerWidget {
     }
 
     fn poll_history_result(&mut self) -> bool {
-        let preview_changed = self.poll_history_preview() || self.poll_merge_preflight();
+        let preview_changed = self.poll_merge_preflight();
         let result = self
             .history_result
             .lock()
@@ -7707,6 +7089,47 @@ impl FileExplorerWidget {
     }
 }
 
+#[path = "native_observer.rs"]
+mod native_observer;
+
+impl FileExplorerWidget {
+    fn history_registration_impl(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        ui::history_mode::HistoryRegistration::new(
+            &crate::framework_history::HISTORY,
+            vec![ui::history_mode::HistorySourceRegistration::CheckedFiles {
+                scope: "selected-file",
+                source: self.framework_history.clone(),
+            }],
+        )
+        .map(Some)
+    }
+
+    fn has_action_control_bindings_impl(&self) -> bool {
+        // Own accessibility actions are semantic; preserve the same modal child
+        // exposure as the complete binding inventory.
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = child.has_action_control_bindings();
+            }
+        });
+        found
+    }
+
+    fn native_input_snapshot_impl(
+        &self,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<serde_json::Value> {
+        Some(native_observer::snapshot(self))
+    }
+}
+
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.nearby_send.poll_if_due(Instant::now());
@@ -7808,6 +7231,27 @@ impl Collaborative for FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        self.history_registration_impl()
+    }
+
+    fn has_action_control_bindings(&self) -> bool {
+        self.has_action_control_bindings_impl()
+    }
+
+    fn native_input_snapshot(
+        &self,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<serde_json::Value> {
+        self.native_input_snapshot_impl(doc, path)
+    }
+
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         Some(self)
     }
@@ -8907,6 +8351,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        self.refresh_framework_history_target();
         self.refresh_metadata_if_due(Instant::now());
         // One bounded catalogue page per idle/sync turn. The palette only
         // reads its retained SearchCatalog; it never performs mount I/O.
@@ -8947,6 +8392,10 @@ impl Widget for FileExplorerWidget {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .chain(self.toolbar.next_wake_deadline())
+            .min()
     }
 
     fn build_layout(
@@ -9234,121 +8683,12 @@ impl Widget for FileExplorerWidget {
         }
         if self.collab_panel.is_some() {
             use winit::keyboard::{Key, NamedKey};
-            let history_command = match event {
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state == ElementState::Pressed
-                        && matches!(
-                            event.logical_key,
-                            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-                        ) =>
-                {
-                    let down = matches!(event.logical_key, Key::Named(NamedKey::ArrowDown));
-                    self.collab_panel
-                        .as_ref()
-                        .and_then(|panel| panel.history.as_ref())
-                        .and_then(|history| {
-                            let next = if down {
-                                (history.selected + 1).min(history.versions.len().saturating_sub(1))
-                            } else {
-                                history.selected.saturating_sub(1)
-                            };
-                            history
-                                .versions
-                                .get(next)
-                                .and_then(|version| uuid::Uuid::parse_str(&version.id).ok())
-                                .map(|id| FileCommand::SelectHistoryVersion {
-                                    version_id: collab_types::FileVersionId(id),
-                                })
-                        })
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state == ElementState::Pressed
-                        && matches!(event.logical_key, Key::Character(ref value) if value.eq_ignore_ascii_case("c")) =>
-                {
-                    self.collab_panel
-                        .as_ref()
-                        .and_then(|panel| panel.history.as_ref())
-                        .map(|_| FileCommand::ToggleHistoryCompare)
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    let history = self
-                        .collab_panel
-                        .as_ref()
-                        .and_then(|panel| panel.history.as_ref());
-                    history.and_then(|history| {
-                        for (index, version) in history.versions.iter().enumerate() {
-                            if self
-                                .history_version_rect(index)
-                                .is_some_and(|rect| rect.contains(self.last_cursor))
-                            {
-                                return uuid::Uuid::parse_str(&version.id).ok().map(|id| {
-                                    FileCommand::SelectHistoryVersion {
-                                        version_id: collab_types::FileVersionId(id),
-                                    }
-                                });
-                            }
-                        }
-                        if self
-                            .history_compare_rect()
-                            .is_some_and(|rect| rect.contains(self.last_cursor))
-                        {
-                            return Some(FileCommand::ToggleHistoryCompare);
-                        }
-                        let selected = history.selected_version()?;
-                        let version_id =
-                            collab_types::FileVersionId(uuid::Uuid::parse_str(&selected.id).ok()?);
-                        if self
-                            .history_restore_rect()
-                            .is_some_and(|rect| rect.contains(self.last_cursor))
-                            && !history.selected_is_current()
-                        {
-                            return Some(FileCommand::RestoreVersion { version_id });
-                        }
-                        if self
-                            .history_activity_rect()
-                            .is_some_and(|rect| rect.contains(self.last_cursor))
-                        {
-                            return Some(FileCommand::ShowInWorkspaceActivity {
-                                record_id: history.record_id.clone(),
-                                version_id,
-                            });
-                        }
-                        None
-                    })
-                }
-                _ => None,
-            };
-            if let Some(command) = history_command {
-                self.apply_command(command);
-                *handled = true;
-                self.structure_dirty = true;
-                return;
-            }
             let activate = match event {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
                         && event.logical_key == Key::Named(NamedKey::Enter) =>
                 {
-                    if let Some(history) = self
-                        .collab_panel
-                        .as_ref()
-                        .and_then(|panel| panel.history.as_ref())
-                    {
-                        history.selected_version().and_then(|version| {
-                            (!history.selected_is_current())
-                                .then(|| uuid::Uuid::parse_str(&version.id).ok())
-                                .flatten()
-                                .map(|id| FileCommand::RestoreVersion {
-                                    version_id: collab_types::FileVersionId(id),
-                                })
-                        })
-                    } else {
-                        self.collab_panel_action_command()
-                    }
+                    self.collab_panel_action_command()
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Released,
@@ -9552,71 +8892,7 @@ impl Widget for FileExplorerWidget {
             children
                 .push(AccessNode::new(Role::Heading { level: 2 }).with_name(panel.title.clone()));
             children.push(AccessNode::new(Role::Paragraph).with_name(panel.summary.clone()));
-            if let Some(history) = &panel.history {
-                children.push(
-                    AccessNode::new(Role::List)
-                        .with_name(t("files-history-timeline-a11y"))
-                        .with_children(
-                            history
-                                .versions
-                                .iter()
-                                .enumerate()
-                                .map(|(index, version)| {
-                                    let person = collab_types::Ed25519PublicKey::from_bytes(
-                                        version.actor.person,
-                                    );
-                                    let label = t_args(
-                                        "files-history-timeline-a11y-item",
-                                        &[
-                                            arg("action", t(version.provenance_key())),
-                                            arg(
-                                                "person",
-                                                self.trusted_humans
-                                                    .display_name_or_fingerprint(&person),
-                                            ),
-                                            arg("time", format_timestamp(version.timestamp_ms)),
-                                        ],
-                                    );
-                                    AccessNode::new(Role::ListItem)
-                                        .with_action_target(format!(
-                                            "files-history-version:{}",
-                                            version.id
-                                        ))
-                                        .with_name(label)
-                                        .with_state(AccessState {
-                                            focusable: true,
-                                            focused: index == history.selected,
-                                            selected: index == history.selected,
-                                            ..Default::default()
-                                        })
-                                })
-                                .collect(),
-                        ),
-                );
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_action_target("files-history-show-activity")
-                        .with_name(t("files-history-show-activity")),
-                );
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_action_target("files-history-compare")
-                        .with_name(if history.compare {
-                            t("files-history-hide-compare")
-                        } else {
-                            t("files-history-compare")
-                        }),
-                );
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_action_target("files-history-restore")
-                        .with_name(if history.selected_is_current() {
-                            t("files-history-current-version-label")
-                        } else {
-                            t("files-history-restore-selected")
-                        }),
-                );
-            }
+
             children.extend(
                 panel
                     .lines
@@ -9722,33 +8998,7 @@ impl Widget for FileExplorerWidget {
         if !matches!(action, Action::Activate) {
             return false;
         }
-        let Some(history) = self
-            .collab_panel
-            .as_ref()
-            .and_then(|panel| panel.history.as_ref())
-        else {
-            return false;
-        };
-        let Some(version) = history.selected_version() else {
-            return false;
-        };
-        let Ok(version_id) = uuid::Uuid::parse_str(&version.id) else {
-            return false;
-        };
-        let command = match target {
-            "files-history-show-activity" => FileCommand::ShowInWorkspaceActivity {
-                record_id: history.record_id.clone(),
-                version_id: collab_types::FileVersionId(version_id),
-            },
-            "files-history-compare" => FileCommand::ToggleHistoryCompare,
-            "files-history-restore" if !history.selected_is_current() => {
-                FileCommand::RestoreVersion {
-                    version_id: collab_types::FileVersionId(version_id),
-                }
-            }
-            _ => return false,
-        };
-        self.apply_command(command)
+        false
     }
 }
 
@@ -9774,3 +9024,7 @@ impl AppWidget for FileExplorerWidget {
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "framework_history_tests.rs"]
+mod framework_history_tests;

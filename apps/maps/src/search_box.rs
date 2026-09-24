@@ -242,12 +242,21 @@ impl SearchBox {
         self.targets.clear();
         self.targets.push((rect, SearchHit::Field));
         let colors = &theme.tokens.colors;
-        let border = if self.focused {
-            theme.border_focus
+        // Rest edge derived from the field's own surface; focus is the
+        // toolkit's 2 px `border_focus` ring, like every text field.
+        if self.focused {
+            draw::card_ring(
+                scene,
+                transform,
+                rect,
+                12.0,
+                colors.surfaces.raised,
+                theme.border_focus,
+                2.0,
+            );
         } else {
-            colors.border_standard
-        };
-        draw::card(scene, transform, rect, 12.0, colors.surfaces.raised, border);
+            draw::card(scene, transform, rect, 12.0, colors.surfaces.raised);
+        }
         let glyph = Point::new(rect.x0 + 22.0, rect.center().y);
         draw::stroke_circle(
             scene,
@@ -319,34 +328,37 @@ impl SearchBox {
             return;
         }
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
         let x = overlay.rect.x0;
         let w = overlay.rect.width();
-        let row_h = 46.0;
-        let pad = 6.0;
+        // Rows pitch at the authored 46 px with an `s1` between neighbouring
+        // hit rects; the card sits an `s2` under the field with an `s2` pad.
+        let row_pitch = 46.0;
+        let row_gap = f64::from(sp.s1);
+        let pad = f64::from(sp.s2);
         let n = self.results.len().min(MAX_RESULTS);
-        let top = overlay.rect.y1 + 6.0;
-        let card = Rect::new(x, top, x + w, top + pad * 2.0 + n as f64 * row_h);
-        draw::card(
-            scene,
-            transform,
-            card,
-            12.0,
-            c.surfaces.raised,
-            c.border_standard,
+        let top = overlay.rect.y1 + f64::from(sp.s2);
+        let card = Rect::new(
+            x,
+            top,
+            x + w,
+            top + pad * 2.0 + n as f64 * row_pitch - row_gap,
         );
+        draw::card(scene, transform, card, 12.0, c.surfaces.raised);
         self.targets.push((card, SearchHit::Consume));
 
+        // Name and address stack on their measured lines, the block centred
+        // on the row like the marker beside it; the distance sits on the
+        // name line's centre.
+        let scale = text_renderer.text_scale();
+        let name_h = ui::text_metrics::line_height_px(13.0, scale);
+        let sub_h = ui::text_metrics::line_height_px(11.0, scale);
         let mut y = top + pad;
         for (index, place) in self.results.iter().enumerate().take(n) {
-            let r = Rect::new(x + pad, y, x + w - pad, y + row_h - 2.0);
+            let r = Rect::new(x + pad, y, x + w - pad, y + row_pitch - row_gap);
+            let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
             if overlay.selected_id == Some(place.id.as_str()) {
-                draw::fill_rrect(
-                    scene,
-                    transform,
-                    r,
-                    8.0,
-                    draw::alpha(theme.accent_primary, 0.12),
-                );
+                draw::selected_row(scene, transform, r, 8.0, theme);
             }
             // Category remains explicit in each row's text. A different
             // saturated hue for every result makes a short ordered list read
@@ -375,7 +387,7 @@ impl SearchBox {
                 transform,
                 &place.name,
                 text_x,
-                r.y0 + 6.0,
+                name_y,
                 13.0,
                 theme.text_primary,
                 r.x1 - text_x - distance_w,
@@ -386,7 +398,7 @@ impl SearchBox {
                 transform,
                 &place.address,
                 text_x,
-                r.y0 + 24.0,
+                name_y + name_h,
                 11.0,
                 theme.text_dim,
                 r.x1 - text_x - distance_w,
@@ -396,13 +408,13 @@ impl SearchBox {
                 text_renderer,
                 transform,
                 &distance,
-                r.x1 - 8.0,
-                r.y0 + 8.0,
+                r.x1 - pad,
+                name_y + (name_h - sub_h) / 2.0,
                 11.0,
                 theme.accent_primary,
             );
             self.targets.push((r, SearchHit::Result(index)));
-            y += row_h;
+            y += row_pitch;
         }
     }
 }

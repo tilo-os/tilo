@@ -237,3 +237,22 @@ mod tests {
         assert_eq!(MergeDoc::session(&doc).as_deref(), Some("config.toml"));
     }
 }
+
+/// Exact authored values used solely to invalidate unsaved external input context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuthoredSnapshot {
+    merged: Option<String>,
+    resolutions: Option<Vec<(usize, String)>>,
+    session: Option<String>,
+}
+pub(crate) fn authored_snapshot(doc: &AutoCommit) -> AuthoredSnapshot {
+    AuthoredSnapshot {
+        merged: MergeDoc::has_merged(doc).then(|| MergeDoc::merged_text(doc)),
+        resolutions: doc
+            .get(ROOT, "resolutions")
+            .ok()
+            .flatten()
+            .map(|_| MergeDoc::resolutions(doc)),
+        session: MergeDoc::session(doc),
+    }
+}

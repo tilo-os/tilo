@@ -15,9 +15,9 @@
     reason = "floating-window animation and geometry operate on bounded screen coordinates"
 )]
 
+use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -27,12 +27,20 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::Metrics;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-pub const TITLE_BAR_HEIGHT: f64 = 38.0;
+/// The unscaled title-bar height: a floating window's title bar is a Bar
+/// (HIG §9.1/§9.6), so it takes `metrics.bar_height` — the same 40 px the
+/// top bar, a toolbar and the shared `Button` use. Live geometry reads the
+/// `ui_scale`d token from the theme the window was laid out with
+/// ([`FloatingWindow::title_bar_height`]); this constant is for callers that
+/// need the reference value in a `const` context.
+pub const TITLE_BAR_HEIGHT: f64 = Metrics::BASE.bar_height as f64;
 pub const RESIZE_GRIP: f64 = 8.0;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
@@ -171,7 +179,7 @@ impl<C: Widget> FloatingWindow<C> {
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         if open && !self.open {
-            self.opened_at = Some(Instant::now());
+            self.opened_at = Some(crate::time::now());
             self.reset_overlay_chrome_presence();
         }
         self.open = open;
@@ -185,7 +193,7 @@ impl<C: Widget> FloatingWindow<C> {
     /// Non-builder form of [`Self::open`].
     pub fn set_open(&mut self, open: bool) {
         if open && !self.open {
-            self.opened_at = Some(Instant::now());
+            self.opened_at = Some(crate::time::now());
             self.reset_overlay_chrome_presence();
         }
         self.open = open;
@@ -350,7 +358,7 @@ impl<C: Widget> FloatingWindow<C> {
     pub fn update_pointer_presence(&mut self, point: Point) {
         self.set_overlay_chrome_hovered(
             self.rect.contains(point) || self.drag.is_some(),
-            Instant::now(),
+            crate::time::now(),
         );
     }
 
@@ -390,13 +398,20 @@ impl<C: Widget> FloatingWindow<C> {
         self.clamp_into_bounds();
     }
 
+    /// Height of the title bar (or, with `overlay_chrome`, of the invisible
+    /// drag band along the top edge): `metrics.bar_height` from the theme of
+    /// the latest layout, so it follows `ui_scale` like every other bar.
+    pub fn title_bar_height(&self) -> f64 {
+        f64::from(self.layout_theme.tokens.metrics.bar_height)
+    }
+
     fn content_area(&self) -> Rect {
         if self.overlay_chrome {
             return self.rect;
         }
         Rect::new(
             self.rect.x0,
-            self.rect.y0 + TITLE_BAR_HEIGHT,
+            self.rect.y0 + self.title_bar_height(),
             self.rect.x1,
             self.rect.y1,
         )
@@ -440,7 +455,7 @@ impl<C: Widget> FloatingWindow<C> {
             (_, true, true) => Some(Edge::BottomRight),
             (true, _, true) => Some(Edge::BottomLeft),
             (_, true, _) => Some(Edge::Right),
-            (true, _, _) if pt.y > r.y0 + TITLE_BAR_HEIGHT => Some(Edge::Left),
+            (true, _, _) if pt.y > r.y0 + self.title_bar_height() => Some(Edge::Left),
             (_, _, true) => Some(Edge::Bottom),
             _ => None,
         }
@@ -451,16 +466,23 @@ impl<C: Widget> FloatingWindow<C> {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + TITLE_BAR_HEIGHT,
+            self.rect.y0 + self.title_bar_height(),
         )
     }
 
+    /// The close control: a bar control (`metrics.bar_control_height`
+    /// square) centred in the title bar, inset from the trailing edge by the
+    /// same margin it has above and below — so the bar and its control scale
+    /// together instead of the control drifting inside a taller bar.
     fn close_rect(&self) -> Rect {
+        let bar = self.title_bar_height();
+        let size = f64::from(self.layout_theme.tokens.metrics.bar_control_height).min(bar);
+        let inset = ((bar - size) / 2.0).max(0.0);
         Rect::new(
-            self.rect.x1 - 34.0,
-            self.rect.y0 + 5.0,
-            self.rect.x1 - 6.0,
-            self.rect.y0 + 33.0,
+            self.rect.x1 - inset - size,
+            self.rect.y0 + inset,
+            self.rect.x1 - inset,
+            self.rect.y0 + inset + size,
         )
     }
 
@@ -474,7 +496,7 @@ impl<C: Widget> FloatingWindow<C> {
         if speed > 0.25 {
             self.squish = (speed / 34.0).clamp(0.0, 1.0);
             self.squish_axis = delta;
-            self.last_motion_at = Some(Instant::now());
+            self.last_motion_at = Some(crate::time::now());
         }
         match drag {
             Drag::Move { grab } => {
@@ -537,7 +559,7 @@ impl<C: Widget> FloatingWindow<C> {
             self.squish = 0.0;
             return (transform, 1.0);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let open_t = self.opened_at.map_or(1.0, |at| {
             (now.saturating_duration_since(at).as_secs_f64() / OPEN_MOTION.as_secs_f64())
                 .clamp(0.0, 1.0)
@@ -839,25 +861,26 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
 
         let body = crate::surface::soft_outline(self.rect);
+        let material = theme.tokens.colors.surfaces.raised;
         scene.fill(
             Fill::NonZero,
             visual,
-            theme
-                .tokens
-                .colors
-                .surfaces
-                .raised
-                .with_alpha_factor(material_alpha as f32),
+            material.with_alpha_factor(material_alpha as f32),
             None,
             &body,
         );
+        // Object role (HIG §9.1): a floating window is a silhouette over the
+        // desktop, so its rim is `Colors::window_edge()` — the hairline the
+        // shell paints around every window card — fading with the material.
+        // The declared `border_standard` sat within rounding distance of
+        // `raised` on the dark preset and read as no edge at all.
         scene.stroke(
             &Stroke::new(1.0),
             visual,
             theme
                 .tokens
                 .colors
-                .border_standard
+                .window_edge()
                 .with_alpha_factor(material_alpha as f32),
             None,
             &body,
@@ -914,7 +937,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             // landing chrome regardless of slow software readback time.
             1.0
         } else {
-            self.overlay_chrome_alpha_at(Instant::now(), theme.reduce_motion)
+            self.overlay_chrome_alpha_at(crate::time::now(), theme.reduce_motion)
         };
         let chrome_alpha = landing_alpha * presence_alpha;
         if chrome_alpha > 0.001 {
@@ -936,12 +959,12 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     .chars()
                     .fold(20.0, |width, _| width + glyph_width))
                 .clamp(72.0, (self.rect.width() - 86.0).max(72.0));
-                let title_chip = Rect::new(
-                    self.rect.x0 + 8.0,
-                    self.rect.y0 + 7.0,
-                    self.rect.x0 + 8.0 + estimated_title_width,
-                    self.rect.y0 + 31.0,
-                );
+                // Same vertical band as the close chip, so the two overlay
+                // controls sit on one line inside the drag band.
+                let band = self.close_rect().inset(-1.0);
+                let chip_x0 = self.rect.x0 + f64::from(theme.tokens.spacing.s2);
+                let title_chip =
+                    Rect::new(chip_x0, band.y0, chip_x0 + estimated_title_width, band.y1);
                 scene.fill(
                     Fill::NonZero,
                     visual,
@@ -953,32 +976,25 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         },
                     ),
                     None,
-                    &RoundedRect::from_rect(title_chip, 12.0),
+                    &RoundedRect::from_rect(title_chip, title_chip.height() / 2.0),
                 );
-                let close_chip = Rect::new(
-                    self.rect.x1 - 34.0,
-                    self.rect.y0 + 7.0,
-                    self.rect.x1 - 8.0,
-                    self.rect.y0 + 33.0,
-                );
+                // The painted chip is the click target (`close_rect`) less a
+                // hairline, so what is tinted on hover is what a press hits
+                // at every `ui_scale`.
+                let close_chip = self.close_rect().inset(-1.0);
                 scene.fill(
                     Fill::NonZero,
                     visual,
-                    if close_chip.contains(self.last_cursor) {
+                    if self.close_rect().contains(self.last_cursor) {
                         theme.tokens.colors.semantic.danger.with_alpha_factor(0.28)
                     } else {
                         theme.tokens.colors.surfaces.base.with_alpha_factor(0.86)
                     },
                     None,
-                    &RoundedRect::from_rect(close_chip, 13.0),
+                    &RoundedRect::from_rect(close_chip, close_chip.height() / 2.0),
                 );
             } else {
-                let title_band = Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + TITLE_BAR_HEIGHT,
-                );
+                let title_band = self.title_bar_rect();
                 scene.fill(
                     Fill::NonZero,
                     visual,
@@ -993,18 +1009,23 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.rect,
                 theme.tokens.colors.text_dim,
             );
-            let title_size = if self.overlay_chrome {
-                theme.tokens.typography.scale.sm
-            } else {
-                theme.tokens.typography.scale.base
-            };
+            let title_size = renderer_type_size(
+                text_renderer,
+                if self.overlay_chrome {
+                    theme.tokens.typography.scale.sm
+                } else {
+                    theme.tokens.typography.scale.base
+                },
+            );
             let tx = self.rect.x0
                 + if self.overlay_chrome {
                     18.0
                 } else {
                     f64::from(theme.tokens.spacing.s4)
                 };
-            let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
+            // Centre on the measured line, not the font size.
+            let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+            let ty = self.rect.y0 + (self.title_bar_height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &self.title,
@@ -1114,7 +1135,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.closable
                     && self.close_rect().contains(pt)
                     && (!self.overlay_chrome
-                        || self.overlay_chrome_alpha_at(Instant::now(), false) > 0.2)
+                        || self.overlay_chrome_alpha_at(crate::time::now(), false) > 0.2)
                 {
                     self.set_open(false);
                     *handled = true;
@@ -1437,6 +1458,63 @@ mod tests {
         assert!(
             window.title_bar_rect().contains(Point::new(1100.0, 550.0)),
             "edge-to-edge content must retain a generous invisible drag target"
+        );
+    }
+
+    /// The title bar is a Bar: `metrics.bar_height` from the layout theme,
+    /// so it follows `ui_scale`; the close control is a bar control centred
+    /// in it, inset from the trailing edge by the same margin it has above.
+    #[test]
+    fn title_bar_is_the_bar_height_token_and_scales_with_ui_scale() {
+        let (w, _e) = laid_out(true);
+        let base = Theme::dark();
+        assert_eq!(w.title_bar_height(), TITLE_BAR_HEIGHT);
+        assert_eq!(
+            w.title_bar_height(),
+            f64::from(base.tokens.metrics.bar_height)
+        );
+        let bar = w.title_bar_rect();
+        let close = w.close_rect();
+        assert!(
+            (close.center().y - bar.center().y).abs() < 1e-6,
+            "{close:?} in {bar:?}"
+        );
+        assert_eq!(
+            close.width(),
+            f64::from(base.tokens.metrics.bar_control_height)
+        );
+        assert!(
+            ((bar.x1 - close.x1) - (close.y0 - bar.y0)).abs() < 1e-6,
+            "trailing inset equals the vertical inset: {close:?} in {bar:?}"
+        );
+
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let probe = Probe {
+            events: std::rc::Rc::new(std::cell::Cell::new(0)),
+            rect: Rect::ZERO,
+        };
+        let mut scaled = FloatingWindow::new("Compose", probe).open(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = scaled.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        scaled.apply_layout(&taffy, node, Point::ZERO);
+        assert!(
+            (scaled.title_bar_height() - TITLE_BAR_HEIGHT * 1.5).abs() < 1e-6,
+            "ui_scale 1.5 → {}",
+            scaled.title_bar_height()
+        );
+        assert_eq!(
+            scaled.content_area().y0,
+            scaled.window_rect().y0 + scaled.title_bar_height()
         );
     }
 
@@ -1853,21 +1931,21 @@ mod tests {
     fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
         let (mut w, _e) = laid_out(true);
         w.overlay_chrome = true;
-        let now = Instant::now();
+        let now = crate::time::now();
         w.opened_at = Some(now - OVERLAY_CHROME_HOLD - OVERLAY_CHROME_FADE);
         assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
 
         w.update_pointer_position(w.window_rect().center());
-        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) < 0.05);
-        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE);
-        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) > 0.99);
+        assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) < 0.05);
+        w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE);
+        assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) > 0.99);
 
         w.update_pointer_position(Point::new(-20.0, -20.0));
-        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE / 2);
-        let leaving = w.overlay_chrome_alpha_at(Instant::now(), false);
+        w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE / 2);
+        let leaving = w.overlay_chrome_alpha_at(crate::time::now(), false);
         assert!((0.45..=0.55).contains(&leaving));
         w.update_pointer_position(w.window_rect().center());
-        let interrupted = w.overlay_chrome_alpha_at(Instant::now(), false);
+        let interrupted = w.overlay_chrome_alpha_at(crate::time::now(), false);
         assert!(
             (interrupted - leaving).abs() < 0.05,
             "re-entering must continue from the current alpha, not jump"

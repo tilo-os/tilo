@@ -18,8 +18,9 @@
 //! nothing is hard-coded.
 
 use std::collections::HashMap;
+use ui::doc::read_str_or_text;
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -63,19 +64,6 @@ impl KeyboardView {
     /// The layout currently being rendered (test/inspection helper).
     pub fn layout_id(&self) -> &str {
         self.layout.id
-    }
-
-    /// Read the display name stored at `value_path` (Text object or scalar
-    /// string), mirroring the [`ui::widget::Dropdown`] storage convention.
-    fn read_value(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
-        match state.get(root, path) {
-            Ok(Some((Value::Object(ObjType::Text), obj))) => state.text(&obj).ok(),
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(t) => Some(t.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     /// Draw one rounded key cap with `glyph` centred; if `shift` is set it
@@ -136,7 +124,7 @@ impl KeyboardView {
 impl Widget for KeyboardView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Re-resolve every sync so the preview tracks the dropdown live.
-        if let Some(name) = Self::read_value(state, root, self.value_path.as_str())
+        if let Some(name) = read_str_or_text(state, root, self.value_path.as_str())
             && let Some(l) = layouts::by_display_name(&name)
         {
             self.layout = l;
@@ -275,6 +263,7 @@ impl Widget for KeyboardView {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc};
 
     fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();

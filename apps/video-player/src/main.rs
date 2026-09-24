@@ -40,20 +40,11 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -65,7 +56,7 @@ extern crate runtime_dylib;
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.video-player", live_root)
+        &LaunchSpec::new_with_args("so.tilo.video-player", live_root)
             .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
@@ -156,115 +147,21 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
             "The video decoder did not produce a frame for the requested file".into(),
         ));
     }
-    render_shot_to_png(Box::new(app), viewport, args.text_scale, out)
+    render_shot_to_png(Box::new(app), viewport, ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn shot_theme(kind: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let theme = match kind {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = match text_scale {
-        Some(scale) => theme.with_text_scale(scale),
-        None => theme,
-    };
-    theme.with_reduce_motion(reduce_motion)
-}
-
-/// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
-/// `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+/// Render one offscreen frame of `widget` and write it as a PNG.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-        });
-    let shot_theme_name = std::env::var("TILO_SHOTS_THEME").ok();
-    let theme = shot_theme(shot_theme_name.as_deref(), text_scale, reduce_motion);
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut state = ui::State::new();
-    let (w, h) = viewport;
-
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     // The offscreen renderer bypasses the regular app loop, so explicitly
     // propagate the accessibility motion preference before building the scene.
     widget.set_motion_reduced(theme.reduce_motion);
-    widget.sync(&mut state.doc, &state.root);
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    ui::launch::render_widget_png(widget.as_mut(), viewport, theme, out)?;
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
-}
-
-#[cfg(test)]
-mod shot_tests {
-    use super::*;
-
-    #[test]
-    fn custom_shot_theme_propagates_text_scale_and_reduced_motion() {
-        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
-        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
-        assert!(theme.reduce_motion);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(theme.text_scale);
-        assert!((renderer.text_scale() - 2.0).abs() < f32::EPSILON);
-    }
 }

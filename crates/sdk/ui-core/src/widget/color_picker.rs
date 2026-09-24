@@ -8,6 +8,7 @@
 //! for an app-owned durable mutation.
 
 use crate::color_compat::ColorCompat;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -237,12 +238,7 @@ impl ColorPicker {
     /// Six-digit `#RRGGBB` hex string for the current colour. Alpha is
     /// intentionally not encoded — the picker doesn't expose that channel.
     pub fn hex_string(&self) -> String {
-        format!(
-            "#{:02X}{:02X}{:02X}",
-            self.color.r(),
-            self.color.g(),
-            self.color.b()
-        )
+        crate::color::to_hex(self.color)
     }
 
     pub fn rgb_string(&self) -> String {
@@ -288,84 +284,19 @@ impl ColorPicker {
         channel
     }
 
-    /// Standard HSV → RGB (HSV all in 0..1; output 0..255 per channel).
-    /// Branch table form to avoid floating-point modulus surprises around
-    /// h ≈ 1.0.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "h, s, v, i, f, p, q, t, r, g, b are the standard HSV/RGB channel and \
-                  interpolation names; inventing longer ones would only hurt readability here"
-    )]
+    /// HSV → RGB with the hue as a fraction of a turn (`0..1`), the unit the
+    /// hue strip works in; see [`crate::color::hsv_to_rgb`].
     fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-        let h = h.rem_euclid(1.0);
-        let s = s.clamp(0.0, 1.0);
-        let v = v.clamp(0.0, 1.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "h*6.0 is in [0.0, 6.0] after rem_euclid(1.0) above, so floor() never \
-                      approaches i32::MAX"
-        )]
-        let i = (h * 6.0).floor() as i32;
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "i is bounded to roughly 0..=6 (see above), far below f32's exact-integer range"
-        )]
-        let f = h * 6.0 - i as f32;
-        let p = v * (1.0 - s);
-        let q = v * (1.0 - f * s);
-        let t = v * (1.0 - (1.0 - f) * s);
-        let (r, g, b) = match i.rem_euclid(6) {
-            0 => (v, t, p),
-            1 => (q, v, p),
-            2 => (p, v, t),
-            3 => (p, q, v),
-            4 => (t, p, v),
-            _ => (v, p, q),
-        };
-        (
-            Self::channel_u8(r * 255.0),
-            Self::channel_u8(g * 255.0),
-            Self::channel_u8(b * 255.0),
-        )
+        let c = crate::color::hsv_to_rgb(h * 360.0, s, v);
+        (c.r(), c.g(), c.b())
     }
 
-    /// Inverse of `hsv_to_rgb`. Returns (h, s, v) all in 0..1. When the
-    /// colour is on the achromatic axis (max == min) we keep `h = 0` —
-    /// callers writing back into HSV should preserve whatever hue they
-    /// last had rather than relying on this fallback.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "r, g, b, h, s, v are the standard RGB/HSV channel names; inventing longer \
-                  ones would only hurt readability here"
-    )]
+    /// Inverse of `hsv_to_rgb`, hue as a fraction of a turn. On the
+    /// achromatic axis `h = 0` — callers writing back into HSV should
+    /// preserve whatever hue they last had rather than rely on it.
     fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
-        let rf = f32::from(r) / 255.0;
-        let gf = f32::from(g) / 255.0;
-        let bf = f32::from(b) / 255.0;
-        let max = rf.max(gf).max(bf);
-        let min = rf.min(gf).min(bf);
-        let delta = max - min;
-        let v = max;
-        let s = if max <= f32::EPSILON {
-            0.0
-        } else {
-            delta / max
-        };
-        #[allow(
-            clippy::float_cmp,
-            reason = "max is exactly one of rf/gf/bf via f32::max (a selection, not an \
-                      independent computation), so exact equality is the correct test"
-        )]
-        let h = if delta <= f32::EPSILON {
-            0.0
-        } else if max == rf {
-            ((gf - bf) / delta).rem_euclid(6.0) / 6.0
-        } else if max == gf {
-            (((bf - rf) / delta) + 2.0) / 6.0
-        } else {
-            (((rf - gf) / delta) + 4.0) / 6.0
-        };
-        (h, s, v)
+        let (h, s, v) = crate::color::rgb_to_hsv(Color::from_rgb8(r, g, b));
+        (h / 360.0, s, v)
     }
 
     fn current_hsv(&self) -> (f32, f32, f32) {
@@ -532,7 +463,8 @@ impl ColorPicker {
         let (sv_border_w, sv_border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
-            (1.0, colors.border_standard)
+            // Derived from the raised square the tint sits on (HIG §9.5).
+            (1.0, crate::surface::edge_on(colors.surfaces.raised))
         };
         scene.stroke(
             &Stroke::new(sv_border_w),
@@ -577,10 +509,12 @@ impl ColorPicker {
             }
         }
         let hue_shape = RoundedRect::from_rect(self.hue_strip_rect, radius_sm);
+        // The strip is a rainbow with no one colour to derive from; its edge
+        // is measured against the raised picker surface around it.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::surface::edge_on(colors.surfaces.raised),
             None,
             &hue_shape,
         );
@@ -620,10 +554,11 @@ impl ColorPicker {
             None,
             &preview_shape,
         );
+        // Edge derived from the swatch itself, so it registers on any colour.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::surface::edge_on(self.color),
             None,
             &preview_shape,
         );
@@ -654,10 +589,12 @@ impl ColorPicker {
             let track_y1 = track_y0 + TRACK_HEIGHT;
             let track = Rect::new(slider.x0, track_y0, slider.x1, track_y1);
             let track_shape = RoundedRect::from_rect(track, radius_sm);
+            // Unfilled half is a lift off the ground (HIG §9.5 Slider row).
+            let unfilled = colors.lift(1.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.surfaces.raised,
+                unfilled,
                 None,
                 &track_shape,
             );
@@ -679,7 +616,7 @@ impl ColorPicker {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(unfilled),
                 None,
                 &track_shape,
             );
@@ -698,7 +635,7 @@ impl ColorPicker {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(colors.text_primary),
                 None,
                 &knob,
             );
@@ -747,6 +684,8 @@ impl Widget for ColorPicker {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(PICKER_HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -785,7 +724,7 @@ impl Widget for ColorPicker {
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);
@@ -987,21 +926,11 @@ impl Widget for ColorPicker {
     }
 }
 
-/// Parse a `#rrggbb` (case-insensitive, leading `#` optional) hex string
-/// into a fully-opaque `Color`. `None` for anything that isn't exactly
-/// six hex digits after an optional `#`.
+/// Parse a typed hex colour (see [`crate::color::parse_hex`]) into a
+/// fully-opaque `Color`: the picker has no alpha channel, so an `#rrggbbaa`
+/// entry keeps only its colour.
 fn parse_hex(s: &str) -> Option<Color> {
-    let s = s.trim().trim_start_matches('#');
-    if !s.is_ascii() {
-        return None;
-    }
-    if s.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-    let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-    let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-    Some(Color::from_rgba8(r, g, b, 255))
+    crate::color::parse_hex(s).map(|c| Color::from_rgb8(c.r(), c.g(), c.b()))
 }
 
 #[cfg(test)]

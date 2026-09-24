@@ -9,8 +9,8 @@ use crate::record_replication::{
 use collab_types::{
     CapOverride, ContentHash, ContentRevisionV1, Ed25519PublicKey, Effect, FILE_BINDING_VERSION,
     FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMetadataV1,
-    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1, FileNodeKind, FileProvenance,
+    FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
+    FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FileProvenance,
     FileRecordId, FileVersionId, FileVersionV1, IndexStatus, Scope, Subject, Verb,
 };
 use std::time::Duration;
@@ -1188,12 +1188,12 @@ async fn live_record_mesh_replacement_transaction_survives_staging_restart_in_bo
                 content_hash: Some(hash),
                 metadata_hash: ContentHash([63; 32]),
                 provenance: match role {
-                    FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                    FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                    FileMutationParticipantRole::Source => FileProvenance::Rename,
+                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                     _ => unreachable!("replacement fixture role"),
                 },
             };
-            let mut participant = FileMutationParticipantV1 {
+            let mut participant = FileMutationParticipant {
                 record_id,
                 role,
                 expected_version,
@@ -1203,7 +1203,7 @@ async fn live_record_mesh_replacement_transaction_survives_staging_restart_in_bo
                     parent: Some(root_record),
                     name: "destination.txt".into(),
                     kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                    tombstoned: role == FileMutationParticipantRole::Replaced,
                     actor,
                     observed_at_ms: 2,
                 },
@@ -1225,25 +1225,25 @@ async fn live_record_mesh_replacement_transaction_survives_staging_restart_in_bo
             participant(
                 source_record,
                 source_expected,
-                FileMutationParticipantRoleV1::Source,
+                FileMutationParticipantRole::Source,
                 ContentHash([61; 32]),
             ),
             participant(
                 replaced_record,
                 replaced_expected,
-                FileMutationParticipantRoleV1::Replaced,
+                FileMutationParticipantRole::Replaced,
                 ContentHash([62; 32]),
             ),
         ];
         participants.sort_by_key(|participant| participant.record_id);
-        let transaction = FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        let transaction = FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: uuid::Uuid::new_v4(),
                 workspace_id,
                 actor,
                 timestamp_ms: 2,
-                operation: FileMutationOperationV1::ReplacementRename {
+                operation: FileMutationOperation::ReplacementRename {
                     source_parent: root_record,
                     source_name: "source.txt".into(),
                     destination_parent: root_record,

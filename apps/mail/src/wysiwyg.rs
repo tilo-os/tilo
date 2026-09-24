@@ -26,6 +26,7 @@
 
 use std::fmt::Write as _;
 
+use qdoc::codecs::xml_escape::{escape_attr, escape_text};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -1144,7 +1145,7 @@ fn inline_html(block: &Block) -> String {
             break;
         };
         let text: String = run.iter().map(|x| x.ch).collect();
-        let mut frag = escape_html(&text);
+        let mut frag = escape_text(&text);
         if g.style.bold {
             frag = format!("<b>{frag}</b>");
         }
@@ -1163,23 +1164,6 @@ fn inline_html(block: &Block) -> String {
         idx = end;
     }
     out
-}
-
-fn escape_html(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => o.push_str("&amp;"),
-            '<' => o.push_str("&lt;"),
-            '>' => o.push_str("&gt;"),
-            _ => o.push(ch),
-        }
-    }
-    o
-}
-
-fn escape_attr(s: &str) -> String {
-    escape_html(s).replace('"', "&quot;")
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,10 +1291,10 @@ mod tests {
             ed.insert_char(ch);
         }
         ed.select_all();
-        ed.set_link("https://tilo.example");
+        ed.set_link("https://example.test");
         let html = ed.to_html();
         assert!(
-            html.contains("<a href=\"https://tilo.example\">"),
+            html.contains("<a href=\"https://example.test\">"),
             "got: {html}"
         );
     }

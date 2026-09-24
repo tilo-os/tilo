@@ -113,3 +113,20 @@ pub fn app_root_for_shot_status(width: f64) -> Box<dyn Widget> {
     app.arm_status_bubble_for_shots();
     Box::new(app)
 }
+
+/// Like [`app_root_for_shot`] with the "New connection" sheet open.
+pub fn app_root_for_shot_connect(width: f64) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new_demo();
+    app.snap_flap_for_width(width);
+    app.open_connect_modal_for_shots();
+    Box::new(app)
+}
+
+/// Like [`app_root_for_shot`] with the destructive-statement confirmation
+/// dialog armed.
+pub fn app_root_for_shot_confirm(width: f64) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new_demo();
+    app.snap_flap_for_width(width);
+    app.arm_query_confirmation_for_shots();
+    Box::new(app)
+}

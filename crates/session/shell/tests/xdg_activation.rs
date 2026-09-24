@@ -206,7 +206,8 @@ impl Harness {
 
 fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
     let tree = state.workspace_tree.read();
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())
@@ -363,7 +364,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     h.pump();
     let target_id = foreign_id(&h.state, identity);
     assert_eq!(
-        h.state.workspace_tree.read().workspaces[0].strips[0].window_groups[0].tabs[0].id,
+        h.state.workspace_tree.read().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id,
         target_tab,
         "normal first adoption used the staged host placement"
     );
@@ -380,7 +381,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
     let tree = h.state.workspace_tree.read();
     let tab = tree
-        .workspaces
+        .desktop.workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())
@@ -471,6 +472,7 @@ fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab(
         h.state
             .workspace_tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -563,7 +565,7 @@ fn real_xdg_title_change_distinguishes_same_app_windows() {
         .state
         .workspace_tree
         .read()
-        .workspaces
+        .desktop.workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
         .flat_map(|strip| strip.window_groups.iter())

@@ -14,10 +14,6 @@ homepage.workspace = true
 documentation = "https://pipewire.pages.freedesktop.org/pipewire-rs/libspa_sys/"
 keywords = ["ffi", "pipewire", "multimedia", "audio", "video"]
 
-[package.metadata.cargo-machete]
-# These are referenced by build.rs; cargo-machete only scans Rust targets.
-ignored = ["bindgen", "cc", "system-deps"]
-
 [dependencies]
 
 [build-dependencies]

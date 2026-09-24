@@ -602,23 +602,23 @@ Build an installable package from the same app root with:
 ```bash
 tilo-app package
 tilo-app package --identity publisher.json
-tilo-app package --output dist/reading-list.qpkg --force
+tilo-app package --output dist/reading-list.tapp --force
 ```
 
 `package` runs the structural checks, builds every entrypoint declared in
 `tilo-app.toml` with Cargo's `release` profile, places the resulting binaries at
-their declared payload paths, and asks `tilo-pkg` to sign and verify the bundle.
-The verified result is published as `dist/<cargo-package>.qpkg` by default.
+their declared payload paths, and asks `tilo-app-package` to sign and verify the bundle.
+The verified result is published as `dist/<cargo-package>.tapp` by default.
 An existing output is never replaced unless `--force` is present, and even
 then replacement happens only after the new package verifies successfully.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
-not depend on files outside the app. Without `--identity`, `tilo-pkg` creates an
+not depend on files outside the app. Without `--identity`, `tilo-app-package` creates an
 ephemeral self-signing key, which is useful for local testing; use one
 persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
-choices. Set `TILO_PKG` to the executable path when `tilo-pkg` is not on `PATH`.
+choices. Set `TILO_PKG` to the executable path when `tilo-app-package` is not on `PATH`.
 
 ## The app shape
 
@@ -1133,7 +1133,7 @@ scope from the identity of the thing being changed:
 
 | State | Canonical home | Identity / permission scope | Replication |
 |---|---|---|---|
-| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | local unless the app explicitly exports a safe semantic projection |
+| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
 | Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
 | Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
 | Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |

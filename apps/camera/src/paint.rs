@@ -4,28 +4,11 @@
 //! explicit colors so callers can pull them from the [`Theme`]. No color is
 //! hard-coded in a way that escapes the caller's control.
 
+pub use ui::paint::{fill_rect, fill_round, stroke_rect, stroke_round};
 use ui::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let rr = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radius);
-    scene.fill(Fill::NonZero, t, color, None, &rr);
-}
-
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color, w: f64) {
-    let rr = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radius);
-    scene.stroke(&Stroke::new(w), t, color, None, &rr);
-}
-
-pub fn stroke_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &rect);
-}
 
 pub fn circle(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color) {
     scene.fill(
@@ -129,6 +112,15 @@ pub fn text_w(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
     tr.measure(s, size, None).0
 }
 
+/// Height of one line of `s` at `size`, measured with the renderer that will
+/// draw it — so it already includes the accessibility text scale. Every
+/// vertical centring and every capsule that must contain a label derives from
+/// this rather than from `size × k`, which stops tracking the glyphs the
+/// moment the renderer scales them.
+pub fn text_h(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
+    f64::from(tr.measure(s, size, None).1)
+}
+
 /// Draw left-aligned text with its top-left at (x, y).
 pub fn text(
     scene: &mut Scene,
@@ -185,6 +177,10 @@ pub fn text_right(
 }
 
 /// Vertically + horizontally center text in a rect.
+///
+/// Centres on the line height the renderer reports for this string, not on
+/// `size × k`: a fixed factor is only right at one text scale, and the mode
+/// labels drifted below their capsules at 200% because of exactly that.
 pub fn text_in(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -193,7 +189,7 @@ pub fn text_in(
     size: f32,
     color: Color,
 ) {
-    let y = rect.y0 + (rect.height() - f64::from(size) * 1.2) / 2.0;
+    let y = rect.y0 + (rect.height() - text_h(tr, s, size)) / 2.0;
     text_center(scene, tr, rect.center().x, y, s, size, color);
 }
 

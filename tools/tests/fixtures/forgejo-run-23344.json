@@ -15,7 +15,7 @@
     },
     "trigger_user": {
       "id": 82,
-      "login": "qos-packaging-controller",
+      "login": "tilo-packaging-controller",
       "is_admin": false
     },
     "event_payload": "{\"inputs\": {\"architectures\": \"x86_64\", \"builder_image\": \"code.sandbox.example/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a\", \"collection\": \"default\", \"coordinator_intent\": \"5d4e785f-db2f-43dc-b241-f1399380bc46\", \"coordinator_policy_sha256\": \"25f1bedff8a3d23f8fd5a98843a0adb738271aa26819326fdf4c9427d815c720\", \"publish\": \"false\", \"verify_final_receipt\": \"false\"}, \"ref\": \"c23e71726aa2f192fd347e8ad56c8e26b3ab996a\"}"

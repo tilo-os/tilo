@@ -27,6 +27,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 const PAD_X: f64 = 14.0;
 const PAD_Y: f64 = 12.0;
@@ -38,7 +39,10 @@ const GAP: f64 = 10.0;
 /// Shared visual paint for a banner filling `rect`. Used by both the retained
 /// [`Banner`] widget and the immediate-mode [`Banner::paint`] entry point.
 /// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared banner painting combines render context with bounds, severity, icon, text and dismiss-button hover state"
+)]
 fn paint_banner(
     scene: &mut Scene,
     transform: Affine,
@@ -90,8 +94,8 @@ fn paint_banner(
     icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
 
     let text_x = icon_rect.x1 + GAP;
-    let title_size = theme.tokens.typography.scale.base;
-    let msg_size = theme.tokens.typography.scale.sm;
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+    let msg_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let title_style = TextStyle::new(title_size);
     let message_style = TextStyle::new(msg_size);
     let text_width = banner_text_width(rect, dismissible);
@@ -101,7 +105,8 @@ fn paint_banner(
             .measure_style(msg, Some(text_width), &message_style)
             .1
     });
-    let total_text_h = f64::from(title_h + message_h) + if message.is_some() { 4.0 } else { 0.0 };
+    let gap = f64::from(theme.tokens.spacing.s1);
+    let total_text_h = f64::from(title_h + message_h) + if message.is_some() { gap } else { 0.0 };
     let mut ty = rect.center().y - total_text_h / 2.0;
     #[allow(
         clippy::arithmetic_side_effects,
@@ -117,7 +122,7 @@ fn paint_banner(
         title_transform,
         Some(text_width),
     );
-    ty += f64::from(title_h) + 4.0;
+    ty += f64::from(title_h) + gap;
     if let Some(msg) = message {
         #[allow(
             clippy::arithmetic_side_effects,
@@ -294,7 +299,10 @@ impl Banner {
     /// straight to a `Scene`. Returns the dismiss "×" rect (or `Rect::ZERO`
     /// when not dismissible) so the caller can hit-test it against its own
     /// pointer state; pass `hover` for the ×-hover tint.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate banner painting forwards render context, content, bounds and dismissal state to the retained widget painter"
+    )]
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -327,15 +335,21 @@ impl Banner {
     fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
         let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
         let text_width = banner_text_width(rect, self.dismissible);
-        let title_style = TextStyle::new(theme.tokens.typography.scale.base);
+        let title_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base));
         let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
         let message_h = self.message.as_ref().map_or(0.0, |message| {
-            let style = TextStyle::new(theme.tokens.typography.scale.sm);
+            let style = text_renderer
+                .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
             text_renderer
                 .measure_style(message, Some(text_width), &style)
                 .1
         });
-        let gap = if self.message.is_some() { 4.0 } else { 0.0 };
+        let gap = if self.message.is_some() {
+            f64::from(theme.tokens.spacing.s1)
+        } else {
+            0.0
+        };
         (f64::from(title_h + message_h) + gap + PAD_Y * 2.0).max(44.0)
     }
 }
@@ -371,11 +385,6 @@ impl Widget for Banner {
         node
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "content_height is a small, bounded pixel value built from theme typography \
-                  constants; f32 precision loss is immaterial for widget layout"
-    )]
     fn measure(
         &mut self,
         known: taffy::Size<Option<f32>>,
@@ -678,7 +687,7 @@ mod tests {
     fn long_message_wraps_and_grows_to_its_painted_height() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let message = "qOS found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
         let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
         let width = 700.0;
         let height = banner.content_height(&theme, &mut text, width);

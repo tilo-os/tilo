@@ -1,8 +1,8 @@
-//! Test helper: build a .qpkg-tar in memory so integration tests and
-//! benchmarks can drive `install::install_qpkg` with a real signed package.
+//! Test helper: build a .tapp-tar in memory so integration tests and
+//! benchmarks can drive `install::install_tapp` with a real signed package.
 //!
-//! Mirrors `pkg-cli::write_qpkg`, kept local so this test crate does
-//! not depend on the `pkg-cli` binary crate.
+//! Mirrors `tilo-app-package-cli::write_tapp`, kept local so this test crate does
+//! not depend on the `tilo-app-package-cli` binary crate.
 
 #![allow(dead_code)]
 #![allow(
@@ -18,16 +18,16 @@
 use std::io::{Cursor, Write};
 
 use ed25519_dalek::SigningKey;
-use pkg::blobs::{BlobHash, BlobStore, MemoryBlobStore};
-use pkg::signed::SignedRoot;
-use pkg::{Manifest, PackageId, SigningIdentity, pack};
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde::{Deserialize, Serialize};
+use tilo_app_package::blobs::{BlobHash, BlobStore, MemoryBlobStore};
+use tilo_app_package::signed::SignedRoot;
+use tilo_app_package::{Manifest, PackageId, SigningIdentity, pack};
 
-const QPKG_FORMAT: u32 = 1;
+const TAPP_FORMAT: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
-struct QpkgHeader {
+struct TappHeader {
     package_id: String,
     format: u32,
 }
@@ -35,7 +35,7 @@ struct QpkgHeader {
 /// Same TOML shape as the pkg crate's fixtures.
 pub const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.tilo.editor"
+id          = "so.tilo.editor"
 version     = "1.4.2"
 kind        = "app"
 runtime     = "tilo-runtime/2025.06"
@@ -102,8 +102,8 @@ pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> st
     Ok(())
 }
 
-pub fn build_qpkg(payload_kib: usize) -> (Vec<u8>, PackageId) {
-    let mut rng = OsRng;
+pub fn build_tapp(payload_kib: usize) -> (Vec<u8>, PackageId) {
+    let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     let src = render_template(SAMPLE_APP_MANIFEST_TEMPLATE, &pub_hex);
@@ -116,19 +116,19 @@ pub fn build_qpkg(payload_kib: usize) -> (Vec<u8>, PackageId) {
     let identity = SigningIdentity::from_signing_key(sk);
     let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
 
-    (write_qpkg_bytes(id, &store), id)
+    (write_tapp_bytes(id, &store), id)
 }
 
-pub fn write_qpkg_bytes(id: PackageId, store: &MemoryBlobStore) -> Vec<u8> {
+pub fn write_tapp_bytes(id: PackageId, store: &MemoryBlobStore) -> Vec<u8> {
     let buf = Cursor::new(Vec::new());
     let mut tar = tar::Builder::new(buf);
 
-    let header = QpkgHeader {
+    let header = TappHeader {
         package_id: id.to_string(),
-        format: QPKG_FORMAT,
+        format: TAPP_FORMAT,
     };
     let header_toml = toml::to_string_pretty(&header).unwrap();
-    tar_append(&mut tar, "qpkg.toml", header_toml.as_bytes());
+    tar_append(&mut tar, "tapp.toml", header_toml.as_bytes());
 
     let signed = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     tar_append(&mut tar, "signed-root", &signed);

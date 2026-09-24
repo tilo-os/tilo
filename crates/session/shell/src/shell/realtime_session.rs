@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -1727,7 +1728,7 @@ fn live_device(entry: &SessionEntry) -> &DeviceId {
 fn random_nonzero() -> [u8; 16] {
     let mut value = [0; 16];
     while value == [0; 16] {
-        OsRng.fill_bytes(&mut value);
+        UnwrapErr(SysRng).fill_bytes(&mut value);
     }
     value
 }
@@ -1810,7 +1811,7 @@ mod tests {
     #[test]
     fn cutover_requires_accept_then_media_ready_and_keeps_source_live_until_ready() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source = device("laptop");
         let target = device("tablet");
         let mut broker = RealtimeSessionBroker::new();
@@ -1865,7 +1866,7 @@ mod tests {
     #[test]
     fn timeout_and_target_loss_roll_back_without_stopping_source() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source = device("laptop");
         let target = device("tablet");
         let mut broker =
@@ -1935,7 +1936,7 @@ mod tests {
     #[test]
     fn capture_authorization_is_fresh_one_shot_and_exactly_bound() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let impostor = FakeCallingApp::verified("dev.other.calls", "work");
         let source = device("laptop");
         let target = device("tablet");
@@ -1977,8 +1978,8 @@ mod tests {
     #[test]
     fn restart_scoped_ids_and_exact_bindings_reject_stale_or_foreign_callers() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
-        let wrong_workspace = FakeCallingApp::verified("dev.tilo.calls", "personal");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
+        let wrong_workspace = FakeCallingApp::verified("so.tilo.calls", "personal");
         let source = device("laptop");
         let mut first = RealtimeSessionBroker::new();
         let id = first
@@ -2010,7 +2011,7 @@ mod tests {
     #[test]
     fn registry_is_bounded_and_ttl_forgets_without_stopping_live_source() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let mut broker =
             RealtimeSessionBroker::with_limits(1, Duration::from_secs(2), Duration::from_secs(1));
         let id = broker
@@ -2045,7 +2046,7 @@ mod tests {
     #[test]
     fn media_actions_follow_mode_and_only_the_live_endpoint() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source = device("laptop");
         let mut broker = RealtimeSessionBroker::new();
         let id = broker
@@ -2109,7 +2110,7 @@ mod tests {
         assert!(share.screen_share() && share.share_audio());
 
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source = device("laptop");
         let mut broker = RealtimeSessionBroker::new();
         let id = broker
@@ -2147,7 +2148,7 @@ mod tests {
     #[test]
     fn lock_hooks_rollback_pending_target_but_end_a_locked_live_endpoint() {
         let now = Instant::now();
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source = device("laptop");
         let target = device("tablet");
         let mut broker = RealtimeSessionBroker::new();
@@ -2209,7 +2210,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let mut origin = RealtimeSessionBroker::new();
         let id = origin
             .register(
@@ -2295,7 +2296,7 @@ mod tests {
         let source = device("laptop");
         let target = device("tablet");
         let attacker = device("attacker");
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let mut origin = RealtimeSessionBroker::new();
         let id = origin
             .register(
@@ -2337,7 +2338,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let source_adapter =
@@ -2451,7 +2452,7 @@ mod tests {
         let source = device("laptop");
         let target = device("tablet");
         let attacker = device("attacker");
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let source_adapter =
@@ -2543,7 +2544,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
+        let app = FakeCallingApp::verified("so.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
             4,
             Duration::from_secs(60),

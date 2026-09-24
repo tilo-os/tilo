@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": 1,
+      "room": "00000000-0000-4000-8000-000000000001",
+      "name": "Studio",
+      "strips": [
+        {
+          "id": 2,
+          "name": "Main",
+          "window_groups": [
+            {
+              "id": 3,
+              "tabs": [
+                {
+                  "id": 4,
+                  "title": "Terminal",
+                  "tile": {
+                    "AppPlaceholder": {
+                      "kind": "Terminal",
+                      "label": "Terminal"
+                    }
+                  }
+                },
+                {
+                  "id": 5,
+                  "title": "Gimp",
+                  "tile": {
+                    "LocalApp": {
+                      "app_id": "org.gimp.GIMP",
+                      "label": "GIMP",
+                      "note": ""
+                    }
+                  }
+                }
+              ],
+              "active_tab": 5,
+              "width": {
+                "Fraction": 420
+              },
+              "maximized": true
+            },
+            {
+              "id": 6,
+              "tabs": [
+                {
+                  "id": 8,
+                  "title": "Files",
+                  "tile": {
+                    "Stub": {
+                      "kind": {
+                        "Other": "Files"
+                      },
+                      "label": "Files"
+                    }
+                  }
+                }
+              ],
+              "active_tab": 8,
+              "width": "Normal",
+              "maximized": false
+            }
+          ]
+        }
+      ],
+      "collaborators": [],
+      "owner": "owner-key",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "owner-key"
+            }
+          },
+          "scope": {
+            "Room": "00000000-0000-4000-8000-000000000001"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-1",
+          "expiry": "Never",
+          "granted_by": null
+        },
+        {
+          "subject": {
+            "Principal": {
+              "App": "org.example.Editor"
+            }
+          },
+          "scope": {
+            "FsPath": "/srv/doc"
+          },
+          "effect": "Grant",
+          "verb": "Write",
+          "id": "cap-fixed",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "permission_profiles": [],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [
+        {
+          "id": "task-1",
+          "title": "Review",
+          "created_by": "owner-key",
+          "assigned_agent": null,
+          "route": "manual",
+          "status": "queued",
+          "resource": null,
+          "created_at": 10,
+          "updated_at": 20,
+          "audit": []
+        }
+      ],
+      "effect_receipts": [],
+      "shared_surfaces": {
+        "7": [
+          42
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "room": "00000000-0000-4000-8000-000000000002",
+      "name": "Joined",
+      "strips": [
+        {
+          "id": 10,
+          "name": "Shared",
+          "window_groups": []
+        }
+      ],
+      "collaborators": [],
+      "owner": null,
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [],
+      "permission_profiles": [],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 1,
+  "active_strip": {
+    "1": 2,
+    "9": 10
+  },
+  "active_group": {
+    "2": 6
+  },
+  "collaborators": [],
+  "room_authority": {
+    "00000000-0000-4000-8000-000000000002": {
+      "Peer": "iroh:peer-endpoint"
+    },
+    "00000000-0000-4000-8000-000000000003": "Unpinned"
+  },
+  "room_peer_names": {
+    "00000000-0000-4000-8000-000000000002": {
+      "peer-endpoint": "Ada"
+    }
+  },
+  "room_peer_identities": {},
+  "room_share_floor": {
+    "00000000-0000-4000-8000-000000000002": 11
+  },
+  "continuation_tabs": [
+    5
+  ],
+  "continuation_rooms": [
+    "00000000-0000-4000-8000-000000000003"
+  ],
+  "continuation_owned_tabs": {
+    "5": "00000000-0000-4000-8000-000000000003"
+  },
+  "continuation_closed_tabs": {
+    "12": "00000000-0000-4000-8000-000000000003"
+  },
+  "continuation_file_references": {},
+  "native_document_tabs": {
+    "8": {
+      "provider_id": "org.example.Editor",
+      "path": "/srv/doc/notes.md"
+    }
+  }
+}

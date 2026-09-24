@@ -207,11 +207,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CONTROL_DIR="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; control sockets need a private directory}/tilo-session"
 for i in 1 2 3; do
-    TILO_TEST_CONTROL="/tmp/tilo-demo-pane$i.sock" "$SHELL_BIN" --backend winit &
+    TILO_TEST_CONTROL="$CONTROL_DIR/demo-pane$i.sock" "$SHELL_BIN" --backend winit &
     PIDS+=("$!")
 done
-echo "spawned 3 nested compositors; control sockets at /tmp/tilo-demo-pane{1,2,3}.sock"
+echo "spawned 3 nested compositors; control sockets at $CONTROL_DIR/demo-pane{1,2,3}.sock"
 echo "arrange the windows now -- recording starts in 8s"
 sleep 8
 

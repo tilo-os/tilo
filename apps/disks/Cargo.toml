@@ -24,9 +24,10 @@ thin = ["dep:runtime-dylib"]
 default = ["live"]
 # The CLI fallback and read benchmark are always available; the zbus path is
 # selected by `DISKS_LIVE`.
-live = ["dep:zbus"]
+live = ["block-devices/udisks"]
 
 [dependencies]
+block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
@@ -36,8 +37,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
-# Pinned to match `apps/chat` so a single zbus copy resolves from the lock.
-zbus = { workspace = true, optional = true, default-features = true }
 
 [lints]
 workspace = true

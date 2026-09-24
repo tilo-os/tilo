@@ -17,9 +17,10 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 dirs.workspace = true
@@ -32,12 +33,12 @@ blake3.workspace = true
 semver.workspace = true
 # `update` resolves a newer version through the signed registry index
 # and downloads it over iroh-blobs. Same crate the app-host daemon
-# uses, so there is one implementation of "fetch and verify a qpkg".
+# uses, so there is one implementation of "fetch and verify a tapp".
 app-registry = { path = "../app-registry" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-rand.workspace = true
+getrandom.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 

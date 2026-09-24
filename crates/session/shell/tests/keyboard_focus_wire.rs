@@ -222,6 +222,7 @@ fn foreign_id(state: &shell::compositor::state::State, app_id: &str) -> u64 {
     state
         .workspace_tree
         .read()
+        .desktop
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
@@ -408,7 +409,8 @@ fn custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client() {
     );
     h.client.keyboard.clear();
 
-    let before_tab = frame.chrome().tree().workspaces[0].strips[0].window_groups[0].active_tab;
+    let before_tab =
+        frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
     assert!(
         shell::compositor::client_input::route_input(
             &mut h.state,
@@ -464,7 +466,7 @@ fn custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client() {
         "only the bare Ctrl transitions, never the custom Ctrl+J pair, may reach the foreign-client wire"
     );
     assert_ne!(
-        frame.chrome().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+        frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
         before_tab,
         "the cached custom binding must fire Next Tab after pre-routing"
     );

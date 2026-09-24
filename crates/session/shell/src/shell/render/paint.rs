@@ -3784,6 +3784,10 @@ mod tests {
     }
 
     fn required_target(width: u32, height: u32) -> RetainedGpuTarget {
+        // Device and renderer creation read renderer controls from the
+        // environment; hold the lock so a sibling test's override of them
+        // cannot leak into this target.
+        let _env = tilo_test_env::lock();
         let mut context = RenderContext::new();
         let index = context
             .device(None)
@@ -3794,6 +3798,19 @@ mod tests {
             context.devices[index].adapter.get_info()
         );
         RetainedGpuTarget::new(&context.devices[index], width, height).expect("target")
+    }
+
+    /// A target created while `key` is `value`; the override ends once the
+    /// renderer has read it.
+    fn required_target_with_env(
+        key: &str,
+        value: &str,
+        width: u32,
+        height: u32,
+    ) -> RetainedGpuTarget {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(key, value);
+        required_target(width, height)
     }
 
     #[test]
@@ -4437,19 +4454,7 @@ mod tests {
 
     #[test]
     fn gpu_target_disabled_measurement_still_waits_for_completion() {
-        let prior = std::env::var_os("VELLO_BUMP_BUDGET");
-        // Each nextest case owns an isolated process; restore the renderer control after creation.
-        unsafe {
-            std::env::set_var("VELLO_BUMP_BUDGET", "upstream");
-        }
-        let mut target = required_target(128, 128);
-        unsafe {
-            if let Some(prior) = prior {
-                std::env::set_var("VELLO_BUMP_BUDGET", prior);
-            } else {
-                std::env::remove_var("VELLO_BUMP_BUDGET");
-            }
-        }
+        let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
         assert_eq!(
             target.renderer.poll_bump_budget(&target.device).unwrap(),
             vello::BumpBudgetPoll::Complete { overflowed: false }
@@ -4468,18 +4473,7 @@ mod tests {
             vello::BumpBudgetPoll::Complete { overflowed: false }
         );
         assert!(target.completed_view().is_none());
-        let prior = std::env::var_os("VELLO_BUMP_BUDGET");
-        unsafe {
-            std::env::set_var("VELLO_BUMP_BUDGET", "upstream");
-        }
-        let mut replacement = required_target(128, 128);
-        unsafe {
-            if let Some(prior) = prior {
-                std::env::set_var("VELLO_BUMP_BUDGET", prior);
-            } else {
-                std::env::remove_var("VELLO_BUMP_BUDGET");
-            }
-        }
+        let mut replacement = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
         let stats = replacement
             .render_until(
                 &Scene::new(),
@@ -4636,18 +4630,7 @@ mod tests {
 
     #[test]
     fn gpu_target_aborted_encoding_does_not_publish_timestamps() {
-        let prior = std::env::var_os("VELLO_GPU_TIMESTAMPS");
-        unsafe {
-            std::env::set_var("VELLO_GPU_TIMESTAMPS", "1");
-        }
-        let mut target = required_target(128, 128);
-        unsafe {
-            if let Some(prior) = prior {
-                std::env::set_var("VELLO_GPU_TIMESTAMPS", prior);
-            } else {
-                std::env::remove_var("VELLO_GPU_TIMESTAMPS");
-            }
-        }
+        let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
         let mut test = completion_clock();
         test.encode_elapsed = Duration::from_secs(2);
         let deadline = test.start + Duration::from_secs(1);

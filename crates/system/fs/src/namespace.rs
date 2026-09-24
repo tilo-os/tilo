@@ -16,9 +16,8 @@ use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{
-    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1,
-    FileMutationParticipantRoleV1, FileMutationTransactionV1, FileNameV1, FileNodeKind,
-    FileRecordId,
+    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
+    FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -155,6 +154,123 @@ pub struct IndexedRecord {
     pub is_dir: bool,
 }
 
+/// Structural index over every node in the document: where each node sits
+/// and, per parent, its children by name. `lookup`, `readdir` and name checks
+/// consult it instead of scanning every node. Local placement writes update
+/// it node by node; every opaque document import rebuilds it.
+#[derive(Clone, Debug, Default)]
+struct TreeIndex {
+    placement: HashMap<String, (String, FileNameV1)>,
+    children: HashMap<String, BTreeMap<FileNameV1, BTreeSet<String>>>,
+}
+
+impl TreeIndex {
+    fn remove(&mut self, id: &str) {
+        let Some((parent, name)) = self.placement.remove(id) else {
+            return;
+        };
+        if let Some(names) = self.children.get_mut(&parent) {
+            if let Some(ids) = names.get_mut(&name) {
+                ids.remove(id);
+                if ids.is_empty() {
+                    names.remove(&name);
+                }
+            }
+            if names.is_empty() {
+                self.children.remove(&parent);
+            }
+        }
+    }
+
+    fn place(&mut self, id: &str, parent: String, name: FileNameV1) {
+        if self
+            .placement
+            .get(id)
+            .is_some_and(|(current_parent, current_name)| {
+                *current_parent == parent && *current_name == name
+            })
+        {
+            return;
+        }
+        self.remove(id);
+        self.children
+            .entry(parent.clone())
+            .or_default()
+            .entry(name.clone())
+            .or_default()
+            .insert(id.to_string());
+        self.placement.insert(id.to_string(), (parent, name));
+    }
+
+    /// Nodes placed under `parent` as `name`, in id order.
+    fn named<'a>(&'a self, parent: &str, name: &[u8]) -> impl Iterator<Item = &'a String> {
+        let name = FileNameV1::from(name.to_vec());
+        self.children
+            .get(parent)
+            .and_then(|names| names.get(&name))
+            .into_iter()
+            .flatten()
+    }
+
+    /// Every node placed under `parent`, in (name, id) order.
+    fn children<'a>(&'a self, parent: &str) -> impl Iterator<Item = &'a String> {
+        self.children
+            .get(parent)
+            .into_iter()
+            .flat_map(BTreeMap::values)
+            .flatten()
+    }
+}
+
+/// Order-independent digest of the record index: the wrapping 256-bit sum of
+/// one digest per row, so adding or removing a row updates it in O(1)
+/// instead of rehashing every row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RecordIndexDigest([u64; 4]);
+
+impl RecordIndexDigest {
+    fn row(record: &IndexedRecord) -> [u64; 4] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo.fs.namespace-record-index.row.v2\0");
+        hasher.update(record.record_id.0.as_bytes());
+        for field in [&record.parent_id, &record.node_id, &record.path] {
+            hasher.update(&(field.len() as u64).to_be_bytes());
+            hasher.update(field.as_bytes());
+        }
+        hasher.update(&[u8::from(record.is_dir)]);
+        let bytes = hasher.finalize();
+        let mut limbs = [0_u64; 4];
+        for (limb, chunk) in limbs.iter_mut().zip(bytes.as_bytes().chunks_exact(8)) {
+            let mut word = [0_u8; 8];
+            word.copy_from_slice(chunk);
+            *limb = u64::from_le_bytes(word);
+        }
+        limbs
+    }
+
+    fn add(&mut self, record: &IndexedRecord) {
+        let row = Self::row(record);
+        let mut carry = false;
+        for (limb, value) in self.0.iter_mut().zip(row) {
+            let (sum, overflow_a) = limb.overflowing_add(value);
+            let (sum, overflow_b) = sum.overflowing_add(u64::from(carry));
+            *limb = sum;
+            carry = overflow_a || overflow_b;
+        }
+    }
+
+    fn remove(&mut self, record: &IndexedRecord) {
+        let row = Self::row(record);
+        let mut borrow = false;
+        for (limb, value) in self.0.iter_mut().zip(row) {
+            let (difference, underflow_a) = limb.overflowing_sub(value);
+            let (difference, underflow_b) = difference.overflowing_sub(u64::from(borrow));
+            *limb = difference;
+            borrow = underflow_a || underflow_b;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Namespace {
     doc: AutoCommit,
@@ -178,6 +294,12 @@ pub struct Namespace {
     /// deliberately absent from the public index until a full reconciliation
     /// proves the ambiguity gone.
     record_index_ambiguous: HashSet<FileRecordId>,
+    record_index_digest: RecordIndexDigest,
+    tree: TreeIndex,
+    /// Every node carries a record id. Local creation always writes one, so
+    /// only a document import can clear this (and each import re-runs the
+    /// migration), which keeps `save_incremental` from rescanning all nodes.
+    record_ids_complete: bool,
     #[cfg(test)]
     record_index_rebuilds: u64,
     #[cfg(test)]
@@ -269,6 +391,9 @@ impl Namespace {
             record_index_by_node: HashMap::new(),
             record_index_children: HashMap::new(),
             record_index_ambiguous: HashSet::new(),
+            record_index_digest: RecordIndexDigest::default(),
+            tree: TreeIndex::default(),
+            record_ids_complete: false,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -323,6 +448,9 @@ impl Namespace {
             record_index_by_node: HashMap::new(),
             record_index_children: HashMap::new(),
             record_index_ambiguous: HashSet::new(),
+            record_index_digest: RecordIndexDigest::default(),
+            tree: TreeIndex::default(),
+            record_ids_complete: false,
             #[cfg(test)]
             record_index_rebuilds: 0,
             #[cfg(test)]
@@ -333,6 +461,38 @@ impl Namespace {
         ns.ensure_record_ids();
         ns.rebuild_record_index();
         Ok(ns)
+    }
+
+    /// Complete visible register operation IDs for a record and its ancestor
+    /// bindings. IDs retain same-value/ABA changes and losing concurrent values.
+    pub(crate) fn checked_record_frontier(
+        &self,
+        ino: u64,
+    ) -> Option<Vec<(String, String, Vec<String>)>> {
+        let mut id = self.ino_to_id.get(&ino)?.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut frontier = Vec::new();
+        while id != ROOT_ID {
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            let node = self.node(&id)?;
+            let mut keys = self.doc.keys(&node).collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                let mut operations = self
+                    .doc
+                    .get_all(&node, &key)
+                    .ok()?
+                    .into_iter()
+                    .map(|(_, operation)| operation.to_string())
+                    .collect::<Vec<_>>();
+                operations.sort();
+                frontier.push((id.clone(), key, operations));
+            }
+            id = read_str(&self.doc, &node, "parent")?;
+        }
+        Some(frontier)
     }
 
     pub fn author(&self) -> &str {
@@ -402,7 +562,9 @@ impl Namespace {
     }
 
     pub fn save(&mut self) -> Vec<u8> {
-        self.ensure_record_ids();
+        if !self.record_ids_complete {
+            self.ensure_record_ids();
+        }
         self.doc.save()
     }
     /// Changes since the last `save_incremental`/load/merge, advancing the shared
@@ -413,7 +575,9 @@ impl Namespace {
     /// saved outside that scope can have its delta silently swallowed by a
     /// concurrent remote-apply.
     pub fn save_incremental(&mut self) -> Vec<u8> {
-        self.ensure_record_ids();
+        if !self.record_ids_complete {
+            self.ensure_record_ids();
+        }
         self.doc.save_incremental()
     }
     /// # Errors
@@ -425,6 +589,34 @@ impl Namespace {
         self.rebuild_record_index();
         Ok(())
     }
+    /// Isolate a durable restore candidate from subsequent changes by the live
+    /// namespace actor. This is projection identity, never certified authorship.
+    pub(crate) fn begin_restore_projection(
+        &mut self,
+        workspace: uuid::Uuid,
+        record: FileRecordId,
+        intent: uuid::Uuid,
+    ) -> automerge::ActorId {
+        let original = self.doc.get_actor().clone();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"qos.namespace.restore-projection.v1\0");
+        hasher.update(workspace.as_bytes());
+        hasher.update(record.0.as_bytes());
+        hasher.update(intent.as_bytes());
+        hasher.update(original.to_bytes());
+        self.doc.set_actor(automerge::ActorId::from(
+            hasher.finalize().as_bytes().as_slice(),
+        ));
+        original
+    }
+
+    pub(crate) fn end_restore_projection(&mut self, original: automerge::ActorId) {
+        // save_incremental closes the candidate's pending transaction before
+        // returning to the live actor; retries retain these exact saved bytes.
+        let _ = self.doc.save_incremental();
+        self.doc.set_actor(original);
+    }
+
     pub fn prime_baseline(&mut self) {
         let _ = self.doc.save_incremental();
     }
@@ -509,6 +701,21 @@ impl Namespace {
         }
     }
 
+    /// The structural index of every node, read from the document.
+    fn scan_tree_index(&self) -> TreeIndex {
+        let mut tree = TreeIndex::default();
+        for id in self.doc.keys(&self.nodes) {
+            let Some(node) = self.node(&id) else {
+                continue;
+            };
+            if let Some(parent) = read_str(&self.doc, &node, "parent") {
+                let name = read_name(&self.doc, &node, "name").unwrap_or_default();
+                tree.place(&id, parent, name);
+            }
+        }
+        tree
+    }
+
     /// Reconstruct the index once while loading or after an opaque remote
     /// Automerge merge.  Serving a record-index page never calls this: page
     /// work is a slice of `record_index`, not a document traversal.
@@ -523,6 +730,7 @@ impl Namespace {
 
         let mut raw = HashMap::<String, Raw>::new();
         let mut occurrences = HashMap::<FileRecordId, usize>::new();
+        self.tree = self.scan_tree_index();
         for id in self.doc.keys(&self.nodes) {
             let Some(node) = self.node(&id) else {
                 continue;
@@ -592,6 +800,10 @@ impl Namespace {
                 );
             }
         }
+        self.record_index_digest = RecordIndexDigest::default();
+        for record in record_index.values() {
+            self.record_index_digest.add(record);
+        }
         self.record_index = record_index;
         self.record_index_order = self.record_index.keys().copied().collect();
         self.record_index_by_node = by_node;
@@ -643,20 +855,14 @@ impl Namespace {
         &self.record_index_revision
     }
 
+    /// O(1): derived from the row count and the incrementally maintained
+    /// row digest, so a create does not rehash the whole catalogue.
     fn update_record_index_revision(&mut self) {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.fs.namespace-record-index.v1\\0");
+        hasher.update(b"tilo.fs.namespace-record-index.v2\0");
         hasher.update(&(self.record_index_order.len() as u64).to_be_bytes());
-        for record_id in &self.record_index_order {
-            let Some(record) = self.record_index.get(record_id) else {
-                continue;
-            };
-            hasher.update(record.record_id.0.as_bytes());
-            for field in [&record.parent_id, &record.node_id, &record.path] {
-                hasher.update(&(field.len() as u64).to_be_bytes());
-                hasher.update(field.as_bytes());
-            }
-            hasher.update(&[u8::from(record.is_dir)]);
+        for limb in self.record_index_digest.0 {
+            hasher.update(&limb.to_le_bytes());
         }
         self.record_index_revision = hasher.finalize().to_hex().to_string();
     }
@@ -676,6 +882,7 @@ impl Namespace {
         if let Some(previous) = self.record_index.remove(&record_id) {
             // A duplicate durable identity is withheld until a full
             // reconciliation can represent the ambiguity fail-closed.
+            self.record_index_digest.remove(&previous);
             self.record_index_by_node.remove(&previous.node_id);
             if let Some(children) = self.record_index_children.get_mut(&previous.parent_id) {
                 children.remove(&previous.node_id);
@@ -710,16 +917,15 @@ impl Namespace {
             .or_default()
             .insert(id.to_string());
         self.record_index_by_node.insert(id.to_string(), record_id);
-        self.record_index.insert(
+        let record = IndexedRecord {
             record_id,
-            IndexedRecord {
-                record_id,
-                node_id: id.to_string(),
-                parent_id,
-                path,
-                is_dir: self.kind_of(id) == NodeKind::Dir,
-            },
-        );
+            node_id: id.to_string(),
+            parent_id,
+            path,
+            is_dir: self.kind_of(id) == NodeKind::Dir,
+        };
+        self.record_index_digest.add(&record);
+        self.record_index.insert(record_id, record);
         let position = self
             .record_index_order
             .binary_search(&record_id)
@@ -785,6 +991,7 @@ impl Namespace {
             let record_id = self.deterministic_record_id(&id);
             let _ = self.doc.put(&node, RECORD_ID_KEY, record_id.0.to_string());
         }
+        self.record_ids_complete = true;
     }
 
     fn parent_of(&self, id: &str) -> Option<String> {
@@ -813,6 +1020,23 @@ impl Namespace {
     fn set_field(&mut self, id: &str, key: &str, val: impl Into<ScalarValue>) {
         if let Some(obj) = self.node(id) {
             let _ = self.doc.put(&obj, key, val);
+            if key == "parent" || key == "name" {
+                self.reindex_node(id);
+            }
+        }
+    }
+
+    /// Bring one node's entry in the structural index in line with the
+    /// document after its parent or name changed.
+    fn reindex_node(&mut self, id: &str) {
+        let placement = self.node(id).and_then(|node| {
+            let parent = read_str(&self.doc, &node, "parent")?;
+            let name = read_name(&self.doc, &node, "name").unwrap_or_default();
+            Some((parent, name))
+        });
+        match placement {
+            Some((parent, name)) => self.tree.place(id, parent, name),
+            None => self.tree.remove(id),
         }
     }
 
@@ -866,26 +1090,16 @@ impl Namespace {
     }
 
     fn children(&self, parent_id: &str) -> Vec<String> {
-        self.doc
-            .keys(&self.nodes)
-            .filter(|id| self.parent_of(id).as_deref() == Some(parent_id))
-            .collect()
+        self.tree.children(parent_id).cloned().collect()
     }
 
     /// The live child of `parent_id` named `name` — smallest id wins on a tie.
     fn child_named(&self, parent_id: &str, name: impl AsRef<[u8]>) -> Option<String> {
-        let name = name.as_ref();
-        let mut matches: Vec<String> = self
-            .children(parent_id)
-            .into_iter()
-            .filter(|id| {
-                self.name_of(id)
-                    .is_some_and(|candidate| candidate.as_bytes() == name)
-                    && self.reaches_root(id)
-            })
-            .collect();
-        matches.sort();
-        matches.into_iter().next()
+        // The index yields same-named nodes in id order.
+        self.tree
+            .named(parent_id, name.as_ref())
+            .find(|id| self.reaches_root(id))
+            .cloned()
     }
 
     fn is_ancestor(&self, maybe_ancestor: &str, id: &str) -> bool {
@@ -1091,7 +1305,7 @@ impl Namespace {
     /// Returns an error when transaction verification or projection fails.
     pub fn apply_replacement_transaction(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         // Automerge transactions make the document edits atomic, but the
         // verified-record projection is maintained alongside the document.
@@ -1115,13 +1329,40 @@ impl Namespace {
     /// Returns an error when transaction verification or projection fails.
     pub fn apply_mutation_transaction(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
-            collab_types::FileMutationOperationV1::ReplacementRename { .. } => {
+            collab_types::FileMutationOperation::RestoreContent { prior_revision, .. } => {
+                transaction
+                    .verify()
+                    .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
+                let participant = transaction
+                    .manifest
+                    .participants
+                    .first()
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let revision = participant
+                    .proposed_content_revision
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let ino = self
+                    .ensure_ino_for_record_id(participant.record_id)
+                    .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+                let current = self.content_revision_for(ino);
+                if current == Some(revision) {
+                    return Ok(None);
+                }
+                if current != Some(prior_revision) {
+                    return Err(TransactionProjectionError::PreconditionFailed);
+                }
+                if !self.set_content_revision(ino, &revision, transaction.manifest.timestamp_ms) {
+                    return Err(TransactionProjectionError::ContentProjectionFailed);
+                }
+                Ok(Some(self.save_incremental()))
+            }
+            collab_types::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
             }
-            collab_types::FileMutationOperationV1::KeepBothContentConflict { .. } => {
+            collab_types::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1130,7 +1371,7 @@ impl Namespace {
                 }
                 Ok(delta)
             }
-            collab_types::FileMutationOperationV1::MergeContentConflict { .. } => {
+            collab_types::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1150,13 +1391,13 @@ impl Namespace {
     /// or inconsistent with the resulting projection.
     pub fn apply_staged_merge_delta(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::MergeContentConflict {
+        let collab_types::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1169,7 +1410,7 @@ impl Namespace {
             .manifest
             .participants
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRoleV1::MergeSource)
+            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
@@ -1208,12 +1449,12 @@ impl Namespace {
 
     fn apply_merge_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::MergeContentConflict {
+        let collab_types::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1226,7 +1467,7 @@ impl Namespace {
             .manifest
             .participants
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRoleV1::MergeSource)
+            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1270,13 +1511,13 @@ impl Namespace {
     /// or inconsistent with the resulting projection.
     pub fn apply_staged_keep_both_delta(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::KeepBothContentConflict {
+        let collab_types::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1291,13 +1532,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSource)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = transaction
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSibling)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
@@ -1351,12 +1592,12 @@ impl Namespace {
 
     fn apply_keep_both_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::KeepBothContentConflict {
+        let collab_types::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1371,13 +1612,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSource)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = transaction
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSibling)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1445,15 +1686,18 @@ impl Namespace {
         Ok(Some(self.save_incremental()))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Replacement projection keeps signature/participant checks, replay detection, namespace preconditions, rename, and revision installation in order."
+    )]
     fn apply_replacement_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::ReplacementRename {
+        let collab_types::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -1468,13 +1712,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|value| value.role == FileMutationParticipantRoleV1::Source)
+            .find(|value| value.role == FileMutationParticipantRole::Source)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let replaced_participant = transaction
             .manifest
             .participants
             .iter()
-            .find(|value| value.role == FileMutationParticipantRoleV1::Replaced)
+            .find(|value| value.role == FileMutationParticipantRole::Replaced)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1906,6 +2150,8 @@ impl Namespace {
         let _ = self.doc.put(&obj, "author", self.author.clone());
         let record_id = FileRecordId::new();
         let _ = self.doc.put(&obj, RECORD_ID_KEY, record_id.0.to_string());
+        self.tree
+            .place(&id, parent_id.to_string(), name.to_vec().into());
         Some(id)
     }
 
@@ -2652,9 +2898,6 @@ mod tests {
         Hash::from([b; 32])
     }
 
-    // This end-to-end scenario intentionally exercises every durable phase of
-    // a two-record replacement transaction and its idempotent replay.
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn root_is_inode_one_and_listable() {
         let mut ns = Namespace::new("a").unwrap();
@@ -2714,16 +2957,19 @@ mod tests {
 
     // This scenario intentionally covers every durable phase and replay of a
     // two-record replacement transaction in one linear assertion trace.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
+    )]
     #[test]
     fn complete_replacement_transaction_moves_source_tombstones_victim_and_replays() {
         use collab_types::{
-            ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperationV1,
-            FileMutationParticipantV1, FileMutationTransactionManifestV1, FileProvenance,
+            ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
+            FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
             FileVersionId, FileVersionV1,
         };
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use getrandom::{SysRng, rand_core::UnwrapErr};
 
         let mut ns = Namespace::new("a").unwrap();
         let source_ino = ns
@@ -2754,7 +3000,7 @@ mod tests {
                 1,
             ));
         }
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: collab_types::Ed25519PublicKey([9; 32]),
             device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
@@ -2769,12 +3015,12 @@ mod tests {
                 content_hash: Some(ContentHash([content_byte; 32])),
                 metadata_hash: ContentHash([content_byte + 2; 32]),
                 provenance: match role {
-                    FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                    FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                    FileMutationParticipantRole::Source => FileProvenance::Rename,
+                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                     _ => unreachable!("replacement fixture role"),
                 },
             };
-            let mut participant = FileMutationParticipantV1 {
+            let mut participant = FileMutationParticipant {
                 record_id,
                 role,
                 expected_version,
@@ -2784,7 +3030,7 @@ mod tests {
                     parent: Some(root_record),
                     name: "destination.txt".into(),
                     kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                    tombstoned: role == FileMutationParticipantRole::Replaced,
                     actor,
                     observed_at_ms: 2,
                 },
@@ -2806,25 +3052,25 @@ mod tests {
             participant(
                 source_record,
                 source_expected,
-                FileMutationParticipantRoleV1::Source,
+                FileMutationParticipantRole::Source,
                 1,
             ),
             participant(
                 victim_record,
                 victim_expected,
-                FileMutationParticipantRoleV1::Replaced,
+                FileMutationParticipantRole::Replaced,
                 2,
             ),
         ];
         participants.sort_by_key(|participant| participant.record_id);
-        let transaction = collab_types::FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        let transaction = collab_types::FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: Uuid::new_v4(),
                 actor,
                 timestamp_ms: 2,
-                operation: FileMutationOperationV1::ReplacementRename {
+                operation: FileMutationOperation::ReplacementRename {
                     source_parent: root_record,
                     source_name: "source.txt".into(),
                     destination_parent: root_record,
@@ -3563,6 +3809,79 @@ mod tests {
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].path, "/synthetic-100001");
         assert_eq!(ns.record_index_rebuild_count(), before);
+    }
+
+    /// The incrementally maintained structural index and record digest must
+    /// equal a from-scratch rebuild after every kind of local and merged
+    /// placement change.
+    fn assert_indexes_match_rebuild(ns: &Namespace) {
+        let mut rebuilt = ns.clone();
+        rebuilt.rebuild_record_index();
+        assert_eq!(ns.tree.placement, rebuilt.tree.placement);
+        assert_eq!(ns.tree.children, rebuilt.tree.children);
+        assert_eq!(ns.record_index_digest, rebuilt.record_index_digest);
+        assert_eq!(ns.record_index_revision, rebuilt.record_index_revision);
+    }
+
+    #[test]
+    fn structural_index_tracks_creates_moves_deletes_and_merges() {
+        let mut a = Namespace::new("a").unwrap();
+        let dir = a.create_dir(ROOT_INO, "dir", 1).unwrap();
+        for i in 0..50_u64 {
+            let parent = if i % 3 == 0 { dir } else { ROOT_INO };
+            a.create_file(parent, format!("f{i}"), Some(&h(1)), 1, i)
+                .unwrap();
+        }
+        assert_indexes_match_rebuild(&a);
+        assert!(a.rename(ROOT_INO, "f1", dir, "moved", 2));
+        assert!(
+            a.rename(dir, "f3", dir, "f6", 3),
+            "rename over an existing name"
+        );
+        let gone = a.lookup(ROOT_INO, "f2").unwrap().ino.0;
+        assert!(a.remove(gone));
+        assert_indexes_match_rebuild(&a);
+        assert!(a.lookup(ROOT_INO, "f1").is_none());
+        assert!(a.lookup(dir, "moved").is_some());
+        assert!(a.lookup(ROOT_INO, "f2").is_none());
+
+        // Concurrent same-name creates on two replicas: the lowest id wins
+        // the name, exactly as the unindexed scan chose.
+        let mut b = a.clone_doc();
+        b.author = "b".into();
+        a.create_file(ROOT_INO, "same", Some(&h(2)), 1, 9).unwrap();
+        b.create_file(ROOT_INO, "same", Some(&h(3)), 1, 9).unwrap();
+        let delta = b.save_incremental();
+        a.apply_remote_and_resolve(&delta).unwrap();
+        assert_indexes_match_rebuild(&a);
+        let winner = a.lookup(ROOT_INO, "same").unwrap().ino.0;
+        let mut same: Vec<String> = a
+            .doc
+            .keys(&a.nodes)
+            .filter(|id| a.name_of(id).is_some_and(|name| name.as_bytes() == b"same"))
+            .collect();
+        same.sort();
+        assert_eq!(a.id_for_ino(winner), same.first().map(String::as_str));
+        let names: Vec<_> = a
+            .readdir(ROOT_INO)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn save_incremental_still_backfills_record_ids_after_an_import() {
+        let mut ns = Namespace::new("a").unwrap();
+        ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
+        let mut copy = ns.clone_doc();
+        assert!(copy.record_ids_complete);
+        let copied = copy.lookup(ROOT_INO, "x").unwrap().ino.0;
+        let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
+        assert_eq!(copy.record_id_for(copied), ns.record_id_for(original));
     }
 
     // test-only helper to merge using a fresh loaded copy

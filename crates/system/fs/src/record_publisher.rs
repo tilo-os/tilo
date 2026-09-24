@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::{
     CONTENT_REVISION_VERSION, CanonicalError, ConflictStatus, ContentRevisionV1, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransactionManifestV1,
-    FileMutationTransactionV1, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction,
+    FileMutationTransactionManifest, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -110,6 +110,74 @@ impl RecordPublisher {
         self.actor
     }
 
+    pub(crate) fn publication_lease(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, RecordPublisherError> {
+        self.publish_lock
+            .lock()
+            .map_err(|_| RecordPublisherError::PublicationUnavailable)
+    }
+
+    pub(crate) fn repository(&self) -> &Arc<RecordRepository> {
+        &self.repository
+    }
+
+    /// Build the exact bounded restore batch while the caller retains P and R.
+    pub(crate) fn sign_checked_restore(
+        &self,
+        manifest: FileMutationTransactionManifest,
+        previous_sequence: u64,
+    ) -> Result<crate::record_transaction::RecordTransactionJournalEntry, RecordPublisherError>
+    {
+        if manifest.workspace_id != self.workspace_id
+            || manifest.actor != self.actor
+            || !matches!(
+                manifest.operation,
+                collab_types::FileMutationOperation::RestoreContent { .. }
+            )
+        {
+            return Err(RecordPublisherError::TransactionScopeMismatch);
+        }
+        let transaction = FileMutationTransaction::signed(manifest, &self.signing_key)
+            .map_err(|_| RecordPublisherError::InvalidTransaction)?;
+        let record_id = transaction.manifest.participants[0].record_id;
+        let prepare = previous_sequence
+            .checked_add(1)
+            .ok_or(RecordPublisherError::SequenceContention)?;
+        let commit = prepare
+            .checked_add(1)
+            .ok_or(RecordPublisherError::SequenceContention)?;
+        Ok(crate::record_transaction::RecordTransactionJournalEntry {
+            schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
+            participant_batches: vec![
+                crate::record_transaction::RecordTransactionParticipantBatch {
+                    record_id,
+                    envelopes: vec![
+                        RecordEnvelopeV1::signed(
+                            record_id,
+                            self.actor,
+                            prepare,
+                            RecordOperationV1::PrepareTransaction(transaction.clone()),
+                            &self.signing_key,
+                        )?,
+                        RecordEnvelopeV1::signed(
+                            record_id,
+                            self.actor,
+                            commit,
+                            RecordOperationV1::CommitTransaction {
+                                transaction_id: transaction.manifest.transaction_id,
+                            },
+                            &self.signing_key,
+                        )?,
+                    ],
+                },
+            ],
+            transaction,
+            phase: crate::record_transaction::RecordTransactionPhase::Prepared,
+            namespace_delta: None,
+        })
+    }
+
     /// Sign, journal, commit, persist, and broadcast one replacement rename
     /// while holding the same local mutation lock as ordinary publication.
     ///
@@ -119,7 +187,7 @@ impl RecordPublisher {
     /// is invalid, or any durable transaction phase fails.
     pub fn execute_replacement_transaction<F>(
         &self,
-        manifest: FileMutationTransactionManifestV1,
+        manifest: FileMutationTransactionManifest,
         journal: &mut crate::record_transaction::RecordTransactionJournal,
         history: &crate::history::FileHistoryStore,
         namespace: &Arc<Mutex<crate::namespace::Namespace>>,
@@ -136,7 +204,7 @@ impl RecordPublisher {
         if manifest.workspace_id != self.workspace_id || manifest.actor != self.actor {
             return Err(RecordPublisherError::TransactionScopeMismatch);
         }
-        let transaction = FileMutationTransactionV1::signed(manifest, &self.signing_key)
+        let transaction = FileMutationTransaction::signed(manifest, &self.signing_key)
             .map_err(|_| RecordPublisherError::InvalidTransaction)?;
         let mut participant_batches = Vec::with_capacity(transaction.manifest.participants.len());
         for participant in &transaction.manifest.participants {
@@ -230,6 +298,17 @@ impl RecordPublisher {
             .map_err(|_| RecordPublisherError::PublicationUnavailable)?;
         let entries = journal.entries().cloned().collect::<Vec<_>>();
         for entry in entries {
+            if entry.phase == crate::record_transaction::RecordTransactionPhase::BroadcastCommitted
+                && matches!(
+                    entry.transaction.manifest.operation,
+                    collab_types::FileMutationOperation::RestoreContent { .. }
+                )
+            {
+                if entry.transaction.manifest.workspace_id != self.workspace_id {
+                    return Err(RecordPublisherError::TransactionScopeMismatch);
+                }
+                continue;
+            }
             if entry.transaction.manifest.workspace_id != self.workspace_id
                 || entry.transaction.manifest.actor != self.actor
             {
@@ -467,7 +546,10 @@ impl RecordPublisher {
     /// or cannot be durably published.
     // Validation and publication are deliberately serialized as one ordered,
     // retry-safe state transition.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One publication lock covers validation and ordered version, content-revision, conflict, and metadata updates for retry safety."
+    )]
     pub fn publish_state(
         &self,
         metadata: &FileMetadataV1,
@@ -664,7 +746,10 @@ impl RecordPublisher {
     /// competing publisher already made the exact state visible.
     // Ownership freezes the requested operation while bounded retries clone it
     // into independently signed envelopes.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The owned operation is the retry snapshot cloned into independently signed envelopes at each candidate sequence."
+    )]
     fn apply_idempotent(
         &self,
         key: RecordRepositoryKey,
@@ -849,6 +934,27 @@ pub enum RecordPublisherError {
     TransactionCoordinator(
         #[from] crate::transaction_coordinator::RecordTransactionCoordinatorError,
     ),
+}
+
+impl RecordPublisherError {
+    /// Whether the record (or repository) has reached a size bound, so the
+    /// same publication will keep failing however often it is retried.
+    #[must_use]
+    pub const fn is_capacity_exhausted(&self) -> bool {
+        matches!(
+            self,
+            Self::HistoryTooLarge
+                | Self::ConflictHistoryTooLarge
+                | Self::SequenceExhausted
+                | Self::Repository(
+                    RecordRepositoryError::TooManyVersions
+                        | RecordRepositoryError::TooManyOperations
+                        | RecordRepositoryError::TooManyConflicts
+                        | RecordRepositoryError::TooManyRecords
+                        | RecordRepositoryError::RecordFileTooLarge
+                )
+        )
+    }
 }
 
 #[cfg(test)]

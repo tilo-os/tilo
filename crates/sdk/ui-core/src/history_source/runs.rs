@@ -18,7 +18,7 @@
 //! thing two writers race to create — losing that race discards every
 //! record inside it.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{
@@ -43,7 +43,7 @@ pub const MAX_LABEL_LEN: usize = 200;
 /// Holds no content — only where the work is and which changes it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunStep {
-    /// Application that owns the document, e.g. `dev.tilo.word-processor`. The
+    /// Application that owns the document, e.g. `so.tilo.word-processor`. The
     /// same id the collaboration broker routes on, so a coordinator can find
     /// the peer to ask.
     pub app: String,
@@ -135,7 +135,7 @@ pub fn record_run_with_details(
     let first = steps.first()?;
     let key = format!("{RUNS_KEY}{}", hex16(&first.run.start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
-    let at = SystemTime::now()
+    let at = crate::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
 

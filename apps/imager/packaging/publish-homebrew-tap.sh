@@ -146,7 +146,7 @@ if [ ! -f "$work/tap/README.md" ]; then
   fi
 fi
 git -C "$work/tap" config user.name "Tilo release automation"
-git -C "$work/tap" config user.email "release-bot@tilo.dev"
+git -C "$work/tap" config user.email "release-bot@tilo.so"
 git -C "$work/tap" add Formula Casks README.md
 if git -C "$work/tap" diff --cached --quiet; then
   printf 'Homebrew tap already contains Tilo Imager %s\n' "$version"

@@ -1,6 +1,6 @@
 [Unit]
 Description=Start QuickFS when the certified device identity is created
-Documentation=https://github.com/tilo/tilo
+Documentation=https://github.com/qos/qos
 ConditionPathExists=/dev/fuse
 # The live installer intentionally has no durable identity. tilo-install removes
 # this sealed marker from the installed target before its first boot.

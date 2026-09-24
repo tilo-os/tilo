@@ -248,26 +248,21 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
 
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
     // A decoy claiming nothing and sorting first by display name: without a
     // second package, "resolve the owner" and "take whatever's installed"
     // look the same.
-    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
+    install(&apps, "so.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
 
-    let old_home = std::env::var_os("HOME");
-    let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
-
-    // SAFETY: this test is the only thing in its binary, and the values
-    // are read on this thread and by the launch thread it spawns.
-    unsafe {
-        std::env::set_var("HOME", &home);
-        std::env::set_var("TILO_APPS_DATA_DIR", &apps);
-        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
-        std::env::set_var("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
-    }
+    // Read on this thread and by the launch thread it spawns.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("TILO_APPS_DATA_DIR", &apps)
+        .set("XDG_RUNTIME_DIR", &runtime)
+        .set("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
     launcher::invalidate_app_cache();
     launcher::clear_pending_placements();
     shell::shell::doc_open::clear_open_documents();
@@ -343,7 +338,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     let cmd = &commands[0];
     assert!(
-        cmd.contains("--app-id dev.tilo.word-processor"),
+        cmd.contains("--app-id so.tilo.word-processor"),
         "the document had to open in the package that declares .odt: {cmd}"
     );
     assert!(
@@ -357,8 +352,11 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         use shell::shell::state::{Effect, Scope, Subject};
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace().expect("an active workspace");
-        let want = Subject::app("dev.tilo.word-processor");
+        let ws = tree
+            .desktop
+            .active_workspace()
+            .expect("an active workspace");
+        let want = Subject::app("so.tilo.word-processor");
         let scopes: Vec<&Scope> = ws
             .capabilities
             .iter()
@@ -372,18 +370,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         );
     }
 
-    unsafe {
-        match old_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-        match old_runtime {
-            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-            None => std::env::remove_var("XDG_RUNTIME_DIR"),
-        }
-        std::env::remove_var("TILO_APPS_DATA_DIR");
-        std::env::remove_var("TILO_LAUNCHER_BIN");
-    }
+    drop(env);
     launcher::invalidate_app_cache();
 }
 
@@ -393,29 +380,27 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
     // The decoy is what makes "the app that owns .odt" a different claim
     // from "whatever is installed".
-    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
+    install(&apps, "so.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
     let doc_path = tmp.path().join("dropped.odt");
     std::fs::write(&doc_path, b"dropped").unwrap();
 
-    // SAFETY: serialised on `process_env` against the other test here.
-    unsafe {
-        std::env::set_var("TILO_APPS_DATA_DIR", &apps);
-        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
-        std::env::set_var("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", &apps)
+        .set("XDG_RUNTIME_DIR", &runtime)
+        .set("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
     launcher::invalidate_app_cache();
     launcher::clear_pending_placements();
     shell::shell::doc_open::clear_open_documents();
     launcher::set_wayland_socket(OsStr::new("wayland-test"));
 
     let tree = WorkspaceTree::bootstrap_demo();
-    let strip_id = tree.workspaces[0].strips[0].id;
+    let strip_id = tree.desktop.workspaces[0].strips[0].id;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let mut session = Session::new();
@@ -423,7 +408,9 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let tabs_before: usize = {
         let st = chrome.borrow();
         let t = st.tree();
-        t.workspaces[0].strips[0].window_groups[0].tabs.len()
+        t.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len()
     };
 
     // winit's `DroppedFile` carries no coordinate, so put the pointer over
@@ -452,7 +439,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let commands = launched_commands(&log, 1);
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     assert!(
-        commands[0].contains("--app-id dev.tilo.word-processor")
+        commands[0].contains("--app-id so.tilo.word-processor")
             && commands[0].contains(&format!("--open {}", doc_path.display())),
         "the drop had to open the document in its own app: {}",
         commands[0]
@@ -462,7 +449,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     // the tab, and it arrives when the app does.
     let st = chrome.borrow();
     let t = st.tree();
-    let group = &t.workspaces[0].strips[0].window_groups[0];
+    let group = &t.desktop.workspaces[0].strips[0].window_groups[0];
     assert_eq!(
         group.tabs.len(),
         tabs_before,
@@ -476,9 +463,6 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     drop(t);
     drop(st);
 
-    unsafe {
-        std::env::remove_var("TILO_APPS_DATA_DIR");
-        std::env::remove_var("TILO_LAUNCHER_BIN");
-    }
+    drop(env);
     launcher::invalidate_app_cache();
 }

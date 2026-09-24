@@ -35,8 +35,8 @@ jobs:
           rustup toolchain install nightly-2026-08-25 --profile minimal
           cargo +nightly-2026-08-25 install cargo-fuzz --locked --version 0.13.2
 
-      - name: Fuzz qpkg ingress
-        run: cargo +nightly-2026-08-25 fuzz run qpkg_ingress -- -max_total_time=900 -timeout=10
+      - name: Fuzz tapp ingress
+        run: cargo +nightly-2026-08-25 fuzz run tapp_ingress -- -max_total_time=900 -timeout=10
 
       - name: Fuzz collaboration invite chains
         run: cargo +nightly-2026-08-25 fuzz run collab_invite_chain -- -max_total_time=900 -timeout=10

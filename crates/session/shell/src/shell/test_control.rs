@@ -106,6 +106,8 @@ pub enum Command {
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
     SetGroupWidth { permille: u16 },
+    /// Seed the production hand-off slot used by the hosted file manager. Files' own widget tests prove pointer-to-drag arming; compositor integration tests use this to isolate the Wayland hand-off boundary.
+    SeedFilesDrag { paths: Vec<PathBuf> },
     /// Press or release a pointer button at the current position. `button` defaults to the left one; the right button drives the "select, right-click" gesture this desktop leans on.
     PointerButton {
         pressed: bool,
@@ -365,6 +367,8 @@ pub enum PlannedAction {
     Snapshot { path: PathBuf },
     /// Give every live window group the same share of its strip, in permille. Applied to the widget tree, where the laid-out width lives.
     SetGroupWidth { permille: u16 },
+    /// Publish paths through the hosted file manager's production external-drag slot.
+    SeedFilesDrag { paths: Vec<PathBuf> },
     /// Run one already-validated action against the live CRDT. Carried as a planned action rather than executed inside `dispatch_command`, since invoking mutates the document and dispatch only ever holds it immutably. The executor re-resolves the address and re-checks `args` against a fresh catalogue, since the document may have moved on since planning.
     InvokeAction {
         provider: String,
@@ -401,6 +405,15 @@ pub enum NamedKeyTag {
     F1,
     F4,
     PrintScreen,
+    AudioVolumeUp,
+    AudioVolumeDown,
+    AudioVolumeMute,
+    MicrophoneVolumeMute,
+    BrightnessUp,
+    BrightnessDown,
+    MediaPlayPause,
+    MediaTrackNext,
+    MediaTrackPrevious,
     Space,
     /// Bare modifier keys, reachable only through `key_down`/`key_up` (a `key` press+release pair would release the modifier before the next key arrives) — the only way to hold a real modifier across a keystroke, matching hardware/xkb.
     Shift,
@@ -428,6 +441,15 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
         "F1" => Some(KeyTag::Named(NamedKeyTag::F1)),
         "F4" => Some(KeyTag::Named(NamedKeyTag::F4)),
         "PrintScreen" => Some(KeyTag::Named(NamedKeyTag::PrintScreen)),
+        "AudioVolumeUp" => Some(KeyTag::Named(NamedKeyTag::AudioVolumeUp)),
+        "AudioVolumeDown" => Some(KeyTag::Named(NamedKeyTag::AudioVolumeDown)),
+        "AudioVolumeMute" => Some(KeyTag::Named(NamedKeyTag::AudioVolumeMute)),
+        "MicrophoneVolumeMute" => Some(KeyTag::Named(NamedKeyTag::MicrophoneVolumeMute)),
+        "BrightnessUp" => Some(KeyTag::Named(NamedKeyTag::BrightnessUp)),
+        "BrightnessDown" => Some(KeyTag::Named(NamedKeyTag::BrightnessDown)),
+        "MediaPlayPause" => Some(KeyTag::Named(NamedKeyTag::MediaPlayPause)),
+        "MediaTrackNext" => Some(KeyTag::Named(NamedKeyTag::MediaTrackNext)),
+        "MediaTrackPrevious" => Some(KeyTag::Named(NamedKeyTag::MediaTrackPrevious)),
         "Space" => Some(KeyTag::Named(NamedKeyTag::Space)),
         "Shift" => Some(KeyTag::Named(NamedKeyTag::Shift)),
         "Control" => Some(KeyTag::Named(NamedKeyTag::Control)),
@@ -538,6 +560,12 @@ pub fn dispatch_command<S: ControlState>(
             Response::Ok { frame: 0 },
             vec![PlannedAction::SetGroupWidth {
                 permille: *permille,
+            }],
+        ),
+        Command::SeedFilesDrag { paths } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::SeedFilesDrag {
+                paths: paths.clone(),
             }],
         ),
         Command::PointerButton { pressed, button } => pointer_button(*pressed, *button),
@@ -1556,6 +1584,15 @@ mod tests {
             ("F1", NamedKeyTag::F1),
             ("F4", NamedKeyTag::F4),
             ("PrintScreen", NamedKeyTag::PrintScreen),
+            ("AudioVolumeUp", NamedKeyTag::AudioVolumeUp),
+            ("AudioVolumeDown", NamedKeyTag::AudioVolumeDown),
+            ("AudioVolumeMute", NamedKeyTag::AudioVolumeMute),
+            ("MicrophoneVolumeMute", NamedKeyTag::MicrophoneVolumeMute),
+            ("BrightnessUp", NamedKeyTag::BrightnessUp),
+            ("BrightnessDown", NamedKeyTag::BrightnessDown),
+            ("MediaPlayPause", NamedKeyTag::MediaPlayPause),
+            ("MediaTrackNext", NamedKeyTag::MediaTrackNext),
+            ("MediaTrackPrevious", NamedKeyTag::MediaTrackPrevious),
             ("Space", NamedKeyTag::Space),
         ];
         for (name, expected) in cases {

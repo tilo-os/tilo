@@ -6,10 +6,7 @@
 //! snapshot and lets the shared catalogue enforce bounded query work.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use ui::tilo_actions::ActionAddress;
 
 use crate::model::{Catalog, Snapshot};
@@ -82,42 +79,18 @@ pub struct BackupsSearchProvider {
     catalog: SearchCatalog,
 }
 
-impl SearchProvider for BackupsSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for BackupsSearchProvider {
+    fn provider_name(&self) -> &'static str {
         "Backups"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(
-            query,
-            None,
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-        .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
     }
 }
 
@@ -138,43 +111,41 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
+    use ui::search::testing::{Corpus, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
-    fn large_catalog() -> Catalog {
+    fn large_catalog(corpus: Corpus) -> Catalog {
         let mut catalog = Catalog::sample();
         let template = catalog.snapshots[0].clone();
-        catalog.snapshots = (0..100_001)
-            .map(|index| {
+        catalog.snapshots = corpus
+            .map(|row| {
                 let mut snapshot = template.clone();
-                snapshot.id = format!("snapshot-{index:06}");
-                snapshot.time = format!("{index:06}");
+                snapshot.id = format!("snapshot-{:06}", row.index);
+                snapshot.time = row.text;
                 snapshot
             })
             .collect();
-        let late = catalog
-            .snapshots
-            .last_mut()
-            .expect("large history has a tail");
-        late.id = "snapshot-100000-unique-recovery-point".into();
-        late.time = "late unique recovery point".into();
         catalog
     }
 
     #[test]
     fn late_recovery_point_is_found_with_bounded_query_work() {
-        let catalog = large_catalog();
-        let index = BackupsSearchIndex::new(&catalog);
-        assert_eq!(index.stats().records, 100_001);
-
-        let page = index
-            .provider()
-            .search_page("unique-recovery-point", None, 8, 4);
-        assert_eq!(page.inspected, 1, "unique posting avoids a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        let address = page.results[0].action_address().expect("canonical address");
-        assert_eq!(
-            address.resource,
-            "backups.snapshot:snapshot-100000-unique-recovery-point"
+        let mut loaded = None;
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let catalog = large_catalog(corpus);
+                let index = BackupsSearchIndex::new(&catalog);
+                assert_eq!(index.stats().records, 3_000);
+                loaded = Some(catalog);
+                index.provider()
+            },
+            3_000,
         );
+        let catalog = loaded.expect("the corpus was loaded");
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 8, 4);
+        assert_eq!(page.inspected, 1, "unique posting avoids a corpus scan");
+        let address = hit.action_address().expect("canonical address");
+        assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
         let resource = crate::actions::resource(
             &crate::model::RetentionPolicy::default(),
             &catalog,
@@ -191,7 +162,7 @@ mod tests {
         );
         assert!(resource.actions.iter().any(|action| action.id == "verify"));
         assert!(resource.actions.iter().any(|action| action.id == "restore"));
-        let page = index.provider().search_page("snapshot", None, 17, 5);
+        let page = provider.search_page("snapshot", None, 17, 5);
         assert!(page.inspected <= 17);
         assert!(page.results.len() <= 5);
         assert!(page.next.is_some(), "the complete history remains pageable");

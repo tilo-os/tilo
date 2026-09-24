@@ -26,6 +26,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_i64_coerced, read_str};
 
 use crate::model::{Account, AccountId, Algorithm};
 
@@ -114,7 +115,7 @@ impl AuthDoc {
         };
         matches!(
             doc.get(&tombstones, id.to_string().as_str()),
-            Ok(Some((Value::Scalar(value), _))) if value.to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_bool() == Some(true)
         )
     }
 
@@ -179,13 +180,19 @@ impl AuthDoc {
                 continue;
             };
 
-            let issuer = str_field(doc, &obj, "issuer");
-            let label = str_field(doc, &obj, "label");
-            let algorithm = Algorithm::parse(&str_field(doc, &obj, "algorithm"));
-            let digits = int_field(doc, &obj, "digits").unwrap_or(6).clamp(4, 10) as u8;
-            let period = int_field(doc, &obj, "period").unwrap_or(30).clamp(5, 300) as u32;
-            let color = int_field(doc, &obj, "color").unwrap_or(0).clamp(0, 255) as u8;
-            let order = int_field(doc, &obj, "order").unwrap_or(0).max(0) as u32;
+            let issuer = read_str(doc, &obj, "issuer").unwrap_or_default();
+            let label = read_str(doc, &obj, "label").unwrap_or_default();
+            let algorithm = Algorithm::parse(&read_str(doc, &obj, "algorithm").unwrap_or_default());
+            let digits = read_i64_coerced(doc, &obj, "digits")
+                .unwrap_or(6)
+                .clamp(4, 10) as u8;
+            let period = read_i64_coerced(doc, &obj, "period")
+                .unwrap_or(30)
+                .clamp(5, 300) as u32;
+            let color = read_i64_coerced(doc, &obj, "color")
+                .unwrap_or(0)
+                .clamp(0, 255) as u8;
+            let order = read_i64_coerced(doc, &obj, "order").unwrap_or(0).max(0) as u32;
 
             out.push(Account {
                 id,
@@ -211,23 +218,6 @@ impl AuthDoc {
         for a in accounts {
             Self::upsert_account(doc, a);
         }
-    }
-}
-
-fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            automerge::ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
     }
 }
 

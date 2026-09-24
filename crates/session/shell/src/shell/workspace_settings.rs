@@ -14,6 +14,7 @@
 //! [`Workspace::may_administer`]. Non-owners see the same information
 //! with controls painted disabled, not hidden.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -111,7 +112,7 @@ pub(crate) fn permission_profile_resource_with_access(
                 ActionParam::required_owned(
                     "rules",
                     ParamType::Array,
-                    "Least-privilege rules. Scope examples: {\"App\":\"dev.tilo.notes\"}, {\"Action\":{\"app\":\"dev.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
+                    "Least-privilege rules. Scope examples: {\"App\":\"so.tilo.notes\"}, {\"Action\":{\"app\":\"so.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
                 )
                 .with_schema(serde_json::json!({
                     "minItems": 1,
@@ -475,8 +476,10 @@ struct Tint {
     alpha: f32,
 }
 
-/// Width of the modal's left sidebar in CSS px.
-pub const SIDEBAR_WIDTH: f64 = 256.0;
+/// Width of the modal's left sidebar in CSS px: the docked navigation
+/// sidebar width (HIG §9.6, `Metrics::sidebar_width`), unscaled like the
+/// rest of this lens's geometry.
+pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
 
 const SIDEBAR_IDENTITY_TOP: f64 = 24.0;
 const NAV_ROW_HEIGHT: f64 = 40.0;
@@ -684,15 +687,21 @@ impl WorkspaceSettings {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Sidebar surface reads distinct from the right pane, separated
-        // by a hairline rather than a heavy border.
-        let bg = colors.neutral[1].with_alpha_factor(0.40);
-        scene.fill(Fill::NonZero, transform, bg, None, &sidebar);
+        // Sidebar surface reads distinct from the right pane — a quiet lift
+        // measured against the ground (HIG §9.2/§9.3), never a ramp slot —
+        // separated by a derived hairline rather than a declared border.
+        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &sidebar);
         let border_x = sidebar.x1 - 0.5;
         let border = Rect::new(border_x, sidebar.y0, border_x + 1.0, sidebar.y1);
-        scene.fill(Fill::NonZero, transform, colors.neutral[3], None, &border);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::shell::panel_border(theme),
+            None,
+            &border,
+        );
 
-        // Identity card.
+        // Identity card, at the Control radius (16 is off the radius scale).
         let identity_size = 56.0_f64;
         let identity_rect = Rect::new(
             sidebar.x0 + 24.0,
@@ -700,7 +709,10 @@ impl WorkspaceSettings {
             sidebar.x0 + 24.0 + identity_size,
             sidebar.y0 + SIDEBAR_IDENTITY_TOP + identity_size,
         );
-        let identity_card = RoundedRect::from_rect(identity_rect, 16.0);
+        let identity_card = RoundedRect::from_rect(
+            identity_rect,
+            ui::chrome::ChromeRole::Control.radius(theme, identity_size),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -720,27 +732,44 @@ impl WorkspaceSettings {
 
         for (tab, row) in self.nav_rows(modal_rect) {
             let active = self.active_tab == tab;
-            let row_rr = RoundedRect::from_rect(row, 12.0);
+            // Selection is a lift (HIG §9.3), never an accent fill; the row
+            // is a Control and takes the Control radius.
+            let row_rr = RoundedRect::from_rect(
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
+            );
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
             if active {
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &row_rr);
+                scene.fill(Fill::NonZero, transform, tier.fill, None, &row_rr);
+                if let Some(border) = tier.border {
+                    scene.stroke(&Stroke::new(1.0), transform, border, None, &row_rr);
+                }
             }
             let label_color = if active {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
+            // Centred on the measured line, not at a fixed offset (HIG §7a).
+            let label_size = tokens.typography.scale.base;
+            let (_, label_h) = text_renderer.measure(tab.label(), label_size, None);
             text_renderer.draw_text(
                 scene,
                 tab.label(),
-                tokens.typography.scale.base,
+                label_size,
                 label_color,
-                at(transform, row.x0 + 12.0, row.y0 + 10.0),
+                at(
+                    transform,
+                    row.x0 + 12.0,
+                    row.center().y - f64::from(label_h) / 2.0,
+                ),
                 None,
             );
         }
 
         // Footer "Close Settings" row pinned to the bottom of the sidebar.
-        let footer_h = 40.0_f64;
+        let footer_h = f64::from(tokens.metrics.bar_height);
         let footer_y = sidebar.y1 - footer_h - 16.0;
         let footer = Rect::new(
             sidebar.x0 + 16.0,
@@ -748,20 +777,28 @@ impl WorkspaceSettings {
             sidebar.x1 - 16.0,
             footer_y + footer_h,
         );
-        let footer_rr = RoundedRect::from_rect(footer, 12.0);
+        let footer_rr = RoundedRect::from_rect(
+            footer,
+            ui::chrome::ChromeRole::Control.radius(theme, footer_h),
+        );
+        // The footer row's edge is derived against the sidebar lift it sits
+        // on (HIG §9.5), not a declared border over a lifted surface.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.lift(0.35)),
             None,
             &footer_rr,
         );
-        let glyph_size = 16.0;
+        // The standard glyph on the row inset, centred on the row; the label
+        // centred on its measured line beside it.
+        let inset = f64::from(tokens.spacing.s3);
+        let glyph_size = f64::from(tokens.metrics.icon_md);
         let glyph_rect = Rect::new(
-            footer.x0 + 12.0,
-            footer.y0 + 12.0,
-            footer.x0 + 12.0 + glyph_size,
-            footer.y0 + 12.0 + glyph_size,
+            footer.x0 + inset,
+            footer.center().y - glyph_size / 2.0,
+            footer.x0 + inset + glyph_size,
+            footer.center().y + glyph_size / 2.0,
         );
         draw_icon(
             scene,
@@ -771,12 +808,18 @@ impl WorkspaceSettings {
             colors.text_dim,
             LUCIDE_DEFAULT_STROKE_PX,
         );
+        let close_size = tokens.typography.scale.sm;
+        let (_, close_h) = text_renderer.measure("Close Settings", close_size, None);
         text_renderer.draw_text(
             scene,
             "Close Settings",
-            tokens.typography.scale.sm,
+            close_size,
             colors.text_dim,
-            at(transform, footer.x0 + 36.0, footer.y0 + 12.0),
+            at(
+                transform,
+                glyph_rect.x1 + inset,
+                footer.center().y - f64::from(close_h) / 2.0,
+            ),
             None,
         );
     }
@@ -800,17 +843,39 @@ fn tab_focus_id(tab: WsTab) -> u64 {
 // Shared chrome — cards, chips, section headers
 
 const PANE_PAD_X: f64 = 16.0;
-const PANE_PAD_TOP: f64 = 12.0;
+/// The pane's lead-in under the lens body top. The body already starts `s2`
+/// under the tab strip (`WorkspaceSettingsOverlay::body_rect_for`), so this
+/// completes the `s4` section step (HIG §7b) from the strip to the intro card.
+const PANE_PAD_TOP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// The pane's bottom inset: the row-overflow guard and the footer copy keep
+/// one `s3` clear of the lens body's bottom edge. Only the top lead-in shrank
+/// to complete the section step; the bottom keeps its authored step.
+const PANE_PAD_BOTTOM: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 const PANE_INTRO_HEIGHT: f64 = 64.0;
 const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
 const ROW_GAP: f64 = 8.0;
-const SECTION_HEADER_HEIGHT: f64 = 26.0;
-const CONTROL_HEIGHT: f64 = 30.0;
-const COMPOSER_HEIGHT: f64 = 78.0;
+/// A section header band inside a pane: the Bar-control step (HIG §9.6).
+const SECTION_HEADER_HEIGHT: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// A composer control — picker, expiry segment, submit — is never smaller
+/// than the minimum pointer target (HIG §9.6).
+const CONTROL_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+/// Caption band above a control ("Until", "Who"): one `xs` line plus air.
+const COMPOSER_CAPTION_BAND: f64 = 18.0;
+/// The composer card: a caption band over one control row, inside `s3`
+/// padding — derived from the pieces rather than restated as a total.
+const COMPOSER_HEIGHT: f64 = ui::tokens::Spacing::BASE.s3 as f64
+    + ui::tokens::Spacing::BASE.s6 as f64
+    + CONTROL_HEIGHT
+    + ui::tokens::Spacing::BASE.s3 as f64;
+/// A narrow pane stacks the composer on two rows: one more control, its
+/// caption band, and an `s1` seam between the rows.
+const COMPOSER_COMPACT_EXTRA: f64 =
+    CONTROL_HEIGHT + COMPOSER_CAPTION_BAND + ui::tokens::Spacing::BASE.s1 as f64;
 const REVOKE_WIDTH: f64 = 80.0;
-const REVOKE_HEIGHT: f64 = 26.0;
+/// Row buttons (revoke, role, review) are full pointer targets (HIG §9.6).
+const REVOKE_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 const AGENT_REVIEW_WIDTH: f64 = 112.0;
 const AGENT_ONBOARDING_HEIGHT: f64 = 34.0;
 const SUBMIT_WIDTH: f64 = 92.0;
@@ -855,20 +920,15 @@ fn draw_section_header(
 
 /// Paint a row card — the surface every subject row sits on.
 fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    // Derived rest edge (HIG §9.5): measured against the card's own fill,
+    // so it registers on the raised tier in every palette — a declared
+    // `border_standard` is three shades from `raised` on the dark preset.
+    ui::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(theme.tokens.radii.lg),
         theme.tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &card,
     );
 }
 
@@ -900,20 +960,12 @@ fn draw_pane_intro(
         pane.x1 - PANE_PAD_X,
         pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT,
     );
-    let surface = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    ui::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(tokens.radii.lg),
         colors.surfaces.raised,
-        None,
-        &surface,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard,
-        None,
-        &surface,
     );
 
     let icon_rect = Rect::new(
@@ -1121,10 +1173,12 @@ fn draw_cycler(
         None,
         &track,
     );
+    // The field's rest edge derives from its own fill (HIG §9.5) and
+    // fades with the disabled face so rest and disabled never look alike.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        colors.border_standard.with_alpha_factor(alpha),
+        ui::surface::edge_on(colors.surfaces.raised).with_alpha_factor(alpha),
         None,
         &track,
     );
@@ -1265,6 +1319,12 @@ fn draw_empty_state(
     let cx = rect.center().x;
     let stack_height = glyph + 58.0;
     let top = rect.y0 + ((rect.height() - stack_height) / 2.0).clamp(12.0, 48.0);
+    // A region too short for the stack (the lens at its height floor) paints
+    // nothing rather than running the glyph and two lines past its bottom
+    // edge into whatever sits below (HIG §7: nothing overlaps).
+    if top + stack_height > rect.y1 {
+        return;
+    }
     draw_icon(
         scene,
         transform,
@@ -1470,6 +1530,7 @@ impl GrantSubject {
     pub fn display(&self) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
+            SubjectKind::App => tilo_desktop_model::apps::app_label(&self.id).to_string(),
             _ => self.id.clone(),
         }
     }
@@ -1650,7 +1711,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                apps.push(tile_app_id(&tab.tile));
+                apps.extend(tilo_desktop_model::apps::canonical_app_id(&tab.tile));
             }
         }
     }
@@ -1666,20 +1727,6 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         id,
     }));
     out
-}
-
-/// The app id a tile belongs to, for subject discovery. `TileContent` has
-/// no variant without an app identity, so this never needs `Option`.
-fn tile_app_id(tile: &crate::shell::state::TileContent) -> String {
-    use crate::shell::state::TileContent;
-    match tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::LocalApp { app_id, .. } => app_id.clone(),
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            kind.as_str().to_string()
-        }
-    }
 }
 
 /// Build the capability `draft` currently names against `ws`, or `None`
@@ -2111,7 +2158,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + ROW_HEIGHT,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let remove_rect = Rect::new(
@@ -2186,7 +2233,7 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + ROW_HEIGHT,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let remove_rect = Rect::new(
@@ -2817,6 +2864,13 @@ pub struct DefaultAppRow {
     pub row_rect: Rect,
 }
 
+/// Top of the first default-app row: under the intro card, the section
+/// header and the column-label line. The pane's empty state starts here
+/// too, so it can never paint over that header block.
+fn default_app_rows_top(pane: Rect) -> f64 {
+    pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + 44.0
+}
+
 pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
@@ -2842,12 +2896,7 @@ pub fn default_app_rows(
                 clippy::cast_precision_loss,
                 reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
             )]
-            let y0 = pane.y0
-                + PANE_PAD_TOP
-                + PANE_INTRO_HEIGHT
-                + PANE_INTRO_GAP
-                + 44.0
-                + index as f64 * row_step;
+            let y0 = default_app_rows_top(pane) + index as f64 * row_step;
             let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
             let (workspace_rect, user_rect) = if compact {
                 let gap = 8.0;
@@ -2863,15 +2912,18 @@ pub fn default_app_rows(
                     ),
                 )
             } else {
+                // Full pointer targets, centred on the row rather than at an
+                // authored offset that only matched the old 30 px control.
                 let control_w = 190.0;
+                let controls_y = y0 + (row_h - CONTROL_HEIGHT) / 2.0;
                 (
                     Rect::new(
                         x1 - control_w * 2.0 - 12.0,
-                        y0 + 26.0,
+                        controls_y,
                         x1 - control_w - 12.0,
-                        y0 + 56.0,
+                        controls_y + CONTROL_HEIGHT,
                     ),
-                    Rect::new(x1 - control_w, y0 + 26.0, x1, y0 + 56.0),
+                    Rect::new(x1 - control_w, controls_y, x1, controls_y + CONTROL_HEIGHT),
                 )
             };
             (row_rect.y1 <= pane.y1 - 10.0).then_some(DefaultAppRow {
@@ -2929,10 +2981,14 @@ pub fn draw_default_apps_pane(
     let can_admin = ws.may_administer(local_user);
     draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
     if candidates.iter().all(|a| a.resources.is_empty()) {
+        // The empty state owns the row region only: centred in the whole
+        // pane it painted across the intro card, the section header and the
+        // column labels (HIG §7: nothing overlaps).
+        let rows = Rect::new(pane.x0, default_app_rows_top(pane), pane.x1, pane.y1);
         draw_empty_state(
             scene,
             transform,
-            pane,
+            rows,
             Icon::LayoutGrid,
             (
                 "No file handlers installed",
@@ -3157,7 +3213,7 @@ fn draw_authority_footnote(
         at(
             transform,
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y1 - PANE_PAD_TOP - 14.0,
+            pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
         ),
         None,
     );
@@ -3283,7 +3339,7 @@ pub fn permission_profiles_rect(pane_rect: Rect) -> Rect {
 
 fn permission_composer_card(pane_rect: Rect) -> Rect {
     let composer_height = if compact_pane(pane_rect) {
-        COMPOSER_HEIGHT + 44.0
+        COMPOSER_HEIGHT + COMPOSER_COMPACT_EXTRA
     } else {
         COMPOSER_HEIGHT
     };
@@ -3413,7 +3469,7 @@ fn layout_capability_rows(
     // Keep a dedicated footer band for overflow/authority copy. Rows must
     // never consume that space and then have explanatory text painted over
     // their final line.
-    let footer_top = pane_rect.y1 - PANE_PAD_TOP - 34.0;
+    let footer_top = pane_rect.y1 - PANE_PAD_BOTTOM - 34.0;
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
     let mut placed = 0usize;
@@ -3566,7 +3622,7 @@ pub fn draw_permissions_pane(
             at(
                 transform,
                 pane_rect.x0 + PANE_PAD_X,
-                pane_rect.y1 - PANE_PAD_TOP - 14.0,
+                pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
             ),
             None,
         );
@@ -3724,20 +3780,12 @@ fn draw_permission_composer(
         }),
     );
     let card = permission_composer_card(pane_rect);
-    let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    ui::surface::card(
+        scene,
         transform,
+        card,
+        f64::from(tokens.radii.lg),
         colors.surfaces.raised,
-        None,
-        &card_rr,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard,
-        None,
-        &card_rr,
     );
 
     draw_who_what_pickers(
@@ -3751,7 +3799,7 @@ fn draw_permission_composer(
     );
 
     let caption_y = if compact_pane(pane_rect) {
-        layout.expiry_rects[0].y0 - 18.0
+        layout.expiry_rects[0].y0 - COMPOSER_CAPTION_BAND
     } else {
         card.y0 + 12.0
     };
@@ -3995,11 +4043,16 @@ mod tab_tests {
     }
 
     #[test]
-    fn sidebar_rect_is_256_px_wide() {
+    fn sidebar_rect_is_the_token_sidebar_width() {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let sidebar = ws.sidebar_rect(modal);
         assert_eq!(sidebar.width(), SIDEBAR_WIDTH);
+        assert_eq!(
+            SIDEBAR_WIDTH,
+            f64::from(ui::tokens::Metrics::BASE.sidebar_width),
+            "the lens sidebar is the docked-sidebar width (HIG §9.6), not a bespoke 256"
+        );
         assert_eq!(sidebar.height(), modal.height());
         assert_eq!(sidebar.x0, modal.x0);
     }
@@ -4278,7 +4331,7 @@ mod members_pane_tests {
         let (_, recipient_public) = collab_types::generate_keypair();
         let owner = hex::encode(owner_public.as_bytes());
         let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::test_default(WorkspaceId(91), "Research");
+        let mut ws = Workspace::new(WorkspaceId(91), "Research");
         ws.set_owner(owner.clone());
         ws.grant_capability(CapOverride::membership(
             Subject::person(recipient.clone()),
@@ -4328,7 +4381,7 @@ mod members_pane_tests {
 
     #[test]
     fn permission_profiles_publish_typed_admin_actions() {
-        let mut ws = Workspace::test_default(WorkspaceId(92), "Research");
+        let mut ws = Workspace::new(WorkspaceId(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
         ws.save_permission_profile_as(
@@ -4371,7 +4424,7 @@ mod members_pane_tests {
             "name": "Notes opener",
             "description": "Can open notes but cannot edit them",
             "rules": [{
-                "scope": {"Action": {"app": "dev.tilo.notes", "action": "note.open"}},
+                "scope": {"Action": {"app": "so.tilo.notes", "action": "note.open"}},
                 "effect": "Grant",
                 "verb": "Read"
             }]
@@ -4389,7 +4442,7 @@ mod members_pane_tests {
             PermissionProfileOperation::Save { rules, .. }
                 if rules == vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "dev.tilo.notes".into(),
+                        app: "so.tilo.notes".into(),
                         action: "note.open".into(),
                     },
                     Verb::Read,
@@ -4536,7 +4589,7 @@ mod agents_pane_tests {
             &OWNER.to_string(),
             CapOverride::grant(
                 Subject::agent(AGENT),
-                Scope::App("dev.tilo.notes".into()),
+                Scope::App("so.tilo.notes".into()),
                 Verb::Write,
             ),
         )
@@ -4578,7 +4631,7 @@ mod agents_pane_tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.tilo.notes".into()),
+                &ResourceRef::App("so.tilo.notes".into()),
                 Verb::Read,
             ),
             "admission must never turn the Observer label into ambient app access"
@@ -4638,13 +4691,13 @@ mod agents_pane_tests {
         let ws = ws_with_agent();
         assert!(ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("so.tilo.notes".into()),
             Verb::Write,
         ));
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.tilo.sheets".into()),
+                &ResourceRef::App("so.tilo.sheets".into()),
                 Verb::Write,
             ),
             "an Editor admission pass must not become ambient human-role authority",
@@ -4659,7 +4712,7 @@ mod agents_pane_tests {
         assert!(ws.agent_members().is_empty());
         assert!(!ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("so.tilo.notes".into()),
             Verb::Write,
         ));
     }
@@ -5319,7 +5372,7 @@ mod permissions_pane_tests {
         );
 
         let candidates = [desktop_policy::AppCandidate {
-            package_id: "dev.tilo.viewer".into(),
+            package_id: "so.tilo.viewer".into(),
             display_name: "Viewer".into(),
             resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
         }];
@@ -5403,7 +5456,7 @@ mod default_app_authority_tests {
 
     #[test]
     fn admin_policy_and_personal_escape_hatch_are_separately_authorized() {
-        let candidates = [candidate("dev.tilo.viewer"), candidate("dev.tilo.other")];
+        let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
         let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
@@ -5413,7 +5466,7 @@ mod default_app_authority_tests {
             ws.set_default_app_policy_as(
                 &"member".into(),
                 pdf.clone(),
-                desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
+                desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
                 &resolver
             )
             .is_err()
@@ -5421,7 +5474,7 @@ mod default_app_authority_tests {
         ws.set_default_app_policy_as(
             &"owner".into(),
             pdf.clone(),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
+            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
             &resolver,
         )
         .unwrap();
@@ -5440,27 +5493,72 @@ mod default_app_authority_tests {
             &"member".into(),
             &"member".into(),
             pdf.clone(),
-            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into()),
+            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into()),
             &resolver,
         )
         .unwrap();
         assert_eq!(
             ws.default_apps.user_choices["member"][&pdf],
-            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into())
+            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into())
         );
     }
 
     #[test]
     fn controls_cycle_through_inheritance_before_apps() {
-        let candidates = [candidate("dev.tilo.viewer")];
+        let candidates = [candidate("so.tilo.viewer")];
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         assert_eq!(
             next_workspace_default(None, &pdf, &candidates),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into())
+            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into())
         );
         assert_eq!(
             next_user_default(None, &pdf, &candidates),
             desktop_policy::UserWorkspaceChoice::PersonalDefault
         );
+    }
+}
+
+#[cfg(test)]
+mod rest_edge_tests {
+    //! HIG §9.5 rest edges: every card class this file paints derives its
+    //! edge from the fill it sits on and must register on every palette.
+
+    use super::*;
+
+    #[test]
+    fn pane_cards_and_footer_keep_an_edge_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            for (what, fill) in [
+                ("row / intro / composer card", colors.surfaces.raised),
+                ("sidebar footer row", colors.lift(0.35)),
+            ] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// The default-apps empty state starts where the first row would, under
+    /// the column-label line, instead of centring itself over the header.
+    #[test]
+    fn default_apps_empty_state_starts_below_the_header_block() {
+        let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
+        let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
+        let label_line_bottom = heading_y + 22.0 + 14.0;
+        assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
+        assert!(default_app_rows(pane, &[]).is_empty());
+    }
+
+    /// The pane lead-in and the lens body lead-in add up to one `s4` step.
+    #[test]
+    fn pane_lead_in_completes_the_section_step() {
+        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+        let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
+        assert_eq!(PANE_PAD_TOP + s2, s4);
     }
 }

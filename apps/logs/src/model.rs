@@ -232,8 +232,8 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// Convert epoch-microseconds to a civil `(year, month, day, hour, min,
-/// sec, milli)` tuple in UTC. Uses Howard Hinnant's `civil_from_days`
-/// algorithm so we need no date crate and stay deterministic offline.
+/// sec, milli)` tuple in UTC, through `ui::date` so the conversion needs no
+/// date crate and stays deterministic offline.
 fn civil(realtime_us: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
     let secs = (realtime_us / 1_000_000) as i64;
     let milli = ((realtime_us / 1_000) % 1_000) as u32;
@@ -243,17 +243,7 @@ fn civil(realtime_us: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
     let mm = ((rem % 3_600) / 60) as u32;
     let ss = (rem % 60) as u32;
 
-    // civil_from_days: days since 1970-01-01 → (y, m, d).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
+    let (year, m, d) = ui::date::civil_from_days(days);
     (year, m, d, hh, mm, ss, milli)
 }
 

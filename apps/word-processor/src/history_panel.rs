@@ -628,7 +628,7 @@ mod tests {
         let changes = s.doc.get_changes(&[]);
         assert_eq!(changes.len(), changes_before + 1);
         let last = changes.last().unwrap();
-        assert_eq!(last.message().map(String::as_str), Some("Finish typing"));
+        assert_eq!(last.message(), Some("Finish typing"));
         assert_eq!(last.timestamp(), 1_780_000_000);
         assert_eq!(body(s), "first second typing");
     }

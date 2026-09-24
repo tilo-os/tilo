@@ -21,8 +21,8 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-const HANDOFF_SETTLE: std::time::Duration = std::time::Duration::from_millis(180);
-const SNAP_SETTLE: std::time::Duration = std::time::Duration::from_millis(170);
+const HANDOFF_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(180);
+const SNAP_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(170);
 
 /// Stable identity of content that can survive an app → desktop hand-off.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +61,7 @@ pub enum FloatingRole {
 /// all carry the same messages.
 pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
-pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.tilo.shell-float.";
+pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
 /// Backpressure bound for a non-reading shell peer. Frames are normally
@@ -604,7 +604,7 @@ struct Drag {
     pointer_origin: Point,
     rect_origin: Rect,
     last_pointer: Point,
-    last_sample: std::time::Instant,
+    last_sample: crate::time::Instant,
     /// Low-pass pointer velocity in logical pixels/second. Presentation uses
     /// it only for the tiny handoff deformation; placement remains exactly
     /// under the pointer and never acquires imprecise inertial drift.
@@ -613,7 +613,7 @@ struct Drag {
 
 #[derive(Clone, Copy, Debug)]
 struct HandoffMotion {
-    started: std::time::Instant,
+    started: crate::time::Instant,
     axis: Vec2,
     strength: f64,
 }
@@ -623,7 +623,7 @@ struct SettleMotion {
     /// Armed by the first geometry sample, not by the ownership event. A
     /// delayed renderer must still present the exact transfer rect once
     /// before easing toward its destination.
-    started: std::cell::Cell<Option<std::time::Instant>>,
+    started: std::cell::Cell<Option<crate::time::Instant>>,
     from: Rect,
     to: Rect,
 }
@@ -742,7 +742,7 @@ impl FloatingPlacement {
         self.drag = None;
         self.desktop_coordinate_offset = Vec2::ZERO;
         self.handoff_progress_override = None;
-        let started = std::time::Instant::now();
+        let started = crate::time::now();
         self.settle_motion = (from != home).then_some(SettleMotion {
             started: std::cell::Cell::new(None),
             from,
@@ -767,7 +767,7 @@ impl FloatingPlacement {
         self.settle_motion = None;
         self.handoff_progress_override = None;
         self.handoff_motion = Some(HandoffMotion {
-            started: std::time::Instant::now(),
+            started: crate::time::now(),
             axis: Vec2::new(1.0, 0.0),
             strength: 0.55,
         });
@@ -924,7 +924,7 @@ impl FloatingPlacement {
         };
         self.settle_motion.as_ref().map_or(resolved, |motion| {
             let Some(started) = motion.started.get() else {
-                motion.started.set(Some(std::time::Instant::now()));
+                motion.started.set(Some(crate::time::now()));
                 return motion.from;
             };
             let t = (started.elapsed().as_secs_f64() / SNAP_SETTLE.as_secs_f64()).clamp(0.0, 1.0);
@@ -962,7 +962,7 @@ impl FloatingPlacement {
             pointer_origin: pointer,
             rect_origin,
             last_pointer: pointer,
-            last_sample: std::time::Instant::now(),
+            last_sample: crate::time::now(),
             velocity: Vec2::ZERO,
         });
     }
@@ -977,7 +977,7 @@ impl FloatingPlacement {
         self.settle_motion = None;
         let delta = pointer - drag.pointer_origin;
         let moved = clamp_rect(drag.rect_origin + delta, desktop, 64.0);
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let sample_delta = pointer - drag.last_pointer;
         let elapsed = now.duration_since(drag.last_sample).as_secs_f64();
         let sample = if (0.001..=0.250).contains(&elapsed) {
@@ -1055,7 +1055,7 @@ impl FloatingPlacement {
             self.attachment = Attachment::Desktop { rect: to };
             if from != to {
                 let axis = to.center() - from.center();
-                let started = std::time::Instant::now();
+                let started = crate::time::now();
                 self.settle_motion = Some(SettleMotion {
                     started: std::cell::Cell::new(None),
                     from,
@@ -1118,10 +1118,10 @@ fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 mod tests {
     use super::*;
 
-    fn instant_ago(duration: std::time::Duration) -> std::time::Instant {
-        std::time::Instant::now()
+    fn instant_ago(duration: crate::time::Duration) -> crate::time::Instant {
+        crate::time::now()
             .checked_sub(duration)
-            .unwrap_or_else(std::time::Instant::now)
+            .unwrap_or_else(crate::time::now)
     }
 
     #[test]
@@ -1199,7 +1199,7 @@ mod tests {
         let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
 
         p.handoff_motion.as_mut().unwrap().started =
-            instant_ago(HANDOFF_SETTLE.saturating_add(std::time::Duration::from_secs(1)));
+            instant_ago(HANDOFF_SETTLE.saturating_add(crate::time::Duration::from_secs(1)));
         assert_eq!(
             p.presentation_transform(Affine::IDENTITY, rect, false),
             desktop_transform,
@@ -1225,12 +1225,12 @@ mod tests {
         let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
         let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
         p.begin_drag(Point::new(600.0, 150.0), app, desk);
-        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
+        p.drag.as_mut().unwrap().last_sample = instant_ago(crate::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(600.0, 230.0), app, desk),
             Handoff::None
         );
-        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
+        p.drag.as_mut().unwrap().last_sample = instant_ago(crate::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(950.0, 220.0), app, desk),
             Handoff::Detached
@@ -1278,7 +1278,7 @@ mod tests {
         let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
         let origin = Point::new(600.0, 120.0);
         p.begin_drag(origin, app, desktop);
-        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
+        p.drag.as_mut().unwrap().last_sample = instant_ago(crate::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(900.0, 150.0), app, desktop),
             Handoff::Detached
@@ -1287,7 +1287,7 @@ mod tests {
         let prepared = p.rect(app, desktop) + app_to_desktop;
         p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
         p.confirm_desktop_adoption();
-        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
+        p.drag.as_mut().unwrap().last_sample = instant_ago(crate::time::Duration::from_millis(16));
         let returned_desktop_pointer = Point::new(620.0, 310.0);
         assert_eq!(
             p.update_drag(returned_desktop_pointer, app, desktop),
@@ -1346,7 +1346,7 @@ mod tests {
             .unwrap()
             .started
             .set(Some(instant_ago(
-                SNAP_SETTLE.saturating_add(std::time::Duration::from_millis(1)),
+                SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
             )));
         assert_eq!(p.rect(app, desk), target);
     }
@@ -1385,7 +1385,7 @@ mod tests {
             .unwrap()
             .started
             .set(Some(instant_ago(
-                SNAP_SETTLE.saturating_add(std::time::Duration::from_millis(1)),
+                SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
             )));
         assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
     }
@@ -1417,11 +1417,11 @@ mod tests {
             role: FloatingRole::PictureInPicture,
             source: FloatingSource::Composite(vec![
                 FloatingSource::AppRegion {
-                    app_id: "dev.tilo.editor".into(),
+                    app_id: "so.tilo.editor".into(),
                     region: Rect::new(12.0, 30.0, 412.0, 330.0),
                 },
                 FloatingSource::AppElement {
-                    app_id: "dev.tilo.browser".into(),
+                    app_id: "so.tilo.browser".into(),
                     element_id: "video:main".into(),
                     region: Rect::new(20.0, 40.0, 620.0, 378.0),
                 },
@@ -1637,7 +1637,7 @@ mod tests {
             title: "Call".into(),
             role: FloatingSurfaceProtocolRole::ActiveCall,
             source: FloatingSurfaceProtocolSource::AppRegion {
-                app_id: "dev.tilo.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 region: [10.0, 20.0, 210.0, 140.0],
             },
             preferred_size: [360.0, 220.0],
@@ -1651,7 +1651,7 @@ mod tests {
 
         let mut inverted = base;
         inverted.source = FloatingSurfaceProtocolSource::AppRegion {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             region: [210.0, 20.0, 10.0, 140.0],
         };
         assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
@@ -1701,7 +1701,7 @@ mod tests {
 
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
         shell_side
-            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .set_read_timeout(Some(crate::time::Duration::from_secs(1)))
             .unwrap();
         let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
         let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };

@@ -19,6 +19,7 @@ use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{InputHint, TaffyTreeExt, Widget};
@@ -124,6 +125,8 @@ impl Widget for ShortcutRecorder {
                 width: Dimension::length(230.0),
                 height: Dimension::length(crate::num::f32_of_f64(HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -165,11 +168,15 @@ impl Widget for ShortcutRecorder {
         }
         if self.capturing {
             let label = "…";
-            let (w, h) = text.measure(label, theme.tokens.typography.scale.sm, None);
+            let (w, h) = text.measure(
+                label,
+                renderer_type_size(text, theme.tokens.typography.scale.sm),
+                None,
+            );
             text.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                renderer_type_size(text, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (
@@ -185,7 +192,10 @@ impl Widget for ShortcutRecorder {
             InputHint::paint_at(
                 scene,
                 transform,
-                Point::new(chord.x0 + 5.0, chord.center().y - 11.0),
+                Point::new(
+                    chord.x0 + 5.0,
+                    chord.center().y - crate::widget::input_hint::HEIGHT / 2.0,
+                ),
                 &InputBinding::Keyboard(self.binding()),
                 self.platform,
                 self.interaction.keyboard_family,
@@ -199,7 +209,7 @@ impl Widget for ShortcutRecorder {
                 text.draw_text_weighted(
                     scene,
                     "!",
-                    theme.tokens.typography.scale.sm,
+                    renderer_type_size(text, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.semantic.danger,
                     transform.pre_translate((chord.x1 - 14.0, chord.y0 + 7.0).into()),
                     None,
@@ -218,11 +228,15 @@ impl Widget for ShortcutRecorder {
                     &RoundedRect::from_rect(reset, 6.0),
                 );
             }
-            let (w, h) = text.measure("↶", theme.tokens.typography.scale.base, None);
+            let (w, h) = text.measure(
+                "↶",
+                renderer_type_size(text, theme.tokens.typography.scale.base),
+                None,
+            );
             text.draw_text(
                 scene,
                 "↶",
-                theme.tokens.typography.scale.base,
+                renderer_type_size(text, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (

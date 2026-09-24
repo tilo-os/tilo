@@ -1,0 +1,99 @@
+//! Mail's Fluent catalogue.
+//!
+//! User-facing strings are keys, never literals, resolved through the toolkit's
+//! [`ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
+//! is no build step and no runtime file I/O — a `--shots` render and a unit test
+//! resolve the same strings a live session does.
+
+use ui::i18n::{ArgValue, EmbeddedCatalog};
+
+/// Loaded per thread on first use; a host's manager is joined, never replaced.
+/// The probe is a key every catalogue revision defines.
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+    "en-US",
+    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    "mail-search-placeholder",
+);
+
+/// Load the catalogue on this thread if it is not loaded yet.
+pub fn ensure() {
+    CATALOG.ensure();
+}
+
+/// Resolve a Mail string key.
+pub fn t(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// Resolve a Mail string key that interpolates variables.
+///
+/// The values are the app's own words — an operation's label, a participant's
+/// name — so the *sentence* around them stays in the catalogue and only the
+/// nouns are substituted. Building the line with `format!` instead would put
+/// English word order in the source and leave nothing to translate.
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_key_the_app_uses_resolves_to_a_real_string() {
+        // A key that resolves to itself is a key with no catalogue entry — the
+        // failure mode that ships an untranslatable literal to a screen.
+        for key in [
+            "mail-search-placeholder",
+            "mail-setup-heading-add",
+            "mail-setup-heading-edit",
+            "mail-setup-subtitle-add",
+            "mail-setup-label-display-name",
+            "mail-setup-label-email",
+            "mail-setup-label-username",
+            "mail-setup-label-password",
+            "mail-setup-label-imap-host",
+            "mail-setup-label-smtp-host",
+            "mail-setup-label-port",
+            "mail-setup-label-sign-in",
+            "mail-setup-auth-password",
+            "mail-setup-auth-oauth",
+            "mail-setup-tls",
+            "mail-setup-hint-verified",
+            "mail-setup-save",
+            "mail-setup-cancel",
+            "mail-setup-remove",
+            "mail-compose-label-to",
+            "mail-compose-label-cc",
+            "mail-compose-label-bcc",
+            "mail-compose-label-subject",
+            "mail-compose-placeholder-to",
+            "mail-compose-cc-bcc",
+            "mail-compose-attach",
+            "mail-compose-send",
+            "mail-compose-save-draft",
+            "mail-compose-discard",
+            "mail-compose-prompt-attach",
+            "mail-compose-prompt-link",
+            "mail-compose-prompt-add",
+            "mail-compose-prompt-cancel",
+            "mail-setup-oauth-provider-fallback",
+            "mail-setup-oauth-note-available",
+            "mail-setup-oauth-note-unavailable",
+        ] {
+            let s = t(key);
+            assert_ne!(s, key, "{key} has no entry in the catalogue");
+            assert!(!s.trim().is_empty(), "{key} resolves to nothing");
+        }
+    }
+
+    #[test]
+    fn interpolated_keys_keep_the_sentence_in_the_catalogue() {
+        let s = t_args(
+            "mail-setup-oauth-sign-in",
+            &[("provider", ui::i18n::ArgValue::from("Gmail"))],
+        );
+        assert!(s.contains("Gmail"), "{s}");
+        assert_ne!(s, "mail-setup-oauth-sign-in");
+    }
+}

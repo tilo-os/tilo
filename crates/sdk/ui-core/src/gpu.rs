@@ -199,10 +199,9 @@ impl RenderContext {
         // Timestamp queries allocate profile-only GPU resources and are not a
         // baseline rendering requirement. Opt in explicitly, and leave the
         // ordinary feature request bit-for-bit unchanged.
-        let gpu_timestamps_requested =
-            std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
-        let dispatch_timestamps_requested =
-            std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").is_ok_and(|value| value == "1");
+        let diagnostics = &crate::host::environment().diagnostics;
+        let gpu_timestamps_requested = diagnostics.gpu_timestamps;
+        let dispatch_timestamps_requested = diagnostics.gpu_dispatch_timestamps;
         let timestamp_feature = wgpu::Features::TIMESTAMP_QUERY;
         let inside_pass_feature = wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
         let timestamp_features = if gpu_timestamps_requested && features.contains(timestamp_feature)

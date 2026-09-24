@@ -206,7 +206,7 @@ fn unwind_restores_owned_history_and_cross_record_entry_refuses_before_delivery(
 fn read_string(doc: &AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .unwrap()
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .and_then(|(value, _)| value.as_str().map(str::to_owned))
 }
 
 fn edit(doc: &mut AutoCommit, history: &mut UndoLog, instance: u64, key: &str, value: &str) {
@@ -471,7 +471,7 @@ fn foreign_noop_commit_notification_preserves_pending_owner() {
                 .last()
                 .unwrap()
                 .message()
-                .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+                .and_then(tilo_actions::ActionContext::from_change_message)
                 .unwrap();
             assert_eq!(context.action_label.as_str(), "A metadata");
             history.undo_in(doc, &author(), 11, None, None).unwrap();

@@ -73,11 +73,11 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
     );
     remote.load_incremental(&retry).unwrap();
     assert_eq!(
-        remote.get(ROOT, "local-only").unwrap().unwrap().0.to_str(),
+        remote.get(ROOT, "local-only").unwrap().unwrap().0.as_str(),
         Some("retry me")
     );
     assert_eq!(
-        remote.get(ROOT, "remote-only").unwrap().unwrap().0.to_str(),
+        remote.get(ROOT, "remote-only").unwrap().unwrap().0.as_str(),
         Some("kept after local undo")
     );
     fixture.app.advance_primary_document(accepted);
@@ -101,7 +101,7 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
         .read(&binding.checkout.id, |doc| {
             assert!(doc.get(ROOT, "local-only").unwrap().is_none());
             assert_eq!(
-                doc.get(ROOT, "remote-only").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "remote-only").unwrap().unwrap().0.as_str(),
                 Some("kept after local undo")
             );
         })
@@ -233,11 +233,11 @@ fn native_bound_sync_retains_out_of_order_dependencies_without_echoing_them() {
         .records
         .read(&binding.checkout.id, |doc| {
             assert_eq!(
-                doc.get(ROOT, "first-remote").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "first-remote").unwrap().unwrap().0.as_str(),
                 Some("one")
             );
             assert_eq!(
-                doc.get(ROOT, "second-remote").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "second-remote").unwrap().unwrap().0.as_str(),
                 Some("two")
             );
         })
@@ -308,7 +308,7 @@ fn native_bound_sync_requires_live_matching_route_and_resends_after_reconnection
     assert!(fixture.app.primary_document_snapshot().is_err());
     assert!(fixture.app.pending_primary_document_delta().is_err());
     let mut wrong = route.clone();
-    wrong.route.app_id = "dev.tilo.foreign".into();
+    wrong.route.app_id = "com.example.foreign".into();
     fixture.app.actions.bound_broker_route_for_test = Some(wrong);
     assert!(fixture.app.primary_document_snapshot().is_err());
     fixture.app.actions.bound_broker_route_for_test = Some(route);

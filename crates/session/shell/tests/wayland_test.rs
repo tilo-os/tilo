@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 /// Kills and reaps the sandboxed client on drop, so a panicking `.expect()`
 /// or a failing assertion before the explicit `kill`/`wait` can't leak the
@@ -98,13 +97,13 @@ fn test_wayland_handshake_fixed() {
     let socket_name = started_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Server failed to start");
-    let tab_id = Uuid::new_v4();
+    let log_dir = tempfile::tempdir().unwrap();
 
     // The workspace's own Wayland client, not a terminal emulator off the
     // host: the sandbox binds the /usr that cargo sees, so on a machine that
     // builds in a container the host having alacritty proves nothing, and the
     // failure surfaced as "server received no events" with "exec: alacritty:
-    // not found" buried in a log under /tmp. Cargo always builds this one, and
+    // not found" buried in the app log. Cargo always builds this one, and
     // the handshake is what is under test, not which client performs it.
     let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
     let container = Container::new(
@@ -116,7 +115,7 @@ fn test_wayland_handshake_fixed() {
     );
     let mut cmd = container.build_command("./click_test_client", &socket_name);
     cmd.env("WAYLAND_DEBUG", "1");
-    let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
+    let log_path = log_dir.path().join("client.log");
     let log_file = std::fs::File::create(&log_path).unwrap();
     cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
     cmd.stderr(std::process::Stdio::from(log_file));

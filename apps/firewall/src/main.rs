@@ -46,7 +46,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.firewall", firewall::app_root)
+        &LaunchSpec::new("so.tilo.firewall", firewall::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "empty",
@@ -55,6 +55,7 @@ pub fn main() {
                 "active-change",
                 "service-error",
                 "services",
+                "selected",
             ])
             .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
     );

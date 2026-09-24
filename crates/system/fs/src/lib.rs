@@ -105,6 +105,8 @@ pub mod transaction_coordinator;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
 #[cfg(feature = "filesystem")]
+pub mod unsaved;
+#[cfg(feature = "filesystem")]
 pub mod workspace_authority;
 
 #[cfg(test)]

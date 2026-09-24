@@ -2179,6 +2179,29 @@ impl WordProcessor {
     /// Resolve the document model under `root` (initialising the schema if
     /// absent), guarantee at least one block, and keep the caret on a real block.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // A canonical body caret proves that the body is nonempty. Resolve
+        // only its block instead of sorting the entire body twice per sync.
+        // Match ordered_keys membership exactly; a map key alone is not enough.
+        if self.region == Region::Body
+            && self.containers.as_ref().is_some_and(|c| {
+                let Ok(Some((automerge::Value::Object(automerge::ObjType::Map), block))) =
+                    state.get(&c.blocks, &self.caret.block)
+                else {
+                    return false;
+                };
+                matches!(
+                    state.get(&block, qdoc::schema::BLOCK_ORDER),
+                    Ok(Some((automerge::Value::Scalar(value), _)))
+                        if matches!(value.as_ref(), automerge::ScalarValue::Bytes(_))
+                )
+            })
+        {
+            self.caret.offset = self
+                .caret
+                .offset
+                .min(self.block_len(state, &self.caret.block));
+            return;
+        }
         let containers = if let Some(c) = self.containers.clone() {
             c
         } else {
@@ -3143,12 +3166,234 @@ mod tests {
         (wp, state)
     }
 
+    fn assert_failed_import_preserves_document(format: crate::WpFormat) {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "Saved draft");
+        state.commit();
+        // Do not commit this edit: recovery must retain the host's open transaction.
+        wp.insert_str(&mut state, " plus unsaved work");
+        wp.select_all(&state);
+        let before_text = wp.block_texts(&state);
+        let before_caret = wp.caret.clone();
+        let before_anchor = wp.selection_anchor.clone();
+        let before_pending = state.pending_ops();
+        let before_bytes = state.clone().save();
+
+        assert!(!wp.replace_with_format(&mut state, b"not a ZIP archive", format));
+        assert_eq!(wp.block_texts(&state), before_text);
+        assert_eq!(wp.caret, before_caret);
+        assert_eq!(wp.selection_anchor, before_anchor);
+        assert_eq!(state.pending_ops(), before_pending);
+        assert_eq!(state.clone().save(), before_bytes);
+
+        // The failed attempt must not poison the block-id/order bookkeeping.
+        wp.clear_anchor();
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "still editable");
+        assert!(
+            wp.block_texts(&state)
+                .iter()
+                .any(|text| text == "still editable")
+        );
+    }
+
+    #[test]
+    fn corrupt_docx_import_preserves_document() {
+        assert_failed_import_preserves_document(crate::WpFormat::Docx);
+    }
+
+    #[test]
+    fn corrupt_odt_import_preserves_document() {
+        assert_failed_import_preserves_document(crate::WpFormat::Odt);
+    }
+
+    #[test]
+    fn successful_format_import_preserves_live_document_identity_and_commit_boundary() {
+        for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
+            let (mut source, mut source_state) = bound();
+            source.insert_str(&mut source_state, "Imported document");
+            let bytes = format
+                .export(qdoc::DocRef {
+                    doc: &source_state,
+                    c: source.containers.as_ref().unwrap(),
+                })
+                .unwrap();
+            let (mut wp, mut state) = bound();
+            state.put(ROOT, "host-marker", "preserve me").unwrap();
+            wp.insert_str(&mut state, "Previous document");
+            let heads = state.get_heads();
+            let actor = state.get_actor().clone();
+            let blocks = wp.containers.as_ref().unwrap().blocks.clone();
+
+            assert!(wp.replace_with_format(&mut state, &bytes, format));
+            assert_eq!(wp.block_texts(&state), vec!["Imported document"]);
+            assert_eq!(state.get_actor(), &actor);
+            assert_eq!(wp.containers.as_ref().unwrap().blocks, blocks);
+            assert_eq!(
+                state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
+                Some("preserve me")
+            );
+            assert!(
+                state.pending_ops() > 0,
+                "the host still owns the commit boundary"
+            );
+            state.commit();
+            assert_eq!(
+                state.get_changes(&heads).len(),
+                1,
+                "replacement is one undoable change"
+            );
+        }
+    }
+
     #[test]
     fn bind_creates_initial_paragraph_and_caret() {
         let (wp, state) = bound();
         assert_eq!(wp.block_texts(&state), vec![String::new()]);
         assert_eq!(wp.caret.offset, 0);
         assert!(!wp.caret.block.is_empty());
+    }
+
+    #[test]
+    fn bound_body_caret_refresh_avoids_order_scans_and_clamps_remote_unicode_edits() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "abcdef");
+        let anchor = Caret {
+            block: wp.caret.block.clone(),
+            offset: 1,
+        };
+        wp.selection_anchor = Some(anchor.clone());
+        let before = qdoc::model::ordered_keys_scan_count();
+        for _ in 0..3 {
+            wp.bind(&mut state, &ROOT);
+        }
+        assert_eq!(
+            qdoc::model::ordered_keys_scan_count(),
+            before,
+            "valid body caret must not enumerate the body"
+        );
+        let c = wp.containers.as_ref().unwrap();
+        let (_, block) = state.get(&c.blocks, &wp.caret.block).unwrap().unwrap();
+        let (_, text) = state
+            .get(&block, qdoc::schema::BLOCK_TEXT)
+            .unwrap()
+            .unwrap();
+        let mut remote = state.fork();
+        remote.splice_text(&text, 0, 6, "é🦀").unwrap();
+        state.merge(&mut remote).unwrap();
+        let before = qdoc::model::ordered_keys_scan_count();
+        wp.bind(&mut state, &ROOT);
+        assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
+        assert_eq!(
+            wp.caret.offset, 2,
+            "clamp counts Unicode scalars, not bytes"
+        );
+        assert_eq!(
+            wp.selection_anchor,
+            Some(anchor),
+            "valid caret retains existing selection behavior"
+        );
+        assert_eq!(wp.current_text(&state), "é🦀");
+    }
+
+    #[test]
+    fn bind_accepts_empty_byte_order_and_recovers_after_last_body_deletion() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "text");
+        let c = wp.containers.as_ref().unwrap().clone();
+        let id = wp.caret.block.clone();
+        let (_, block) = state.get(&c.blocks, &id).unwrap().unwrap();
+        state
+            .put(
+                &block,
+                qdoc::schema::BLOCK_ORDER,
+                automerge::ScalarValue::Bytes(vec![]),
+            )
+            .unwrap();
+        state.delete(&block, qdoc::schema::BLOCK_TEXT).unwrap();
+        assert_eq!(qdoc::model::blocks_in_order(&state, &c), vec![id.clone()]);
+        let before = qdoc::model::ordered_keys_scan_count();
+        wp.bind(&mut state, &ROOT);
+        assert_eq!(qdoc::model::ordered_keys_scan_count(), before);
+        assert_eq!(
+            wp.caret,
+            Caret {
+                block: id.clone(),
+                offset: 0
+            }
+        );
+        wp.selection_anchor = Some(wp.caret.clone());
+        state.delete(&c.blocks, &id).unwrap();
+        wp.bind(&mut state, &ROOT);
+        let canonical = qdoc::model::blocks_in_order(&state, &c);
+        assert_eq!(canonical.len(), 1, "empty body is reseeded");
+        assert_ne!(canonical[0], id);
+        assert_eq!(
+            wp.caret,
+            Caret {
+                block: canonical[0].clone(),
+                offset: 0
+            }
+        );
+        assert_eq!(wp.selection_anchor, None);
+    }
+
+    #[test]
+    fn bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks() {
+        for damage in ["deleted", "scalar_block", "missing_order", "scalar_order"] {
+            let (mut wp, mut state) = bound();
+            let first = wp.caret.block.clone();
+            wp.insert_str(&mut state, "first");
+            wp.enter(&mut state);
+            wp.insert_str(&mut state, "second");
+            wp.selection_anchor = Some(Caret {
+                block: first.clone(),
+                offset: 1,
+            });
+            let c = wp.containers.as_ref().unwrap().clone();
+            let target = wp.caret.block.clone();
+            let (_, block) = state.get(&c.blocks, &target).unwrap().unwrap();
+            match damage {
+                "deleted" => state.delete(&c.blocks, &target).unwrap(),
+                "scalar_block" => state.put(&c.blocks, &target, "not a block").unwrap(),
+                "missing_order" => state.delete(&block, qdoc::schema::BLOCK_ORDER).unwrap(),
+                _ => state
+                    .put(&block, qdoc::schema::BLOCK_ORDER, 42_i64)
+                    .unwrap(),
+            }
+            let canonical = qdoc::model::blocks_in_order(&state, &c);
+            assert!(!canonical.contains(&target));
+            wp.bind(&mut state, &ROOT);
+            assert_eq!(
+                wp.caret,
+                Caret {
+                    block: canonical[0].clone(),
+                    offset: 0
+                },
+                "{damage}"
+            );
+            assert_eq!(wp.selection_anchor, None, "{damage}");
+        }
+        for region in [Region::Header, Region::Footer] {
+            let (mut wp, mut state) = bound();
+            let body = wp.caret.block.clone();
+            wp.focus_region(&mut state, region);
+            wp.insert_str(&mut state, "running text");
+            wp.bind(&mut state, &ROOT);
+            assert_eq!(wp.region, region);
+            assert_eq!(wp.caret.offset, 12);
+            let container = wp.region_container_obj(&state).unwrap();
+            state.delete(&container, &wp.caret.block).unwrap();
+            wp.bind(&mut state, &ROOT);
+            assert_eq!(wp.region, Region::Body);
+            assert_eq!(
+                wp.caret,
+                Caret {
+                    block: body,
+                    offset: 0
+                }
+            );
+        }
     }
 
     #[test]

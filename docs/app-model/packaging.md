@@ -1,18 +1,18 @@
-# Packaging: manifest schema and the `tilo-pkg` CLI
+# Packaging: manifest schema and the `tilo-app-package` CLI
 
-A `.qpkg` is a tar archive of a signed root + a manifest + a Collection of
+A `.tapp` is a tar archive of a signed root + a manifest + a Collection of
 content-addressed blobs. This document is the source of truth for what
-belongs in the manifest and what `tilo-pkg` does to it.
+belongs in the manifest and what `tilo-app-package` does to it.
 
 ## The manifest file
 
 Every manifest is TOML. The schema comes straight from
-`crates/packaging/pkg/src/manifest.rs`. A complete minimal manifest for a
+`crates/packaging/tilo-app-package/src/manifest.rs`. A complete minimal manifest for a
 GUI app:
 
 ```toml
 [package]
-id       = "dev.tilo.hello"
+id       = "so.tilo.hello"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
@@ -44,7 +44,7 @@ type = "gui"
 
 | Field     | Required | Notes                                                             |
 | --------- | -------- | ----------------------------------------------------------------- |
-| `id`      | yes      | Reverse-DNS, e.g. `dev.tilo.notes-cli`. Stable across versions; used as the install slot and to name the sandbox profile. |
+| `id`      | yes      | Reverse-DNS, e.g. `so.tilo.notes-cli`. Stable across versions; used as the install slot and to name the sandbox profile. |
 | `version` | yes      | Semver. Rejected at validate time if not parseable.               |
 | `kind`    | yes      | One of `app`, `service`, `format-provider`, `plugin`, `runtime`.  |
 | `runtime` | no       | `<name>/<version>` of the runtime bundle to bind against. The version side must be semver OR calver (`YYYY.MM[.MICRO]`, e.g. `2026.07`). Must be omitted for `kind = "runtime"`. |
@@ -53,8 +53,8 @@ type = "gui"
 
 | Field       | Required | Notes                                                                                            |
 | ----------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
-| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo-pkg pack` / `tilo-pkg sign`.  |
+| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-app-package pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
+| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo-app-package pack` / `tilo-app-package sign`.  |
 
 #### `[trust]`
 
@@ -186,7 +186,7 @@ schemes = ["web+notes"]
 
 ### Validation
 
-`tilo-pkg pack` calls
+`tilo-app-package pack` calls
 `validate_manifest_with_payload` before writing anything, which enforces:
 
 - `sandbox.fs.read` and `sandbox.fs.write` are empty. Checked first, so a
@@ -208,12 +208,12 @@ schemes = ["web+notes"]
 
 ### On-disk layout
 
-A `.qpkg` is a plain (uncompressed) tar. Contents of the example hello-world
+A `.tapp` is a plain (uncompressed) tar. Contents of the example hello-world
 package:
 
 ```
-$ tar tvf /tmp/tilo-hello-demo/tilo-hello.qpkg
--rw-r--r-- 0/0              96 1970-01-01 01:00 qpkg.toml
+$ tar tvf /tmp/tilo-hello-demo/tilo-hello.tapp
+-rw-r--r-- 0/0              96 1970-01-01 01:00 tapp.toml
 -rw-r--r-- 0/0             173 1970-01-01 01:00 signed-root
 -rw-r--r-- 0/0             770 1970-01-01 01:00 manifest.toml
 -rw-r--r-- 0/0              61 1970-01-01 01:00 collection.qcl
@@ -223,7 +223,7 @@ $ tar tvf /tmp/tilo-hello-demo/tilo-hello.qpkg
 -rw-r--r-- 0/0             173 1970-01-01 01:00 blobs/b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 ```
 
-- `qpkg.toml` — 2-field header: `package_id = "qpkg:<hex>"`, `format = 1`.
+- `tapp.toml` — 2-field header: `package_id = "tapp:<hex>"`, `format = 1`.
   Duplicates info in `signed-root`; kept human-readable for `tar tf`.
 - `signed-root` — 173-byte binary: `manifest_hash + payload_root_hash +
   publisher_identity + signature`.
@@ -239,22 +239,22 @@ Uncompressed on purpose: each blob is already content-addressed and (in
 deployed Tilo) lives in an `iroh-blobs` store with chunk-level dedup. Adding
 gzip over that adds CPU cost without improving deduplication.
 
-The `PackageId` is `blake3(signed-root-bytes)`. It is the `qpkg:<hex>` URL
-you see in `tilo-pkg inspect`.
+The `PackageId` is `blake3(signed-root-bytes)`. It is the `tapp:<hex>` URL
+you see in `tilo-app-package inspect`.
 
-## `tilo-pkg` — the CLI
+## `tilo-app-package` — the CLI
 
 ```
-$ tilo-pkg --help
-Pack / sign / verify / inspect Tilo packages (.qpkg)
+$ tilo-app-package --help
+Pack / sign / verify / inspect Tilo packages (.tapp)
 
-Usage: tilo-pkg <COMMAND>
+Usage: tilo-app-package <COMMAND>
 
 Commands:
-  pack     Pack a payload directory + manifest into a .qpkg, signing it with a freshly-generated identity unless --identity is passed
-  sign     Re-sign an existing .qpkg with the given identity, writing the result back into the same file
-  verify   Verify a .qpkg — checks every cryptographic invariant and reports the first one that breaks. By default the embedded publisher identity is treated as trusted (so the command succeeds on a self-signed package); pass --trusted-key to override
-  inspect  Print the manifest + payload tree of a .qpkg
+  pack     Pack a payload directory + manifest into a .tapp, signing it with a freshly-generated identity unless --identity is passed
+  sign     Re-sign an existing .tapp with the given identity, writing the result back into the same file
+  verify   Verify a .tapp — checks every cryptographic invariant and reports the first one that breaks. By default the embedded publisher identity is treated as trusted (so the command succeeds on a self-signed package); pass --trusted-key to override
+  inspect  Print the manifest + payload tree of a .tapp
   unpack   Extract the payload + a copy of the manifest into `dest`
   help     Print this message or the help of the given subcommand(s)
 ```
@@ -262,23 +262,23 @@ Commands:
 ### `pack`
 
 ```
-tilo-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <json>]
+tilo-app-package pack --manifest <toml> --payload <dir> --output <tapp> [--identity <json>]
 ```
 
 - Reads `--manifest` and `--payload/**`.
 - If `--identity` is absent, generates a fresh Ed25519 keypair and overwrites
   `publisher.identity` in the embedded manifest with the fresh public key.
 - Signs the signed root with that identity.
-- Writes the `.qpkg`.
+- Writes the `.tapp`.
 
 Example run against the demo project:
 
 ```
-$ tilo-pkg pack \
+$ tilo-app-package pack \
     --manifest /tmp/tilo-hello-demo/manifest.toml \
     --payload  /tmp/tilo-hello-demo/payload \
-    --output   /tmp/tilo-hello-demo/tilo-hello.qpkg
-packed qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 (4 blobs)
+    --output   /tmp/tilo-hello-demo/tilo-hello.tapp
+packed tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 (4 blobs)
 ```
 
 The `--identity` file is JSON:
@@ -289,10 +289,10 @@ The `--identity` file is JSON:
 
 ### `sign`
 
-Re-sign an existing `.qpkg` with a different identity. Fails unless the
-identity's public key matches the `.qpkg`'s embedded publisher identity —
+Re-sign an existing `.tapp` with a different identity. Fails unless the
+identity's public key matches the `.tapp`'s embedded publisher identity —
 this command is for detached signing flows (e.g. an offline HSM signed
-what `tilo-pkg pack --identity dummy.json` produced), not for identity
+what `tilo-app-package pack --identity dummy.json` produced), not for identity
 substitution.
 
 ### `verify`
@@ -300,8 +300,8 @@ substitution.
 Every cryptographic invariant. On the demo bundle:
 
 ```
-$ tilo-pkg verify /tmp/tilo-hello-demo/tilo-hello.qpkg
-ok: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
+$ tilo-app-package verify /tmp/tilo-hello-demo/tilo-hello.tapp
+ok: tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
 ```
 
 Pass `--trusted-key <hex>` (repeatable) to override the default of trusting
@@ -317,8 +317,8 @@ the embedded publisher key. Exit code:
 Human-readable dump of everything but the payload contents:
 
 ```
-$ tilo-pkg inspect /tmp/tilo-hello-demo/tilo-hello.qpkg
-package-id: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
+$ tilo-app-package inspect /tmp/tilo-hello-demo/tilo-hello.tapp
+package-id: tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 manifest-hash: blake3:774d5714edfb4734e3f158e5e74aa5a8aeb34aab98ae21ef675894a578dbb312
 payload-root-hash: blake3:55ab8b6bdeb4e85d7fd37e975914278f67347056414d3e489aaaad4a1b4de2ee
 publisher-identity: ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39
@@ -326,7 +326,7 @@ signed: yes
 
 --- manifest.toml ---
 [package]
-id = "dev.tilo.hello"
+id = "so.tilo.hello"
 version = "0.1.0"
 kind = "app"
 runtime = "tilo-runtime/2026.07"
@@ -336,7 +336,7 @@ runtime = "tilo-runtime/2026.07"
 ### `unpack`
 
 ```
-tilo-pkg unpack --dest <dir> <qpkg>
+tilo-app-package unpack --dest <dir> <tapp>
 ```
 
 Writes the payload tree into `--dest` and drops a copy of `manifest.toml`
@@ -371,7 +371,7 @@ Under the hood, `pack` runs this sequence:
                                 │
                                 ▼
                           ┌────────────┐
-                          │ PackageId   │  "qpkg:<64-hex>"
+                          │ PackageId   │  "tapp:<64-hex>"
                           └────────────┘
 ```
 

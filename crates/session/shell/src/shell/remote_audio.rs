@@ -14,7 +14,8 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 
 use crate::shell::device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
@@ -327,7 +328,7 @@ fn state() -> &'static Mutex<RemoteAudioState> {
 fn random_nonzero_16() -> [u8; 16] {
     loop {
         let mut value = [0_u8; 16];
-        OsRng.fill_bytes(&mut value);
+        UnwrapErr(SysRng).fill_bytes(&mut value);
         if value != [0; 16] {
             return value;
         }
@@ -336,7 +337,7 @@ fn random_nonzero_16() -> [u8; 16] {
 
 fn random_nonzero_u64(existing: &BTreeMap<u64, LocalAudioSelection>) -> u64 {
     loop {
-        let value = OsRng.next_u64();
+        let value = UnwrapErr(SysRng).next_u64();
         if value != 0 && !existing.contains_key(&value) {
             return value;
         }
@@ -1039,7 +1040,7 @@ mod tests {
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
-            app_id: "dev.tilo.music".into(),
+            app_id: "so.tilo.music".into(),
             workspace_id: "work".into(),
             session_id: session.into(),
         }

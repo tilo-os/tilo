@@ -13,18 +13,19 @@ path = "src/lib.rs"
 name = "tilo-registry-server"
 path = "src/main.rs"
 
-# Self-hostable HTTP registry for `.qpkg` bundles. Serves the
+# Self-hostable HTTP registry for `.tapp` bundles. Serves the
 # `RegistryHandshake`, entry index, and a signed-POST endpoint so
 # publishers can add / update / delete their own entries. Owner
 # controls a `publishers.toml` allowlist; TLS is deliberately out
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
 hyper        = { version = "1", features = ["server", "http1"] }
@@ -48,11 +49,12 @@ zeroize.workspace = true
 # Moderation fetches run in the deployed container. Use its maintained CA
 # bundle so newly issued public certificates do not depend on the root set
 # compiled into an older pinned application image.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls-native-roots"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
+getrandom.workspace = true
 tempfile.workspace = true
-rand.workspace = true
 
 [lints]
 workspace = true
