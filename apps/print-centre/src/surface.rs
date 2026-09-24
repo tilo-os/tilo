@@ -1,6 +1,5 @@
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -390,11 +389,7 @@ fn resource_action(
 /// externally visible address valid and stable even when CUPS reports spaces,
 /// punctuation, or non-ASCII queue names.
 fn resource_key(value: &str) -> String {
-    let mut key = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.bytes() {
-        let _ = write!(&mut key, "{byte:02x}");
-    }
-    key
+    hex::encode(value)
 }
 
 fn printer_resource(queue: &os_actions::printing::PrinterQueue) -> Resource {

@@ -6,7 +6,6 @@
 //! non-secret selector; the launcher mounts one exact record into new apps.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_str_or_text};
@@ -491,10 +490,7 @@ impl UsersPane {
         } else {
             &id.display_name
         };
-        let key = id.public_key[..4].iter().fold(String::new(), |mut acc, b| {
-            let _ = write!(acc, "{b:02x}");
-            acc
-        });
+        let key = hex::encode(&id.public_key[..4]);
         let mut top = Row::new()
             .push(Box::new(Text::new(name).with_size(13.0)))
             .push(Box::new(Spacer::new()))

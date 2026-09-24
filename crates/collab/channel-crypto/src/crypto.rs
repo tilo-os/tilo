@@ -132,11 +132,7 @@ impl std::fmt::Debug for MemberKey {
         // `.get()` (rather than indexing) covers the case where a future
         // ciphersuite change shrinks the public key below 4 bytes.
         let pk = self.signer.public();
-        let mut prefix = String::with_capacity(10);
-        for b in pk.get(..4).unwrap_or(pk) {
-            use std::fmt::Write as _;
-            let _ = write!(prefix, "{b:02x}");
-        }
+        let mut prefix = hex::encode(pk.get(..4).unwrap_or(pk));
         prefix.push_str("..");
         f.debug_struct("MemberKey")
             .field("name", &String::from_utf8_lossy(&self.name))
