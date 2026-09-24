@@ -1637,16 +1637,16 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "mail",
- "reqwest 0.13.2",
- "roxmltree 0.20.0",
+ "pim-lines",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "test-http",
  "tilo-actions",
  "tilo-app",
- "tilo-net",
+ "tilo-dav",
  "tilo-test-env",
  "tracing",
  "url",
@@ -2490,6 +2490,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "pim-lines",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4136,8 +4137,6 @@ dependencies = [
  "libc",
  "mime_guess",
  "qdoc",
- "reqwest 0.13.2",
- "roxmltree 0.20.0",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4149,7 +4148,7 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
- "tilo-net",
+ "tilo-dav",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -4162,7 +4161,6 @@ dependencies = [
  "winit",
  "xattr",
  "xdg-paths",
- "zeroize",
  "zip",
 ]
 
@@ -8099,6 +8097,7 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
+ "pim-lines",
  "qdoc",
  "rcgen",
  "reqwest 0.13.2",
@@ -10265,6 +10264,10 @@ name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
+
+[[package]]
+name = "pim-lines"
+version = "0.1.0"
 
 [[package]]
 name = "pin-project"
@@ -12878,6 +12881,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "agent-provider-config",
+ "async-imap",
  "atomic-file",
  "automerge",
  "bounded-command",
@@ -12890,7 +12894,6 @@ dependencies = [
  "os-actions",
  "quick-xml 0.41.0",
  "rcgen",
- "reqwest 0.13.2",
  "runtime-dylib",
  "runtime-fs",
  "runtime-identity",
@@ -12901,15 +12904,19 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-app",
  "tilo-bluez",
+ "tilo-dav",
  "tilo-desktop-entry",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-relay",
  "tilo-test-env",
  "tilo-user-identity",
+ "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
  "vello",
@@ -14262,6 +14269,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-http"
+version = "0.1.0"
+
+[[package]]
 name = "themes"
 version = "0.1.0"
 dependencies = [
@@ -14539,6 +14550,17 @@ dependencies = [
  "tempfile",
  "time",
  "x509-cert",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-dav"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.2",
+ "roxmltree 0.20.0",
+ "test-http",
+ "tilo-net",
  "zeroize",
 ]
 
