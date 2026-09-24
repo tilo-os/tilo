@@ -274,6 +274,9 @@ futures-util.workspace = true
 # Serializes tests that share process-wide state (environment variables,
 # static registries).
 serial_test.workspace = true
+# Scoped, restoring environment changes for tests whose interface is the
+# environment itself.
+tilo-test-env = { path = "../../dev/test-env" }
 # Naga is the WGSL parser/validator wgpu already pulls in transitively.
 # `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
 # WGSL kernel at test time so a shader edit doesn't silently break the
