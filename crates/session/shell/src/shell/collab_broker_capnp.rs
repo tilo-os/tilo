@@ -59,8 +59,8 @@ use crate::shell::collab_broker::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::state::{
-    CapRole, Capability, FsMode, GRANT_SESSION, Principal, WorkspaceTaskStatus, WorkspaceTree,
-    WorkspaceTreeHandle,
+    CapRole, Capability, FsMode, GRANT_SESSION, Principal, WorkspaceId, WorkspaceTaskStatus,
+    WorkspaceTree, WorkspaceTreeHandle,
 };
 
 /// Launcher preambles are deliberately tiny: they only bind a socket to the
@@ -2036,6 +2036,104 @@ impl RealtimeFabricAppBridge {
     }
 }
 
+/// Find `id` in `resource`'s subtree.
+fn find_resource<'a>(
+    resource: &'a tilo_actions::Resource,
+    id: &str,
+) -> Option<&'a tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_resource(child, id))
+}
+
+/// Decode a workspace governance invocation's typed `argument` into the
+/// permission-profile operation `spec` encodes.
+fn decode_permission_profile_operation(
+    spec: &tilo_actions::ActionSpec,
+    argument: Option<&str>,
+) -> Result<crate::shell::workspace_settings::PermissionProfileOperation, String> {
+    let json = argument
+        .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
+    let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    let encoded = spec
+        .build_json(&arguments)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+        return Err(format!(
+            "invalid workspace governance arguments: {}",
+            String::from_utf8_lossy(&encoded.payload)
+        ));
+    }
+    if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+        return Err("workspace governance action encoded an unexpected operation".into());
+    }
+    serde_json::from_slice(&encoded.payload)
+        .map_err(|error| format!("invalid workspace governance operation: {error}"))
+}
+
+/// Apply a permission-profile operation as `caller` to one workspace and
+/// mirror it into the room document.
+fn apply_permission_profile_operation(
+    tree: &mut WorkspaceTree,
+    workspace_index: usize,
+    workspace_id: WorkspaceId,
+    caller: &Actor,
+    operation: crate::shell::workspace_settings::PermissionProfileOperation,
+) -> Result<(), String> {
+    match operation {
+        crate::shell::workspace_settings::PermissionProfileOperation::Save {
+            name,
+            description,
+            rules,
+        } => {
+            let profile = collab_types::PermissionProfile {
+                name,
+                description,
+                rules,
+            };
+            tree.workspaces[workspace_index]
+                .save_permission_profile_as_actor(caller, profile.clone())
+                .map_err(|error| error.to_string())?;
+            tree.doc_upsert_permission_profile(workspace_id, &profile);
+        }
+        crate::shell::workspace_settings::PermissionProfileOperation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => {
+            let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                "person" => collab_types::Subject::person(subject.trim()),
+                "app" => collab_types::Subject::app(subject.trim()),
+                "agent" => collab_types::Subject::agent(subject.trim()),
+                _ => return Err("subject_kind must be person, app, or agent".into()),
+            };
+            let expiry = (expires_unix > 0)
+                .then_some(expires_unix)
+                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+            let ids = tree.workspaces[workspace_index]
+                .assign_permission_profile_as_actor(caller, &profile, subject, expiry)
+                .map_err(|error| error.to_string())?;
+            let capabilities = tree.workspaces[workspace_index]
+                .capabilities
+                .iter()
+                .filter(|capability| ids.contains(&capability.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            for capability in capabilities {
+                tree.doc_insert_capability(workspace_id, &capability);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl CapnpBrokerState {
     #[allow(
         clippy::too_many_lines,
@@ -3185,19 +3283,6 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         confirmation: &serde_json::Value,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
-        fn find_resource<'a>(
-            resource: &'a tilo_actions::Resource,
-            id: &str,
-        ) -> Option<&'a tilo_actions::Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource);
-            }
-            resource
-                .children
-                .iter()
-                .find_map(|child| find_resource(child, id))
-        }
-
         let membership = self
             .membership
             .as_ref()
@@ -3243,73 +3328,15 @@ impl CapnpBrokerState {
         {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
-        let json = argument
-            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
-            .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
-        let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
-        let encoded = spec
-            .build_json(&arguments)
-            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
-        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
-            return Err(format!(
-                "invalid workspace governance arguments: {}",
-                String::from_utf8_lossy(&encoded.payload)
-            ));
-        }
-        if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
-            return Err("workspace governance action encoded an unexpected operation".into());
-        }
-        let operation = serde_json::from_slice::<
-            crate::shell::workspace_settings::PermissionProfileOperation,
-        >(&encoded.payload)
-        .map_err(|error| format!("invalid workspace governance operation: {error}"))?;
+        let operation = decode_permission_profile_operation(spec, argument)?;
         let workspace_id = tree.workspaces[workspace_index].id;
-        match operation {
-            crate::shell::workspace_settings::PermissionProfileOperation::Save {
-                name,
-                description,
-                rules,
-            } => {
-                let profile = collab_types::PermissionProfile {
-                    name,
-                    description,
-                    rules,
-                };
-                tree.workspaces[workspace_index]
-                    .save_permission_profile_as_actor(&caller, profile.clone())
-                    .map_err(|error| error.to_string())?;
-                tree.doc_upsert_permission_profile(workspace_id, &profile);
-            }
-            crate::shell::workspace_settings::PermissionProfileOperation::Assign {
-                profile,
-                subject_kind,
-                subject,
-                expires_unix,
-            } => {
-                let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
-                    "person" => collab_types::Subject::person(subject.trim()),
-                    "app" => collab_types::Subject::app(subject.trim()),
-                    "agent" => collab_types::Subject::agent(subject.trim()),
-                    _ => return Err("subject_kind must be person, app, or agent".into()),
-                };
-                let expiry = (expires_unix > 0)
-                    .then_some(expires_unix)
-                    .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-                let ids = tree.workspaces[workspace_index]
-                    .assign_permission_profile_as_actor(&caller, &profile, subject, expiry)
-                    .map_err(|error| error.to_string())?;
-                let capabilities = tree.workspaces[workspace_index]
-                    .capabilities
-                    .iter()
-                    .filter(|capability| ids.contains(&capability.id))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for capability in capabilities {
-                    tree.doc_insert_capability(workspace_id, &capability);
-                }
-            }
-        }
+        apply_permission_profile_operation(
+            &mut tree,
+            workspace_index,
+            workspace_id,
+            &caller,
+            operation,
+        )?;
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = tilo_actions::InvocationUpdate::Succeeded {
@@ -11088,8 +11115,8 @@ pub(crate) mod tests {
         serde_json::to_string(&state.action_catalogue_for(caller)).expect("catalogue encodes")
     }
 
-    #[test]
-    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+    /// A workspace whose `agent` may save and assign permission profiles.
+    fn profile_governed_workspace(agent: &str) -> crate::shell::state::Workspace {
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(32),
             "Governance room",
@@ -11100,7 +11127,7 @@ pub(crate) mod tests {
             crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
         ] {
             workspace.grant_capability(collab_types::CapOverride::grant(
-                collab_types::Subject::agent("architect"),
+                collab_types::Subject::agent(agent),
                 collab_types::Scope::Action {
                     app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
                     action: action.into(),
@@ -11108,6 +11135,12 @@ pub(crate) mod tests {
                 collab_types::Verb::Admin,
             ));
         }
+        workspace
+    }
+
+    #[test]
+    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+        let workspace = profile_governed_workspace("architect");
         let cluster = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
