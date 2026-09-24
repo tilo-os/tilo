@@ -32,6 +32,8 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # Portable content store for draft attachments. Drafts carry only a verified
 # content identity; qdoc offers/fetches the bytes across collaborators.
 qdoc = { path = "../../crates/doc/qdoc" }
+# Calendar invitations are validated as parsed iCalendar content lines.
+pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

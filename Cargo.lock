@@ -8097,6 +8097,7 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
+ "pim-lines",
  "qdoc",
  "rcgen",
  "reqwest 0.13.2",
