@@ -14,6 +14,9 @@
       "code.sandbox.example/qos/tilo-vm": [
         { "type": "reject" }
       ],
+      "code.sandbox.example/qos/tilo-ci": [
+        { "type": "reject" }
+      ],
       "code.sandbox.example/qos/tilo-dev": [
         { "type": "reject" }
       ]

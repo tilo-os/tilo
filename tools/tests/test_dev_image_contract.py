@@ -84,6 +84,14 @@ class DevImageContractTests(unittest.TestCase):
         path.write_text(json.dumps(policy, indent=2))
         self.assertIn("does not reject code.sandbox.example/qos/tilo-vm", "\n".join(self.findings(root)))
 
+    def test_production_policy_must_reject_integration_repository(self):
+        root = self.fixture()
+        path = root / "os/etc/containers/policy.json"
+        policy = json.loads(path.read_text())
+        policy["transports"]["docker"]["code.sandbox.example/qos/tilo-ci"] = [{"type": "insecureAcceptAnything"}]
+        path.write_text(json.dumps(policy, indent=2))
+        self.assertIn("does not reject code.sandbox.example/qos/tilo-ci", "\n".join(self.findings(root)))
+
     def test_dev_image_tagged_as_production_fails(self):
         root = self.fixture()
         workflow = root / ".forgejo/workflows/bad.yml"
