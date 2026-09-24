@@ -51,6 +51,19 @@ grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
   && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate work or exhaust a PR runner'
 
+# A registry hiccup after a completed compile must neither fail the release on
+# its best-effort cache write nor discard the build: the cache export ignores
+# errors, and a failed publication push retries the already-loaded image a
+# bounded number of times before the signing gate consumes its digest.
+grep -Fq 'tilo-kernel-buildcache:{0},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
+  && grep -Fq "if: \${{ steps.build.outcome == 'failure' }}" "$workflows/build-kernel.yml" \
+  && grep -Fq 'for attempt in 1 2 3; do' "$workflows/build-kernel.yml" \
+  && grep -Fq 'docker image inspect "$LOCAL_IMAGE"' "$workflows/build-kernel.yml" \
+  && grep -Fq 'ref="code.sandbox.example/qos/tilo-kernel@${{ steps.published.outputs.digest }}"' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'tilo-kernel@${{ steps.build.outputs.digest }}' "$workflows/build-kernel.yml" \
+  && ok 'kernel publication survives cache-write failures and retries a failed push of the completed build' \
+  || bad 'a registry cache or push hiccup can fail or silently skip kernel publication'
+
 if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
   && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
   && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
@@ -141,13 +154,16 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
    && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
-   && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
+   && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
+   && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
+   && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
    && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow" \
    && grep -Fq 'automation/kernel-snapshot-${snapshot_digest:0:16}' "$kernel_workflow" \
    && grep -Fq 'python3 os/dev/open-kernel-snapshot-pr.py' "$kernel_workflow" \
+   && ! grep -Fq 'FORGEJO_TOKEN: ${{ github.token }}' "$kernel_workflow" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
    && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
    && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'" "$kernel_workflow" \

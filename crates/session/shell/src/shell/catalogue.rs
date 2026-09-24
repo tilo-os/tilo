@@ -108,17 +108,34 @@ fn lock_pending_notices() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> 
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The same search the launcher does for `tilo-launcher`.
+/// The same search the launcher does for `tilo-launcher`, including its
+/// rule that only a developer build lets the environment name the binary
+/// (`TILO_APP_BIN`): the catalogue binary runs unconfined and decides what
+/// gets offered and installed.
 fn catalogue_bin_candidates() -> Vec<PathBuf> {
+    let current_exe = std::env::current_exe().ok();
+    catalogue_bin_candidates_from(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os("TILO_APP_BIN"),
+        current_exe.as_deref(),
+    )
+}
+
+/// [`catalogue_bin_candidates`] as a pure function of its inputs, so the
+/// shipped ordering is assertable from a debug test run.
+fn catalogue_bin_candidates_from(
+    dev_overrides: bool,
+    explicit: Option<std::ffi::OsString>,
+    current_exe: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(explicit) = std::env::var_os("TILO_APP_BIN")
+    if dev_overrides
+        && let Some(explicit) = explicit
         && !explicit.is_empty()
     {
         out.push(PathBuf::from(explicit));
     }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
+    if let Some(dir) = current_exe.and_then(std::path::Path::parent) {
         out.push(dir.join("app"));
     }
     out.push(PathBuf::from("/usr/libexec/app"));
@@ -500,6 +517,19 @@ mod tests {
         let resolved = resolve_catalogue_bin();
         unsafe { std::env::remove_var("TILO_APP_BIN") };
         assert_eq!(resolved.as_deref(), Some(fake.as_path()));
+    }
+
+    #[test]
+    fn a_release_build_ignores_the_catalogue_binary_override() {
+        let exe = std::path::Path::new("/usr/bin/shell");
+        let shipped = catalogue_bin_candidates_from(false, Some("/tmp/evil-app".into()), Some(exe));
+        assert!(
+            !shipped.contains(&PathBuf::from("/tmp/evil-app")),
+            "a release compositor must not run a catalogue binary named by the environment: {shipped:?}",
+        );
+        assert_eq!(shipped.first(), Some(&PathBuf::from("/usr/bin/app")));
+        let developer = catalogue_bin_candidates_from(true, Some("/dev/app".into()), Some(exe));
+        assert_eq!(developer.first(), Some(&PathBuf::from("/dev/app")));
     }
 
     #[test]

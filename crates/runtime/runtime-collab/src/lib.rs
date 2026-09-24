@@ -42,8 +42,10 @@
               redesigning around the RPC library"
 )]
 
+#[cfg(feature = "client")]
 use std::rc::Rc;
 
+#[cfg(feature = "client")]
 use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
 // Checked-in bindings let app developers build `tilo-app` without installing
@@ -58,10 +60,12 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
     clippy::restriction,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
+#[cfg(feature = "client")]
 pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+#[cfg(feature = "client")]
 use capnp_rpc::rpc_twoparty_capnp;
 
 /// Opaque capability naming MLS state held by the shell's vault provider.
@@ -214,20 +218,31 @@ pub enum WorkspaceControlInput {
     },
 }
 
+#[cfg(feature = "client")]
 pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
 /// Client endpoint for an application-owned paged action directory.  Apps
 /// implement the matching `action_directory::Server` and hand this capability
 /// to [`ChannelHandle::publish_action_directory`]; the broker owns neither the
 /// widget nor a complete copy of its rows.
+#[cfg(feature = "client")]
 pub use collab_capnp::action_directory::Client as ActionDirectoryClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::realtime_stream::Client as RealtimeStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::stream::Client as StreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
@@ -290,6 +305,7 @@ impl CertifiedJoinIdentity {
 /// Returns [`NotAvailable::ServiceFdMissing`] if the launcher didn't hand
 /// this process a collab service fd, or another [`NotAvailable`] variant
 /// if the connection fails to establish.
+#[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -299,10 +315,12 @@ pub fn try_connect() -> Result<CollabClient, NotAvailable> {
 
 /// Idiomatic Rust wrapper over the generated [`CollabServiceClient`].
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct CollabClient {
     inner: Rc<CollabServiceClient>,
 }
 
+#[cfg(feature = "client")]
 impl CollabClient {
     /// Wrap an existing generated client (mainly useful for tests
     /// that own their own RPC system).
@@ -381,6 +399,7 @@ impl CollabClient {
 /// broker; dropping the handle closes the subscription. Cheap to
 /// clone (the underlying capability is reference-counted).
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
@@ -760,6 +779,7 @@ impl NearbyTransferReply {
     }
 }
 
+#[cfg(feature = "client")]
 impl ChannelHandle {
     /// Ask the broker to direct one current route holder to publish a complete
     /// document snapshot for this late joiner.
@@ -1731,10 +1751,12 @@ impl ChannelHandle {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct WorkspaceControlHandle {
     inner: Rc<collab_capnp::workspace_control_handle::Client>,
 }
 
+#[cfg(feature = "client")]
 impl WorkspaceControlHandle {
     /// Wait for the next workspace-control event.
     ///
@@ -1793,10 +1815,12 @@ pub struct OpEvent {
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct OpStream {
     inner: Rc<StreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl OpStream {
     /// Pull the next op along with the broker's attribution string
     /// for its author. Resolves when the broker has one available.
@@ -1838,10 +1862,12 @@ pub struct BlobEvent {
 /// Client-pulled stream of arrived document content. Each `.read()` is a
 /// single RPC, like every other stream in this schema.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct BlobStream {
     inner: Rc<BlobStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl BlobStream {
     /// Pull the next piece of arrived content. The caller MUST verify the
     /// bytes against `hash` before storing them — the key is the content's
@@ -1883,15 +1909,18 @@ pub struct ActionEvent {
 
 /// Client-pulled stream of actions published into this room.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ActionStream {
     inner: Rc<ActionStreamClient>,
 }
 
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ActionCatalogueStream {
     inner: Rc<ActionCatalogueStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl ActionCatalogueStream {
     /// Pull the next complete action-catalogue snapshot.
     ///
@@ -1910,6 +1939,7 @@ impl ActionCatalogueStream {
     }
 }
 
+#[cfg(feature = "client")]
 impl ActionStream {
     /// Pull the next action published into this room.
     ///
@@ -2041,12 +2071,14 @@ pub enum ActionDirectoryResolution {
     Unavailable,
 }
 
+#[cfg(feature = "client")]
 fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
     value.to_str().map(str::to_owned).map_err(|error| {
         capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
     })
 }
 
+#[cfg(feature = "client")]
 fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {
@@ -2073,6 +2105,7 @@ fn decode_exported_action(
     })
 }
 
+#[cfg(feature = "client")]
 fn decode_action_directory_row(
     row: collab_capnp::action_directory_row::Reader<'_>,
 ) -> Result<ActionDirectoryRow, capnp::Error> {
@@ -2107,6 +2140,7 @@ fn decode_action_directory_row(
 ///
 /// Returns a Cap'n Proto error when a field is absent, malformed, or cannot
 /// be decoded into the typed resource/action representation.
+#[cfg(feature = "client")]
 pub fn decode_action_directory_page(
     page: collab_capnp::action_directory_page::Reader<'_>,
 ) -> Result<ActionDirectoryPage, capnp::Error> {
@@ -2132,6 +2166,7 @@ pub fn decode_action_directory_page(
 ///
 /// Returns a Cap'n Proto error when the union or a contained action row is
 /// malformed.
+#[cfg(feature = "client")]
 pub fn decode_action_directory_resolution(
     resolution: collab_capnp::action_directory_resolution::Reader<'_>,
 ) -> Result<ActionDirectoryResolution, capnp::Error> {
@@ -2175,16 +2210,19 @@ pub struct Invocation {
 
 /// Client-pulled stream of invocations addressed to this application.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct InvocationStream {
     inner: Rc<InvocationStreamClient>,
 }
 
 /// Client-pulled active-session lifecycle stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct RealtimeStream {
     inner: Rc<RealtimeStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl RealtimeStream {
     /// Pull one bounded, versioned event payload.
     ///
@@ -2197,6 +2235,7 @@ impl RealtimeStream {
     }
 }
 
+#[cfg(feature = "client")]
 impl InvocationStream {
     /// Pull the next invocation addressed to this application.
     ///
@@ -2272,10 +2311,12 @@ pub enum TaskRunUpdate {
 
 /// Client-pulled stream of broker-addressed task leases.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct TaskRunStream {
     inner: Rc<TaskRunStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl TaskRunStream {
     /// Pull the next task run, rejecting malformed broker data rather than
     /// presenting an agent with an ambiguous authority envelope.
@@ -2337,10 +2378,12 @@ mod task_run_tests {
 
 /// Per-channel presence handle.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct PresenceHandle {
     inner: Rc<collab_capnp::presence_handle::Client>,
 }
 
+#[cfg(feature = "client")]
 impl PresenceHandle {
     /// Publish a cursor position. The broker fan-outs to peers.
     ///
@@ -2607,10 +2650,12 @@ pub struct PresenceEvent {
 
 /// Client-pulled unified presence stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct PresenceStream {
     inner: Rc<PresenceStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl PresenceStream {
     /// Pull the next presence event across all payload kinds.
     ///
@@ -2639,6 +2684,7 @@ impl PresenceStream {
     }
 }
 
+#[cfg(feature = "client")]
 fn decode_presence_payload(
     reader: collab_capnp::presence_payload::Reader<'_>,
 ) -> Result<PresencePayload, capnp::Error> {
@@ -2726,10 +2772,12 @@ pub struct ChannelContext {
 
 /// Client-pulled channel-context stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ContextStream {
     inner: Rc<ContextStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl ContextStream {
     /// Pull the next roster / permission snapshot.
     ///
@@ -2811,6 +2859,7 @@ pub struct ScrollbackBatch {
 
 /// Re-export the raw generated module for power users that need to
 /// reach below the idiomatic wrappers (server impls, tests).
+#[cfg(feature = "client")]
 pub mod raw {
     pub use super::collab_capnp::*;
 }
@@ -2841,7 +2890,7 @@ mod certified_join_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 mod tests {
     use super::*;
     use std::env;

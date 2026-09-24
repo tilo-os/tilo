@@ -154,14 +154,21 @@ pub const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
 /// directory is the whole of it". A production desktop sets neither
 /// and gets `false`.
 pub fn store_is_scoped_to_this_session() -> bool {
-    std::env::var_os("TILO_APPS_SYSTEM_DIR").is_none()
-        && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
+    system_dir_override().is_none() && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
+}
+
+/// `TILO_APPS_SYSTEM_DIR`, when this build honours developer overrides.
+/// A release build ignores it: the image's store is not something the
+/// session environment gets to replace.
+fn system_dir_override() -> Option<std::ffi::OsString> {
+    crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV)
 }
 
 /// Root of the system store, or `None` when there is no system store
 /// to read.
 ///
-/// `TILO_APPS_SYSTEM_DIR` names it explicitly; otherwise it's
+/// `TILO_APPS_SYSTEM_DIR` names it explicitly (developer builds only —
+/// see [`crate::dev_env`]); otherwise it's
 /// [`SYSTEM_DATA_DIR`] — *unless* `TILO_APPS_DATA_DIR` is set, which
 /// suppresses it entirely. That's what makes the override usable for
 /// tests: `TILO_APPS_DATA_DIR` means "the store is here", and a test
@@ -169,10 +176,22 @@ pub fn store_is_scoped_to_this_session() -> bool {
 /// the same test would pass on a dev box and fail inside a Tilo image
 /// with real preinstalled packages counted alongside fixtures.
 pub fn system_data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_APPS_SYSTEM_DIR") {
+    system_data_dir_from(
+        system_dir_override(),
+        std::env::var_os("TILO_APPS_DATA_DIR").is_some(),
+    )
+}
+
+/// [`system_data_dir`] as a function of the system-store override the
+/// build's gate let through and whether the user store was overridden.
+fn system_data_dir_from(
+    allowed_system_override: Option<std::ffi::OsString>,
+    user_store_overridden: bool,
+) -> Option<PathBuf> {
+    if let Some(dir) = allowed_system_override {
         return Some(PathBuf::from(dir));
     }
-    if store_is_scoped_to_this_session() {
+    if user_store_overridden {
         return None;
     }
     Some(PathBuf::from(SYSTEM_DATA_DIR))
@@ -367,6 +386,26 @@ mod tests {
             std::env::remove_var("TILO_APPS_DATA_DIR");
             std::env::remove_var("TILO_APPS_SYSTEM_DIR");
         }
+    }
+
+    #[test]
+    fn a_release_build_ignores_the_system_store_override() {
+        use crate::dev_env::{APPS_SYSTEM_DIR_ENV, dev_override_from};
+        let gated = dev_override_from(
+            false,
+            APPS_SYSTEM_DIR_ENV,
+            Some("/tmp/attacker-store".into()),
+        );
+        assert_eq!(
+            system_data_dir_from(gated, false),
+            Some(PathBuf::from(SYSTEM_DATA_DIR)),
+            "a release build reads the image's store whatever the environment says",
+        );
+        let honoured = dev_override_from(true, APPS_SYSTEM_DIR_ENV, Some("/dev/store".into()));
+        assert_eq!(
+            system_data_dir_from(honoured, false),
+            Some(PathBuf::from("/dev/store"))
+        );
     }
 
     #[test]

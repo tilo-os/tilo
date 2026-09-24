@@ -14,6 +14,12 @@ path = "src/lib.rs"
 name = "app"
 path = "src/main.rs"
 
+[features]
+# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
+# release build. Debug builds always honour them; shipped images never enable
+# this.
+dev-overrides = []
+
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
