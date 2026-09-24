@@ -44,6 +44,7 @@ taffy.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
