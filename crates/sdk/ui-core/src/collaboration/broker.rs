@@ -5523,14 +5523,19 @@ mod tests {
             before_seq: 10,
             max: 50,
         });
-        let events = drain_events(&mut mgr, Duration::from_secs(2));
-        let batch = events
-            .into_iter()
-            .find_map(|e| match e {
-                CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
-                _ => None,
-            })
-            .expect("must receive a ScrollbackBatch event");
+        // `drain_events` returns with the first burst of events, which can be
+        // unrelated to the fetch; keep draining until the batch arrives.
+        let start = crate::time::now();
+        let mut batch = None;
+        while batch.is_none() && start.elapsed() < Duration::from_secs(10) {
+            batch = drain_events(&mut mgr, Duration::from_millis(500))
+                .into_iter()
+                .find_map(|e| match e {
+                    CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
+                    _ => None,
+                });
+        }
+        let batch = batch.expect("must receive a ScrollbackBatch event");
         assert_eq!(batch.0.len(), 1);
         assert_eq!(
             collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
