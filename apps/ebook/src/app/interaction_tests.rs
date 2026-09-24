@@ -10,29 +10,12 @@ use ui::presence::PresenceCtx;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, KeyEvent};
 
-struct WorkspaceEnvGuard(Option<std::ffi::OsString>);
-
-impl WorkspaceEnvGuard {
-    fn set(path: &std::path::Path) -> Self {
-        let previous = std::env::var_os("TILO_WORKSPACE_DIR");
-        // SAFETY: callers use the shared `serial_test` lock while this
-        // process-global compatibility override is installed.
-        unsafe { std::env::set_var("TILO_WORKSPACE_DIR", path) };
-        Self(previous)
-    }
-}
-
-impl Drop for WorkspaceEnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: see `set`; restoration also runs during unwinding.
-        unsafe {
-            if let Some(previous) = self.0.take() {
-                std::env::set_var("TILO_WORKSPACE_DIR", previous);
-            } else {
-                std::env::remove_var("TILO_WORKSPACE_DIR");
-            }
-        }
-    }
+/// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
+/// returned scope is dropped, including during unwinding.
+fn workspace_env(path: &std::path::Path) -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_WORKSPACE_DIR", path);
+    env
 }
 
 fn app_with_sample() -> BooksApp {
@@ -2280,7 +2263,7 @@ fn import_worker_never_blocks_and_rejects_a_stale_result() {
     // fallback. A file root cannot host `Books`, so workspace
     // materialisation is unavailable regardless of runner privileges.
     let workspace = tempfile::NamedTempFile::new().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     let pa = a.path().join("slow-a.epub");
@@ -2403,7 +2386,7 @@ fn the_same_book_from_two_paths_shares_one_identity() {
 #[serial]
 fn a_workspace_book_is_surfaced_as_shared() {
     let ws = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(ws.path());
+    let _workspace = workspace_env(ws.path());
     let books = crate::content::workspace_books_dir();
     std::fs::create_dir_all(&books).unwrap();
     let shared_path = books.join("shared.epub");
@@ -2437,7 +2420,7 @@ fn a_workspace_book_is_surfaced_as_shared() {
 #[serial]
 fn sharing_a_local_book_moves_it_onto_the_workspace() {
     let ws = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(ws.path());
+    let _workspace = workspace_env(ws.path());
     let home = tempfile::tempdir().unwrap();
     let src = home.path().join("mine.epub");
     std::fs::write(&src, crate::content::SAMPLE_EPUB).unwrap();
@@ -2460,7 +2443,7 @@ fn sharing_a_local_book_moves_it_onto_the_workspace() {
 #[serial]
 fn canonical_share_operation_materialises_before_reporting_success() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("local.epub");
     std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -2523,7 +2506,7 @@ fn canonical_share_operation_refuses_a_missing_local_capability() {
 #[serial]
 fn remote_open_operation_hydrates_verified_workspace_bytes_before_revealing() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let seed = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(seed.path(), crate::content::SAMPLE_EPUB).unwrap();
     let remote = crate::content::parse_path_detailed(seed.path()).unwrap();
@@ -2568,7 +2551,7 @@ fn remote_open_operation_hydrates_verified_workspace_bytes_before_revealing() {
 #[serial]
 fn remote_open_refuses_workspace_bytes_with_the_wrong_content_id() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let mut app = BooksApp::with_library(Vec::new());
     let mut doc = AutoCommit::new();
     let id = "book:claimed-but-wrong".to_string();
@@ -2612,7 +2595,7 @@ fn remote_open_refuses_workspace_bytes_with_the_wrong_content_id() {
 #[serial]
 fn cancellable_share_operation_reports_its_own_lifecycle_status() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("cancel.epub");
     std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -4242,7 +4225,7 @@ fn font_rename_escape_cancels_without_writing() {
 #[serial]
 fn completed_import_wakes_its_idle_host() {
     let tmp = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(tmp.path());
+    let _workspace = workspace_env(tmp.path());
     let path = tmp.path().join("wake.epub");
     std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
     let mut scope = ui::wake::WakeScope::new();
