@@ -2,9 +2,20 @@
 
 Start with `tilo-vm doctor`: it checks each prerequisite and prints the fix.
 
-**Cannot reach the VM over SSH.** `tilo-vm vm status`, then `tilo-vm vm
-start`. If it is running but silent, look at it: `tilo-vm vm shot`,
-`tilo-vm vm serial`. As a last resort, `tilo-vm vm reset`.
+**What `vm status` (and `status`) say.** Each case has its own fix:
+
+| It says | Meaning | Next |
+|---|---|---|
+| shut off | the hypervisor reports the VM is not running | `tilo-vm vm start <name>` |
+| running, but SSH does not answer | still booting, or stuck | `tilo-vm vm serial <name>`, `tilo-vm vm shot <name>`, `tilo-vm doctor`; last resort `tilo-vm vm reset` |
+| SSH answers but refuses the root key | the key was never installed | the printed install command (`tilo-vm guide platforms`) |
+| reachable over SSH, but no tilo-vmd | not a Tilo dev image | see "No tilo-vmd" below |
+| its tilo-vmd speaks protocol N, this tilo-vm speaks M | an incompatible daemon | see "Protocol mismatch" below |
+
+With `--json` the report carries `vm.state` (`ready`, `off`, `no-ssh`,
+`key-refused`, `no-daemon`, `incompatible`) and, when it is not ready, the
+same top-level `error`, `hint` and `see` as any failed command; the exit
+status is then non-zero.
 
 **The VM refuses its root SSH key.** SSH answers but says `Permission
 denied (publickey)`. On UTM, Hyper-V and qemu the key is installed once
@@ -12,15 +23,38 @@ after the first boot; on libvirt it goes in at creation, so a VM created
 before that needs the same step. The error prints the exact command;
 `tilo-vm guide platforms` explains it.
 
-**Protocol mismatch.** The VM's image and your `tilo-vm` disagree. If the VM
-is older, `tilo-vm vm upgrade`; if `tilo-vm` is older, rebuild it with
-`cargo install --locked --path crates/dev/tilo-vm`.
+**Protocol mismatch.** The VM's tilo-vmd and your `tilo-vm` disagree; both
+protocol numbers are in the message. If `tilo-vm` is older, update your
+checkout and rebuild it the way the docs build it: `cargo build -p tilo-vm`,
+then run `target/debug/tilo-vm` (`rcargo` works as a drop-in for `cargo`).
+If the VM is older, it depends on the VM: one running a bootc dev image moves
+onto a current one with `tilo-vm vm upgrade`; one that is not (no `bootc`)
+cannot be upgraded in place, so create a VM from a dev image
+(`tilo-vm vm create <name>`) or ask whoever set it up. The hint checks which
+it is.
 
 **No tilo-vmd / no tilo-control.** The VM runs a production image (or any
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
 `vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
-Move it to a dev image: `tilo-vm vm upgrade --image code.sandbox.example/qos/tilo-vm:<tag>`,
-or one built here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
+If it has bootc, move it to a dev image:
+`tilo-vm vm upgrade --image code.sandbox.example/qos/tilo-vm:<tag>`, or one built
+here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
+
+**"Not running a bootc dev image".** `vm upgrade` and `vm rollback-image`
+check for bootc before anything else. Without it they cannot move the VM:
+create a VM from a dev image (`tilo-vm vm create <name>`, the published dev
+disk), or ask whoever set this VM up.
+
+**`vm ssh` refuses a command.** Reading is always fine (`systemctl status`,
+`journalctl`, `cat`, `ls`, `command -v`, pipelines of those). `vm ssh`
+refuses only writes behind tilo-vm's back: copies, moves, `tee`, `dd` or
+redirections into `/usr`, `/etc`, `/boot` or tilo-vm's state
+(`/var/lib/tilo-vm`, `/var/lib/extensions`), package installs,
+`systemctl enable|start|restart|stop` of tilo units, `systemd-sysext`
+merges, `bootc switch|usr-overlay` and `tilo-vmd` subcommands. Change
+components with `tilo-vm swap`, the image with `tilo-vm vm upgrade`.
+`--raw` is the documented escape hatch for the rare change by hand (such as
+the podman login below); it leaves a receipt.
 
 **Session is failed or inactive.** `tilo-vm logs`, then
 `tilo-vm slot restart`. A bad build usually shows in the first lines;
@@ -78,8 +112,12 @@ exit 1 from flock means another build of the same worktree is running.
 **Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc`,
 upgrades and `vm stop` take the whole VM; wait and retry.
 
+**A VM that needs a fresh boot.** `tilo-vm vm restart` shuts it down under
+the VM lock, waits until it is off, starts it and waits for tilo-vmd.
+
 **Receipts.** Every command that changes something or runs long leaves
-`target/dev-runs/<id>/run.json` (status, doctor, guide, lists and logs do
-not) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
+`target/dev-runs/<id>/run.json` (status, doctor, guide, lists, logs,
+`slot show`, `slot exec` and `vm ssh` do not; `vm ssh --raw` does, since it
+may change the VM behind tilo-vm) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
 download) and flags phases slower than the goals: warm build < 60s, swap
 plus restart < 10s, cached boot < 30s.

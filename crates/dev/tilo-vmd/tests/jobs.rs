@@ -164,6 +164,7 @@ fn in_vm_build_imports_a_layer_and_records_its_build_dir() {
             dry_run: false,
             keep_targets: Some(0),
             free_goal_bytes: None,
+            min_age_seconds: None,
         })
         .unwrap();
     assert_eq!(gc.removed_targets, ["wt-1"]);

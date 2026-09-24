@@ -18,6 +18,16 @@ pub const FORGE_TOKEN_USE: &str =
 /// What a podman registry login for code.sandbox.example is for.
 pub const REGISTRY_LOGIN_USE: &str = "used only for image pulls: swap --from ci:/sha: layers (pulled in the VM when it has podman, else on this host) and vm upgrade (in the VM, with the VM's own login)";
 
+/// How the docs build tilo-vm; what to run when it is older than the VM.
+pub const REBUILD: &str =
+    "cargo build -p tilo-vm, then run target/debug/tilo-vm   (rcargo works as a drop-in for cargo)";
+
+/// What to do with a VM that has no bootc, so `vm upgrade` cannot move it.
+pub const NOT_BOOTC_FIX: &str = "create a VM from a dev image instead: tilo-vm vm create <name>   (the published dev disk; or --image <dev disk.qcow2>)   |   or ask whoever set this VM up to move it onto a dev image";
+
+/// Whether a VM has bootc could not be checked.
+const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be checked";
+
 /// What to do when no dev disk is published: `local_build` is the path of
 /// [`LOCAL_BUILD_SCRIPT`] when this checkout has it.
 pub fn no_disk_help(local_build: Option<&str>) -> String {
@@ -57,7 +67,13 @@ pub enum CliError {
         debug: Vec<String>,
     },
     #[error("VM '{vm}' has no tilo-vmd; it is not running a Tilo dev image")]
-    DaemonMissing { vm: String },
+    DaemonMissing {
+        vm: String,
+        /// Whether the VM has bootc, when it was checked.
+        bootc: Option<bool>,
+    },
+    #[error("VM '{vm}' is not running a bootc dev image; {command} needs one")]
+    NotBootc { vm: String, command: String },
     #[error("VM '{vm}' refuses its root SSH key {key}")]
     RootKeyRefused {
         vm: String,
@@ -68,7 +84,14 @@ pub enum CliError {
         credentials: bool,
     },
     #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
-    ProtocolMismatch { client: u32, daemon: u32 },
+    ProtocolMismatch {
+        /// The VM's name; empty when not known where the mismatch surfaced.
+        vm: String,
+        client: u32,
+        daemon: u32,
+        /// Whether the VM has bootc, when it was checked.
+        bootc: Option<bool>,
+    },
     #[error("{}", .0.message)]
     Remote(RpcError),
     #[error("{tool} is not installed (needed to {purpose})")]
@@ -103,14 +126,18 @@ pub enum CliError {
     },
     #[error("{place} is not logged in to {registry}")]
     RegistryLogin { place: String, registry: String },
-    #[error("refusing to deploy over raw SSH: `{command}`")]
-    RawDeploy { command: String },
+    #[error("vm ssh refuses `{command}`: it {change}")]
+    RawWrite { command: String, change: String },
     #[error("unknown source '{0}'")]
     InvalidSource(String),
     #[error("building on the host needs Linux; this host runs {os}")]
     HostBuildUnsupported { os: String },
     #[error("the VM's image cannot build: it has no {}", missing.join(", "))]
-    VmCannotBuild { missing: Vec<String> },
+    VmCannotBuild {
+        missing: Vec<String>,
+        /// Whether the VM has bootc (so vm upgrade can bring a toolchain).
+        bootc: Option<bool>,
+    },
     #[error("no dev disk is published for tag '{tag}' ({url})")]
     NoDiskPublished {
         tag: String,
@@ -219,8 +246,9 @@ impl CliError {
                 "name the slot explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm slot create my-slot"
                     .into()
             }
-            Self::Unreachable { debug, .. } => {
-                let mut hint = String::from("tilo-vm vm start   (is it running?)   then   tilo-vm doctor");
+            Self::Unreachable { vm, debug, .. } => {
+                let mut hint =
+                    format!("tilo-vm vm start {vm}   (is it running?)   then   tilo-vm doctor");
                 for command in debug {
                     hint.push_str("   |   ");
                     hint.push_str(command);
@@ -233,20 +261,41 @@ impl CliError {
             Self::RootKeyRefused { install, .. } => format!(
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
-            Self::DaemonMissing { .. } => {
-                "move the VM to a dev image: tilo-vm vm upgrade --image code.sandbox.example/qos/tilo-vm:<tag>".into()
+            Self::DaemonMissing { vm, bootc: Some(true) } => format!(
+                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image code.sandbox.example/qos/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
+            ),
+            Self::DaemonMissing { bootc: Some(false), .. } | Self::NotBootc { .. } => {
+                NOT_BOOTC_FIX.into()
             }
-            Self::ProtocolMismatch { client, daemon } if client > daemon => {
-                "the VM is older than this tilo-vm: tilo-vm vm upgrade".into()
+            Self::DaemonMissing { vm, bootc: None } => format!(
+                "{UNCHECKED_BOOTC}: tilo-vm vm status {vm}   (it says whether vm upgrade can move this VM onto a dev image)"
+            ),
+            Self::ProtocolMismatch { vm, client, daemon, bootc } if client > daemon => {
+                let name = if vm.is_empty() { String::new() } else { format!(" {vm}") };
+                match bootc {
+                    Some(true) => format!(
+                        "the VM is older than this tilo-vm: move it onto a current dev image with tilo-vm vm upgrade{name}"
+                    ),
+                    Some(false) => format!(
+                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}"
+                    ),
+                    None => format!(
+                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)"
+                    ),
+                }
             }
-            Self::ProtocolMismatch { .. } => {
-                "this tilo-vm is older than the VM: cargo install --locked --path crates/dev/tilo-vm".into()
-            }
+            Self::ProtocolMismatch { .. } => format!(
+                "this tilo-vm is older than the VM's tilo-vmd: update this checkout and rebuild it: {REBUILD}"
+            ),
             Self::Remote(error) => error.hint.clone(),
             Self::ToolMissing { tool, .. } => format!("install {tool} and make sure it is on PATH; tilo-vm doctor re-checks"),
-            Self::CommandFailed { .. } => {
-                "the command's own output above names the cause; rerun it by hand to iterate".into()
+            // A command that explained itself needs no advice beyond reading it.
+            Self::CommandFailed { stderr, .. } if !stderr.is_empty() => {
+                "the command's own message above names the cause".into()
             }
+            Self::CommandFailed { command, .. } => format!(
+                "it printed no reason here; rerun it by hand to see its full output: {command}"
+            ),
             Self::Unsupported { alternative, .. } => alternative.clone(),
             Self::NoManifest { .. } => {
                 "run from a Tilo worktree that has os/components.toml, or swap a prebuilt layer: --from layer:<hash>".into()
@@ -271,8 +320,8 @@ impl CliError {
             Self::RegistryLogin { registry, .. } => format!(
                 "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json {registry}   (password: a forge token with package read access). The VM keeps its own login for image pulls; this host's logins do not reach it"
             ),
-            Self::RawDeploy { .. } => {
-                "deploy with tilo-vm swap <component> (it records a generation you can roll back); pass --raw to run it anyway"
+            Self::RawWrite { .. } => {
+                "change the VM through tilo-vm instead, so it can be rolled back and other agents see it: a component: tilo-vm swap <component>   |   the image (/etc, units, packages): tilo-vm vm upgrade --from local   |   to run it by hand anyway, --raw is the escape hatch: tilo-vm vm ssh --raw -- <command>"
                     .into()
             }
             Self::InvalidSource(_) => {
@@ -281,11 +330,17 @@ impl CliError {
             Self::HostBuildUnsupported { .. } => {
                 "build in the VM instead: tilo-vm swap <component> --builder vm   (the default)".into()
             }
-            Self::VmCannotBuild { .. } if cfg!(target_os = "linux") => {
-                "build on this host: tilo-vm swap <component> --builder host   |   or move the VM to a dev image with a toolchain: tilo-vm vm upgrade".into()
-            }
-            Self::VmCannotBuild { .. } => {
-                "move the VM to a dev image with a toolchain: tilo-vm vm upgrade   |   or swap a CI build: --from ci:<tag>".into()
+            Self::VmCannotBuild { bootc, .. } => {
+                let image = if *bootc == Some(true) {
+                    "move the VM to a dev image with a toolchain: tilo-vm vm upgrade"
+                } else {
+                    "use a VM created from a current dev image, which has the toolchain: tilo-vm vm create <name>"
+                };
+                if cfg!(target_os = "linux") {
+                    format!("build on this host: tilo-vm swap <component> --builder host   |   or {image}")
+                } else {
+                    format!("{image}   |   or swap a CI build: --from ci:<tag>")
+                }
             }
             Self::NoDiskPublished { tag, local_build, .. } if tag != "(any)" => format!(
                 "pick a published tag (tilo-vm vm create <name> without --tag takes the newest)   |   {}",
@@ -368,14 +423,14 @@ impl CliError {
             | Self::UnknownComponent { .. }
             | Self::BootComponent { .. }
             | Self::ScopeMismatch { .. }
-            | Self::RawDeploy { .. }
+            | Self::RawWrite { .. }
             | Self::InvalidSource(_)
             | Self::HostBuildUnsupported { .. }
             | Self::VmCannotBuild { .. }
             | Self::UnknownApp { .. }
             | Self::MissingInImage { .. } => "swapping",
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
-            Self::ImageRefused { .. } | Self::BaseOlder { .. } => "images",
+            Self::ImageRefused { .. } | Self::BaseOlder { .. } | Self::NotBootc { .. } => "images",
             Self::InvalidInput(_) => "driving",
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::Unreachable { .. }
@@ -412,9 +467,12 @@ impl From<tilo_vm_protocol::ClientError> for CliError {
         use tilo_vm_protocol::ClientError;
         match error {
             ClientError::Rpc(error) => Self::Remote(error),
-            ClientError::VersionMismatch { client, daemon } => {
-                Self::ProtocolMismatch { client, daemon }
-            }
+            ClientError::VersionMismatch { client, daemon } => Self::ProtocolMismatch {
+                vm: String::new(),
+                client,
+                daemon,
+                bootc: None,
+            },
             ClientError::Io(source) => Self::Io {
                 context: "talking to tilo-vmd".into(),
                 source,
@@ -461,7 +519,22 @@ mod tests {
                 detail: "d".into(),
                 debug: vec!["tilo-vm vm serial".into()],
             },
-            CliError::DaemonMissing { vm: "dev".into() },
+            CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(true),
+            },
+            CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: Some(false),
+            },
+            CliError::DaemonMissing {
+                vm: "dev".into(),
+                bootc: None,
+            },
+            CliError::NotBootc {
+                vm: "dev".into(),
+                command: "vm upgrade".into(),
+            },
             CliError::RootKeyRefused {
                 vm: "dev".into(),
                 key: "/cfg/keys/dev_ed25519".into(),
@@ -475,12 +548,28 @@ mod tests {
                 credentials: false,
             },
             CliError::ProtocolMismatch {
+                vm: "dev".into(),
                 client: 2,
                 daemon: 1,
+                bootc: Some(true),
             },
             CliError::ProtocolMismatch {
+                vm: "dev".into(),
+                client: 2,
+                daemon: 1,
+                bootc: Some(false),
+            },
+            CliError::ProtocolMismatch {
+                vm: String::new(),
+                client: 2,
+                daemon: 1,
+                bootc: None,
+            },
+            CliError::ProtocolMismatch {
+                vm: "dev".into(),
                 client: 1,
                 daemon: 2,
+                bootc: Some(true),
             },
             CliError::Remote(RpcError {
                 code: 1,
@@ -546,13 +635,24 @@ mod tests {
                 place: "VM dev".into(),
                 registry: "code.sandbox.example".into(),
             },
-            CliError::RawDeploy {
-                command: "scp".into(),
+            CliError::RawWrite {
+                command: "cp shell /usr/bin/shell".into(),
+                change: "writes /usr/bin/shell".into(),
             },
             CliError::InvalidSource("x".into()),
             CliError::HostBuildUnsupported { os: "macos".into() },
             CliError::VmCannotBuild {
                 missing: vec!["cargo".into()],
+                bootc: Some(true),
+            },
+            CliError::VmCannotBuild {
+                missing: vec!["cargo".into()],
+                bootc: Some(false),
+            },
+            CliError::CommandFailed {
+                command: "c".into(),
+                status: "1".into(),
+                stderr: "ls: cannot access '/x': No such file or directory".into(),
             },
             CliError::NoDiskPublished {
                 tag: "main-abc1234".into(),
@@ -662,6 +762,7 @@ mod tests {
                 | CliError::SlotName { .. }
                 | CliError::Unreachable { .. }
                 | CliError::DaemonMissing { .. }
+                | CliError::NotBootc { .. }
                 | CliError::RootKeyRefused { .. }
                 | CliError::ProtocolMismatch { .. }
                 | CliError::Remote(_)
@@ -675,7 +776,7 @@ mod tests {
                 | CliError::ArchMismatch { .. }
                 | CliError::LowDisk { .. }
                 | CliError::RegistryLogin { .. }
-                | CliError::RawDeploy { .. }
+                | CliError::RawWrite { .. }
                 | CliError::InvalidSource(_)
                 | CliError::Io { .. } => {}
             }
@@ -787,6 +888,97 @@ mod tests {
             "the libvirt adapter cannot run here: virsh not on PATH"
         );
         assert_eq!(error.hint(), "sudo dnf install libvirt");
+    }
+
+    #[test]
+    fn protocol_mismatch_hints_pick_the_side_that_is_older() {
+        let mismatch = |client, daemon, bootc| CliError::ProtocolMismatch {
+            vm: "dev".into(),
+            client,
+            daemon,
+            bootc,
+        };
+        let upgrade = mismatch(2, 1, Some(true)).hint();
+        assert!(upgrade.contains("tilo-vm vm upgrade dev"), "{upgrade}");
+        let no_bootc = mismatch(2, 1, Some(false)).hint();
+        assert!(!no_bootc.contains("vm upgrade dev"), "{no_bootc}");
+        assert!(
+            no_bootc.contains("not running a bootc dev image"),
+            "{no_bootc}"
+        );
+        assert!(no_bootc.contains("tilo-vm vm create <name>"), "{no_bootc}");
+        assert!(
+            no_bootc.contains("ask whoever set this VM up"),
+            "{no_bootc}"
+        );
+        let unknown = mismatch(2, 1, None).hint();
+        assert!(!unknown.contains("tilo-vm vm upgrade"), "{unknown}");
+        assert!(unknown.contains("tilo-vm vm status dev"), "{unknown}");
+        for bootc in [Some(true), Some(false), None] {
+            let rebuild = mismatch(1, 2, bootc).hint();
+            assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
+            assert!(!rebuild.contains("vm upgrade"), "{rebuild}");
+        }
+    }
+
+    #[test]
+    fn a_vm_without_bootc_is_named_plainly_with_the_fix() {
+        let error = CliError::NotBootc {
+            vm: "dev".into(),
+            command: "vm upgrade".into(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "VM 'dev' is not running a bootc dev image; vm upgrade needs one"
+        );
+        assert!(error.hint().contains("tilo-vm vm create <name>"));
+        assert!(error.hint().contains("ask whoever set this VM up"));
+        assert!(!error.hint().contains("rerun it by hand"));
+        let missing = CliError::DaemonMissing {
+            vm: "dev".into(),
+            bootc: Some(false),
+        }
+        .hint();
+        assert!(!missing.contains("vm upgrade"), "{missing}");
+        let upgradable = CliError::DaemonMissing {
+            vm: "dev".into(),
+            bootc: Some(true),
+        }
+        .hint();
+        assert!(
+            upgradable.contains("tilo-vm vm upgrade dev"),
+            "{upgradable}"
+        );
+    }
+
+    #[test]
+    fn only_a_silent_failure_is_worth_rerunning_by_hand() {
+        let failed = |stderr: &str| CliError::CommandFailed {
+            command: "rsync a b".into(),
+            status: "exit 1".into(),
+            stderr: stderr.into(),
+        };
+        let explained = failed("rsync: No such file or directory").hint();
+        assert!(!explained.contains("rerun"), "{explained}");
+        let silent = failed("").hint();
+        assert!(silent.contains("rerun it by hand"), "{silent}");
+        assert!(silent.contains("rsync a b"), "{silent}");
+    }
+
+    #[test]
+    fn a_vm_that_cannot_build_gets_vm_upgrade_only_with_bootc() {
+        let hint = |bootc| {
+            CliError::VmCannotBuild {
+                missing: vec!["cargo".into()],
+                bootc,
+            }
+            .hint()
+        };
+        assert!(hint(Some(true)).contains("tilo-vm vm upgrade"));
+        for bootc in [Some(false), None] {
+            assert!(!hint(bootc).contains("vm upgrade"), "{}", hint(bootc));
+            assert!(hint(bootc).contains("tilo-vm vm create <name>"));
+        }
     }
 
     #[test]

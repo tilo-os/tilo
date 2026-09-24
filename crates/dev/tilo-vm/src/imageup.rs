@@ -343,12 +343,37 @@ pub fn under_vm_lock(words: &[String]) -> String {
     )
 }
 
+/// Printed in place of bootc's status when the VM has no bootc.
+const NO_BOOTC: &str = "@@nobootc";
+
+/// A remote line that says whether the VM has bootc.
+pub const BOOTC_PROBE: &str =
+    "if command -v bootc >/dev/null 2>&1; then echo bootc=yes; else echo bootc=no; fi";
+
+/// [`BOOTC_PROBE`]'s answer; `None` when it did not run.
+pub fn parse_bootc_probe(output: &str) -> Option<bool> {
+    output.lines().find_map(|line| match line.trim() {
+        "bootc=yes" => Some(true),
+        "bootc=no" => Some(false),
+        _ => None,
+    })
+}
+
 /// What `upgrade` reads from the VM before it changes anything.
 pub fn vm_facts_script() -> String {
     format!(
-        "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@bootc; {}",
+        "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@bootc; if command -v bootc >/dev/null 2>&1; then {}; else echo {NO_BOOTC}; fi",
         bootc_line(&["status", "--json"])
     )
+}
+
+/// Why [`parse_vm_facts`] found no bootc status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactsError {
+    /// The VM has no bootc at all: not a bootc dev image.
+    NoBootc,
+    /// bootc ran but said nothing usable, or the output is cut short.
+    Unreadable(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -360,11 +385,21 @@ pub struct VmFacts {
 }
 
 /// # Errors
-/// No bootc status in the output (not a bootc system).
-pub fn parse_vm_facts(output: &str) -> Result<VmFacts, String> {
-    let (boot, rest) = output.split_once("@@base").ok_or("no boot id")?;
-    let (base, rest) = rest.split_once("@@free").ok_or("no base.json section")?;
-    let (free, bootc) = rest.split_once("@@bootc").ok_or("no free space section")?;
+/// No bootc on the VM, or no bootc status in the output.
+pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
+    let cut = |what: &str| FactsError::Unreadable(what.to_owned());
+    let (boot, rest) = output
+        .split_once("@@base")
+        .ok_or_else(|| cut("no boot id"))?;
+    let (base, rest) = rest
+        .split_once("@@free")
+        .ok_or_else(|| cut("no base.json section"))?;
+    let (free, bootc) = rest
+        .split_once("@@bootc")
+        .ok_or_else(|| cut("no free space section"))?;
+    if bootc.trim() == NO_BOOTC {
+        return Err(FactsError::NoBootc);
+    }
     Ok(VmFacts {
         boot_id: boot.trim().to_owned(),
         base: serde_json::from_str(base.trim()).ok(),
@@ -373,7 +408,7 @@ pub fn parse_vm_facts(output: &str) -> Result<VmFacts, String> {
             .parse::<u64>()
             .ok()
             .map(|kib| kib.saturating_mul(1024)),
-        bootc: parse_bootc_status(bootc)?,
+        bootc: parse_bootc_status(bootc).map_err(FactsError::Unreadable)?,
     })
 }
 
@@ -749,7 +784,7 @@ mod tests {
             line.contains("mount -o remount,ro /boot; exit $rc)"),
             "{line}"
         );
-        assert!(vm_facts_script().ends_with(&line));
+        assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
     }
 
     #[test]
@@ -762,10 +797,23 @@ mod tests {
         assert_eq!(facts.free_bytes, Some(1 << 20));
         assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
         assert!(facts.bootc.booted.is_some());
-        assert!(
-            parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@bootc\nbash: bootc: command not found")
-                .is_err()
+        assert!(matches!(
+            parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@bootc\n"),
+            Err(FactsError::Unreadable(_))
+        ));
+        // No bootc at all is its own answer, not a JSON parse error.
+        assert_eq!(
+            parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@bootc\n@@nobootc\n").unwrap_err(),
+            FactsError::NoBootc
         );
+    }
+
+    #[test]
+    fn the_bootc_probe_answers_yes_no_or_nothing() {
+        assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
+        assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
+        assert_eq!(parse_bootc_probe(""), None);
+        assert!(BOOTC_PROBE.contains("command -v bootc"));
     }
 
     #[test]

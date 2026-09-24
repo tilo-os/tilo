@@ -158,7 +158,10 @@ pub fn run_job(
         Some(JobLine {
             error: Some(error), ..
         }) => Err(CliError::Remote(error)),
-        _ if status.code() == Some(127) => Err(CliError::DaemonMissing { vm: vm.into() }),
+        _ if status.code() == Some(127) => Err(CliError::DaemonMissing {
+            vm: vm.into(),
+            bootc: None,
+        }),
         _ if status.code() == Some(255) => Err(CliError::Unreachable {
             vm: vm.into(),
             detail: "ssh failed during the job".into(),

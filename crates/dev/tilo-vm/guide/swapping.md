@@ -10,9 +10,15 @@ tilo-vm swap shell --from ci:main-1a2b3c4 # the CI build of a published image
 tilo-vm swap shell --from sha:1a2b3c4     # the CI build of a main commit
 tilo-vm swap shell --from layer:<hash>    # a layer already in the VM
 tilo-vm swap kernel                       # the kernel: build, install VM-wide, reboot (guide kernel)
-tilo-vm rollback [--to <generation>]
+tilo-vm rollback                          # the generation before the current one
+tilo-vm rollback --forward                # the next newer one again
+tilo-vm rollback --to <generation>        # any generation, older or newer
 tilo-vm rollback --slot vm                # the vm slot, the kernel included
 ```
+
+Rolling back never deletes a generation, so `rollback --forward` (or
+`--to <n>`) goes forward again until `gc` prunes it; `tilo-vm slot show`
+lists them, generation 0 (the bare image) included.
 
 The one positional argument is the component; the slot is `--slot` and
 defaults to the one named after your branch. Components and their scope
@@ -49,7 +55,8 @@ Each worktree has its own build dir in the VM; `gc` evicts old ones.
 `--builder host` builds with this host's cargo and uploads the layer. It
 needs a Linux host of the VM's architecture; macOS and Windows hosts use the
 VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
-python3 makes a Linux host build locally, with a warning.
+python3 makes a Linux host build locally, with a warning before the build
+starts.
 
 ## CI builds (`--from sha:` / `--from ci:`)
 
@@ -89,6 +96,28 @@ the VM under them, so prefer session components in your own slot.
 A kernel builds on this host, never in the VM: `--builder`, `--profile` and
 `--from ci:` do not apply to it, while `--jobs` and `--direct` apply only to
 it. `tilo-vm guide kernel` has the whole loop.
+
+## Verify your swap
+
+The session sees your slot's layers stacked over the VM's `/usr`; nothing
+else does, so check from inside the slot, never with `vm ssh`:
+
+```sh
+tilo-vm slot show                              # generations, and each component's files with sha256 and layer
+tilo-vm slot show --json | jq '.files[] | select(.path == "/usr/bin/shell")'
+tilo-vm slot exec -- sha256sum /usr/bin/shell  # the file the session runs
+tilo-vm slot exec -- shell --version
+tilo-vm slot exec --slot review-a -- sh -c 'ls -l /usr/lib/tilo | head'
+```
+
+`slot exec` runs the command in the mount namespace of the slot's running
+session, as its user `tds-<slot>`, so it sees exactly the files the session
+does. Output streams back; the command stops after `--timeout` seconds
+(default 60, exit 124) or 1 MiB of output (exit 125), and its own exit
+status is passed on. The slot's session must be running
+(`tilo-vm slot restart` if not). Compare the sha256 with your build
+(`sha256sum target/release/shell` for a host build); `tilo-vm logs` shows
+what the restarted session printed.
 
 ## Checks
 
