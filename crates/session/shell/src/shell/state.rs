@@ -734,20 +734,6 @@ pub struct NativeDocumentReference {
     pub path: std::path::PathBuf,
 }
 
-/// The model's drop target for the one the toolkit's strip row previewed.
-pub fn drop_target_from_ui(target: ui::widget::TabDropTarget) -> DropTarget {
-    match target {
-        ui::widget::TabDropTarget::ExistingGroup {
-            group_id,
-            tab_index,
-        } => DropTarget::ExistingGroup {
-            group_id,
-            tab_index,
-        },
-        ui::widget::TabDropTarget::GroupGap { gap_index } => DropTarget::GroupGap { gap_index },
-    }
-}
-
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

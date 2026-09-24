@@ -5977,7 +5977,7 @@ impl ShellOverlayHost {
                     dest_strip_id,
                     payload.tab_id,
                     new_group_id,
-                    crate::shell::state::drop_target_from_ui(target),
+                    target,
                 )
             });
             if committed {
