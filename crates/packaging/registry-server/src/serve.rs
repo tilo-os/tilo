@@ -99,6 +99,9 @@ pub async fn handle(
             read_file(&state, move |state| handle_get_entry(state, &id)).await
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
+        (Method::GET, p) if p.starts_with("/blobs/") => {
+            handle_get_blob(&state, p.trim_start_matches("/blobs/"))
+        }
         (Method::POST, "/moderation/mutations") => handle_post_moderation(&state, req).await,
         (Method::GET, p) if p.starts_with("/moderation/cases/") => {
             let case_id = p.trim_start_matches("/moderation/cases/").to_owned();
@@ -486,6 +489,36 @@ fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool {
     clippy::expect_used,
     reason = "status codes and header values are hardcoded constants, never attacker- or \
               caller-controlled, so the builder cannot actually fail here"
+)]
+/// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
+/// downloaded a thin package fetches only the blobs it lacks. Content
+/// addressing makes the response self-verifying; clients check every blob.
+fn handle_get_blob(
+    state: &AppState,
+    blake3_hex: &str,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    match state
+        .inner
+        .storage
+        .load_payload_blob(blake3_hex)
+        .map_err(HandlerError::Storage)?
+    {
+        Some(bytes) => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/octet-stream")
+            .header("cache-control", "public, max-age=31536000, immutable")
+            .body(Full::new(Bytes::from(bytes)))
+            .unwrap_or_else(|_| {
+                text_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            })),
+        None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the status is an already-validated `StatusCode` and the header is a hardcoded \
+              constant, so the builder cannot actually fail here"
 )]
 fn json_response<T: serde::Serialize>(code: StatusCode, body: &T) -> Response<Full<Bytes>> {
     let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());

@@ -69,6 +69,7 @@ impl Storage {
             "transparency",
             "moderation-requests",
             "staged-artifacts",
+            "payload-blobs",
         ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
@@ -174,6 +175,67 @@ impl Storage {
         delete_if_exists(&self.staged_promotion_path())
     }
 
+    fn payload_blob_path(&self, blake3_hex: &str) -> Option<PathBuf> {
+        (blake3_hex.len() == 64 && blake3_hex.bytes().all(|byte| byte.is_ascii_hexdigit())).then(
+            || {
+                self.root
+                    .join("payload-blobs")
+                    .join(blake3_hex.to_ascii_lowercase())
+            },
+        )
+    }
+
+    /// Keep every payload blob a full package carries, each at its BLAKE3
+    /// path, so a client installing the package's thin form can fetch just
+    /// the blobs it lacks from this registry. Only reviewed artifacts pass
+    /// through here, so the registry serves no bytes it has not inspected.
+    /// Bytes that do not decode as a package carry no payload to serve.
+    ///
+    /// # Errors
+    /// Returns an error if a blob cannot be written durably.
+    pub fn save_payload_blobs(&self, tapp_bytes: &[u8]) -> Result<usize, StorageError> {
+        let mut blobs = std::collections::BTreeMap::new();
+        if tilo_app_package::tapp::read(tapp_bytes, &mut blobs).is_err() {
+            return Ok(0);
+        }
+        let count = blobs.len();
+        for (hash, bytes) in blobs {
+            let path = self
+                .payload_blob_path(&hash.to_hex())
+                .ok_or_else(|| StorageError::Encode("invalid payload blob name".into()))?;
+            if !path.exists() {
+                atomic_write(&path, &bytes)?;
+            }
+        }
+        Ok(count)
+    }
+
+    /// The payload blob named `blake3_hex`, re-checked against its name, or
+    /// `None` when this registry holds no such blob.
+    ///
+    /// # Errors
+    /// Returns an error when a stored blob cannot be read or no longer matches
+    /// its name.
+    pub fn load_payload_blob(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.payload_blob_path(blake3_hex) else {
+            return Ok(None);
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(StorageError::Io(format!("read payload blob: {error}"))),
+        };
+        if !blake3::hash(&bytes)
+            .to_hex()
+            .eq_ignore_ascii_case(blake3_hex)
+        {
+            return Err(StorageError::Parse(
+                "payload blob content does not match its name".into(),
+            ));
+        }
+        Ok(Some(bytes))
+    }
+
     /// Store exact package bytes at their BLAKE3-addressed path.
     ///
     /// # Errors
@@ -197,7 +259,8 @@ impl Storage {
                 "staged artifact digest path contains different bytes".into(),
             ));
         }
-        atomic_write(&path, bytes)
+        atomic_write(&path, bytes)?;
+        self.save_payload_blobs(bytes).map(drop)
     }
 
     /// Load package bytes and re-check their content-addressed path.
@@ -1207,6 +1270,37 @@ mod tests {
         assert!(s.root.join("reviews").is_dir());
         assert!(s.root.join("quarantined").is_dir());
         assert!(s.root.join("snapshots").is_dir());
+    }
+
+    #[test]
+    fn staging_a_package_keeps_its_payload_blobs_for_thin_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let identity = tilo_app_package::SigningIdentity::generate();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
+        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+            "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+             [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
+             [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
+            hex::encode(identity.public_key_bytes())
+        ))
+        .unwrap();
+        let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        storage.save_staged_artifact(&digest, &bytes).unwrap();
+
+        let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
+        assert_eq!(
+            storage.load_payload_blob(&blob).unwrap().as_deref(),
+            Some(&b"#!/bin/true\n"[..])
+        );
+        assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
+        assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
     }
 
     #[test]

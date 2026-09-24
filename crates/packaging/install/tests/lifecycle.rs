@@ -570,3 +570,41 @@ fn info_reports_the_runtime_the_integrity_record_and_the_saved_data() {
     assert!(out.contains("saved data    : 2 room(s)"), "{out}");
     assert!(out.contains("personal"), "{out}");
 }
+
+/// The thin form of the full package at `full`: metadata only.
+fn thin_of(full: &Path) -> PathBuf {
+    let file = std::fs::File::open(full).unwrap();
+    let tapp = tilo_app_package::tapp::read(file, &mut tilo_app_package::DiscardBlobs).unwrap();
+    let thin = full.with_extension("thin.tapp");
+    let out = std::fs::File::create(&thin).unwrap();
+    tilo_app_package::tapp::write(out, &tapp.meta, None).unwrap();
+    thin
+}
+
+/// A thin package is metadata only: it installs when the content store
+/// already holds its payload, and is refused when nothing can supply it.
+#[test]
+fn a_thin_package_installs_from_what_the_store_holds() {
+    let env = Env::new();
+    let full = env.tapp("1.0.0", b"one", None);
+    let thin = thin_of(&full);
+    assert!(std::fs::metadata(&thin).unwrap().len() < 16 * 1024);
+
+    let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "a thin package with no payload source must not install: {out}"
+    );
+    assert!(err.contains("payload blob"), "{err}");
+    assert!(
+        !env.payload_root().exists(),
+        "a refused install leaves nothing behind"
+    );
+
+    assert!(env.cmd(&["install", full.to_str().unwrap()]).0);
+    let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap(), "--force"]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("already in the content store"), "{out}");
+    let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
+    assert!(ok, "{out}{err}");
+}
