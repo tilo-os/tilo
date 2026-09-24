@@ -21,6 +21,7 @@ serde_json.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 [features]
 thin = ["dep:runtime-dylib"]
