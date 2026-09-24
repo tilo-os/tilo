@@ -15078,6 +15078,7 @@ dependencies = [
  "socket2 0.6.3",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-actions",
  "tilo-app-package",
  "tilo-user-identity",
  "tokio",
