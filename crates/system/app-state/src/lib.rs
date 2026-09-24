@@ -517,10 +517,7 @@ impl DocStore {
     ) -> Result<bool, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(room_key)?;
-        claim_legacy_room_migration(
-            &cli::standalone_state_dir(package_id).join(LEGACY_PACKAGE_ROOM_CLAIM),
-            room_key,
-        )
+        Ok(Self::native_store().claim(&StorageKey::package(package_id), room_key)?)
     }
 
     /// The record-level twin of [`Self::claim_legacy_package_migration`].
@@ -536,16 +533,11 @@ impl DocStore {
         room_key: &str,
         record_key: &str,
     ) -> Result<bool, StoreError> {
-        validate_package_id(package_id)?;
-        validate_record_key(room_key)?;
-        validate_record_key(record_key)?;
-        claim_legacy_room_migration(
-            &cli::standalone_state_dir(package_id)
-                .join(RECORDS_DIR)
-                .join(record_key)
-                .join(LEGACY_RECORD_ROOM_CLAIM),
+        validate_record_identity(package_id, room_key, record_key)?;
+        Ok(Self::native_store().claim(
+            &StorageKey::package_record(package_id, record_key),
             room_key,
-        )
+        )?)
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
@@ -828,6 +820,33 @@ impl DocStore {
         Ok(len)
     }
 
+    /// Whether the store holds anything for this document, even bytes that
+    /// would not load.
+    ///
+    /// # Errors
+    /// A failure reading the store.
+    pub fn has_stored(&self) -> Result<bool, StoreError> {
+        Ok(self.owner.stored()?.is_some())
+    }
+
+    /// Merge the document another key of the same store holds (a retained
+    /// pre-room source) into this one and save the result. The source is
+    /// left untouched. `false` when the source holds nothing.
+    ///
+    /// # Errors
+    /// The source can't be read or decoded, or the merged save fails.
+    pub fn import_from(&mut self, source: &StorageKey) -> Result<bool, StoreError> {
+        let Some(stored) = self.owner.store().read(source)? else {
+            return Ok(false);
+        };
+        let label = self
+            .owner
+            .store()
+            .local_path(source)
+            .unwrap_or_else(|| PathBuf::from(source.to_string()));
+        self.merge_bytes(&stored.bytes, &label)
+    }
+
     /// Submit one write through the owner and wait for its outcome.
     fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
         let store = self.owner.store();
@@ -862,17 +881,23 @@ impl DocStore {
     /// resulting save fails.
     pub fn migrate_from(&mut self, legacy: &Path) -> Result<bool, StoreError> {
         let bytes = match fs::read(legacy) {
-            Ok(b) if !b.is_empty() => b,
-            Ok(_) => return Ok(false),
+            Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(io_err(format!("reading {}", legacy.display()), e)),
         };
+        self.merge_bytes(&bytes, legacy)
+    }
+
+    fn merge_bytes(&mut self, bytes: &[u8], label: &Path) -> Result<bool, StoreError> {
+        if bytes.is_empty() {
+            return Ok(false);
+        }
         let mut incoming = AutoCommit::load_with_options(
-            &bytes,
+            bytes,
             LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
         )
         .map_err(|source| StoreError::Automerge {
-            path: legacy.to_path_buf(),
+            path: label.to_path_buf(),
             source: Box::new(source),
         })?;
 
@@ -883,7 +908,7 @@ impl DocStore {
         current
             .merge(&mut incoming)
             .map_err(|source| StoreError::Automerge {
-                path: legacy.to_path_buf(),
+                path: label.to_path_buf(),
                 source: Box::new(source),
             })?;
         self.save(&mut current)?;
