@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let document = root.path().join("deep/report.pdf");
@@ -797,7 +797,7 @@ mod tests {
     /// command the compositor executed and the events it queued, not
     /// what `open_in_workspace` handed back.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn each_format_opens_in_the_package_that_declares_it() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn explicit_drop_placement_survives_launch_until_toplevel_adoption() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -946,7 +946,7 @@ mod tests {
     /// One instance, one launch — asserted against the tree the
     /// compositor paints and the commands it ran.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn opening_an_open_document_focuses_it_instead_of_launching_again() {
         const SURFACE: u64 = 4242;
         let tmp = tempfile::tempdir().unwrap();
@@ -1069,7 +1069,7 @@ mod tests {
     /// production route ([`crate::shell::install_document_opener`]) —
     /// the wiring is under test, not a direct call.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn the_file_explorer_opens_a_document_in_the_app_that_owns_it() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1139,7 +1139,7 @@ mod tests {
 
     /// A type nothing claims is refused in words the explorer shows.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn the_file_explorer_reports_a_type_nothing_opens() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1193,7 +1193,7 @@ mod tests {
 
     /// A closed window means the next activation launches for real.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn a_closed_window_means_the_document_is_no_longer_open() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1245,7 +1245,7 @@ mod tests {
     /// Resolution must land on the declaring package, not a name the
     /// compositor made up.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn declared_extension_resolves_to_the_declaring_package() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1284,7 +1284,7 @@ mod tests {
     /// A format with nothing installed is its own answer — different
     /// from "this file is not a document".
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
@@ -1315,7 +1315,7 @@ mod tests {
     /// (no Wayland socket in a unit test), which is the point: the
     /// grant is recorded *before* the launch, so it's observable either way.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn opening_a_document_grants_read_for_that_path() {
         use crate::shell::state::{Effect, Scope, Subject};
 
@@ -1389,7 +1389,7 @@ mod tests {
     /// Nothing installed claims `.zzz`, so the open is refused rather
     /// than silently launching something arbitrary.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
@@ -1448,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn remote_file_reference_resolves_a_projected_record_without_source_path() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("hydrated-on-read.md");
