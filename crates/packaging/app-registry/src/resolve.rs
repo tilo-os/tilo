@@ -9,7 +9,8 @@
 //! 3. Pick the best entry for the host (arch + ISA + runtime), highest
 //!    semver; verify the entry's publisher signature.
 //! 4. Download the tapp blob over iroh-blobs, keyed by the entry's
-//!    blake3 hash.
+//!    blake3 hash. A thin tapp's payload blobs come later from the same
+//!    provider ([`FetchOutcome::payload`]), only those the device lacks.
 //! 5. Verify the downloaded bytes fail-closed: blake3 matches, and the
 //!    embedded publisher signature validates against the entry's
 //!    publisher (via [`tilo_app_package::verify`]).
@@ -27,14 +28,18 @@ use tilo_app_package::PackageId;
 use crate::config::{RegistriesConfig, RegistryRef, RegistryTrust};
 use crate::index::{HostProfile, RegistryIndex};
 use crate::tapp;
-use crate::transport::{self, fetch_blob};
+use crate::transport::{self, ProviderBlobs, fetch_blob};
 use iroh::Endpoint;
 use iroh_blobs::ticket::BlobTicket;
 
 /// Verified bytes ready to hand to the installer.
 #[derive(Clone, Debug)]
 pub struct FetchOutcome {
+    /// The package as the registry serves it: thin for a registry that
+    /// also serves payload blobs, full otherwise.
     pub bytes: Vec<u8>,
+    /// Where the payload blobs a thin package does not carry come from.
+    pub payload: ProviderBlobs,
     pub package_id: PackageId,
     pub app_id: String,
     pub version: String,
@@ -167,6 +172,7 @@ async fn try_registry(
 
     Ok(Some(FetchOutcome {
         bytes: bytes.to_vec(),
+        payload: ProviderBlobs::new(ticket.addr().clone()),
         package_id,
         app_id: entry.app_id.clone(),
         version: entry.version.clone(),

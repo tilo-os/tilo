@@ -2,9 +2,9 @@
 //!
 //! Publishing is: (1) build a per-entry attestation from the tapp's
 //! own manifest and sign it with the publisher identity, (2) upload
-//! the tapp blob to iroh-blobs, (3) upsert the entry into the target
-//! registry's index and (for a self-hosted `file://` registry)
-//! re-sign the index with the operator key.
+//! the payload blobs and the thin tapp to iroh-blobs, (3) upsert the
+//! entry into the target registry's index and (for a self-hosted
+//! `file://` registry) re-sign the index with the operator key.
 //!
 //! The `file://` path is fully implemented + tested here. The
 //! `https://` path emits the signed entry to a registry server's
@@ -133,9 +133,10 @@ pub fn build_entry(
     Ok((entry, meta.package_id))
 }
 
-/// Publish a `.tapp` to a `file://` registry directory: upload the
-/// blob into the registry's iroh-blobs store (served by `node`) and
-/// upsert + re-sign the index.
+/// Publish a full `.tapp` to a `file://` registry directory: upload its
+/// payload blobs and its thin form into the registry's iroh-blobs store
+/// (served by `node`), and upsert + re-sign the index with the thin form as
+/// the entry's artifact.
 ///
 /// `node` MUST be serving `<dir>/blobs` (see
 /// [`crate::transport::BlobNode::persistent`]) so the ticket baked
@@ -155,12 +156,22 @@ pub async fn publish_to_dir(
     registry_id: &str,
     arch: Option<Arch>,
 ) -> Result<PublishReceipt> {
-    // Authenticate and enforce payload budgets before mutating blob storage.
+    // Authenticate and enforce payload budgets on the full package before
+    // mutating blob storage.
     let (mut entry, package_id) = build_entry(tapp_bytes, publisher, arch, None)?;
 
-    // Upload only accepted bytes, then bind the resulting fetch source into
-    // the publisher-signed entry.
-    let (hash, ticket) = node.add_and_ticket(tapp_bytes.to_vec()).await?;
+    // The node serves every payload blob by hash and the thin package as the
+    // entry's artifact: an installer downloads a few KiB of metadata and then
+    // only the blobs its store lacks.
+    let mut payload = std::collections::BTreeMap::new();
+    let decoded = tilo_app_package::tapp::read(tapp_bytes, &mut payload)?;
+    for bytes in payload.into_values() {
+        node.add(bytes).await?;
+    }
+    let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)?;
+    let (hash, ticket) = node.add_and_ticket(thin.clone()).await?;
+    entry.tapp_hash = hex::encode(hash.as_bytes());
+    entry.size_bytes = thin.len() as u64;
     entry.ticket = ticket.to_string();
     entry.sign(publisher)?;
 

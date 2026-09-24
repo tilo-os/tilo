@@ -53,8 +53,10 @@ pub async fn fetch_and_install(
 ) -> Result<PackageId, FetchError> {
     let outcome = fetch_remote(workspace_root, app_id, version).await?;
     // `install_tapp` re-verifies and does blocking IO; the caller
-    // (service task) already runs this off the capnp event loop.
-    let installed = install::install_tapp(store, &outcome.bytes, pinning, None)?;
+    // (service task) already runs this off the capnp event loop. A thin
+    // package's payload comes from the provider that served it, and only
+    // the blobs the store lacks are fetched.
+    let installed = install::install_tapp(store, &outcome.bytes, pinning, Some(&outcome.payload))?;
     Ok(installed.package_id().unwrap_or(outcome.package_id))
 }
 

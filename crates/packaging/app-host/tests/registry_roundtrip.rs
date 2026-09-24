@@ -111,14 +111,26 @@ async fn publish_resolve_fetch_and_install() {
         .await
         .expect("fetch + verify");
     assert_eq!(outcome.package_id, pkg_id);
-    assert_eq!(
-        outcome.bytes, tapp_bytes,
-        "fetched bytes are byte-identical"
+    assert!(
+        outcome.bytes.len() < 16 * 1024 && outcome.bytes.len() < tapp_bytes.len(),
+        "the registry serves the thin package: {} bytes against {} full",
+        outcome.bytes.len(),
+        tapp_bytes.len()
     );
 
-    // Install on the production path and confirm the payload landed.
+    // Without a source for the payload, a thin package cannot install.
     let store = PackageStore::at(tmp.path().join("store"));
-    let installed = install_tapp(&store, &outcome.bytes, Pinning::Tried, None).unwrap();
+    assert!(install_tapp(&store, &outcome.bytes, Pinning::Tried, None).is_err());
+
+    // Install on the production path, fetching the payload from the
+    // registry's node, and confirm the payload landed.
+    let installed = install_tapp(
+        &store,
+        &outcome.bytes,
+        Pinning::Tried,
+        Some(&outcome.payload),
+    )
+    .unwrap();
     assert_eq!(installed.package_id(), Some(pkg_id));
     assert!(
         installed.payload_root.join("bin/app").exists(),
