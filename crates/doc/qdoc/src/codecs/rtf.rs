@@ -44,11 +44,13 @@ impl FormatProvider for RtfCodec {
     }
 
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
-        // RTF is ASCII-with-escapes; non-ASCII only appears inside `\'XX`/`\uN`, which
-        // we decode ourselves — map each byte to a char (Latin-1-ish) so char index == byte index.
-        let src: String = bytes.iter().map(|&b| b as char).collect();
-        import_rtf(&src, doc);
-        Ok(())
+        doc.bulk(|doc| {
+            // RTF is ASCII-with-escapes; non-ASCII only appears inside `\'XX`/`\uN`, which
+            // we decode ourselves — map each byte to a char (Latin-1-ish) so char index == byte index.
+            let src: String = bytes.iter().map(|&b| b as char).collect();
+            import_rtf(&src, doc);
+            Ok(())
+        })
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
