@@ -20,8 +20,10 @@ grep -Fq 'ln -s app /out/store' "$image"
 grep -Fq 'ln -s tilo /out/system' "$image"
 grep -Fq 'target/release/tilo completions bash' "$image"
 grep -Fq 'target/release/app completions fish' "$image"
-grep -Fq '/usr/share/bash-completion/completions/' "$image"
-grep -Fq '/usr/share/fish/vendor_completions.d/' "$image"
-grep -Fq '/usr/share/zsh/site-functions/' "$image"
+components="$root/os/components.toml"
+grep -Fq 'to = "/usr/share/bash-completion/completions/tilo"' "$components"
+grep -Fq 'to = "/usr/share/bash-completion/completions/app"' "$components"
+grep -Fq 'to = "/usr/share/fish/vendor_completions.d/' "$components"
+grep -Fq 'to = "/usr/share/zsh/site-functions/' "$components"
 
 echo 'packaging subprocess boundary: ok'
