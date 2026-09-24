@@ -5138,8 +5138,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "task 11 fix 1 long-content captures; set API_TESTER_CAPTURE_DIR"]
-    fn composition_fix1_capture_routes() {
+    #[ignore = "writes long-content route captures for review; set API_TESTER_CAPTURE_DIR"]
+    fn composition_long_content_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
         std::fs::create_dir_all(&directory).unwrap();
@@ -5190,7 +5190,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "task 11 named route captures; set API_TESTER_CAPTURE_DIR"]
+    #[ignore = "writes named route captures for review; set API_TESTER_CAPTURE_DIR"]
     fn composition_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
