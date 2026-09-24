@@ -1,5 +1,5 @@
 //! Plumbing shared by the two literal ratchets (`design_token_audit.rs`,
-//! `f1_spacing_token_audit.rs`): the production-file walk, the
+//! `spacing_token_audit.rs`): the production-file walk, the
 //! `#[cfg(test)]` span finder, the `<path> <pattern> <count>` baseline file
 //! and the grew/stale comparison. One copy, so a fix to what the scanners
 //! can see reaches both audits at once.

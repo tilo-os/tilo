@@ -1,4 +1,4 @@
-# Spacing and geometry literals in production code (see f1_spacing_token_audit.rs).
+# Spacing and geometry literals in production code (see spacing_token_audit.rs).
 # Format: <path relative to repository root> <pattern> <count>
 # This is a ratchet, not approval: counts may only move down.
 apps/api-tester/src/app.rs pixel_const 14

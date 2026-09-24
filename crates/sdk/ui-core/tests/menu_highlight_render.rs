@@ -268,7 +268,7 @@ fn context_menu_pointer_hover_is_visible_in_both_themes() {
         let rendered = render(&theme, |scene, tr| {
             menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        rendered.dump(&format!("f4_context_menu_hover_{name}"));
+        rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row1),
@@ -303,7 +303,7 @@ fn context_menu_keyboard_highlight_is_visible_when_anchored() {
         let rendered = render(&theme, |scene, tr| {
             menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        rendered.dump(&format!("f4_context_menu_keyboard_{name}"));
+        rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row1),
@@ -341,7 +341,7 @@ fn dropdown_open_list_highlight_is_visible_in_both_themes() {
             dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
             dd.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        rendered.dump(&format!("f4_dropdown_hover_{name}"));
+        rendered.dump(&format!("menu_highlight_dropdown_hover_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row(1.0)),
@@ -379,7 +379,7 @@ fn autocomplete_pointer_hover_is_visible_in_both_themes() {
             ac.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
             ac.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        rendered.dump(&format!("f4_autocomplete_hover_{name}"));
+        rendered.dump(&format!("menu_highlight_autocomplete_hover_{name}"));
         assert_highlight_visible(
             &rendered,
             text_free_probe(row(1.0)),
@@ -408,7 +408,7 @@ fn slash_menu_cursor_row_is_visible_in_both_themes() {
         let rendered = render(&theme, |scene, tr| {
             menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
         });
-        rendered.dump(&format!("f4_slash_menu_hover_{name}"));
+        rendered.dump(&format!("menu_highlight_slash_menu_hover_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row1),
@@ -452,7 +452,7 @@ fn page_palette_cursor_row_is_visible_in_both_themes() {
         let rendered = render(&theme, |scene, tr| {
             palette.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
         });
-        rendered.dump(&format!("f4_page_palette_cursor_{name}"));
+        rendered.dump(&format!("menu_highlight_page_palette_cursor_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row(1.0)),
@@ -507,7 +507,7 @@ fn context_menu_highlight_is_visible_in_every_shipped_theme() {
         let rendered = render(&theme, |scene, tr| {
             menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        rendered.dump(&format!("f4_context_menu_hover_{name}"));
+        rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
         assert_armed_row(
             &rendered,
             text_free_probe(row1),
@@ -545,7 +545,7 @@ fn dropdown_closed_control_hover_is_visible_in_both_themes() {
         let hovered = render(&theme, |scene, tr| {
             dd.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
         });
-        hovered.dump(&format!("f4_dropdown_control_hover_{name}"));
+        hovered.dump(&format!("menu_highlight_dropdown_control_hover_{name}"));
 
         let rest = resting.sample(probe);
         let hov = hovered.sample(probe);
