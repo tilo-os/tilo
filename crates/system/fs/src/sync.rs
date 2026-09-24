@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
+use crate::blob_access::{BlobAccessIndex, Requester};
 use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::hydration::Hydrator;
 use crate::identity::PeerCredentials;
@@ -727,170 +728,8 @@ async fn peer_may_read_blob(
     peer_may_read_blob_with_records(policy, namespace, store, peer, None, hash, None).await
 }
 
-/// What each caller of the blob guard may read, so a hydration's chunk
-/// requests do not each rescan the namespace and decode every readable
-/// manifest (hundreds of milliseconds per request on a small repository,
-/// serialised in the guard, so that a 2 MiB file's chunks timed out).
-///
-/// For one caller it is a pure function of the namespace state and the ACL
-/// revision, and is recomputed whenever either changes: a revocation, a
-/// rename or the deletion of the last readable reference takes effect at
-/// the next request, as before. Manifests are content-addressed, so their
-/// chunk lists are kept across namespace changes.
-#[derive(Default)]
-struct ReadableBlobs {
-    by_caller: std::sync::Mutex<std::collections::HashMap<Caller, Arc<CallerReadable>>>,
-    manifests:
-        std::sync::Mutex<std::collections::HashMap<iroh_blobs::Hash, Arc<Vec<iroh_blobs::Hash>>>>,
-}
-
-/// A blob caller: its device and the person certifying it.
-type Caller = (IdentityKey, Option<IdentityKey>);
-
-struct CallerReadable {
-    acl_revision: u64,
-    heads: Vec<automerge::ChangeHash>,
-    /// Manifests and thumbnails of live paths the caller may read.
-    roots: std::collections::HashSet<iroh_blobs::Hash>,
-    manifests: Vec<iroh_blobs::Hash>,
-    /// Every chunk those manifests name, built on the first chunk request.
-    chunks: tokio::sync::OnceCell<(std::collections::HashSet<iroh_blobs::Hash>, bool)>,
-}
-
-/// Distinct manifests whose chunk lists the guard keeps before starting over.
-const MAX_CACHED_MANIFESTS: usize = 4096;
-
-impl ReadableBlobs {
-    fn for_caller(
-        &self,
-        acl: &AclHandle,
-        namespace: &Arc<Mutex<Namespace>>,
-        peer: &IdentityKey,
-        person: Option<IdentityKey>,
-    ) -> Arc<CallerReadable> {
-        let acl_revision = acl.revision();
-        let mut ns = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let heads = ns.heads();
-        let key = (*peer, person);
-        if let Some(known) = self
-            .by_caller
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
-            .filter(|c| c.acl_revision == acl_revision && c.heads == heads)
-        {
-            return Arc::clone(known);
-        }
-        let permits = |path: &str| {
-            acl.permits_peer(peer, path, crate::acl::Access::Read)
-                || person
-                    .is_some_and(|person| acl.permits_peer(&person, path, crate::acl::Access::Read))
-        };
-        let mut roots = std::collections::HashSet::new();
-        let mut manifests = Vec::new();
-        for (path, manifest, thumbnail) in ns.live_blob_roots_by_path() {
-            if !permits(&path) {
-                continue;
-            }
-            if let Some(m) = manifest {
-                roots.insert(m);
-                manifests.push(m);
-            }
-            if let Some(t) = thumbnail {
-                roots.insert(t);
-            }
-        }
-        drop(ns);
-        let readable = Arc::new(CallerReadable {
-            acl_revision,
-            heads,
-            roots,
-            manifests,
-            chunks: tokio::sync::OnceCell::new(),
-        });
-        self.by_caller
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, Arc::clone(&readable));
-        readable
-    }
-
-    async fn chunks_of(
-        &self,
-        store: &ContentStore,
-        manifest_hash: iroh_blobs::Hash,
-    ) -> Option<Arc<Vec<iroh_blobs::Hash>>> {
-        if let Some(known) = self
-            .manifests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&manifest_hash)
-        {
-            return Some(Arc::clone(known));
-        }
-        let bytes = store.local(manifest_hash).await?;
-        let manifest = crate::content::Manifest::decode(&bytes).ok()?;
-        let chunks: Arc<Vec<iroh_blobs::Hash>> = Arc::new(
-            manifest
-                .chunks
-                .iter()
-                .map(|chunk| iroh_blobs::Hash::from(chunk.hash))
-                .collect(),
-        );
-        {
-            let mut cache = self
-                .manifests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if cache.len() >= MAX_CACHED_MANIFESTS {
-                cache.clear();
-            }
-            cache.insert(manifest_hash, Arc::clone(&chunks));
-        }
-        Some(chunks)
-    }
-
-    /// Whether a readable manifest of `caller` names chunk `hash`.
-    async fn names_chunk(
-        &self,
-        store: &ContentStore,
-        caller: &CallerReadable,
-        hash: iroh_blobs::Hash,
-    ) -> bool {
-        let (chunks, complete) = caller
-            .chunks
-            .get_or_init(|| async {
-                let mut all = std::collections::HashSet::new();
-                let mut complete = true;
-                for m in &caller.manifests {
-                    match self.chunks_of(store, *m).await {
-                        Some(chunks) => all.extend(chunks.iter().copied()),
-                        None => complete = false,
-                    }
-                }
-                (all, complete)
-            })
-            .await;
-        if chunks.contains(&hash) {
-            return true;
-        }
-        if *complete {
-            return false;
-        }
-        // A manifest was not stored here when the set was built.
-        for m in &caller.manifests {
-            if let Some(chunks) = self.chunks_of(store, *m).await
-                && chunks.contains(&hash)
-            {
-                return true;
-            }
-        }
-        false
-    }
-}
-
+/// One blob request checked the way the provider checks it, against a
+/// fresh index of the namespace.
 #[cfg(test)]
 async fn peer_may_read_blob_with_records(
     policy: &PeerPolicy,
@@ -901,79 +740,165 @@ async fn peer_may_read_blob_with_records(
     hash: iroh_blobs::Hash,
     records: Option<&RecordPlane>,
 ) -> bool {
-    peer_may_read_blob_cached(
+    let index = BlobAccessIndex::new(Arc::clone(namespace));
+    authorize_blob_request(
         policy,
-        namespace,
+        &index,
         store,
-        &ReadableBlobs::default(),
-        peer,
-        certified_person,
-        hash,
         records,
+        (*peer, certified_person),
+        &[hash],
+        &[],
     )
     .await
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    clippy::too_many_arguments,
-    reason = "namespace and record guards are deliberately released only after one coherent authorization decision"
-)]
-async fn peer_may_read_blob_cached(
+/// Whether the caller `(device, certified person)` may receive every blob
+/// in `wanted`; `context` are further hashes named in the same request with
+/// nothing asked of them (the manifests of requested chunks).
+async fn authorize_blob_request(
     policy: &PeerPolicy,
-    namespace: &Arc<Mutex<Namespace>>,
+    index: &BlobAccessIndex,
     store: &ContentStore,
-    readable: &ReadableBlobs,
-    peer: &IdentityKey,
-    certified_person: Option<IdentityKey>,
-    hash: iroh_blobs::Hash,
     records: Option<&RecordPlane>,
+    caller: (IdentityKey, Option<IdentityKey>),
+    wanted: &[iroh_blobs::Hash],
+    context: &[iroh_blobs::Hash],
 ) -> bool {
     if policy.is_none() && records.is_none() {
         return true;
     }
-
-    if let Some(acl) = policy.as_ref() {
-        let caller = readable.for_caller(acl, namespace, peer, certified_person);
-        if caller.roots.contains(&hash) {
-            return true;
-        }
-        // File hashes address manifests; range hydration requests their
-        // chunks individually. A chunk is readable only while a live,
-        // readable file's manifest names it. A learned chunk hash is not a
-        // bearer capability.
-        if readable.names_chunk(store, &caller, hash).await {
-            return true;
-        }
-    }
-
-    let Some(records) = records else {
-        return false;
+    let (device, person) = caller;
+    let readable_records = records.map(|records| {
+        records
+            .access_registry
+            .readable_record_ids_for_device(
+                records.workspace_id,
+                collab_types::Ed25519PublicKey(device),
+            )
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    let requester = Requester {
+        policy,
+        device,
+        person,
+        readable_records,
     };
-    let readable = records
-        .access_registry
-        .readable_record_ids_for_device(records.workspace_id, collab_types::Ed25519PublicKey(*peer))
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    if readable.is_empty() {
-        return false;
+    index.authorize(store, &requester, wanted, context).await
+}
+
+/// Blob requests authorised at once; further requests wait for a slot,
+/// which pushes back on the requesting connections.
+const MAX_CONCURRENT_BLOB_AUTHORIZATIONS: usize = 64;
+
+type BlobCallers = HashMap<u64, (IdentityKey, Option<IdentityKey>)>;
+
+/// Everything one blob-request decision needs, shared by the guard's tasks.
+#[derive(Clone)]
+struct BlobGuard {
+    policy: PeerPolicy,
+    index: Arc<BlobAccessIndex>,
+    store: Arc<ContentStore>,
+    records: Option<RecordPlane>,
+    callers: Arc<Mutex<BlobCallers>>,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl BlobGuard {
+    /// The connect-time verdict, remembering who is on the connection.
+    fn admit(
+        &self,
+        identity: Option<&FsTransportIdentity>,
+        endpoint_id: Option<iroh::EndpointId>,
+        connection: u64,
+    ) -> iroh_blobs::provider::events::EventResult {
+        use iroh_blobs::provider::events::AbortReason;
+
+        let device = endpoint_id.map(identity_of);
+        let person = device.and_then(|device| {
+            identity.and_then(|identity| identity.certified_person_for_device(device))
+        });
+        let mut verdict =
+            admit_blob_caller_with_records(&self.policy, endpoint_id, self.records.as_ref());
+        if verdict.is_err()
+            && person.is_some_and(|person| peer_may_read_anything(&self.policy, &person))
+        {
+            verdict = device.ok_or(AbortReason::Permission);
+        }
+        match verdict {
+            Ok(peer) => {
+                self.callers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(connection, (peer, person));
+                Ok(())
+            }
+            Err(reason) => {
+                eprintln!(
+                    "iroh-blobs: refusing {} — it reads nothing in this workspace",
+                    endpoint_id.map_or_else(|| "unnamed peer".into(), |id| id.to_string())
+                );
+                Err(reason)
+            }
+        }
     }
-    let limits = crate::store::BlobRecordLookupLimits::default();
-    let roots = {
-        namespace
+
+    /// Decides one request on its own task and answers on `reply`. Waits
+    /// for a free slot first, so a flood of requests is pushed back.
+    async fn decide<R, F>(
+        &self,
+        connection: u64,
+        wanted: Vec<iroh_blobs::Hash>,
+        context: Vec<iroh_blobs::Hash>,
+        reply: R,
+    ) where
+        R: FnOnce(iroh_blobs::provider::events::EventResult) -> F + Send + 'static,
+        F: std::future::Future<Output = ()> + Send,
+    {
+        use iroh_blobs::provider::events::AbortReason;
+
+        let caller = self
+            .callers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .live_record_blob_roots(limits.max_live_records)
-    };
-    let reachable = match roots {
-        Ok(roots) => {
-            store
-                .live_record_ids_for_blob_roots(roots, hash, limits)
-                .await
-        }
-        Err(error) => Err(error.into()),
-    };
-    reachable.is_ok_and(|records| records.into_iter().any(|record| readable.contains(&record)))
+            .get(&connection)
+            .copied();
+        let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
+            return;
+        };
+        let guard = self.clone();
+        tokio::spawn(async move {
+            let ok = match caller {
+                Some(caller) => {
+                    authorize_blob_request(
+                        &guard.policy,
+                        &guard.index,
+                        &guard.store,
+                        guard.records.as_ref(),
+                        caller,
+                        &wanted,
+                        &context,
+                    )
+                    .await
+                }
+                None => false,
+            };
+            drop(slot);
+            if !ok {
+                eprintln!(
+                    "iroh-blobs: refusing {} unreadable blob(s) on connection {connection}",
+                    wanted.len()
+                );
+            }
+            reply(if ok {
+                Ok(())
+            } else {
+                Err(AbortReason::Permission)
+            })
+            .await;
+        });
+    }
 }
 
 /// Closed connections whose caller the blob guard still recognises.
@@ -989,6 +914,11 @@ const RETAINED_CLOSED_CALLERS: usize = 256;
 /// is recorded at connect and looked up per request. Pushes are refused
 /// outright: this is a *read* plane; content arrives via the FUSE write
 /// path where the write-side capability model is enforced.
+///
+/// Requests are authorised concurrently against a [`BlobAccessIndex`]: the
+/// live namespace, ACL and record grants decide every request, as before,
+/// but an unchanged namespace is not rescanned and no request waits for
+/// another's decision.
 #[allow(
     clippy::too_many_lines,
     reason = "one protocol guard keeps all blob request variants under the same read-only authorization boundary"
@@ -1016,53 +946,45 @@ fn blob_guard(
         observe: ObserveMode::Intercept,
         throttle: ThrottleMode::None,
     };
-    let (sender, mut rx) = EventSender::channel(64, mask);
+    let (sender, mut rx) = EventSender::channel(256, mask);
+    let guard = BlobGuard {
+        policy,
+        index: Arc::new(BlobAccessIndex::new(namespace)),
+        store,
+        records,
+        callers: Arc::new(Mutex::new(HashMap::new())),
+        slots: Arc::new(tokio::sync::Semaphore::new(
+            MAX_CONCURRENT_BLOB_AUTHORIZATIONS,
+        )),
+    };
+    // The answer to one request, sent once its decision is made.
+    macro_rules! reply {
+        ($tx:expr) => {{
+            let tx = $tx;
+            move |result| async move {
+                tx.send(result).await.ok();
+            }
+        }};
+    }
     tokio::spawn(async move {
-        let mut callers: std::collections::HashMap<u64, (IdentityKey, Option<IdentityKey>)> =
-            std::collections::HashMap::new();
-        let readable = ReadableBlobs::default();
         // A connection's close can be reported before the requests it
         // already carried, and its id can be reused by a later connection.
         // A caller therefore stays registered after its last connection of
         // that id closed, until a bounded number of later closes has passed.
-        let mut open: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut open: HashMap<u64, usize> = HashMap::new();
         let mut closed: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-        // Re-resolve both the live namespace and live ACL for every request:
-        // revocation, rename, and deleting the last readable reference all
-        // take effect without ending the connection.
+        // Revocation, rename, and deleting the last readable reference all
+        // take effect for the next request without ending the connection.
         while let Some(msg) = rx.recv().await {
             match msg {
                 ProviderMessage::ClientConnected(msg) => {
-                    let device = msg.inner.endpoint_id.map(identity_of);
-                    let person = device.and_then(|device| {
-                        identity
-                            .as_ref()
-                            .and_then(|identity| identity.certified_person_for_device(device))
-                    });
-                    let mut verdict = admit_blob_caller_with_records(
-                        &policy,
-                        msg.inner.endpoint_id,
-                        records.as_ref(),
-                    );
-                    if verdict.is_err()
-                        && person.is_some_and(|person| peer_may_read_anything(&policy, &person))
-                    {
-                        verdict = device.ok_or(AbortReason::Permission);
-                    }
-                    if verdict.is_err() {
-                        eprintln!(
-                            "iroh-blobs: refusing {} — it reads nothing in this workspace",
-                            msg.inner
-                                .endpoint_id
-                                .map_or_else(|| "unnamed peer".into(), |id| id.to_string())
-                        );
-                    }
-                    if let Ok(peer) = verdict {
-                        callers.insert(msg.inner.connection_id, (peer, person));
-                        let n = open.entry(msg.inner.connection_id).or_default();
+                    let id = msg.inner.connection_id;
+                    let verdict = guard.admit(identity.as_ref(), msg.inner.endpoint_id, id);
+                    if verdict.is_ok() {
+                        let n = open.entry(id).or_default();
                         *n = n.saturating_add(1);
                     }
-                    msg.tx.send(verdict.map(|_| ())).await.ok();
+                    msg.tx.send(verdict).await.ok();
                 }
                 ProviderMessage::ConnectionClosed(msg) => {
                     let id = msg.inner.connection_id;
@@ -1077,97 +999,58 @@ fn blob_guard(
                         let Some(old) = closed.pop_front() else { break };
                         if open.get(&old).is_none_or(|n| *n == 0) {
                             open.remove(&old);
-                            callers.remove(&old);
+                            guard
+                                .callers
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&old);
                         }
                     }
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
-                    let ok = match callers.get(&msg.inner.connection_id) {
-                        Some((peer, person)) => {
-                            peer_may_read_blob_cached(
-                                &policy,
-                                &namespace,
-                                &store,
-                                &readable,
-                                peer,
-                                *person,
-                                msg.inner.request.hash,
-                                records.as_ref(),
-                            )
-                            .await
-                        }
-                        None => false,
-                    };
-                    if !ok {
-                        eprintln!(
-                            "iroh-blobs: refusing unreadable blob {} on connection {}",
-                            msg.inner.request.hash, msg.inner.connection_id
-                        );
+                    let request = &msg.inner.request;
+                    if !request.ranges.is_blob() {
+                        // Children of a hash sequence would be served without
+                        // a check of their own; this plane never asks for them.
+                        msg.tx.send(Err(AbortReason::Permission)).await.ok();
+                        continue;
                     }
-                    msg.tx
-                        .send(if ok {
-                            Ok(())
-                        } else {
-                            Err(AbortReason::Permission)
-                        })
-                        .await
-                        .ok();
+                    let hash = request.hash;
+                    guard
+                        .decide(
+                            msg.inner.connection_id,
+                            vec![hash],
+                            Vec::new(),
+                            reply!(msg.tx),
+                        )
+                        .await;
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
-                    let mut ok = callers.contains_key(&msg.inner.connection_id);
-                    if let Some((peer, person)) = callers.get(&msg.inner.connection_id) {
-                        for hash in &msg.inner.request.hashes {
-                            if !peer_may_read_blob_cached(
-                                &policy,
-                                &namespace,
-                                &store,
-                                &readable,
-                                peer,
-                                *person,
-                                *hash,
-                                records.as_ref(),
-                            )
-                            .await
-                            {
-                                ok = false;
-                                break;
-                            }
+                    let request = &msg.inner.request;
+                    let mut wanted = Vec::with_capacity(request.hashes.len());
+                    let mut context = Vec::new();
+                    for (hash, ranges) in request.hashes.iter().zip(request.ranges.iter_infinite())
+                    {
+                        if ranges.is_empty() {
+                            context.push(*hash);
+                        } else {
+                            wanted.push(*hash);
                         }
                     }
-                    msg.tx
-                        .send(if ok {
-                            Ok(())
-                        } else {
-                            Err(AbortReason::Permission)
-                        })
-                        .await
-                        .ok();
+                    guard
+                        .decide(msg.inner.connection_id, wanted, context, reply!(msg.tx))
+                        .await;
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
-                    let ok = match callers.get(&msg.inner.connection_id) {
-                        Some((peer, person)) => {
-                            peer_may_read_blob_cached(
-                                &policy,
-                                &namespace,
-                                &store,
-                                &readable,
-                                peer,
-                                *person,
-                                msg.inner.request.hash,
-                                records.as_ref(),
-                            )
-                            .await
-                        }
-                        None => false,
-                    };
-                    msg.tx
-                        .send(if ok {
-                            Ok(())
-                        } else {
-                            Err(AbortReason::Permission)
-                        })
-                        .await
-                        .ok();
+                    let hash = msg.inner.request.hash;
+                    guard
+                        .decide(
+                            msg.inner.connection_id,
+                            vec![hash],
+                            Vec::new(),
+                            reply!(msg.tx),
+                        )
+                        .await;
                 }
                 ProviderMessage::PushRequestReceived(msg) => {
                     msg.tx.send(Err(AbortReason::Permission)).await.ok();
