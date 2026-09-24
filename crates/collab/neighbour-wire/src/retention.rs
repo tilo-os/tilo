@@ -163,6 +163,9 @@ mod tests {
                 peer: 1,
                 capability: "remote-input".into(),
             },
+            NeighbourMsg::RemoteAction {
+                frame: b"{}".to_vec(),
+            },
             NeighbourMsg::AppPresenceV2 {
                 peer: 1,
                 app_id: "app".into(),
