@@ -475,6 +475,7 @@ mod tests {
     use crate::favorites::{FavKind, Favorite};
     use std::path::PathBuf;
     use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchProvider};
 
     fn places() -> Vec<Favorite> {
@@ -691,27 +692,34 @@ mod tests {
     }
 
     #[test]
-    fn collaborative_search_pages_a_late_hit_in_a_100k_record_catalog() {
-        const RECORD_COUNT: usize = 100_001;
-        let mut entries: Vec<_> = (0..RECORD_COUNT)
-            .map(|index| {
-                let mut entry = collaborative_entry(&format!("record-{index}"));
-                entry.record_id = uuid::Uuid::from_u128(index as u128 + 1);
-                entry.path = PathBuf::from(format!("/Workspace/record-{index}"));
-                entry
-            })
-            .collect();
-        // A unique late tail proves this is a complete index, not a first-page
-        // snapshot.  It also avoids making the test's query work proportional
-        // to the entire corpus.
-        entries[RECORD_COUNT - 1].name = "late-needle-文書".into();
-        entries[RECORD_COUNT - 1].path = PathBuf::from("/Workspace/late-needle-文書");
-        let provider = CollaborativeRecordSearchProvider::new(&entries);
+    fn collaborative_search_pages_a_late_hit_in_a_large_record_catalog() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let entries: Vec<_> = corpus
+                    .map(|row| {
+                        let name = if row.is_target {
+                            format!("{}-文書", row.text)
+                        } else {
+                            row.text
+                        };
+                        let mut entry = collaborative_entry(&name);
+                        entry.record_id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        entry.path = PathBuf::from(format!("/Workspace/{name}"));
+                        entry
+                    })
+                    .collect();
+                CollaborativeRecordSearchProvider::new(&entries)
+            },
+            3_000,
+        );
+        assert_eq!(
+            hit.title,
+            format!("ordinary record 2999 {LATE_HIT_NEEDLE}-文書")
+        );
 
         let page = provider.search_page("needle-文書", None, 1, 1);
         assert_eq!(page.inspected, 1);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late-needle-文書");
+        assert_eq!(page.results, vec![hit]);
         assert!(
             page.next.is_none(),
             "the exact late hit exhausted its posting"
