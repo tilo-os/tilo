@@ -97,8 +97,8 @@ pub fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 
 /// Moves the entries of `from` and everything below it to `to`. Returns
 /// each moved entry's old path, new path and record.
-pub fn rename_entries(
-    map: &mut HashMap<PathBuf, Materialized>,
+pub fn rename_entries<S: std::hash::BuildHasher>(
+    map: &mut HashMap<PathBuf, Materialized, S>,
     from: &Path,
     to: &Path,
 ) -> Vec<(PathBuf, PathBuf, Materialized)> {
@@ -138,7 +138,7 @@ enum Install {
     /// A staged file or link, renamed into place.
     Staged(PathBuf),
     Placeholder {
-        spec: PlaceholderSpec,
+        spec: Box<PlaceholderSpec>,
         replace: bool,
     },
     /// Same content, new mode bits.
@@ -312,7 +312,7 @@ impl Projector {
             let cut = self.hold_cut(&rel, mtime_ms, changesets);
             let (apply, hold): (Vec<Pending>, Vec<Pending>) =
                 pending.into_iter().partition(|p| p.mtime_ms < cut);
-            self.discard(hold);
+            Self::discard(hold);
             self.commit(apply, &mut out);
             out.waiting = true;
             out.waiting_for = Some(rel);
@@ -608,7 +608,7 @@ impl Projector {
     }
 
     /// Drops prepared versions that are held back.
-    fn discard(&self, pending: Vec<Pending>) {
+    fn discard(pending: Vec<Pending>) {
         for p in pending {
             if let Install::Staged(staging) = p.install {
                 let _ = fs::remove_file(staging);
@@ -644,6 +644,10 @@ impl Projector {
         Ok(copy)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fencing, the dirty check and staging decide one version together"
+    )]
     fn prepare_file(
         &self,
         rel: &Path,
@@ -834,7 +838,10 @@ impl Projector {
             mtime: mtime_of(e.mtime_ms),
             owner: self.owner,
         };
-        Ok(Some(Install::Placeholder { spec, replace }))
+        Ok(Some(Install::Placeholder {
+            spec: Box::new(spec),
+            replace,
+        }))
     }
 
     fn note_unavailable(&self, why: String) {
@@ -943,7 +950,7 @@ fn set_link_mtime(path: &Path, mtime_ms: u64) -> io::Result<()> {
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
     let secs = i64::try_from(mtime_ms / 1000).unwrap_or(i64::MAX);
-    let nanos = i64::try_from((mtime_ms % 1000) * 1_000_000).unwrap_or(0);
+    let nanos = i64::try_from((mtime_ms % 1000).saturating_mul(1_000_000)).unwrap_or(0);
     let times = [
         libc::timespec {
             tv_sec: 0,

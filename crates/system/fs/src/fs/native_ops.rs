@@ -529,7 +529,7 @@ impl QuickFS {
         };
         self.publish(delta);
         let before = current.map_or(0, |l| l.epoch);
-        let deadline = std::time::Instant::now() + wait;
+        let started = std::time::Instant::now();
         let answer = loop {
             std::thread::sleep(std::time::Duration::from_millis(5));
             let lease = self.ns().write_lease(record);
@@ -541,7 +541,7 @@ impl QuickFS {
                 Some(l) if l.holder != me && l.is_live(now) => break Some(Err(l)),
                 _ => {}
             }
-            if std::time::Instant::now() >= deadline {
+            if started.elapsed() >= wait {
                 break None;
             }
         };
@@ -564,6 +564,10 @@ impl QuickFS {
     /// request for a lease nobody holds is granted with a new epoch, one at
     /// a time, so of two devices asking at once exactly one gets it.
     /// `answered` remembers requests already decided. Returns the grants.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "requests are answered one at a time under one namespace lock, so two grants cannot interleave"
+    )]
     pub fn arbitrate_lease_requests(
         &self,
         ttl: std::time::Duration,
