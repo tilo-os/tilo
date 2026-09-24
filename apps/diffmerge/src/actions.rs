@@ -789,18 +789,47 @@ mod tests {
         )
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
+    /// The provisional merged output of the conflict model, as the app writes
+    /// it when a merge opens.
+    fn seeded_merge() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        MergeDoc::set_merged(&mut doc, &conflict_ctx().0.model.merged_text());
+        doc.commit();
+        doc
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
+    fn take(choice: HunkChoice) -> EncodedAction {
+        let (ctx, hunk) = conflict_ctx();
+        encode(&resolve_hunk_action(
+            hunk,
+            choice,
+            compose_choice(&ctx.model, hunk, choice),
+        ))
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_merge(),
+        registry: registry(),
+        resources: |doc| provide_resources(&conflict_ctx().0, doc),
+        palette: ["Take theirs", "Replace merged output"],
+        replay: [
+            take_both => |_| take(HunkChoice::Both),
+            set_merged => |_| encode(&set_merged_action("a\nmerged\nc\n")),
+        ],
+        undo: [
+            take_theirs => |_| take(HunkChoice::Theirs),
+            set_merged => |_| encode(&set_merged_action("a\nmerged\nc\n")),
+        ],
+        encodes: [
+            take_theirs => ("diffmerge.conflict", "take-theirs", |_, _| take(HunkChoice::Theirs)),
+            custom_resolve => ("diffmerge.conflict", "resolve", arg: "CUSTOM", |_, _| {
+                let (ctx, hunk) = conflict_ctx();
+                encode(&set_merged_action(&compose_custom(&ctx.model, hunk, "CUSTOM")))
+            }),
+            edit_merged => ("diffmerge.merge", "edit-merged", arg: "a\nmerged\nc", |_, _| {
+                encode(&set_merged_action("a\nmerged\nc\n"))
+            }),
+        ],
     }
 
     /// Ctrl+K on a merge yields the tree: the merge root (with a merged-output
@@ -825,23 +854,6 @@ mod tests {
         assert!(ids.contains(&"take-theirs"), "{ids:?}");
         assert!(ids.contains(&"take-both"), "{ids:?}");
         assert!(ids.contains(&"resolve"), "{ids:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Take theirs");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Take theirs")),
-            "{labels:?}"
-        );
-        palette.set_query("Replace merged output");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Replace merged output")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -890,79 +902,6 @@ mod tests {
             stored,
             vec![(hunk, "theirs".to_string())],
             "choice recorded"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (ctx, hunk) = conflict_ctx();
-        let mut a = AutoCommit::new();
-        MergeDoc::set_merged(&mut a, &ctx.model.merged_text());
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = resolve_hunk_action(
-            hunk,
-            HunkChoice::Both,
-            compose_choice(&ctx.model, hunk, HunkChoice::Both),
-        );
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(MergeDoc::merged_text(&a), MergeDoc::merged_text(&b));
-    }
-
-    /// Single source of truth: the palette's immediate take-theirs spec encodes
-    /// byte-identically to the action a chip builds via the shared builder +
-    /// composer. And the prompted custom-resolve spec matches the `SetMerged` the
-    /// builder produces for the same text.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (ctx, hunk) = conflict_ctx();
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        let conflict = &resources[0].children[0];
-
-        let spec = conflict
-            .actions
-            .iter()
-            .find(|a| a.id == "take-theirs")
-            .unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&resolve_hunk_action(
-            hunk,
-            HunkChoice::Theirs,
-            compose_choice(&ctx.model, hunk, HunkChoice::Theirs),
-        ));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth"
-        );
-
-        let resolve = conflict.actions.iter().find(|a| a.id == "resolve").unwrap();
-        let from_spec = prompted_encode(resolve, "CUSTOM");
-        let from_builder = encode(&set_merged_action(&compose_custom(
-            &ctx.model, hunk, "CUSTOM",
-        )));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "custom resolve is one source of truth"
         );
     }
 

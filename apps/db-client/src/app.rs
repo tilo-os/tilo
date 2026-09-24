@@ -34,7 +34,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
+use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1932,6 +1932,7 @@ impl Widget for DbClientApp {
         // lighter in-app path for clearly read-only SQL.
         query = query
             .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
             .destructive();
         if !self.session.connected {
             query = query.unavailable(
