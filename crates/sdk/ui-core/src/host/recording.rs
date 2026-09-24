@@ -1,4 +1,6 @@
-//! Host services that record every effect instead of performing it, for tests.
+//! Host services that record every effect instead of performing it — for
+//! tests, and for any host that must observe an app without letting it reach
+//! the desktop.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,6 +24,8 @@ struct Log {
     launch_requests: Vec<LaunchRequest>,
     pick_outcomes: VecDeque<PortalOutcome>,
     multi_outcomes: VecDeque<MultiOutcome>,
+    open_file_outcomes: VecDeque<OpenFileOutcome>,
+    launch_outcomes: VecDeque<LaunchOutcome>,
     utterances: Vec<tts::Utterance>,
     notifications: Vec<Notification>,
     media_sessions: Vec<MprisConfig>,
@@ -31,8 +35,8 @@ struct Log {
 /// What a [`HostServices::recording`] host was asked to do, and the answers
 /// it will give.
 ///
-/// Copies round-trip through an in-process clipboard; pickers answer queued
-/// outcomes and then `Cancelled`; launches report `Opened`; URIs, utterances
+/// Copies round-trip through an in-process clipboard; pickers and launches
+/// answer queued outcomes, then `Cancelled` (launches: `Opened`); URIs, utterances
 /// and notifications are recorded; media sessions start and record what the
 /// player publishes.
 #[derive(Clone, Default)]
@@ -75,6 +79,16 @@ impl HostRecorder {
     /// Answer the next multi-select chooser with `outcome`.
     pub fn respond_to_pick_multiple(&self, outcome: MultiOutcome) {
         self.log().multi_outcomes.push_back(outcome);
+    }
+
+    /// Answer the next descriptor-retaining chooser with `outcome`.
+    pub fn respond_to_open_file(&self, outcome: OpenFileOutcome) {
+        self.log().open_file_outcomes.push_back(outcome);
+    }
+
+    /// Answer the next desktop-open request with `outcome`.
+    pub fn respond_to_launch(&self, outcome: LaunchOutcome) {
+        self.log().launch_outcomes.push_back(outcome);
     }
 
     /// Everything the screen reader was asked to say, in order.
@@ -159,13 +173,23 @@ impl FilePicker for HostRecorder {
     }
 
     fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        self.log().pick_requests.push(request);
-        answered(OpenFileOutcome::Cancelled)
+        let mut log = self.log();
+        log.pick_requests.push(request);
+        answered(
+            log.open_file_outcomes
+                .pop_front()
+                .unwrap_or(OpenFileOutcome::Cancelled),
+        )
     }
 
     fn launch(&self, request: LaunchRequest) -> LaunchChannel {
-        self.log().launch_requests.push(request);
-        answered(LaunchOutcome::Opened)
+        let mut log = self.log();
+        log.launch_requests.push(request);
+        answered(
+            log.launch_outcomes
+                .pop_front()
+                .unwrap_or(LaunchOutcome::Opened),
+        )
     }
 }
 

@@ -24,17 +24,19 @@
 //! # Threading contract
 //!
 //! The portal round-trip is asynchronous and opens a real host window, so it
-//! must **never** run on the UI thread. [`PickRequest::send`] spawns a worker
-//! thread with a Tokio runtime on Unix or a COM apartment on Windows,
-//! and hands the outcome back over an [`std::sync::mpsc`] channel. The app
-//! drains that channel once per frame; the UI thread never blocks.
+//! must **never** run on the UI thread. [`PickRequest::send`] hands the request
+//! to the current host's [`crate::host::FilePicker`], which answers over an
+//! [`std::sync::mpsc`] channel — the native one from a worker thread with a
+//! Tokio runtime on Unix or a COM apartment on Windows. The app drains that
+//! channel once per frame; the UI thread never blocks. Tests answer requests
+//! through [`crate::host::HostServices::recording`].
 //!
 //! # Feature gating
 //!
 //! The `ashpd`/`tokio` machinery is behind the `portal` cargo feature so apps
 //! that never open a chooser (and hermetic `--shots` builds) do not pay for
-//! D-Bus. The pure URI→path mapping ([`map_uris`], [`map_uri`]), the channel
-//! types, and [`inject_for_test`] compile unconditionally, so the security
+//! D-Bus. The pure URI→path mapping ([`map_uris`], [`map_uri`]) and the
+//! channel types compile unconditionally, so the security
 //! rule stays under test in every configuration and `--open PATH` style flags
 //! work without a portal.
 
@@ -127,9 +129,6 @@ impl LaunchRequest {
 
     /// Hand the request to the current host's [`crate::host::FilePicker`].
     pub fn send(self) -> LaunchChannel {
-        if suppressed() {
-            return inject_launch_for_test(LaunchOutcome::Opened);
-        }
         crate::host::current().files.launch(self)
     }
 
@@ -384,9 +383,6 @@ impl PickRequest {
     /// request should go through [`send_multiple`](Self::send_multiple)
     /// instead, so every pick is delivered.
     pub fn send(self) -> PortalChannel {
-        if suppressed() {
-            return inject_for_test(PortalOutcome::Cancelled);
-        }
         crate::host::current().files.pick(self)
     }
 
@@ -397,46 +393,13 @@ impl PickRequest {
     /// This is valid only for a single-file Open request. Calling it for Save
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
-        if suppressed() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = tx.send(OpenFileOutcome::Cancelled);
-            return rx;
-        }
         crate::host::current().files.open_file(self)
     }
 
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
-        if suppressed() {
-            return inject_multi_for_test(MultiOutcome::Cancelled);
-        }
         crate::host::current().files.pick_multiple(self)
     }
-}
-
-/// Set when tests must prevent a chooser from opening.
-static SUPPRESSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Stop this process opening a file chooser; every request answers `Cancelled`
-/// immediately instead. Tests use this to verify request handling without
-/// opening a dialog on the user's screen or waiting for a portal response.
-///
-/// Idempotent and process-wide. [`set_suppressed`] can lift it, which exists so
-/// this module's own tests can cover both sides of the switch without one
-/// leaking into the other; an app suite calls only this.
-pub fn suppress_for_tests() {
-    set_suppressed(true);
-}
-
-/// Set the switch directly, returning what it was. Only a test that must
-/// exercise the un-suppressed path should lift it, and it should put it back.
-pub fn set_suppressed(on: bool) -> bool {
-    SUPPRESSED.swap(on, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Whether [`suppress_for_tests`] is in force.
-pub fn suppressed() -> bool {
-    SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Spawn the portal worker. The UI may have moved on (window closed) by the
@@ -621,44 +584,17 @@ pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Build a channel and immediately deliver `outcome` on it, so a headless test
-/// (and the `--shots` scenarios) can exercise the exact per-frame drain path
-/// the portal worker feeds — without opening a host dialog. Returns the
-/// receiver the app installs, mirroring [`PickRequest::send`]'s contract.
-pub fn inject_for_test(outcome: PortalOutcome) -> PortalChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    // `rx` is still alive right here, so the send cannot fail; ignoring the
-    // result rather than panicking is safe on this path (it always succeeds)
-    // and degrades gracefully if it ever
-    // doesn't.
-    let _ = tx.send(outcome);
-    rx
-}
-
-/// Test counterpart of [`LaunchRequest::send`].
-pub fn inject_launch_for_test(outcome: LaunchOutcome) -> LaunchChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = tx.send(outcome);
-    rx
-}
-
-/// Build a descriptor-retaining channel from a file a test has already opened.
-/// Production callers should use [`PickRequest::send_open_file`], which applies
-/// the portal worker's no-follow and regular-file checks.
-pub fn inject_open_file_for_test(file: File, display_name: impl Into<String>) -> OpenFileChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = tx.send(OpenFileOutcome::Opened(OpenedFile {
-        file,
-        display_name: display_name.into(),
-    }));
-    rx
-}
-
-/// Multi-select counterpart of [`inject_for_test`].
-pub fn inject_multi_for_test(outcome: MultiOutcome) -> MultiChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = tx.send(outcome);
-    rx
+impl OpenedFile {
+    /// Wrap a file a host has already opened and checked. The native picker
+    /// opens without following the final path component and verifies a
+    /// regular file; another host must uphold the same rule.
+    #[must_use]
+    pub fn new(file: File, display_name: impl Into<String>) -> Self {
+        Self {
+            file,
+            display_name: display_name.into(),
+        }
+    }
 }
 
 impl PortalOutcome {
@@ -933,49 +869,32 @@ mod tests {
         );
     }
 
-    /// Prevent a chooser from opening during the test. Assert that the
-    /// suppression seam answers immediately rather than leaving the app waiting
-    /// for a dialog.
+    /// A request reaches whatever host is current: a recording host answers
+    /// immediately, so a test never opens a chooser on the user's screen.
     #[test]
-    #[serial_test::serial(portal_suppression)]
-    fn suppression_answers_without_ever_opening_a_chooser() {
-        let was = set_suppressed(true);
-        assert!(suppressed(), "the switch is in force");
-
-        let single = PickRequest::open("Open", "Open").send();
-        assert_eq!(
-            single.try_recv(),
-            Ok(PortalOutcome::Cancelled),
-            "a suppressed request answers immediately instead of spawning a worker",
-        );
-
-        let save = PickRequest::save("Save", "Save", "x.qvp").send();
-        assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
-
-        let many = PickRequest::open_multiple("Import", "Import").send_multiple();
-        assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
-
-        let descriptor = PickRequest::open("Open", "Open").send_open_file();
-        assert!(matches!(
-            descriptor.try_recv(),
-            Ok(OpenFileOutcome::Cancelled)
-        ));
-
-        // The switch is process-wide, so leaving it set would change what a
-        // sibling test observes — exactly the kind of cross-test leakage that
-        // makes a suite lie about which behaviour it checked.
-        set_suppressed(was);
-    }
-
-    #[test]
-    fn inject_delivers_the_outcome_immediately() {
-        let rx = inject_for_test(PortalOutcome::Cancelled);
-        assert_eq!(rx.try_recv(), Ok(PortalOutcome::Cancelled));
-
-        let rx = inject_multi_for_test(MultiOutcome::Cancelled);
-        assert_eq!(rx.try_recv(), Ok(MultiOutcome::Cancelled));
-        let rx = inject_launch_for_test(LaunchOutcome::Opened);
-        assert_eq!(rx.try_recv(), Ok(LaunchOutcome::Opened));
+    fn requests_reach_the_current_host() {
+        let (services, recorder) = crate::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(local_path("/tmp/a.qvp")));
+        crate::host::scoped(&services, || {
+            let single = PickRequest::open("Open", "Open").send();
+            assert_eq!(
+                single.try_recv(),
+                Ok(PortalOutcome::Opened(local_path("/tmp/a.qvp")))
+            );
+            let save = PickRequest::save("Save", "Save", "x.qvp").send();
+            assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
+            let many = PickRequest::open_multiple("Import", "Import").send_multiple();
+            assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
+            let descriptor = PickRequest::open("Open", "Open").send_open_file();
+            assert!(matches!(
+                descriptor.try_recv(),
+                Ok(OpenFileOutcome::Cancelled)
+            ));
+            let launch = LaunchRequest::reveal("/tmp/a.qvp").send();
+            assert_eq!(launch.try_recv(), Ok(LaunchOutcome::Opened));
+        });
+        assert_eq!(recorder.pick_requests().len(), 4);
+        assert_eq!(recorder.launch_requests().len(), 1);
     }
 
     #[test]
@@ -1085,15 +1004,16 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "portal"))]
+    #[cfg(all(feature = "native", not(feature = "portal")))]
     #[test]
-    #[serial_test::serial(portal_suppression)]
-    fn without_the_feature_a_request_fails_rather_than_hanging() {
-        let rx = PickRequest::open("Open", "Open").send();
+    fn without_the_feature_the_native_picker_fails_rather_than_hanging() {
+        use crate::host::FilePicker as _;
+        let picker = crate::native::portal::DesktopFilePicker;
+        let rx = picker.pick(PickRequest::open("Open", "Open"));
         assert!(matches!(rx.recv(), Ok(PortalOutcome::Failed(_))));
-        let rx = PickRequest::open_multiple("Open", "Open").send_multiple();
+        let rx = picker.pick_multiple(PickRequest::open_multiple("Open", "Open"));
         assert!(matches!(rx.recv(), Ok(MultiOutcome::Failed(_))));
-        let rx = PickRequest::open("Open", "Open").send_open_file();
+        let rx = picker.open_file(PickRequest::open("Open", "Open"));
         assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
     }
 }

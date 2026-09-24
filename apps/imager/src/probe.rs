@@ -20,23 +20,9 @@ use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, 
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-#[cfg(not(target_os = "linux"))]
-pub fn pick_image_native() -> ui::PortalChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new()
-        .name("imager-native-picker".into())
-        .spawn(move || {
-            let outcome = native_image_path().map_or_else(
-                |error| ui::PortalOutcome::Failed(error.to_string()),
-                |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
-            );
-            let _ = tx.send(outcome);
-        });
-    rx
-}
-
+/// The platform's own file dialog for a disk image; `None` when dismissed.
 #[cfg(target_os = "macos")]
-fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"try
 set picked to choose file with prompt "Choose a Tilo or disk image"
 POSIX path of picked
@@ -51,8 +37,9 @@ end try"#;
     Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
 }
 
+/// The platform's own file dialog for a disk image; `None` when dismissed.
 #[cfg(target_os = "windows")]
-fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
     let out = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", script])

@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 #[cfg(feature = "portal")]
-use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_uri, suppressed};
+use crate::portal::{FileFilter, PickKind, map_uri, map_uris, open_uri};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome, spawn_worker,
@@ -78,9 +78,6 @@ fn single(req: PickRequest) -> PortalOutcome {
 
 #[cfg(feature = "portal")]
 fn single_open_file(req: PickRequest) -> OpenFileOutcome {
-    if suppressed() {
-        return OpenFileOutcome::Cancelled;
-    }
     if !matches!(req.kind, PickKind::Open { multiple: false }) {
         return OpenFileOutcome::Failed(
             "an already-open file request must be a single-file Open chooser".to_string(),

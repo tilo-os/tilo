@@ -8453,6 +8453,11 @@ mod tests {
             index,
         })
         .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join(&filename);
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(PortalOutcome::Opened(destination.clone()));
         assert!(matches!(
             app.start_resource_operation(
                 invocation,
@@ -8470,12 +8475,8 @@ mod tests {
                 .is_none(),
             "opening a picker cannot be reported as a completed save"
         );
+        assert_eq!(recorder.pick_requests()[0].title(), "Save attachment");
 
-        let temp = tempfile::tempdir().unwrap();
-        let destination = temp.path().join(&filename);
-        app.attachment_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            destination.clone(),
-        )));
         app.drain_attachment_save();
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
         assert!(matches!(
@@ -8522,9 +8523,11 @@ mod tests {
         );
 
         let invocation = tilo_actions::InvocationId::new();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(invocation);
-        app.attachment_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         let deadline = app
             .next_wake_deadline()
             .expect("native picker results wake independently of animation");

@@ -4264,7 +4264,6 @@ dependencies = [
  "iroh",
  "libc",
  "mime_guess",
- "open",
  "qdoc",
  "reqwest 0.12.28",
  "roxmltree",

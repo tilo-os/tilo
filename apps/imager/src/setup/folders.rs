@@ -302,28 +302,66 @@ pub fn scan_folder_cancellable(root: &Path, cancelled: &AtomicBool) -> Result<Fo
 }
 
 /// Open the host's folder chooser without blocking the UI thread.
-#[cfg(target_os = "linux")]
 pub fn pick_folder() -> ui::PortalChannel {
     ui::PickRequest::directory("Choose folder", "Choose").send()
 }
 
-/// Open the host's folder chooser without blocking the UI thread.
+/// The file choosers off Linux, where the imager ships without the desktop
+/// portal: the platform's own folder and disk-image dialogs, run on a worker
+/// thread. It serves the two requests the imager makes — a folder, and one
+/// disk image to open.
 #[cfg(not(target_os = "linux"))]
-pub fn pick_folder() -> ui::PortalChannel {
-    if ui::portal::suppressed() {
-        return ui::portal::inject_for_test(ui::PortalOutcome::Cancelled);
+pub struct PlatformDialogs;
+
+#[cfg(not(target_os = "linux"))]
+impl PlatformDialogs {
+    fn answered<T: Send + 'static>(outcome: T) -> std::sync::mpsc::Receiver<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(outcome);
+        rx
     }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new()
-        .name("imager-folder-picker".to_string())
-        .spawn(move || {
-            let outcome = native_folder_path().map_or_else(
-                |error| ui::PortalOutcome::Failed(error.to_string()),
-                |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
-            );
-            let _ = tx.send(outcome);
-        });
-    rx
+
+    const UNSUPPORTED: &'static str = "only folder and disk-image choosing is available";
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ui::host::FilePicker for PlatformDialogs {
+    fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
+        if request.is_multiple() || request.suggested_name().is_some() {
+            return Self::answered(ui::PortalOutcome::Failed(Self::UNSUPPORTED.into()));
+        }
+        let folder = request.is_directory();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name(request.worker_name().to_string())
+            .spawn(move || {
+                let picked = if folder {
+                    native_folder_path()
+                } else {
+                    crate::probe::native_image_path()
+                };
+                let outcome = picked.map_or_else(
+                    |error| ui::PortalOutcome::Failed(error.to_string()),
+                    |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
+                );
+                let _ = tx.send(outcome);
+            });
+        rx
+    }
+
+    fn pick_multiple(&self, _request: ui::PickRequest) -> ui::portal::MultiChannel {
+        Self::answered(ui::portal::MultiOutcome::Failed(Self::UNSUPPORTED.into()))
+    }
+
+    fn open_file(&self, _request: ui::PickRequest) -> ui::portal::OpenFileChannel {
+        Self::answered(ui::portal::OpenFileOutcome::Failed(
+            Self::UNSUPPORTED.into(),
+        ))
+    }
+
+    fn launch(&self, _request: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        Self::answered(ui::portal::LaunchOutcome::Failed(Self::UNSUPPORTED.into()))
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -37,14 +37,12 @@ pub mod environment;
 /// The native desktop implementation; see [`crate::native::services`].
 #[cfg(feature = "native")]
 pub use crate::native::services as native;
-#[cfg(any(test, feature = "test-support"))]
 mod recording;
 
 pub use environment::{
     AccessibilityInputs, HostEnvironment, HostIdentity, HostPaths, RunnerDiagnostics, environment,
     install_environment,
 };
-#[cfg(any(test, feature = "test-support"))]
 pub use recording::HostRecorder;
 
 /// Host-provided file choosing and opening.
@@ -178,6 +176,13 @@ impl HostServices {
         self.clipboard = clipboard;
         self
     }
+
+    /// Replace file choosing and opening, keeping every other service.
+    #[must_use]
+    pub fn with_files(mut self, files: Arc<dyn FilePicker>) -> Self {
+        self.files = files;
+        self
+    }
 }
 
 impl std::fmt::Debug for HostServices {
@@ -288,15 +293,6 @@ pub fn install_default_if_unset(make: impl FnOnce() -> HostServices) -> bool {
     true
 }
 
-/// Replace only the default clipboard, starting from [`HostServices::null`]
-/// when no default is installed yet.
-pub(crate) fn replace_default_clipboard(clipboard: Arc<dyn ClipboardBackend>) {
-    if let Ok(mut slot) = DEFAULT.write() {
-        let services = slot.take().unwrap_or_else(HostServices::null);
-        *slot = Some(services.with_clipboard(clipboard));
-    }
-}
-
 /// The installed default, if a runner installed one.
 pub fn installed_default() -> Option<HostServices> {
     DEFAULT.read().ok()?.clone()
@@ -307,17 +303,36 @@ pub fn installed_default() -> Option<HostServices> {
 /// Nests: the innermost scope wins, and the previous one is restored when `f`
 /// returns or unwinds.
 pub fn scoped<R>(services: &HostServices, f: impl FnOnce() -> R) -> R {
-    struct Pop;
-    impl Drop for Pop {
-        fn drop(&mut self) {
-            SCOPES.with(|scopes| {
-                scopes.borrow_mut().pop();
-            });
-        }
-    }
-    SCOPES.with(|scopes| scopes.borrow_mut().push(services.clone()));
-    let _pop = Pop;
+    let _scope = enter(services);
     f()
+}
+
+/// Make `services` [`current`] on this thread until the returned guard drops.
+///
+/// The guard form of [`scoped`], for a scope that spans several statements
+/// (a test, a host's dispatch of one event). Guards must drop in reverse
+/// order of creation, which Rust's scoping gives for free.
+#[must_use = "the services are current only while the guard lives"]
+pub fn enter(services: &HostServices) -> HostScope {
+    SCOPES.with(|scopes| scopes.borrow_mut().push(services.clone()));
+    HostScope {
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+/// Keeps a set of services [`current`] on this thread; see [`enter`].
+pub struct HostScope {
+    // The scope lives in a thread-local stack; dropping it elsewhere would
+    // pop another thread's entry.
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for HostScope {
+    fn drop(&mut self) {
+        SCOPES.with(|scopes| {
+            scopes.borrow_mut().pop();
+        });
+    }
 }
 
 /// The services effects on this thread should reach right now; see the
