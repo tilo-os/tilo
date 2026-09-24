@@ -672,10 +672,8 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Legacy App\nExec=/bin/true\nStartupWMClass=LegacyWindow\n",
         )
         .expect("desktop entry");
-        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: `serial(process_env)` keeps other environment-mutating
-        // tests out until the original value is restored below.
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data.path());
         crate::shell::host_apps::invalidate_cache();
         crate::shell::host_apps::set_x11_starting();
         crate::shell::host_apps::set_x11_session(None);
@@ -706,12 +704,5 @@ mod tests {
         crate::shell::host_apps::invalidate_cache();
         crate::shell::launcher::clear_pending_placements();
         crate::shell::host_apps::set_x11_unavailable();
-        unsafe {
-            if let Some(previous) = previous_data_home {
-                std::env::set_var("XDG_DATA_HOME", previous);
-            } else {
-                std::env::remove_var("XDG_DATA_HOME");
-            }
-        }
     }
 }

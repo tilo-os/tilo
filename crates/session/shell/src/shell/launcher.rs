@@ -2950,12 +2950,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.hello", "gui");
         install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let apps = read_installed_apps().expect("registry readable");
         let offered = gui_apps(); // what the palette actually offers
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
 
         assert_eq!(apps.len(), 2, "both packages enumerate: {apps:?}");
@@ -2998,11 +2998,11 @@ mod tests {
         )
         .unwrap();
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         let required = installed_continuity_contract("so.tilo.browser");
         let legacy = installed_continuity_contract("so.tilo.not-installed");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
 
         assert_eq!(
             required,
@@ -3072,12 +3072,9 @@ mod tests {
             "TILO_RUNTIME_BUNDLE_DIR",
             "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
         ];
-        let previous: Vec<_> = names.iter().map(|name| std::env::var_os(name)).collect();
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            for (index, name) in names.iter().enumerate() {
-                std::env::set_var(name, format!("/developer/overlay/{index}"));
-            }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for (index, name) in names.iter().enumerate() {
+            env.set(name, format!("/developer/overlay/{index}"));
         }
         let command = build_launch_command(
             &test_app("so.tilo.settings"),
@@ -3104,14 +3101,6 @@ mod tests {
                     .iter()
                     .all(|(name, _)| !names.contains(&name.as_str()))
             );
-        }
-        unsafe {
-            for (name, value) in names.iter().zip(previous) {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
         }
     }
 
@@ -3282,11 +3271,11 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn launch_refuses_an_unknown_package() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let err = launch("so.tilo.nope", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(
             err,
@@ -3322,11 +3311,11 @@ mod tests {
     fn launch_refuses_a_cli_only_package() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let err = launch("so.tilo.notes-cli", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(
             err,
@@ -3341,12 +3330,12 @@ mod tests {
     fn launch_refuses_when_no_compositor_socket_is_published() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.hello", "gui");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         set_wayland_socket_path(None);
         let err = launch("so.tilo.hello", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
     }
@@ -3376,11 +3365,9 @@ mod tests {
         }
         std::fs::set_permissions(&fake, perms).unwrap();
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-            std::env::set_var("TILO_LAUNCHER_BIN", &fake);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        env.set("TILO_LAUNCHER_BIN", &fake);
         invalidate_app_cache();
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
@@ -3406,10 +3393,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-        }
+        env.remove("TILO_APPS_DATA_DIR");
+        env.remove("TILO_LAUNCHER_BIN");
         invalidate_app_cache();
         set_wayland_socket_path(None);
 
@@ -3627,8 +3612,8 @@ mod tests {
     fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         set_workspace_capabilities(vec![
             fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
             fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
@@ -3651,7 +3636,7 @@ mod tests {
         );
 
         clear_workspace_capabilities();
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
 
         assert_eq!(
             plan.ro_paths,
@@ -3675,8 +3660,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn revoking_the_last_capability_removes_the_file() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
 
         let granted = vec![fs_grant(
             "so.tilo.books",
@@ -3690,7 +3675,7 @@ mod tests {
 
         let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
         let still_there = path.exists();
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
 
         assert_eq!(
             after_revoke, None,
@@ -3706,12 +3691,12 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_package_id_that_could_escape_the_directory_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
         let escaped = write_capabilities_file("../../etc/x", &caps);
         let slashed = write_capabilities_file("a/b", &caps);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
         assert!(escaped.is_err(), "`..` in a package id must be refused");
         assert!(slashed.is_err(), "`/` in a package id must be refused");
     }
@@ -3868,9 +3853,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
 
         let room = RoomId::new();
         let path = write_trusted_identities_projection(
@@ -3929,23 +3913,14 @@ mod tests {
             &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
         );
         assert!(again.exists());
-
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn files_launch_receives_only_the_staged_projection_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         let room = RoomId::new();
         let files = test_app(FILES_PACKAGE_ID);
         let mut command = build_launch_command(
@@ -3979,13 +3954,6 @@ mod tests {
                 .any(|arg| arg == "--trusted-identities"),
             "the member directory is scoped to Files"
         );
-
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 }
 

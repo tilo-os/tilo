@@ -451,17 +451,13 @@ mod tests {
     use std::os::fd::IntoRawFd;
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn signing_requires_the_exact_app_action_capability() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         let system_root = temp.path().join("system");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root);
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
@@ -530,31 +526,20 @@ mod tests {
             sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
             Response::Denied(reason) if reason.contains("revoked")
         ));
-
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one signing session checked against every route, payload and role binding"
+    )]
     fn collaboration_signing_binds_route_payload_and_live_action_role() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let system_root = temp.path().join("system");
-        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root);
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
@@ -740,33 +725,21 @@ mod tests {
             ),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
-
-        unsafe {
-            match old_xdg {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one runtime client session checked against each request it may and may not make"
+    )]
     fn runtime_client_gets_metadata_and_only_granted_signing() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
-        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         let service_var = "TILO_SVC_IDENTITY_FD";
-        let old_service = std::env::var_os(service_var);
         let system_root = temp.path().join("system");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root);
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
@@ -802,7 +775,7 @@ mod tests {
         )
         .expect("handshake");
         let fd = client.into_raw_fd();
-        unsafe { std::env::set_var(service_var, fd.to_string()) };
+        env.set(service_var, fd.to_string());
 
         let identity = runtime_identity::load().expect("broker metadata");
         assert!(!identity.group_public_key().iter().all(|byte| *byte == 0));
@@ -866,20 +839,5 @@ mod tests {
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
         drop(identity);
-
-        unsafe {
-            match old_service {
-                Some(value) => std::env::set_var(service_var, value),
-                None => std::env::remove_var(service_var),
-            }
-            match old_xdg {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-        }
     }
 }

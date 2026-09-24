@@ -6724,9 +6724,8 @@ mod tests {
             serde_json::to_vec(&vec![registration]).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
 
         assert!(net.refresh_home_peer_hosts());
         net.share_wifi_credential("Home", os_actions::WifiSecurity::Wpa2, "correct horse")
@@ -6779,14 +6778,6 @@ mod tests {
                 .is_err(),
             "removed devices must be excluded from the next envelope"
         );
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     fn fabric_snapshot(
@@ -8190,17 +8181,24 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invite is redeemed, exercised and revoked end to end"
+    )]
     fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
         };
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
         let device = iroh::SecretKey::from_bytes(&[62; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Guest laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8208,7 +8206,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut workspace =
@@ -8549,7 +8547,7 @@ mod tests {
             reason: RevocationReason::Compromised,
             signature: [0; 64],
         };
-        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        sign_revocation_entry(&mut revoked, &user_root).expect("revocation");
         net.accept_identity_hello(
             room_topic_id(room),
             &origin,
@@ -8572,14 +8570,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let device = iroh::SecretKey::from_bytes(&[82; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Viewer laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8587,7 +8588,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut workspace =
@@ -8658,14 +8659,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = iroh::SecretKey::from_bytes(&[92; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Inviting device".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8673,7 +8677,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut tree = WorkspaceTree::default();
@@ -8762,23 +8766,14 @@ mod tests {
             .expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let rooms = std::collections::BTreeSet::from([42]);
         let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         assert_eq!(first_boot, restarted, "registry is durable across restart");
         assert_eq!(first_boot.len(), 1);
         assert_eq!(first_boot[0].addr.id, service);
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8819,9 +8814,8 @@ mod tests {
             serde_json::to_vec(&registrations).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let hosts =
             registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
                 .expect("registry parses");
@@ -8831,13 +8825,6 @@ mod tests {
                 .iter()
                 .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8845,29 +8832,14 @@ mod tests {
     fn home_peer_registry_defaults_to_the_active_identity_root() {
         let temp = tempfile::tempdir().expect("temp");
         let identity_root = temp.path().join("user-data/tilo");
-        let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
-            std::env::remove_var("TILO_HOME_PEERS_PATH");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", &identity_root);
+        env.remove("TILO_HOME_PEERS_PATH");
         assert_eq!(
             home_peer_registry_path(),
             identity_root.join("home-peers.json"),
             "the shell must read the approval registry beside its own user key, never a system copy"
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_identity_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8884,9 +8856,8 @@ mod tests {
         assert!(tree.set_room(workspace, room));
         let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
         net.personal_continuity_user = Some(own_user);
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         std::fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!([{
@@ -8920,14 +8891,6 @@ mod tests {
         };
         assert_eq!(id, service);
         assert!(net.host_addrs.lock().unwrap().is_empty());
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     /// Two rooms this machine governs, and the network that holds
@@ -9943,9 +9906,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn network_announcement_governs_and_republishes_files_projection() {
         let runtime = tempfile::tempdir().unwrap();
-        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group shared with launcher tests.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let mut state = WorkspaceTree::default();
         let workspace = state.append_empty_workspace("Identity workflow");
@@ -10023,14 +9985,6 @@ mod tests {
                 .humans
                 .is_empty()
         );
-
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous_runtime {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]

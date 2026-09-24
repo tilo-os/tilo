@@ -700,7 +700,7 @@ mod tests {
 
     /// A stand-in `tilo-launcher` that records its argv, wired in via
     /// `TILO_LAUNCHER_BIN` so the log holds what production really ran.
-    fn install_recording_launcher(dir: &Path) -> PathBuf {
+    fn install_recording_launcher(dir: &Path, env: &mut tilo_test_env::ScopedEnv) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let log = dir.join("launched.log");
         let bin = dir.join("tilo-launcher");
@@ -710,11 +710,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_LAUNCHER_BIN", &bin);
-            std::env::set_var("XDG_RUNTIME_DIR", dir);
-        }
+        env.set("TILO_LAUNCHER_BIN", &bin)
+            .set("XDG_RUNTIME_DIR", dir);
         launcher::set_test_execution_program(Some(bin));
         launcher::set_wayland_socket_path(Some(dir.join("wayland-0")));
         log
@@ -743,14 +740,8 @@ mod tests {
         clear_open_documents();
     }
 
+    /// The environment itself is restored by each test's `ScopedEnv`.
     fn clear_launch_env() {
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-            std::env::remove_var("XDG_RUNTIME_DIR");
-            std::env::remove_var("TILO_WORKSPACE_ROOTS");
-        }
         launcher::set_test_execution_program(None);
         launcher::set_wayland_socket_path(None);
         reset_session_state();
@@ -779,8 +770,8 @@ mod tests {
             &serde_json::to_vec(&projection).unwrap(),
         )
         .unwrap();
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
         clear_open_documents();
         note_opening(
             &RecordId::for_file(&document),
@@ -817,9 +808,9 @@ mod tests {
         );
         install(tmp.path(), "so.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
         install(tmp.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -876,9 +867,9 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -965,9 +956,9 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let doc = tmp.path().join("report.odt");
@@ -1088,9 +1079,9 @@ mod tests {
         std::fs::create_dir_all(&files).unwrap();
         let doc = files.join("agenda.odt");
         std::fs::write(&doc, b"x").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1157,9 +1148,9 @@ mod tests {
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("archive.zzz"), b"x").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1211,9 +1202,9 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let doc = tmp.path().join("report.odt");
@@ -1263,8 +1254,8 @@ mod tests {
             "Word Processor",
             &["odt", "md"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         let target = resolve(Path::new("/w/report.odt"));
@@ -1286,8 +1277,7 @@ mod tests {
             DocumentTarget::App { .. }
         ));
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
@@ -1298,8 +1288,8 @@ mod tests {
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         assert_eq!(
@@ -1315,8 +1305,7 @@ mod tests {
             "mkv is neither a qdoc format nor claimed by anything installed"
         );
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
@@ -1337,8 +1326,8 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         let doc_path = tmp.path().join("report.odt");
@@ -1393,8 +1382,7 @@ mod tests {
         drop(tree);
         drop(st);
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
@@ -1405,11 +1393,11 @@ mod tests {
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
-        let log = install_recording_launcher(tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1503,9 +1491,8 @@ mod tests {
         xattr::set(&path, "user.tilo.content-hash", &[0x43; 32]).unwrap();
         xattr::set(&path, "user.tilo.thumb", b"fresh preview").unwrap();
 
-        let previous = std::env::var_os("TILO_WORKSPACE_ROOTS");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
         let resolved = open_continuity_file_reference(&reference)
             .expect("the mounted Files record catalog resolves and hydrates the remote reference");
         assert_eq!(resolved, path);
@@ -1516,9 +1503,8 @@ mod tests {
                 .contains(root.path().to_str().unwrap())
         );
         install(root.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", root.path()) };
-        let log = install_recording_launcher(root.path());
+        env.set("TILO_APPS_DATA_DIR", root.path());
+        let log = install_recording_launcher(root.path(), &mut env);
         reset_session_state();
         let chrome = chrome_with_workspace();
         {
@@ -1537,12 +1523,5 @@ mod tests {
             "activation must use the normal document launcher: {launch:?}"
         );
         clear_launch_env();
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_WORKSPACE_ROOTS", value),
-                None => std::env::remove_var("TILO_WORKSPACE_ROOTS"),
-            }
-        }
     }
 }
