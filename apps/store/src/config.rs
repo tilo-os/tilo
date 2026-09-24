@@ -3,7 +3,7 @@
 //! Two files, and only one of them is defined here:
 //!
 //!   * `registries.toml` — the list of Tilo registries the user pulls
-//!     entries from. **Owned by [`app_catalogue::config`]**, not by
+//!     entries from. **Owned by [`app_cli::config`]**, not by
 //!     this app. The desktop's search box reads the same file to decide
 //!     what software the machine could open, so a second definition of
 //!     its shape would eventually mean the store and the palette
@@ -28,7 +28,7 @@ use crate::model::SourceFilter;
 // The registry list, its file format and the two directories it lives
 // under, re-exported so existing `store::config::…` paths keep working
 // and there is still exactly one definition of each.
-pub use app_catalogue::config::{
+pub use app_cli::config::{
     DEFAULT_REGISTRY_BASE_URL, RegistriesFile, RegistryConfig, cache_dir, config_dir,
     load_registries, placeholder_owner_pubkey, registries_path,
 };
@@ -63,57 +63,22 @@ pub fn save_config(cfg: &StoreConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
+    use tilo_test_env::ScopedEnv;
 
-    /// Shared lock used to serialise the env-var-touching tests in
-    /// this module. Without it, cargo's default parallel test
-    /// runner races on `TILO_STORE_CONFIG_DIR` and the assertions
-    /// see a value another test set.
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            // A poisoned lock only means a previous test panicked; we
-            // still want to run — clear the poison and continue.
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    struct Guard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        prev: Option<std::ffi::OsString>,
-        prev_official: Option<std::ffi::OsString>,
-    }
-    impl Drop for Guard<'_> {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(v) => unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("TILO_STORE_CONFIG_DIR") },
-            }
-            match &self.prev_official {
-                Some(v) => unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
-                None => unsafe { std::env::remove_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
-            }
-        }
-    }
-
-    fn scoped_dir(td: &TempDir) -> Guard<'static> {
-        let lock = env_lock();
-        let prev = std::env::var_os("TILO_STORE_CONFIG_DIR");
-        let prev_official = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
+    /// Point the store's config directory and official registry trust key
+    /// at `td` for as long as the returned scope lives.
+    fn scoped_dir(td: &TempDir) -> ScopedEnv {
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(
             &trust,
             "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
         )
         .unwrap();
-        unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", td.path()) };
-        unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
-        Guard {
-            _lock: lock,
-            prev,
-            prev_official,
-        }
+        let mut env = ScopedEnv::new();
+        env.set("TILO_STORE_CONFIG_DIR", td.path())
+            .set("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust);
+        env
     }
 
     /// The store and the desktop have to resolve `registries.toml` to
@@ -128,7 +93,7 @@ mod tests {
         let _g = scoped_dir(&td);
         assert_eq!(
             registries_path(),
-            app_catalogue::config::registries_path(),
+            app_cli::config::registries_path(),
             "one registry list, two readers"
         );
         assert_eq!(config_dir().as_deref(), Some(td.path()));

@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(not(windows))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use cosmic_text::{FontSystem, fontdb};
 use serde::Deserialize;
@@ -36,7 +37,7 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
         }
     });
     database.as_ref().map(|db| {
-        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::QosFallback)
+        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
     })
 }
 
@@ -63,7 +64,10 @@ pub struct FontCatalogError {
 }
 
 impl FontCatalogError {
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The error constructor accepts owned diagnostics and string literals and stores their formatted message."
+    )]
     fn at(path: impl Into<PathBuf>, problem: impl ToString) -> Self {
         Self {
             path: path.into(),
@@ -100,7 +104,7 @@ pub fn catalog_manifest_sha256() -> String {
     hex::encode(Sha256::digest(MANIFEST.as_bytes()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
     FontCatalog::controlled_fixture(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
@@ -115,7 +119,7 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("checked-in canonical font fixture")
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("checked-in canonical renderer fixture")
@@ -158,7 +162,6 @@ impl FontCatalog {
     }
 
     // Injection is private, synchronous, and per-call: no test changes a global.
-    #[allow(clippy::too_many_lines)]
     fn load_with_system(
         &self,
         discover: impl FnOnce(&mut fontdb::Database),
@@ -167,98 +170,18 @@ impl FontCatalog {
             .root
             .canonicalize()
             .map_err(|e| FontCatalogError::at(&self.root, e))?;
-        let manifest_path = root.join("manifest.toml");
-        let shipped =
-            std::fs::read(&manifest_path).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
-        if shipped != MANIFEST.as_bytes() {
-            return Err(FontCatalogError::at(
-                manifest_path,
-                "manifest differs from this Tilo build",
-            ));
-        }
-        let manifest: Manifest =
-            toml::from_str(MANIFEST).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
-        if manifest.schema != 1 {
-            return Err(FontCatalogError::at(
-                manifest_path,
-                "unsupported catalog schema",
-            ));
-        }
-        let mut db = fontdb::Database::new();
-        let mut canonical = HashSet::new();
-        let mut reserved = HashSet::new();
-        for asset in &manifest.font {
-            if asset.scope == Scope::Fixture && !self.fixtures {
-                continue;
-            }
-            // Only this catalog's canonical faces reserve names. Product mode
-            // can still discover an ambient Adwaita as a user-named font.
-            reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-            let path = root.join(&asset.file);
-            let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
-            if !metadata.is_file() || metadata.len() != asset.bytes {
-                return Err(FontCatalogError::at(
-                    &path,
-                    format!("expected regular file of {} bytes", asset.bytes),
-                ));
-            }
-            let actual = hash_file(&path)?;
-            if actual != asset.sha256 {
-                return Err(FontCatalogError::at(
-                    &path,
-                    format!(
-                        "SHA-256 mismatch: expected {}, found {actual}",
-                        asset.sha256
-                    ),
-                ));
-            }
-            let ids = db.load_font_source(fontdb::Source::File(path.clone()));
-            if ids.len() != asset.faces.len() {
-                return Err(FontCatalogError::at(
-                    &path,
-                    format!("expected {} faces, loaded {}", asset.faces.len(), ids.len()),
-                ));
-            }
-            for expected in &asset.faces {
-                let found = ids
-                    .iter()
-                    .filter_map(|id| db.face(*id))
-                    .find(|face| face.index == expected.index);
-                let valid = found.is_some_and(|face| {
-                    face.families.iter().any(|name| name.0 == expected.family)
-                        && face.post_script_name == expected.post_script_name
-                        && face.style
-                            == if expected.style == "italic" {
-                                fontdb::Style::Italic
-                            } else {
-                                fontdb::Style::Normal
-                            }
-                });
-                if !valid {
-                    return Err(FontCatalogError::at(
-                        &path,
-                        format!(
-                            "face {} must be {} / {} ({})",
-                            expected.index,
-                            expected.family,
-                            expected.post_script_name,
-                            expected.style
-                        ),
-                    ));
-                }
-            }
-            canonical.extend(ids);
-        }
+        let bundle = verified_bundle(&root, self.fixtures)?;
+        let mut db = bundle.db.clone();
         if self.system {
             discover(&mut db);
             let remove: Vec<_> = db
                 .faces()
                 .filter(|face| {
-                    !canonical.contains(&face.id)
+                    !bundle.canonical.contains(&face.id)
                         && face
                             .families
                             .iter()
-                            .any(|name| reserved.contains(&name.0.to_lowercase()))
+                            .any(|name| bundle.reserved.contains(&name.0.to_lowercase()))
                 })
                 .map(|face| face.id)
                 .collect();
@@ -269,34 +192,155 @@ impl FontCatalog {
         db.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
         db.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
         db.set_monospace_family(crate::text_render::UI_MONOSPACE_FAMILY);
-        for asset in &manifest.font {
-            if asset.scope == Scope::Fixture && !self.fixtures {
-                continue;
-            }
-            for face in &asset.faces {
-                let query = fontdb::Query {
-                    families: &[fontdb::Family::Name(&face.family)],
-                    style: if face.style == "italic" {
-                        fontdb::Style::Italic
-                    } else {
-                        fontdb::Style::Normal
-                    },
-                    ..fontdb::Query::default()
-                };
-                if !db.query(&query).is_some_and(|id| canonical.contains(&id)) {
-                    return Err(FontCatalogError::at(
-                        &root,
-                        format!("required canonical family is unavailable: {}", face.family),
-                    ));
-                }
+        for (family, style) in &bundle.required {
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                style: *style,
+                ..fontdb::Query::default()
+            };
+            if !db
+                .query(&query)
+                .is_some_and(|id| bundle.canonical.contains(&id))
+            {
+                return Err(FontCatalogError::at(
+                    &root,
+                    format!("required canonical family is unavailable: {family}"),
+                ));
             }
         }
         Ok(FontSystem::new_with_locale_and_db_and_fallback(
             self.locale.clone(),
             db,
-            fallback::QosFallback,
+            fallback::TiloFallback,
         ))
     }
+}
+
+/// The catalog's own faces after their manifest, sizes, hashes and face
+/// metadata have been checked, before any host font is added.
+struct VerifiedBundle {
+    db: fontdb::Database,
+    canonical: HashSet<fontdb::ID>,
+    reserved: HashSet<String>,
+    required: Vec<(String, fontdb::Style)>,
+}
+
+type VerifiedBundles = HashMap<(PathBuf, bool), Arc<VerifiedBundle>>;
+
+/// Verify a catalog root once per process and hand every later load a clone
+/// of the resulting database. Hashing the ~43 MB of shipped fonts dominates
+/// loading (about 1.5 s in a debug build), while cloning the database copies
+/// only face metadata: the faces stay file-backed. A root that fails
+/// verification is not remembered, so a repaired installation loads on the
+/// next attempt. The lock is held across verification so concurrent first
+/// loads hash the fonts once rather than once per caller.
+fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, FontCatalogError> {
+    static VERIFIED: OnceLock<Mutex<VerifiedBundles>> = OnceLock::new();
+    let mut verified = VERIFIED
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let key = (root.to_path_buf(), fixtures);
+    if let Some(bundle) = verified.get(&key) {
+        return Ok(Arc::clone(bundle));
+    }
+    let bundle = Arc::new(verify_bundle(root, fixtures)?);
+    verified.insert(key, Arc::clone(&bundle));
+    Ok(bundle)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Bundle verification keeps manifest, size, hash and face validation in one sequence."
+)]
+fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
+    let manifest_path = root.join("manifest.toml");
+    let shipped =
+        std::fs::read(&manifest_path).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
+    if shipped != MANIFEST.as_bytes() {
+        return Err(FontCatalogError::at(
+            manifest_path,
+            "manifest differs from this Tilo build",
+        ));
+    }
+    let manifest: Manifest =
+        toml::from_str(MANIFEST).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
+    if manifest.schema != 1 {
+        return Err(FontCatalogError::at(
+            manifest_path,
+            "unsupported catalog schema",
+        ));
+    }
+    let mut db = fontdb::Database::new();
+    let mut canonical = HashSet::new();
+    let mut reserved = HashSet::new();
+    let mut required = Vec::new();
+    for asset in &manifest.font {
+        if asset.scope == Scope::Fixture && !fixtures {
+            continue;
+        }
+        // Only this catalog's canonical faces reserve names. Product mode
+        // can still discover an ambient Adwaita as a user-named font.
+        reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
+        let path = root.join(&asset.file);
+        let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
+        if !metadata.is_file() || metadata.len() != asset.bytes {
+            return Err(FontCatalogError::at(
+                &path,
+                format!("expected regular file of {} bytes", asset.bytes),
+            ));
+        }
+        let actual = hash_file(&path)?;
+        if actual != asset.sha256 {
+            return Err(FontCatalogError::at(
+                &path,
+                format!(
+                    "SHA-256 mismatch: expected {}, found {actual}",
+                    asset.sha256
+                ),
+            ));
+        }
+        let ids = db.load_font_source(fontdb::Source::File(path.clone()));
+        if ids.len() != asset.faces.len() {
+            return Err(FontCatalogError::at(
+                &path,
+                format!("expected {} faces, loaded {}", asset.faces.len(), ids.len()),
+            ));
+        }
+        for expected in &asset.faces {
+            let style = if expected.style == "italic" {
+                fontdb::Style::Italic
+            } else {
+                fontdb::Style::Normal
+            };
+            let found = ids
+                .iter()
+                .filter_map(|id| db.face(*id))
+                .find(|face| face.index == expected.index);
+            let valid = found.is_some_and(|face| {
+                face.families.iter().any(|name| name.0 == expected.family)
+                    && face.post_script_name == expected.post_script_name
+                    && face.style == style
+            });
+            if !valid {
+                return Err(FontCatalogError::at(
+                    &path,
+                    format!(
+                        "face {} must be {} / {} ({})",
+                        expected.index, expected.family, expected.post_script_name, expected.style
+                    ),
+                ));
+            }
+            required.push((expected.family.clone(), style));
+        }
+        canonical.extend(ids);
+    }
+    Ok(VerifiedBundle {
+        db,
+        canonical,
+        reserved,
+        required,
+    })
 }
 
 #[cfg(windows)]
@@ -308,7 +352,10 @@ fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
 }
 
 #[cfg(not(windows))]
-#[allow(clippy::large_stack_arrays)]
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."
+)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
     let mut hash = Sha256::new();

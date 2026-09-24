@@ -609,6 +609,12 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
+    /// Measured control/header sizes of the expanded call overlay, refreshed
+    /// by the paint pass and read by the renderer-less layout functions.
+    pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
+    /// `(renderer scale, theme scale, catalogue revision)` the overlay metrics
+    /// were measured at; unchanged means the measurement is skipped.
+    pub(crate) call_overlay_metrics_key: Option<(u32, u32, u64)>,
     pub(crate) realtime: crate::continuity::ChatRealtimeContinuity,
     pub(crate) call_chrome_motion: CallChromeMotion,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
@@ -715,11 +721,13 @@ pub struct ChatApp {
     /// shows the honest "connecting" placeholder rather than a fabricated feed.
     pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
 
-    /// The screen-capture source seam. Consulted before a share starts so the
-    /// real xdg-desktop-portal `ScreenCast` flow (behind `live-media`) can be
-    /// swapped for an injected fake in tests. The default [`SystemPortal`]
-    /// returns `None` in the default build — honest gating, never a faked share.
-    pub(crate) portal: Box<dyn crate::call::ScreenPortal>,
+    /// A screen-capture request the host has not answered yet, and the flow
+    /// its answer finishes. The host shows its own source picker; a share
+    /// starts only on a grant — honest gating, never a faked share.
+    pub(crate) pending_screen: Option<(
+        crate::call::ScreenCapturePurpose,
+        ui::capture::ScreenCaptureChannel,
+    )>,
 
     // Live capture/encode/playback pipelines — present only under `live-media`
     // and only while in a call. All `None`/empty until the call opens a device;
@@ -762,7 +770,7 @@ pub struct ChatApp {
     /// A capture-side terminal error has changed the share bit outside an
     /// input event. `sync` owns the corresponding small canonical action so
     /// collaborators do not retain a stale featured-stage reservation.
-    screen_share_needs_sync: bool,
+    pub(crate) screen_share_needs_sync: bool,
     legacy_migration_attempted: bool,
 }
 
@@ -861,6 +869,8 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
+            call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
+            call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
             call_chrome_motion: CallChromeMotion::default(),
             pending_floating: None,
@@ -898,7 +908,7 @@ impl ChatApp {
             is_live: false,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
-            portal: Box::new(crate::call::SystemPortal),
+            pending_screen: None,
             #[cfg(feature = "live-media")]
             mic: None,
             #[cfg(feature = "live-media")]
@@ -1632,34 +1642,94 @@ impl ChatApp {
         Some(s)
     }
 
-    /// Acquire a screen-share source through the portal seam: check the
-    /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
-    /// (the real xdg-desktop-portal `ScreenCast` picker behind `live-media`; an
-    /// honest `None` in the default build; an injected fake in tests). On a
-    /// grant, open the `PipeWire` capture + a shared-stack video sender and
-    /// publish the screen track (behind `live-media`) and return `true`.
-    /// Returns `false` — never fabricating a share — when permission is denied
-    /// or the portal grants nothing. The caller flips `call.sharing` + the
-    /// shared voice membership.
+    /// Ask the host for a screen-share source: check the `ShareScreen`
+    /// permission, then request a stream through the host's screen-capture
+    /// service (natively the xdg-desktop-portal `ScreenCast` picker). The
+    /// answer is finished by [`Self::settle_screen_capture`] — immediately when
+    /// the host answers at once, otherwise on a later frame — so the picker
+    /// never blocks the UI thread. Returns `false` when permission is denied
+    /// or a request is already pending.
+    pub(crate) fn request_screen(&mut self, purpose: crate::call::ScreenCapturePurpose) -> bool {
+        if self.pending_screen.is_some() || !self.call_allows(crate::call::CallAction::ShareScreen)
+        {
+            return false;
+        }
+        let channel =
+            ui::capture::request_screen_capture(ui::capture::ScreenCaptureRequest::default());
+        self.pending_screen = Some((purpose, channel));
+        true
+    }
+
+    /// Finish an answered screen-capture request. A grant opens the capture
+    /// (see [`Self::start_screen`]) and completes the flow that asked for it;
+    /// anything else starts nothing. A share whose call ended, or whose
+    /// permission was revoked, while the picker was open is dropped.
+    pub(crate) fn settle_screen_capture(&mut self) {
+        let Some((_, channel)) = &self.pending_screen else {
+            return;
+        };
+        let outcome = match channel.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::capture::ScreenCaptureOutcome::Unavailable(
+                    "the screen-capture request closed without an answer".into(),
+                )
+            }
+        };
+        let Some((purpose, _)) = self.pending_screen.take() else {
+            return;
+        };
+        let source = match &outcome {
+            ui::capture::ScreenCaptureOutcome::Granted(grant) => {
+                crate::call::ScreenSource::from_grant(grant)
+            }
+            ui::capture::ScreenCaptureOutcome::Cancelled
+            | ui::capture::ScreenCaptureOutcome::Unavailable(_) => None,
+        };
+        match purpose {
+            crate::call::ScreenCapturePurpose::Share => {
+                let Some(source) = source else {
+                    return;
+                };
+                if !self.call.active
+                    || self.call.sharing
+                    || !self.call_allows(crate::call::CallAction::ShareScreen)
+                {
+                    return;
+                }
+                self.start_screen(source);
+                self.call.sharing = true;
+                self.screen_share_needs_sync = true;
+            }
+            crate::call::ScreenCapturePurpose::Resume { session } => {
+                if let Some(source) = source {
+                    self.start_screen(source);
+                    self.call.sharing = true;
+                    self.realtime.session = Some(session);
+                    self.realtime.target_media_ready = true;
+                } else {
+                    self.fail_realtime_target(session);
+                }
+            }
+        }
+    }
+
+    /// Open the `PipeWire` capture + a shared-stack video sender for a granted
+    /// source and publish the screen track (behind `live-media`).
     ///
-    /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
-    /// the encode + framing route through [`tilo_callstream::VideoStreamSender`]
+    /// The encode + framing route through [`tilo_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
     #[cfg_attr(
         not(feature = "live-media"),
         allow(
             clippy::needless_pass_by_ref_mut,
+            clippy::unused_self,
             reason = "live-media mutates capture state; the default build keeps the same call API"
         )
     )]
-    pub(crate) fn acquire_screen(&mut self) -> bool {
-        if !self.call_allows(crate::call::CallAction::ShareScreen) {
-            return false;
-        }
-        let Some(src) = self.portal.request() else {
-            return false;
-        };
+    fn start_screen(&mut self, src: crate::call::ScreenSource) {
         #[cfg(all(feature = "live-media", not(test)))]
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
@@ -1677,8 +1747,8 @@ impl ChatApp {
         }
         #[cfg(all(feature = "live-media", test))]
         {
-            // A fake portal source has no real PipeWire node. Tests still use
-            // the production sender/transport contract, but must never block
+            // A recorded grant has no real PipeWire node. Tests still use the
+            // production sender/transport contract, but must never block
             // opening a host device merely to verify the shared call state.
             self.screen_session = tilo_callstream::VideoStreamSender::new(
                 src.width,
@@ -1691,12 +1761,11 @@ impl ChatApp {
                 .publish(crate::media::TrackKind::Screen);
         }
         let _ = src;
-        true
     }
 
     /// Whether this peer is currently sharing its screen — the shared-truth
     /// flag used by the featured tile and transport tests. True only after the
-    /// portal granted a source (see [`Self::acquire_screen`]).
+    /// host granted a source (see [`Self::request_screen`]).
     #[allow(
         dead_code,
         reason = "queried by transport tests while the production capture control is hidden"
@@ -2433,6 +2502,24 @@ impl ChatApp {
             self.rect.y1 - 12.0,
         )
     }
+
+    /// The thread panel's composer: the same control as the main composer,
+    /// so it follows the same height rule — the 1× minimum, growing with the
+    /// measured draft up to the same cap — instead of a separate fixed 48 px
+    /// box. `panel` is the thread panel it sits at the bottom of.
+    pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
+        let inset = 12.0;
+        let w = (panel.width() - 2.0 * inset - 48.0).max(40.0) as f32;
+        let (_, h) = tr.measure(self.composer_thread.value(), 15.0, Some(w));
+        let h =
+            (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
+        Rect::new(
+            panel.x0 + inset,
+            panel.y1 - h - inset,
+            panel.x1 - inset,
+            panel.y1 - inset,
+        )
+    }
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
         Rect::new(
@@ -2709,7 +2796,26 @@ impl ChatApp {
                     Hit::CallLeave => ("Leave call".into(), Role::Button, false),
                     _ => return None,
                 };
-                Some((*rect, hit.clone(), name, role, selected))
+                // The composer's pointer target is the whole box (clicking
+                // its padding focuses it), but what assistive technology
+                // reads as the text field is the band the shared `TextInput`
+                // was laid out into — the attach / emoji / send buttons sit
+                // beside that band, not inside it. Before the first paint
+                // the band is empty, so the box stands in for it.
+                let text_band = |field: &ui::widget::TextInput| {
+                    let inner = field.get_rect();
+                    if inner.width() > 0.0 && inner.height() > 0.0 {
+                        inner
+                    } else {
+                        *rect
+                    }
+                };
+                let rect = match hit {
+                    Hit::FocusMain => text_band(&self.composer_main),
+                    Hit::FocusThread => text_band(&self.composer_thread),
+                    _ => *rect,
+                };
+                Some((rect, hit.clone(), name, role, selected))
             })
             .collect()
     }
@@ -3037,6 +3143,7 @@ impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
+        self.settle_screen_capture();
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
@@ -3311,6 +3418,9 @@ impl Widget for ChatApp {
         // stray mark at its stale origin before the placeholder lands.
         let host_has_frame = self.video.latest_frame().is_some();
         if self.call.active && self.call.expanded {
+            // Measure the controls and header with this frame's text scale
+            // before anything reads their geometry.
+            self.measure_call_overlay(tr, theme);
             self.draw_call_overlay_bg(scene, tf, tr, theme);
             if host_has_frame {
                 self.video.draw(scene, tf, tr, theme, presence);

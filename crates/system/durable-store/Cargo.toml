@@ -1,0 +1,25 @@
+[package]
+name = "durable-store"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Keyed, host-acknowledged durable storage for application records and views."
+
+[lib]
+name = "durable_store"
+path = "src/lib.rs"
+
+[features]
+# The shared behavioural suite every `DurableStore` implementation must pass.
+# Enabled by implementations' dev-dependencies, never by production builds.
+conformance = []
+
+# Deliberately no filesystem, thread or CRDT dependencies: the seam must be
+# implementable by any host, including ones that persist through something
+# other than a local filesystem.
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

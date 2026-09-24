@@ -5,15 +5,16 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use crate::time::{Duration, Instant};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
+use crate::text_break::{grapheme_indices, graphemes};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -29,7 +30,6 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
@@ -117,7 +117,7 @@ fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-const FONT_SIZE: f32 = 16.0;
+pub(super) const FONT_SIZE: f32 = 16.0;
 /// Caret centres against this band, not `FONT_SIZE`, to line up with where
 /// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
@@ -130,8 +130,6 @@ const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
 const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
 const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
-/// Approximate glyph advance; used identically for gutter geometry and
-/// drawing so both stay aligned despite being approximate.
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
 const GUTTER_PAD_R: f64 = 12.0;
@@ -145,6 +143,17 @@ enum DragUnit {
 }
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
+
+/// Complete committed-text runs for an unmasked single line. Decorations use
+/// byte ranges in that same text; IME insertion remaps them only for display.
+#[derive(Clone, Debug, Default)]
+pub(super) struct SingleLineAttributes {
+    pub spans: Vec<RichSpan>,
+    pub underlines: Vec<(usize, usize)>,
+    pub strikes: Vec<(usize, usize)>,
+    pub chips: Vec<(usize, usize)>,
+    pub links: Vec<(usize, usize)>,
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -214,8 +223,10 @@ pub struct TextInput {
     /// Authoritative cosmic-text geometry for a visible, unmasked single-line
     /// value. Painting, carets, selection, and hit-testing all consume it.
     single_layout: Option<RichTextLayout>,
+    single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
     rich_spans: Option<Vec<RichSpan>>,
@@ -228,6 +239,9 @@ pub struct TextInput {
     compact_multiline: bool,
     last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
+    /// Theme scale captured during `build_layout`; direct measurement falls
+    /// back to the renderer when no themed layout pass has occurred.
+    layout_text_scale: Option<f32>,
     /// The text scale used for the most recent paint. Code gutter geometry is
     /// derived from the same scale as its shaped line-number text so it never
     /// intrudes into the viewport at accessibility sizes.
@@ -295,7 +309,10 @@ pub struct TextInput {
     /// Preserved across consecutive `Up`/`Down`; reset on any other move.
     goal_x: Option<f64>,
     scroll_y: f64,
+    preserve_unfocused_scroll: bool,
     gutter: bool,
+    /// Width measured from the same scaled line-number style used to paint.
+    measured_gutter_width: f64,
     highlight_current_line: bool,
     /// `None` renders the whole body in one colour; `Some` colours per [`Span`] via `token_color`.
     highlighter: Option<Box<dyn Highlighter>>,
@@ -380,8 +397,10 @@ impl TextInput {
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
             single_layout: None,
+            single_attributes: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            shaped_layout_epoch: None,
             rich_spans: None,
             preedit: String::new(),
             preedit_cursor: None,
@@ -399,6 +418,7 @@ impl TextInput {
             path_was_present: false,
             external_buffer: None,
             font_size_override: None,
+            layout_text_scale: None,
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
@@ -433,7 +453,9 @@ impl TextInput {
             lines: Vec::new(),
             goal_x: None,
             scroll_y: 0.0,
+            preserve_unfocused_scroll: false,
             gutter: false,
+            measured_gutter_width: 0.0,
             highlight_current_line: false,
             highlighter: None,
             tab_spaces: None,
@@ -475,13 +497,32 @@ impl TextInput {
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
-        if self.text != text {
-            self.text = text;
+        if self.adopt_model_text(text) {
             self.dirty = true;
         }
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         Ok(())
+    }
+
+    /// Replace text read from model state without reporting a user edit.
+    /// Returns whether the value changed so direct bindings can preserve
+    /// their existing reconciliation signal.
+    fn adopt_model_text(&mut self, text: String) -> bool {
+        if self.text == text {
+            return false;
+        }
+        self.text = text;
+        self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+        true
+    }
+
+    /// Capture the resolved theme scale before a renderer-backed measurement.
+    pub(super) fn capture_layout_text_scale(&mut self, text_scale: f32) {
+        if self.layout_text_scale != Some(text_scale) {
+            self.layout_text_scale = Some(text_scale);
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+        }
     }
 
     /// Keep the binding readable while an owning action bridge handles user writes.
@@ -545,7 +586,10 @@ impl TextInput {
     }
 
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size_override = Some(size);
+        if self.font_size_override != Some(size) {
+            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.font_size_override = Some(size);
+        }
     }
 
     pub fn set_plain_chrome(&mut self, plain: bool) {
@@ -560,6 +604,9 @@ impl TextInput {
     }
 
     pub fn set_mono(&mut self, mono: bool) {
+        if self.mono != mono {
+            self.model_layout_dirty |= self.single_attributes.is_some();
+        }
         self.mono = mono;
         if mono {
             self.set_kind(TextInputKind::Code);
@@ -681,7 +728,10 @@ impl TextInput {
     }
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
-        self.family = family;
+        if self.family != family {
+            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.family = family;
+        }
     }
 
     pub fn font_family(&self) -> Option<&FontChoice> {
@@ -859,6 +909,109 @@ impl TextInput {
         display
     }
 
+    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
+        if self.preedit.is_empty() {
+            return spans;
+        }
+        let at = self.cursor_pos.min(self.text.len());
+        let mut display = Vec::with_capacity(spans.len().saturating_add(2));
+        let mut consumed = 0usize;
+        let mut inserted = false;
+        for span in spans {
+            let end = consumed.saturating_add(span.text.len());
+            if !inserted && at <= end {
+                let local = at.saturating_sub(consumed);
+                if let (Some(before_str), Some(after_str)) =
+                    (span.text.get(..local), span.text.get(local..))
+                {
+                    if !before_str.is_empty() {
+                        let mut before = span.clone();
+                        before.text = before_str.to_string();
+                        display.push(before);
+                    }
+                    display.push(RichSpan::new(&self.preedit));
+                    if !after_str.is_empty() {
+                        let mut after = span.clone();
+                        after.text = after_str.to_string();
+                        display.push(after);
+                    }
+                } else {
+                    display.push(span);
+                    display.push(RichSpan::new(&self.preedit));
+                }
+                inserted = true;
+            } else {
+                display.push(span);
+            }
+            consumed = end;
+        }
+        if !inserted {
+            display.push(RichSpan::new(&self.preedit));
+        }
+        display
+    }
+
+    pub(super) fn set_single_line_attributes(&mut self, attributes: SingleLineAttributes) {
+        let signature = Self::single_attributes_signature(&attributes);
+        if self
+            .single_attributes
+            .as_ref()
+            .is_none_or(|old| Self::single_attributes_signature(old) != signature)
+        {
+            self.single_attributes = Some(attributes);
+            self.single_layout = None;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    fn single_attributes_signature(attributes: &SingleLineAttributes) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        Self::attributed_signature(0, &attributes.spans).hash(&mut hash);
+        attributes.underlines.hash(&mut hash);
+        attributes.strikes.hash(&mut hash);
+        attributes.chips.hash(&mut hash);
+        attributes.links.hash(&mut hash);
+        hash.finish()
+    }
+
+    fn valid_single_attributes(&self) -> Option<&SingleLineAttributes> {
+        self.single_attributes.as_ref().filter(|attributes| {
+            attributes
+                .spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+                == self.text
+        })
+    }
+
+    /// Preedit is its own run: adjacent committed decorations do not expand
+    /// over it. An insertion inside a marked run splits its decoration.
+    fn display_ranges(&self, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+        let at = self.cursor_pos.min(self.text.len());
+        let extra = self.preedit.len();
+        let mut display = Vec::new();
+        for &(start, end) in ranges {
+            if start >= end
+                || end > self.text.len()
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(end)
+            {
+                continue;
+            }
+            if extra == 0 || end <= at {
+                display.push((start, end));
+            } else if start >= at {
+                display.push((start.saturating_add(extra), end.saturating_add(extra)));
+            } else {
+                display.push((start, at));
+                display.push((at.saturating_add(extra), end.saturating_add(extra)));
+            }
+        }
+        display
+    }
+
     /// No CRDT integration — for a field with no CRDT path to spend.
     pub fn local() -> Self {
         let mut s = Self::new(Vec::new());
@@ -942,7 +1095,7 @@ impl TextInput {
         self.selection_anchor = None;
         self.clamp_to_text();
         self.dirty = false;
-        self.model_layout_dirty = self.multiline;
+        self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
         self.last_edit_time = None;
         self.last_notified_text.clone_from(&self.text);
         if self.action.is_none() {
@@ -1056,6 +1209,12 @@ impl TextInput {
         self.scroll_x
     }
 
+    /// Retain bounded multiline scroll when used as an inert, unfocused source view.
+    /// Does not enable focus, caret painting, input handling or document binding.
+    pub fn set_preserve_unfocused_scroll(&mut self, preserve: bool) {
+        self.preserve_unfocused_scroll = preserve;
+    }
+
     pub fn scroll_y(&self) -> f64 {
         self.scroll_y
     }
@@ -1066,6 +1225,13 @@ impl TextInput {
 
     pub fn gutter_width(&self) -> f64 {
         self.code_gutter_w()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shaped_font_size_for_test(&self) -> Option<f32> {
+        self.single_layout
+            .as_ref()
+            .map(|layout| layout.buffer.metrics().font_size)
     }
 
     /// Requires a prior `draw` to have built the metrics.
@@ -1102,6 +1268,15 @@ impl TextInput {
 
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
+        if !self.multiline
+            && !self.masked()
+            && let Some(layout) = &self.single_layout
+        {
+            return (
+                self.single_origin.y,
+                f64::from(layout.buffer.metrics().line_height),
+            );
+        }
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
@@ -1258,6 +1433,11 @@ impl TextInput {
     }
 
     fn line_height(&self) -> f64 {
+        if self.multiline_shaped
+            && let Some(layout) = &self.single_layout
+        {
+            return f64::from(layout.buffer.metrics().line_height);
+        }
         f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
     }
 
@@ -1278,7 +1458,7 @@ impl TextInput {
         let ci = self
             .text
             .get(r.start..b)
-            .map_or(0, |s| s.graphemes(true).count());
+            .map_or(0, |s| graphemes(s).count());
         r.char_x
             .get(ci)
             .copied()
@@ -1289,7 +1469,7 @@ impl TextInput {
         let Some(row_text) = self.text.get(r.start..r.end) else {
             return r.end;
         };
-        match row_text.grapheme_indices(true).nth(ci) {
+        match grapheme_indices(row_text).nth(ci) {
             Some((b, _)) => r.start.saturating_add(b),
             None => r.end,
         }
@@ -1537,7 +1717,7 @@ impl TextInput {
         let Some(para) = self.text.get(start..end) else {
             return;
         };
-        let mut boundaries: Vec<usize> = para.grapheme_indices(true).map(|(i, _)| i).collect();
+        let mut boundaries: Vec<usize> = grapheme_indices(para).map(|(i, _)| i).collect();
         boundaries.push(para.len()); // end sentinel
         let cum: Vec<f64> = boundaries
             .iter()
@@ -1650,33 +1830,30 @@ impl TextInput {
         }
     }
 
+    fn refresh_layout_epoch(&mut self, renderer: &TextRenderer) {
+        if self
+            .shaped_layout_epoch
+            .as_ref()
+            .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()))
+        {
+            self.single_layout = None;
+            self.shaped_layout_epoch = Some(Arc::clone(renderer.layout_epoch()));
+        }
+    }
+
     /// Every unmasked multiline input—including attributed source code—uses
     /// the same shaped paragraph for paint, wrapping, carets, selection,
     /// hit-testing, vertical movement, and IME composition.
     /// Rebuilds `self.single_layout` (and its signature) if the shaped
-    /// spans, family or size changed since the last draw. Returns the
-    /// `TextStyle` used, so gutter line numbers reuse the exact metrics.
+    /// spans, family, size, or available width changed.
     fn ensure_shaped_layout(
         &mut self,
         tr: &mut TextRenderer,
         theme: &Theme,
-        size: f32,
+        style: &TextStyle,
         available_width: f32,
-    ) -> TextStyle {
-        let family = self.family.clone().unwrap_or(if self.mono {
-            FontChoice::Monospace
-        } else {
-            FontChoice::SansSerif
-        });
-        // RichTextLayout owns its own cosmic-text shaping metrics rather than
-        // going through TextRenderer::draw_text, so it must receive the
-        // accessibility scale explicitly. Without this, multiline editors
-        // stayed visually tiny while the surrounding chrome and static text
-        // correctly followed Theme::text_scale.
-        let layout_size = size * theme.text_scale;
-        let style = TextStyle::new(layout_size)
-            .with_line_height(LINE_HEIGHT_RATIO)
-            .with_family(family.clone());
+    ) {
+        self.refresh_layout_epoch(tr);
         self.refresh_highlight();
         let display = self.layout_display_text();
         let spans = self.highlighted_display_spans(theme);
@@ -1688,18 +1865,19 @@ impl TextInput {
             display
         );
         let signature = Self::attributed_signature(
-            self.shaped_signature(&display, &family, layout_size, Some(available_width)),
+            self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled(
+            let mut layout = RichTextLayout::shape_styled_reusing(
                 &mut tr.font_system,
                 &spans,
-                &style,
+                style,
                 Some(available_width),
                 TextAlign::Left,
                 Vec::new(),
                 Vec::new(),
+                self.single_layout.take(),
             );
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
@@ -1708,7 +1886,39 @@ impl TextInput {
             self.single_layout = Some(layout);
             self.shaped_layout_signature = signature;
         }
-        style
+    }
+
+    fn multiline_style(&self, scale: f32) -> TextStyle {
+        let family = self.family.clone().unwrap_or(if self.mono {
+            FontChoice::Monospace
+        } else {
+            FontChoice::SansSerif
+        });
+        TextStyle::new(self.effective_font_size() * scale)
+            .with_line_height(LINE_HEIGHT_RATIO)
+            .with_family(family)
+    }
+
+    fn update_gutter_metrics(
+        &mut self,
+        tr: &mut TextRenderer,
+        renderer_style: &TextStyle,
+        scale: f32,
+    ) {
+        if !self.gutter || !self.multiline {
+            self.measured_gutter_width = 0.0;
+            return;
+        }
+        let lines = self
+            .text
+            .bytes()
+            .filter(|&byte| byte == b'\n')
+            .count()
+            .saturating_add(1);
+        let label = lines.max(10).to_string();
+        let (number_width, _) = tr.measure_style(&label, None, renderer_style);
+        self.measured_gutter_width =
+            f64::from(number_width) + (GUTTER_PAD_L + GUTTER_PAD_R) * f64::from(scale);
     }
 
     /// Keeps the caret in view by adjusting `self.scroll_y`. Only re-centres
@@ -1722,7 +1932,7 @@ impl TextInput {
             } else if f64::from(caret_top + caret_height) - self.scroll_y > view_height {
                 self.scroll_y = f64::from(caret_top + caret_height) - view_height;
             }
-        } else if !self.is_focused {
+        } else if !self.is_focused && !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.cursor_pos);
@@ -1740,8 +1950,9 @@ impl TextInput {
     ) -> f32 {
         self.gutter_text_scale = f64::from(theme.text_scale);
         let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
+        let style = self.multiline_style(theme.text_scale);
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
-        self.ensure_shaped_layout(tr, theme, self.effective_font_size(), available as f32);
+        self.ensure_shaped_layout(tr, theme, &style, available as f32);
         let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
@@ -1790,10 +2001,11 @@ impl TextInput {
             &gutter,
         );
         let edge = self.rect.x0 + gutter_width;
+        // Gutter rule derived from the field it divides (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::Line::new((edge, self.rect.y0), (edge, self.rect.y1)),
         );
@@ -1837,6 +2049,7 @@ impl TextInput {
     /// which applies that scale itself. Convert the paragraph style back to
     /// its unscaled form so a 200% line number is measured and painted once,
     /// not twice (which would push two-digit labels beyond the left edge).
+    #[cfg(test)]
     fn gutter_number_style(style: &TextStyle, theme: &Theme) -> TextStyle {
         let mut gutter = style.clone();
         let scale = theme.text_scale;
@@ -1933,13 +2146,16 @@ impl TextInput {
         shape: &RoundedRect,
     ) {
         let size = self.effective_font_size();
+        let style = self.multiline_style(theme.text_scale);
+        let renderer_style = tr.renderer_input_style(&style);
+        self.update_gutter_metrics(tr, &renderer_style, theme.text_scale);
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
         let available_width = (self.rect.width() - left - ML_PAD_X).max(1.0) as f32;
-        let style = self.ensure_shaped_layout(tr, theme, size, available_width);
+        self.ensure_shaped_layout(tr, theme, &style, available_width);
 
         let caret_position = if self.preedit.is_empty() {
             self.text_to_layout_position(self.caret_position())
@@ -2015,7 +2231,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &Self::gutter_number_style(&style, theme),
+            &renderer_style,
             caret_byte,
             gutter_width,
         );
@@ -2040,7 +2256,7 @@ impl TextInput {
                     self.scroll_y = caret_bot - view_h;
                 }
             }
-        } else {
+        } else if !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.cursor_pos);
@@ -2405,6 +2621,16 @@ impl TextInput {
         self.single_origin.x += rect.x0 - self.rect.x0;
         self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
+        self.refresh_multiline_origin();
+    }
+
+    fn refresh_multiline_origin(&mut self) {
+        if self.multiline && self.multiline_shaped {
+            self.single_origin = Point::new(
+                self.rect.x0 + self.ml_left(),
+                self.rect.y0 + ML_PAD_Y - self.scroll_y,
+            );
+        }
     }
 
     /// Embedded hosts that route movement only to their focused child must
@@ -2566,10 +2792,14 @@ impl TextInput {
         self.tab_spaces = Some(n);
     }
 
-    /// Pure function of line count + font size, so geometry and painting stay identical.
+    /// Uses measured line-number glyphs after layout, with a font-size
+    /// estimate only before the first measurement.
     fn code_gutter_w(&self) -> f64 {
         if !self.gutter || !self.multiline {
             return 0.0;
+        }
+        if self.measured_gutter_width > 0.0 {
+            return self.measured_gutter_width;
         }
         let lines = self
             .text
@@ -2843,7 +3073,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         if let Some(obj_id) = obj_id {
             let del = isize::try_from(char_count).unwrap_or(isize::MAX);
             let _ = state.splice_text(obj_id, char_start, del, "");
@@ -2909,7 +3139,7 @@ impl TextInput {
             }
         }
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -2955,7 +3185,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -3576,7 +3806,7 @@ impl TextInput {
         let mut best_idx = 0;
         // Stale if the text changed since the last draw and this fires before
         // the next one — fall back to skipping rather than panicking.
-        for (i, _) in self.text.grapheme_indices(true) {
+        for (i, _) in grapheme_indices(&self.text) {
             let Some(&x) = self.char_x_positions.get(i) else {
                 continue;
             };
@@ -3678,12 +3908,12 @@ impl Widget for TextInput {
                 match val {
                     Value::Scalar(s) => {
                         if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                            self.text = text.to_string();
+                            self.adopt_model_text(text.to_string());
                         }
                     }
                     Value::Object(ObjType::Text) => {
                         if let Ok(text) = state.text(&obj_id) {
-                            self.text = text;
+                            self.adopt_model_text(text);
                         }
                     }
                     Value::Object(_) => {}
@@ -3691,7 +3921,7 @@ impl Widget for TextInput {
             }
             Ok(None) if self.path_was_present => {
                 self.path_was_present = false;
-                self.text.clear();
+                self.adopt_model_text(String::new());
                 self.cursor_pos = 0;
                 self.selection_anchor = None;
                 self.goal_x = None;
@@ -3708,14 +3938,28 @@ impl Widget for TextInput {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Multiline is measured (grows with content, see `measure`); single-line is a fixed 40px row.
+        self.capture_layout_text_scale(theme.text_scale);
+        // Multiline is measured (grows with content, see `measure`). Single-
+        // line is the 40 px form-field band — until the scaled line no
+        // longer fits it: at 2× text the 16 px face shapes a 40 px line,
+        // which left zero slack in a 40 px band, so the band grows to the
+        // line plus the same vertical inset the multiline body keeps
+        // (`ML_PAD_Y` each side). At 1× a 20 px line leaves the band at 40.
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            Dimension::length(40.0_f32.max(self.interaction.minimum_target()))
+            let line_px = f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
+                * f64::from(theme.text_scale);
+            let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a control band is a few dozen logical pixels, far inside f32"
+            )]
+            let band = band as f32;
+            Dimension::length(band.max(self.interaction.minimum_target()))
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -3746,11 +3990,24 @@ impl Widget for TextInput {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        self.refresh_layout_epoch(text_renderer);
         // Taffy measures before painting. Retain the renderer scale here too,
         // so a freshly opened editor reserves its full accessibility gutter
         // on the very first layout rather than correcting on frame two.
         self.gutter_text_scale = f64::from(text_renderer.text_scale());
         if !self.multiline {
+            if !self.masked() && self.single_attributes.is_some() {
+                let scale = self
+                    .layout_text_scale
+                    .unwrap_or_else(|| text_renderer.text_scale());
+                let display = self.layout_display_text();
+                self.build_single_line_metrics(
+                    text_renderer,
+                    &display,
+                    self.effective_font_size(),
+                    scale,
+                );
+            }
             self.model_layout_dirty = false;
             return taffy::Size::ZERO;
         }
@@ -3758,6 +4015,55 @@ impl Widget for TextInput {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 400.0,
         });
+        if !self.masked() {
+            let scale = self
+                .layout_text_scale
+                .unwrap_or_else(|| text_renderer.text_scale());
+            let style = self.multiline_style(scale);
+            let renderer_style = text_renderer.renderer_input_style(&style);
+            self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
+            )]
+            let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
+            let display = self.layout_display_text();
+            let signature =
+                self.shaped_signature(&display, &style.family, style.size, Some(available_width));
+            if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let mut layout = RichTextLayout::shape_plain(
+                    &mut text_renderer.font_system,
+                    &display,
+                    &style,
+                    Some(available_width),
+                );
+                if !self.preedit.is_empty() {
+                    let start = self.cursor_pos.min(self.text.len());
+                    layout.add_underline(start..start.saturating_add(self.preedit.len()));
+                }
+                self.single_layout = Some(layout);
+                self.shaped_layout_signature = signature;
+            }
+            self.multiline_shaped = true;
+            self.lines.clear();
+            self.refresh_multiline_origin();
+            let height = self.single_layout.as_ref().map_or_else(
+                || f64::from(style.line_height_px()),
+                |layout| f64::from(layout.height()),
+            ) + ML_PAD_Y * 2.0;
+            self.model_layout_dirty = false;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
+            )]
+            return taffy::Size {
+                width,
+                // Taffy rounds layout boxes to pixels. Never round intrinsic
+                // text below its last row: subpixel inner overflow would eat
+                // the first wheel event instead of scrolling the outer pane.
+                height: height.ceil() as f32,
+            };
+        }
         let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         self.build_lines(text_renderer, avail_w);
         #[allow(
@@ -3814,7 +4120,8 @@ impl Widget for TextInput {
         // used for paint and hit-testing. Masked fields keep the prefix path
         // because bullet byte offsets intentionally differ from the secret.
         let display = self.layout_display_text();
-        let total_w = self.build_single_line_metrics(text_renderer, &display, text_size, theme);
+        let total_w =
+            self.build_single_line_metrics(text_renderer, &display, text_size, theme.text_scale);
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -3828,6 +4135,7 @@ impl Widget for TextInput {
             &shape,
         );
 
+        self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
 
         let text_color = if self.effectively_disabled() {
@@ -3847,6 +4155,7 @@ impl Widget for TextInput {
             text_color,
         );
 
+        self.draw_single_line_decorations(scene, transform, theme, false);
         if self.is_focused && !self.effectively_disabled() {
             self.draw_single_line_caret(scene, transform, theme);
         }
@@ -4164,8 +4473,7 @@ impl Widget for TextInput {
             }
             Action::SetSelection { anchor, focus } => {
                 let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
+                    grapheme_indices(&self.text)
                         .nth(character_index)
                         .map_or(self.text.len(), |(byte, _)| byte)
                 };
@@ -4194,7 +4502,7 @@ impl Widget for TextInput {
         }
         self.last_edit_time
             .map(|edited| edited + SPELL_EDIT_SETTLE)
-            .filter(|deadline| *deadline > Instant::now())
+            .filter(|deadline| *deadline > crate::time::now())
     }
 
     fn needs_commit(&self) -> bool {
@@ -4279,7 +4587,7 @@ impl Widget for TextInput {
             // re-derived approximation. `transform` maps the local rect to the scene.
 
             // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
+            let now = crate::time::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 let rect = self.selection_rect(theme, range.start, range.end);
                 // `Affine * Point` is a geometric transform over f64 coordinates,
@@ -4369,14 +4677,25 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        let bg_color = if self.effectively_disabled() {
-            // One step darker than the raised form-field fill, to read as "inert".
-            theme.tokens.colors.surfaces.base
-        } else if self.is_focused {
+        let disabled = self.effectively_disabled();
+        let rest = theme.tokens.colors.surfaces.raised;
+        let bg_color = if self.is_focused && !disabled {
             theme.bg_active
         } else {
-            theme.tokens.colors.surfaces.raised
+            rest
         };
+        // Disabled is the rest face under one group alpha (HIG §9.5), so rest
+        // and disabled never look alike; a "one step darker" fill with the
+        // same declared border did, on the dark preset.
+        if disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                shape,
+            );
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -4384,24 +4703,25 @@ impl TextInput {
             None,
             shape,
         );
-        let border_color = if self.effectively_disabled() {
-            theme.tokens.colors.border_standard
-        } else if self.is_focused {
-            theme.tokens.colors.border_focus
+        // Rest edge derived from the field fill; focus keeps `border_focus`.
+        let (border_w, border_color) = if self.is_focused && !disabled {
+            (2.0, theme.tokens.colors.border_focus)
         } else {
-            theme.tokens.colors.border_standard
+            (1.0, crate::surface::edge_on(rest))
         };
+        // Rest edge and focus ring share one half-pixel-inset outline, so
+        // the hairline never bleeds onto the ground and the ring sits where
+        // the edge was.
         scene.stroke(
-            &Stroke::new(if self.is_focused && !self.effectively_disabled() {
-                2.0
-            } else {
-                1.0
-            }),
+            &Stroke::new(border_w),
             transform,
             border_color,
             None,
-            shape,
+            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
         );
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
@@ -4411,14 +4731,15 @@ impl TextInput {
         text_renderer: &mut TextRenderer,
         display: &str,
         text_size: f32,
-        theme: &Theme,
+        text_scale: f32,
     ) -> f32 {
+        self.refresh_layout_epoch(text_renderer);
         self.char_x_positions.clear();
         self.char_x_positions
             .resize(self.text.len().saturating_add(1), 0.0);
         if self.masked() {
             self.single_layout = None;
-            for (byte_idx, _) in self.text.grapheme_indices(true) {
+            for (byte_idx, _) in grapheme_indices(&self.text) {
                 let (w, _) =
                     self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
                 if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
@@ -4436,18 +4757,34 @@ impl TextInput {
             } else {
                 FontChoice::SansSerif
             });
-            let layout_size = text_size * theme.text_scale;
+            let layout_size = text_size * text_scale;
             let style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
                 .with_family(family.clone());
-            let signature = self.shaped_signature(display, &family, layout_size, None);
+            let base = self.shaped_signature(display, &family, layout_size, None);
+            let attributes = self.valid_single_attributes();
+            let signature = attributes.map_or(base, |a| {
+                Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
+            });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                let mut layout = RichTextLayout::shape_plain(
-                    &mut text_renderer.font_system,
-                    display,
-                    &style,
-                    None,
-                );
+                let mut layout = if let Some(attributes) = attributes {
+                    RichTextLayout::shape_styled(
+                        &mut text_renderer.font_system,
+                        &self.insert_preedit_span(attributes.spans.clone()),
+                        &style,
+                        None,
+                        TextAlign::Left,
+                        self.display_ranges(&attributes.underlines),
+                        self.display_ranges(&attributes.strikes),
+                    )
+                } else {
+                    RichTextLayout::shape_plain(
+                        &mut text_renderer.font_system,
+                        display,
+                        &style,
+                        None,
+                    )
+                };
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4459,9 +4796,7 @@ impl TextInput {
                 return 0.0;
             };
             let end_byte = self.text_to_layout_byte(self.text.len());
-            let positions: Vec<(usize, f64)> = self
-                .text
-                .grapheme_indices(true)
+            let positions: Vec<(usize, f64)> = grapheme_indices(&self.text)
                 .map(|(byte_idx, _)| {
                     let x = layout.caret_geometry(self.text_to_layout_byte(byte_idx)).0;
                     (byte_idx, f64::from(x))
@@ -4537,6 +4872,63 @@ impl TextInput {
                 None,
                 &sel_rect,
             );
+        }
+    }
+
+    /// Code chips precede selection and glyphs; accent link rules follow
+    /// glyphs. All bounds come from the exact layout used for interaction.
+    fn draw_single_line_decorations(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        backgrounds: bool,
+    ) {
+        if self.masked() {
+            return;
+        }
+        let (Some(attributes), Some(layout)) =
+            (self.valid_single_attributes(), &self.single_layout)
+        else {
+            return;
+        };
+        let ranges = if backgrounds {
+            &attributes.chips
+        } else {
+            &attributes.links
+        };
+        for (start, end) in self.display_ranges(ranges) {
+            for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
+                let x = self.single_origin.x - self.scroll_x;
+                let y = self.single_origin.y;
+                let rect = if backgrounds {
+                    Rect::new(
+                        x + f64::from(x0) - 2.0,
+                        y + f64::from(y0) + 1.0,
+                        x + f64::from(x1) + 2.0,
+                        y + f64::from(y1) - 1.0,
+                    )
+                } else {
+                    Rect::new(
+                        x + f64::from(x0),
+                        y + f64::from(y1) - 2.0,
+                        x + f64::from(x1),
+                        y + f64::from(y1) - 1.0,
+                    )
+                };
+                let color = if backgrounds {
+                    theme.tokens.colors.surfaces.raised
+                } else {
+                    theme.tokens.colors.accent[5]
+                };
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &RoundedRect::from_rect(rect, if backgrounds { 3.0 } else { 0.0 }),
+                );
+            }
         }
     }
 
@@ -5045,7 +5437,7 @@ impl TextInput {
                 self.text.replace_range(start..end, "");
                 self.cursor_pos = start;
                 self.caret_affinity = TextAffinity::Before;
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -5078,7 +5470,7 @@ impl TextInput {
                 let char_start = before.chars().count();
                 let char_count = removed.chars().count();
                 self.text.replace_range(start..end, "");
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -6196,12 +6588,12 @@ mod tests {
             .with_initial_value("teh wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
         // Dictionary warm-up can dominate this unit test in an unoptimised
         // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
@@ -6217,7 +6609,7 @@ mod tests {
             .with_initial_value("wrold ");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 
@@ -6233,7 +6625,7 @@ mod tests {
             .with_initial_value("wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Instant::now()
+        ti.last_edit_time = crate::time::now()
             .checked_sub(SPELL_EDIT_SETTLE)
             .and_then(|t| t.checked_sub(Duration::from_millis(1)));
 
@@ -6254,7 +6646,7 @@ mod tests {
         ti.cursor_pos = ti.text.len();
         ti.spell_spans = vec![(0, 3)];
         ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 
@@ -7084,6 +7476,68 @@ mod tests {
     }
 
     #[test]
+    fn multiline_reuse_refreshes_unchanged_paragraphs_after_font_generation() {
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_initial_value("first\nWWW iii unchanged");
+        let mut tr = TextRenderer::new();
+        tr.font_system = crate::font_catalog::fixture_font_system();
+        let theme = Theme::dark();
+        let style = input.multiline_style(theme.text_scale);
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let before = input
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .caret_geometry(input.text.len());
+        tr.font_system
+            .db_mut()
+            .set_sans_serif_family(crate::text_render::UI_MONOSPACE_FAMILY);
+        tr.bump_generation();
+        // No edit must also refresh cached geometry when fonts change.
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let fresh = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(&theme),
+            &style,
+            Some(300.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let after = input
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .caret_geometry(input.text.len());
+        assert_ne!(
+            before,
+            fresh.caret_geometry(input.text.len()),
+            "fixture fonts must differ"
+        );
+        assert_eq!(after, fresh.caret_geometry(input.text.len()));
+        input.text.insert(0, 'x');
+        input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
+        let fresh = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(&theme),
+            &style,
+            Some(300.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            input
+                .single_layout
+                .as_ref()
+                .unwrap()
+                .caret_geometry(input.text.len()),
+            fresh.caret_geometry(input.text.len())
+        );
+    }
+
+    #[test]
     fn multiline_shaped_editor_scales_font_and_line_metrics_with_theme() {
         let mut normal = TextInput::local()
             .multiline(true)
@@ -7113,6 +7567,255 @@ mod tests {
         assert!(
             large_height >= normal_height * 1.9,
             "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
+        );
+    }
+
+    #[test]
+    fn snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views() {
+        for shaped in [false, true] {
+            for preserve in [false, true] {
+                let text = "a long source row\n".repeat(80);
+                let mut input = TextInput::local().multiline(true).with_initial_value(&text);
+                input.set_preserve_unfocused_scroll(preserve);
+                input.rect = Rect::new(0., 0., 300., 100.);
+                input.is_focused = false;
+                if !shaped {
+                    input.lines = (0..80)
+                        .map(|i| VisualLine {
+                            start: i * 18,
+                            end: i * 18 + 17,
+                            hard_break: true,
+                            y: i as f64 * 20.,
+                            char_x: vec![],
+                        })
+                        .collect();
+                }
+                input.scroll_y = 60.;
+                if shaped {
+                    input.update_ml_scroll(0., 20., 1600.);
+                } else {
+                    input.update_ml_body_scroll(20.);
+                }
+                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
+                input.rect = Rect::new(0., 0., 400., 140.);
+                if shaped {
+                    input.update_ml_scroll(0., 20., 1600.);
+                } else {
+                    input.update_ml_body_scroll(20.);
+                }
+                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
+                assert!(!input.is_focused);
+            }
+        }
+    }
+
+    #[test]
+    fn multiline_measure_uses_the_same_scaled_shaped_rows_as_draw() {
+        let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_font_size(14.0)
+            .with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let measured = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured.height)));
+        let theme = Theme::dark().with_text_scale(2.0);
+        draw_with_theme(&mut input, &theme);
+        let layout = input
+            .single_layout
+            .as_ref()
+            .expect("shaped multiline layout");
+        let expected_height = layout.height() + (ML_PAD_Y * 2.0) as f32;
+        assert!(
+            (measured.height - expected_height).abs() < 0.1,
+            "measure {measured:?} must use drawn shaped height {expected_height}"
+        );
+        let last_row = layout.visual_line_index(input.text_to_layout_byte(text.len()));
+        let caret = input.caret_rect(&theme, text.len());
+        assert_eq!(
+            (caret.y0 / caret.height()).floor() as usize,
+            last_row,
+            "caret row and shaped visual row index agree"
+        );
+    }
+
+    #[test]
+    fn multiline_trailing_lf_keeps_measure_draw_hit_and_caret_scroll_in_sync() {
+        let text = "let value = 1;\n";
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut input = TextInput::local()
+                .multiline(true)
+                .with_mono()
+                .with_gutter(true)
+                .with_current_line_highlight(true)
+                .with_initial_value(text);
+            input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
+            input.set_focus(true);
+            input.set_cursor_pos(text.len());
+
+            let mut renderer = TextRenderer::new();
+            renderer.set_text_scale(theme.text_scale);
+            let measured = Widget::measure(
+                &mut input,
+                taffy::Size {
+                    width: Some(240.0),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(240.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            let viewport_height =
+                f64::from(input.multiline_style(scale).line_height_px()) + ML_PAD_Y * 2.0;
+            input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, viewport_height));
+            draw_with_theme(&mut input, &theme);
+
+            let drawn_height = input.content_height() as f32;
+            assert!(
+                measured.height >= drawn_height && measured.height - drawn_height < 1.0,
+                "pixel-ceiled measure {measured:?} agrees with attributed draw height {drawn_height} at {scale}x"
+            );
+            let layout = input
+                .single_layout
+                .as_ref()
+                .expect("draw retained attributed multiline layout");
+            let (_, eof_top, eof_height) =
+                layout.caret_geometry(input.text_to_layout_byte(text.len()));
+            assert_eq!(
+                layout.visual_line_index(text.len()).saturating_add(1),
+                layout.buffer.layout_runs().count(),
+                "EOF stays on the final visual row even when large text wraps"
+            );
+            assert_eq!(layout.logical_line_origins().len(), 2);
+            assert!(
+                (eof_top + eof_height - layout.height()).abs() < 0.01,
+                "EOF caret reaches the bottom of the final row"
+            );
+
+            let caret = input.caret_rect(&theme, text.len());
+            assert_eq!(
+                input.byte_at_point(Point::new(caret.x0 + 1.0, caret.center().y)),
+                text.len(),
+                "clicking the final empty row returns EOF"
+            );
+            let view_height = input.rect.height() - ML_PAD_Y * 2.0;
+            let expected_scroll = (f64::from(layout.height()) - view_height).max(0.0);
+            assert!(expected_scroll > 0.0);
+            assert!(
+                (input.scroll_y() - expected_scroll).abs() < 0.01,
+                "caret-follow scroll remains at the EOF row"
+            );
+            assert!(input.gutter_width() > 0.0);
+            assert!(
+                input
+                    .code_row_colors(&theme)
+                    .iter()
+                    .any(|(_, color)| *color != theme.text_primary),
+                "syntax attribution survives terminal-row normalization"
+            );
+        }
+    }
+
+    #[test]
+    fn multiline_measure_uses_build_layout_theme_scale_when_renderer_is_stale() {
+        let text = "The layout theme owns accessibility scale even when a retained renderer still carries its previous frame value.";
+        let mut input = TextInput::local().multiline(true).with_initial_value(text);
+        let large = Theme::dark().with_text_scale(2.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &large, &mut node_map);
+
+        let mut renderer = TextRenderer::new();
+        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
+        let measured_large = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
+        draw_with_theme(&mut input, &large);
+        let drawn_large = input.content_height() as f32;
+        assert!((measured_large.height - drawn_large).abs() < 0.1);
+
+        let normal = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &normal, &mut node_map);
+        let measured_normal = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(
+            0.0,
+            0.0,
+            180.0,
+            f64::from(measured_normal.height),
+        ));
+        draw_with_theme(&mut input, &normal);
+        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
+        assert!(
+            measured_large.height > measured_normal.height * 1.8,
+            "same instance remeasures from large text back to normal"
+        );
+    }
+
+    /// The single-line band is the shipped 40 px at 1× (a 20 px line has
+    /// 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
+    /// the scaled line no longer fits: at 2× text the 40 px line sat edge
+    /// to edge in a 40 px band.
+    #[test]
+    fn single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line() {
+        fn band_height(theme: &Theme) -> Dimension {
+            let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+                std::collections::HashMap::new();
+            let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+            taffy.style(node).unwrap().size.height
+        }
+        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
+        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
+        assert_eq!(
+            scaled_line, 40.0,
+            "2× base line fills the shipped band exactly"
+        );
+        #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
+        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
+        assert_eq!(
+            band_height(&Theme::dark().with_text_scale(2.0)),
+            Dimension::length(expected),
+            "2× band = scaled line + 2×ML_PAD_Y"
         );
     }
 
@@ -7149,6 +7852,121 @@ mod tests {
             large.caret_rect(&large_theme, 0).x0 > large.rect.x0 + large.gutter_width(),
             "the first code glyph stays to the right of the scaled gutter"
         );
+    }
+
+    #[test]
+    fn measured_multiline_pointer_geometry_tracks_applied_origin_before_draw() {
+        let text = "first wrapped row continues for a while before the second hard line\nsecond";
+        let mut input = TextInput::local().multiline(true).with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let measured = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(
+            100.0,
+            50.0,
+            280.0,
+            50.0 + f64::from(measured.height),
+        ));
+        let second = text.find('\n').expect("hard break") + 1;
+        let (x, top, height) = input
+            .single_layout
+            .as_ref()
+            .expect("measurement retained shaped rows")
+            .caret_geometry(input.text_to_layout_byte(second));
+        let point = Point::new(
+            input.rect.x0 + input.ml_left() + f64::from(x) + 1.0,
+            input.rect.y0 + ML_PAD_Y + f64::from(top + height / 2.0),
+        );
+        assert_eq!(
+            input.byte_at_point(point),
+            second,
+            "pointer uses the applied widget origin before the first draw"
+        );
+    }
+
+    #[test]
+    fn crdt_sync_undo_redo_invalidates_multiline_measurement() {
+        let short = "short";
+        let long = "undo and redo replay real CRDT text through the same widget, including a long line that wraps at large text";
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut state = crate::State::new();
+        let text_obj = state
+            .doc
+            .put_object(&state.root, "body", ObjType::Text)
+            .expect("create document text");
+        state
+            .doc
+            .splice_text(&text_obj, 0, 0, short)
+            .expect("seed document text");
+        state.commit_action(None, None);
+
+        let mut input = TextInput::from_document_string("body").multiline(true);
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        let mut renderer = TextRenderer::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &theme, &mut node_map);
+        let measure = |input: &mut TextInput, renderer: &mut TextRenderer| {
+            Widget::measure(
+                input,
+                taffy::Size {
+                    width: Some(180.0),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(180.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                renderer,
+            )
+            .height
+        };
+        let short_height = measure(&mut input, &mut renderer);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(short_height)));
+        assert!(!Widget::layout_needs_measure(&input));
+
+        let old_len = state.doc.length(&text_obj);
+        state
+            .doc
+            .splice_text(
+                &text_obj,
+                0,
+                isize::try_from(old_len).expect("test text length fits isize"),
+                long,
+            )
+            .expect("replace with wrapping text");
+        state.commit_action(None, None);
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
+        assert!(
+            Widget::layout_needs_measure(&input),
+            "CRDT text growth invalidates retained measurement"
+        );
+        let long_height = measure(&mut input, &mut renderer);
+        assert!(long_height > short_height * 1.8, "long text wraps at 2x");
+
+        state.undo(None, None).expect("undo long text");
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert!(Widget::layout_needs_measure(&input));
+        let undo_height = measure(&mut input, &mut renderer);
+        assert!((undo_height - short_height).abs() < 0.1);
+
+        state.redo(None, None).expect("redo long text");
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert!(Widget::layout_needs_measure(&input));
+        let redo_height = measure(&mut input, &mut renderer);
+        assert!((redo_height - long_height).abs() < 0.1);
     }
 
     #[test]

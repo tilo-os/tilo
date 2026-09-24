@@ -41,7 +41,7 @@ fn snapshot(doc: &AutoCommit, page: notes::PageId) -> Rows {
             let nesting = doc
                 .get(object, "nesting")
                 .unwrap()
-                .and_then(|(value, _)| value.to_u64())
+                .and_then(|(value, _)| value.as_u64())
                 .unwrap_or(0);
             (id, text, kind, format!("{:?}", spans.1), nesting)
         })
@@ -341,7 +341,7 @@ fn schema_one_move_upgrades_order_without_replacing_any_text() {
             .unwrap()
             .unwrap()
             .0
-            .to_u64(),
+            .as_u64(),
         Some(2)
     );
     assert_eq!(

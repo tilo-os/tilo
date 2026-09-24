@@ -1,4 +1,4 @@
-//! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
+//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
 //! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
@@ -404,6 +404,7 @@ impl ActionPalette {
             arguments,
         )
     }
+
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;
@@ -998,12 +999,14 @@ impl ActionPalette {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn take_scoped_navigation(
         &mut self,
     ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
         self.pending_nav.take()
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
         self.index
             .values()
@@ -1318,6 +1321,7 @@ impl ActionPalette {
         );
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn layout_with_text(
         &mut self,
         theme: &Theme,
@@ -2009,7 +2013,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("yes".to_string()),
         );
         assert!(!p.is_open(), "an immediate action closes the palette");
@@ -2216,7 +2220,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "name")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
         );
@@ -2287,7 +2291,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some("yes".into())
         );
     }

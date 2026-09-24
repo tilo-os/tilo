@@ -9,20 +9,19 @@
 //!   `next_char_boundary`. All return byte indices and stay on UTF-8
 //!   char boundaries by construction.
 //! * Clipboard helpers — [`clipboard_copy`] / [`clipboard_paste`] and the
-//!   primary-selection pair, resolved against whichever backend this process
-//!   has (see [`crate::clipboard`]): the compositor's mirror for in-process
-//!   chrome, `wl_data_device` for a Wayland app, arboard on X11, and an
-//!   in-process buffer of last resort that announces itself in the log.
+//!   primary-selection pair, resolved against the clipboard of the current
+//!   [`crate::host::HostServices`] (see [`crate::clipboard`]): the
+//!   compositor's mirror for in-process chrome, the desktop clipboard for a
+//!   native app, or an in-process buffer.
 //!
 //! Word operations follow Unicode Standard Annex #29, so apostrophes,
 //! combining marks, non-Latin scripts, and Unicode numeric forms behave as
 //! coherent words instead of being reduced to an ASCII-style predicate.
 
 use std::ops::Range;
-use std::sync::{Mutex, OnceLock};
-use unicode_segmentation::UnicodeSegmentation;
 
-use crate::clipboard::{ClipboardTarget, clipboard_backend, warn_fallback_once};
+use crate::clipboard::ClipboardTarget;
+use crate::text_break::grapheme_indices;
 
 /// Which shaped run owns a caret at a shared logical byte boundary.
 ///
@@ -194,7 +193,7 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
         return text.len();
     }
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .take_while(|&i| i <= byte_idx)
         .last()
@@ -207,7 +206,7 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
 /// compatibility.
 pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .take_while(|&i| i < byte_idx)
         .last()
@@ -218,7 +217,7 @@ pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
 /// [`prev_char_boundary`] for the compatibility note.
 pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .find(|&i| i > byte_idx)
         .unwrap_or(text.len())
@@ -293,161 +292,27 @@ pub fn extend_span_drag<T: Ord + Copy>(
     }
 }
 
-/// Lazy global `arboard` handle, used **only on X11** and other non-Wayland
-/// platforms.
-///
-/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
-/// not offer to sandboxed apps (see `crates/session/shell/src/compositor/selection.rs`); a
-/// `ui` app there goes through [`crate::clipboard::WaylandClipboard`] and
-/// `wl_data_device` instead. Construction is skipped rather than attempted
-/// on Wayland because arboard's probe there is slow, and a handle that
-/// fails on every call is worse than no handle.
-fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
-    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| {
-        if running_on_wayland() {
-            return None;
-        }
-        arboard::Clipboard::new().ok().map(Mutex::new)
-    })
-    .as_ref()
-}
-
-/// Whether this process is a Wayland client.
-fn running_on_wayland() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
-}
-
-/// In-process clipboard fallback, used only when neither an installed backend
-/// nor arboard can serve the request — a unit test, a headless scenario run,
-/// or a session with no clipboard owner at all.
-///
-/// Keeps copy → paste round-tripping **within the process** so the shared
-/// caret/clipboard core stays testable headlessly. A silently-working
-/// fallback can mask an unavailable clipboard, so every fall-through here
-/// logs once via [`crate::clipboard::warn_fallback_once`].
-fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
-    static FB: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
-    FB.get_or_init(|| Mutex::new((None, None)))
-}
-
-/// Write `text` to `target`, trying each backend in priority order.
-fn try_write_selection(target: ClipboardTarget, text: &str) -> bool {
-    if let Some(backend) = clipboard_backend()
-        && backend.set_text(target, text)
-    {
-        return true;
-    }
-    #[cfg(windows)]
-    if target == ClipboardTarget::Primary {
-        return false;
-    }
-    if let Some(cb) = arboard_clipboard()
-        && let Ok(mut handle) = cb.lock()
-    {
-        let wrote = match target {
-            ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
-            #[cfg(target_os = "linux")]
-            ClipboardTarget::Primary => {
-                use arboard::{LinuxClipboardKind, SetExtLinux};
-                handle
-                    .set()
-                    .clipboard(LinuxClipboardKind::Primary)
-                    .text(text.to_string())
-                    .is_ok()
-            }
-            // No primary selection outside Linux; the regular clipboard is
-            // the closest equivalent.
-            #[cfg(not(target_os = "linux"))]
-            ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
-        };
-        if wrote {
-            return true;
-        }
-    }
-    false
-}
-
-/// Copy with a local fallback for editors and headless use.
-fn write_selection(target: ClipboardTarget, text: &str) {
-    if try_write_selection(target, text) {
-        return;
-    }
-    // Windows has no primary-selection protocol. Keep select/middle-click
-    // local to the app instead of overwriting the user's Ctrl+C clipboard.
-    #[cfg(windows)]
-    if target == ClipboardTarget::Primary {
-        if let Ok(mut selection) = clipboard_fallback().lock() {
-            selection.1 = Some(text.to_string());
-        }
-        return;
-    }
-    warn_fallback_once("copy");
-    if let Ok(mut fb) = clipboard_fallback().lock() {
-        match target {
-            ClipboardTarget::Clipboard => fb.0 = Some(text.to_string()),
-            ClipboardTarget::Primary => fb.1 = Some(text.to_string()),
-        }
-    }
-}
-
-/// Read `target`, trying each backend in priority order.
-fn read_selection(target: ClipboardTarget) -> Option<String> {
-    if let Some(backend) = clipboard_backend() {
-        return backend.text(target);
-    }
-    #[cfg(windows)]
-    if target == ClipboardTarget::Primary {
-        return clipboard_fallback().lock().ok()?.1.clone();
-    }
-    if let Some(cb) = arboard_clipboard()
-        && let Ok(mut handle) = cb.lock()
-    {
-        return match target {
-            ClipboardTarget::Clipboard => handle.get_text().ok(),
-            #[cfg(target_os = "linux")]
-            ClipboardTarget::Primary => {
-                use arboard::{GetExtLinux, LinuxClipboardKind};
-                handle
-                    .get()
-                    .clipboard(LinuxClipboardKind::Primary)
-                    .text()
-                    .ok()
-            }
-            #[cfg(not(target_os = "linux"))]
-            ClipboardTarget::Primary => handle.get_text().ok(),
-        };
-    }
-    warn_fallback_once("paste");
-    let fb = clipboard_fallback().lock().ok()?;
-    match target {
-        ClipboardTarget::Clipboard => fb.0.clone(),
-        ClipboardTarget::Primary => fb.1.clone(),
-    }
+fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
+    crate::host::current().clipboard
 }
 
 /// Push `text` onto the system clipboard — the Ctrl+C buffer.
 ///
-/// Routes to whichever backend this process resolved to; see
-/// [`crate::clipboard`] for the order. Falls back to an in-process buffer only
-/// when there is no clipboard at all, and says so in the log when it does.
+/// Routes to the current host's clipboard; see [`crate::clipboard`]. Without
+/// a system clipboard the copy stays inside this process, and the native host
+/// says so in the log when it does.
 pub fn clipboard_copy(text: &str) {
-    write_selection(ClipboardTarget::Clipboard, text);
+    clipboard().set_text(ClipboardTarget::Clipboard, text);
 }
 
 /// Copy text only if a system clipboard backend accepts it.
 ///
-/// Returns `false` on failure and never retains the text in the in-process
-/// fallback. Use this for secrets and success messages that require an actual
+/// Returns `false` on failure and never retains the text in an in-process
+/// buffer. Use this for secrets and success messages that require an actual
 /// clipboard write rather than an editor-local copy.
 #[must_use]
 pub fn try_clipboard_copy(text: &str) -> bool {
-    // An explicitly installed host backend is authoritative. Its refusal
-    // must not route a secret through another backend or a local fallback.
-    if let Some(backend) = clipboard_backend() {
-        return backend.set_text(ClipboardTarget::Clipboard, text);
-    }
-    try_write_selection(ClipboardTarget::Clipboard, text)
+    clipboard().set_shared_text(ClipboardTarget::Clipboard, text)
 }
 
 /// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
@@ -464,42 +329,28 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
     if width == 0 || height == 0 || rgba.len() != expected_len {
         return false;
     }
-    if let Some(backend) = clipboard_backend() {
-        return backend.set_image(width, height, rgba);
-    }
-    let Some(cb) = arboard_clipboard() else {
-        return false;
-    };
-    let Ok(mut handle) = cb.lock() else {
-        return false;
-    };
-    let img = arboard::ImageData {
-        width,
-        height,
-        bytes: std::borrow::Cow::Borrowed(rgba),
-    };
-    handle.set_image(img).is_ok()
+    clipboard().set_image(width, height, rgba)
 }
 
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {
-    read_selection(ClipboardTarget::Clipboard)
+    clipboard().text(ClipboardTarget::Clipboard)
 }
 
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
 /// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
 /// and editors set this whenever a range is selected so a middle-click paste
-/// in any app receives it. Goes through the same backend chain as the
-/// clipboard, including the in-process fallback.
+/// in any app receives it. Goes through the same clipboard as
+/// [`clipboard_copy`].
 pub fn clipboard_copy_primary(text: &str) {
-    write_selection(ClipboardTarget::Primary, text);
+    clipboard().set_text(ClipboardTarget::Primary, text);
 }
 
 /// Read the **primary selection** as a UTF-8 string — what a middle-click
 /// paste should insert. `None` when empty or unavailable.
 pub fn clipboard_paste_primary() -> Option<String> {
-    read_selection(ClipboardTarget::Primary)
+    clipboard().text(ClipboardTarget::Primary)
 }
 
 #[cfg(test)]

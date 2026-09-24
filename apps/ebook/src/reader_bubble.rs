@@ -30,22 +30,6 @@ pub(crate) struct ReaderPosition {
     pub(crate) chapter_count: usize,
 }
 
-pub(crate) struct ReaderBubblePaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ReaderBubbleView {
-    pub viewport: Rect,
-    pub cursor: Point,
-    pub center_x0: f64,
-    pub center_x1: f64,
-    pub position: ReaderPosition,
-}
-
 pub(crate) struct ReaderBubble {
     animation: ui::StatusBubble,
     shown_position: Option<(usize, usize)>,
@@ -101,13 +85,28 @@ impl ReaderBubble {
     }
 
     /// Draw the bubble and refresh the geometry consumed by [`Self::hit_test`].
-    pub(crate) fn draw(&mut self, ctx: &mut ReaderBubblePaintCtx<'_>, view: ReaderBubbleView) {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The page bubble needs render context, viewport, cursor, reading-column edges, and chapter/page position for placement and hits."
+    )]
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+        cursor: Point,
+        center_x0: f64,
+        center_x1: f64,
+        position: ReaderPosition,
+    ) {
         self.rect = Rect::ZERO;
         self.previous_rect = Rect::ZERO;
         self.next_rect = Rect::ZERO;
 
         let now = Instant::now();
-        let current = (view.position.chapter, view.position.page);
+        let current = (position.chapter, position.page);
         if self
             .shown_position
             .is_some_and(|previous| previous != current)
@@ -116,21 +115,20 @@ impl ReaderBubble {
         }
         self.shown_position = Some(current);
 
-        let label = label(ctx.text, view.center_x0, view.center_x1, view.position);
-        let (pill_w, pill_h) =
-            ui::status_bubble::pill_size(&label, ctx.text, TEXT_SIZE, CHEVRON_SLOT);
-        let cx = f64::midpoint(view.center_x0, view.center_x1);
-        let by = view.viewport.y1 - 16.0 - pill_h;
+        let label = label(text, center_x0, center_x1, position);
+        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, text, TEXT_SIZE, CHEVRON_SLOT);
+        let cx = f64::midpoint(center_x0, center_x1);
+        let by = viewport.y1 - 16.0 - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
         let reveal_zone = Rect::new(
             rect.x0 - 40.0,
-            view.viewport.y1 - (pill_h + 32.0),
+            viewport.y1 - (pill_h + 32.0),
             rect.x1 + 40.0,
-            view.viewport.y1,
+            viewport.y1,
         );
         self.animation.set_hover(
-            self.force_open || reveal_zone.contains(view.cursor) || rect.contains(view.cursor),
+            self.force_open || reveal_zone.contains(cursor) || rect.contains(cursor),
             now,
         );
 
@@ -142,58 +140,57 @@ impl ReaderBubble {
         self.rect = rect;
         self.previous_rect = Rect::new(rect.x0, rect.y0, rect.x0 + CHEVRON_SLOT + 8.0, rect.y1);
         self.next_rect = Rect::new(rect.x1 - CHEVRON_SLOT - 8.0, rect.y0, rect.x1, rect.y1);
-        self.draw_pill(ctx, &label, alpha, view.cursor);
+        self.draw_pill(scene, transform, text, theme, &label, alpha, cursor);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The page pill painter combines render context with its label, animation opacity, and cursor for navigation hover states."
+    )]
     fn draw_pill(
         &self,
-        ctx: &mut ReaderBubblePaintCtx<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         label: &str,
         alpha: f32,
         cursor: Point,
     ) {
-        ctx.scene.push_layer(
+        scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             alpha,
-            ctx.transform,
+            transform,
             &self.rect.inflate(12.0, 14.0),
         );
-        ui::status_bubble::draw_pill(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            self.rect,
-            label,
-            TEXT_SIZE,
-        );
+        ui::status_bubble::draw_pill(scene, transform, text, theme, self.rect, label, TEXT_SIZE);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let previous_icon = Rect::new(self.rect.x0 + 8.0, cy - 8.0, self.rect.x0 + 24.0, cy + 8.0);
         let next_icon = Rect::new(self.rect.x1 - 24.0, cy - 8.0, self.rect.x1 - 8.0, cy + 8.0);
         ui::status_bubble::draw_chevron(
-            ctx.scene,
-            ctx.transform,
+            scene,
+            transform,
             previous_icon,
             if self.previous_rect.contains(cursor) {
-                ctx.theme.text_primary
+                theme.text_primary
             } else {
-                ctx.theme.text_dim
+                theme.text_dim
             },
             true,
         );
         ui::status_bubble::draw_chevron(
-            ctx.scene,
-            ctx.transform,
+            scene,
+            transform,
             next_icon,
             if self.next_rect.contains(cursor) {
-                ctx.theme.text_primary
+                theme.text_primary
             } else {
-                ctx.theme.text_dim
+                theme.text_dim
             },
             false,
         );
-        ctx.scene.pop_layer();
+        scene.pop_layer();
     }
 }
 

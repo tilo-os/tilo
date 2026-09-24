@@ -15,6 +15,7 @@ firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
 installer_disks="$repo_root/crates/session/installer/src/disks.rs"
+block_devices_lsblk="$repo_root/crates/system/block-devices/src/lsblk.rs"
 installer_timezones="$repo_root/crates/session/installer/src/timezones.rs"
 media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
@@ -28,11 +29,12 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-if grep -Fq 'bounded_command::run(' "$installer_disks" \
+if grep -Fq 'use block_devices::' "$installer_disks" \
+   && grep -Fq 'bounded_command::run(' "$block_devices_lsblk" \
    && grep -Fq 'bounded_command::run(' "$installer_timezones" \
    && grep -Fq 'bounded_command::run(' "$installer_app" \
    && ! grep -Eq 'Command::new\("(lsblk|timedatectl|/usr/libexec/tilo-verified-boot-install-preflight)"\)' \
-      "$installer_disks" "$installer_timezones" "$installer_app"; then
+      "$installer_disks" "$block_devices_lsblk" "$installer_timezones" "$installer_app"; then
   ok "installer discovery and verified-boot preflight have bounded subprocesses"
 else
   bad "installer trusts an unbounded discovery or verified-boot subprocess"
@@ -60,8 +62,8 @@ fi
 
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
-   && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
-   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
+   && python3 -B "$repo_root/os/tests/test_installer_target_boot_digest.py" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
@@ -421,6 +423,25 @@ if grep -Fq -- '--full-name' "$backend" \
   ok "preconfigured identity and locale reach the installed account"
 else
   bad "profile identity or locale is dropped before first boot"
+fi
+
+locale_catalog="$repo_root/os/usr/share/tilo/installer-locales.txt"
+locale_packs_complete=1
+while IFS= read -r locale; do
+  [ -n "$locale" ] || continue
+  language="${locale%%_*}"
+  awk -v package="glibc-langpack-$language" \
+    '$1 == package && $2 == "\\" { found = 1 } END { exit !found }' \
+    "$repo_root/os/Containerfile" || locale_packs_complete=0
+done < "$locale_catalog"
+if [ -s "$locale_catalog" ] \
+   && [ "$locale_packs_complete" -eq 1 ] \
+   && grep -Fq 'COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt' \
+      "$repo_root/os/Containerfile" \
+   && grep -Fq 'grep -Fxq -- "$LOCALE_VAL" "$LOCALE_CATALOG"' "$backend"; then
+  ok "every advertised install locale is shipped and revalidated by the privileged backend"
+else
+  bad "installation profiles can select locale data absent from the installed OS"
 fi
 
 if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \

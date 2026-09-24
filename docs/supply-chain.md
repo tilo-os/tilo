@@ -14,7 +14,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   KMS/HSM key. Exportable private-key material is rejected by the workflow.
 - **Verify-before-update.** The image ships `/usr/share/tilo/cosign.pub` + an
   `/etc/containers/policy.json` that **requires** a valid signature for
-  `code.podesta.ai/tilo/tilo` (+ `registries.d` sigstore-attachment lookup). So
+  `code.podesta.ai/qos/tilo` (+ `registries.d` sigstore-attachment lookup). So
   `bootc upgrade` refuses an unsigned/tampered OS image.
 - **Owner identity endorsements.** `tilo-user-identity::ImageEndorsement` gives
   locally built images a separate human-root → explicitly authorized device →
@@ -153,16 +153,36 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   exact digest, base image, architecture set, source, and canonical package-set
   hash. CI and local image builders reject it before any package transaction
   unless all of those claims match the current build inputs.
-  **When you add/remove/rename a package in `os/Containerfile`,** re-run the
-  `snapshot-rpms` workflow (`workflow_dispatch`); it prints the new `RPMS_REF` —
-  commit that into `os/rpms-snapshot.env`. Otherwise the build fails
+  **When you add/remove/rename a package in `os/Containerfile`,** merging it
+  to `main` re-runs `snapshot-rpms` (or dispatch it by hand). Once the new
+  index is signed and verified, the workflow pushes an
+  `automation/rpm-snapshot-<digest16>` branch that updates
+  `os/rpms-snapshot.env` and opens its pull request; merge that PR once its
+  required checks pass. Until then the build fails
   `No match for argument: <pkg>`. The package list is auto-derived from
   `os/Containerfile`, so there is no separate list to maintain.
+  Before publishing, the snapshot replays the image's erase of base packages it
+  later needs again (the pkgconf family) and re-resolves the whole package set
+  offline, so an incomplete snapshot fails in CI rather than in an image build.
 - **Native custom kernels.** Kernel CI rebuilds the hardened kernel separately
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
   each digest through the non-exportable release key, and advances both pins
   in `os/kernel-snapshot.env` atomically only after both native jobs verify and
-  a source-input race check passes. OS CI selects the matching pin, verifies
+  source-input race checks pass. Promotion creates a deterministic,
+  snapshot-bound automation branch and pull request rather than bypassing
+  protected `main`; normal required checks and merge policy remain
+  authoritative. Kernel provenance binds `RPMS_REF`, so every merged RPM pin
+  triggers a kernel rebuild, and OS builds verify only after that kernel pin
+  merges too.
+- **Pin promotion credentials.** Both snapshot workflows push their automation
+  branch with the checkout credential (`REGISTRY_TOKEN` for RPMs, the job
+  token for kernels), but open the pull request through
+  `os/dev/open-snapshot-pr.py` with protected secret `RELEASE_TOKEN`. Forgejo
+  answers the pull-request API with 404 for both push credentials, while
+  `RELEASE_TOKEN` has repository scope. If the script reports that the token
+  cannot read pull requests, check that `RELEASE_TOKEN` exists and still grants
+  repository access; the branch is already pushed, so a PR can be opened from
+  it by hand in the meantime. OS CI selects the matching pin, verifies
   its Cosign signature, OCI architecture, and SLSA source/base/RPM provenance
   before BuildKit can consume it,
   and binds both kernel digests into the signed multi-architecture release
@@ -174,7 +194,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
   a day (`manifest unknown`) and every build fails at its first `FROM` — the
   `snapshot-rpms` job included, which made the package set unrefreshable too.
-  So the base is **mirrored into `code.podesta.ai/tilo/fedora-bootc`** and every
+  So the base is **mirrored into `code.podesta.ai/qos/fedora-bootc`** and every
   Containerfile takes it as `--build-arg BASE_REF`, pinned in
   `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
   resolving. The copy uses `skopeo copy --all --preserve-digests`, so the
@@ -182,8 +202,8 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   published — the mirror adds durability, not a second artifact to trust.
   **To refresh the base:** edit `BASE_SOURCE` if the Fedora release is
   changing, dispatch `mirror-base`, commit the `BASE_REF` it prints, then
-  re-run `snapshot-rpms` and commit the new `RPMS_REF` — the frozen package set
-  is resolved against the base and has to follow it. The mirror job refuses to
+  merge the `snapshot-rpms` pin PR that follows — the frozen package set is
+  resolved against the base and has to follow it. The mirror job refuses to
   report a reference that is not a multi-arch index or whose `ostree.linux`
   does not match the Fedora release `BASE_SOURCE` claims, so a silent major
   bump fails the job instead of shipping.

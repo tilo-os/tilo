@@ -30,7 +30,7 @@ REGIONAL_REPOSITORIES = {
     "docker.io/library/python": "dockerhub/library/python",
 }
 OIDC_ISSUER = "https://code.podesta.ai/api/actions"
-OIDC_SUBJECT = "repo:qos-11/qos-23:ref:refs/heads/main"
+OIDC_SUBJECT = "repo:tilo-11/tilo-23:ref:refs/heads/main"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 

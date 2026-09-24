@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
+use crate::widget::text::centered_text_top;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
 const HEIGHT: f64 = 38.0;
@@ -34,6 +35,16 @@ const ICON_GUTTER: f64 = 34.0;
 const CLEAR_GUTTER: f64 = 30.0;
 const ICON_D: f64 = 16.0;
 const CLEAR_D: f64 = 16.0;
+
+/// The palette-shortcut key cap drawn at the trailing edge when the field
+/// opens the palette instead of editing. A 20 px cap with a 7 px inset each
+/// side around an 11 px label, set 10 px in from the pill's edge so it
+/// clears the pill's curvature; the label is centred on its measured line.
+const KBD_HEIGHT: f64 = 20.0;
+const KBD_PAD_X: f64 = 7.0;
+const KBD_INSET: f64 = 10.0;
+const KBD_RADIUS: f64 = 5.0;
+const KBD_LABEL_SIZE: f32 = 11.0;
 
 /// A search-styled input: magnifier + editable text + clear button.
 #[allow(
@@ -207,41 +218,52 @@ impl SearchField {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        const SIZE: f32 = 11.0;
         let label = Shortcut::command("K").label(self.platform);
-        let (tw, _) = text_renderer.measure(&label, SIZE, None);
-        let chip_h = 20.0_f64;
-        let chip_w = f64::from(tw) + 14.0;
-        let right_inset = 10.0_f64;
+        let (tw, th) = text_renderer.measure(&label, KBD_LABEL_SIZE, None);
+        let chip_w = f64::from(tw) + 2.0 * KBD_PAD_X;
         let cy = self.rect.center().y;
         let chip = Rect::new(
-            self.rect.x1 - right_inset - chip_w,
-            cy - chip_h / 2.0,
-            self.rect.x1 - right_inset,
-            cy + chip_h / 2.0,
+            self.rect.x1 - KBD_INSET - chip_w,
+            cy - KBD_HEIGHT / 2.0,
+            self.rect.x1 - KBD_INSET,
+            cy + KBD_HEIGHT / 2.0,
         );
-        let rounded = RoundedRect::from_rect(chip, 5.0);
+        let rounded = RoundedRect::from_rect(chip, KBD_RADIUS);
+        // Keycap body and edge derived against the pill it sits in (HIG
+        // §9.5): a literal white wash was invisible on the light preset.
+        let pill_fill = theme.tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            vello::peniko::Color::from_rgba8(255, 255, 255, 16),
+            crate::tokens::colors::Colors::hairline_on(pill_fill, crate::chrome::HAIRLINE_ALPHA),
             None,
             &rounded,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::surface::edge_on(pill_fill),
             None,
             &rounded,
         );
+        // Centre the measured line in the chip; the former `cy - 6.5` was a
+        // hand-tuned offset for an 11 px face that left the label a fraction
+        // low and could not follow a text-scale change.
+        let label_top = centered_text_top(chip.y0, KBD_HEIGHT, f64::from(th));
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine composition is float matrix multiplication; it cannot overflow \
                       or panic"
         )]
-        let label_transform = transform * Affine::translate((chip.x0 + 7.0, cy - 6.5));
-        text_renderer.draw_text(scene, &label, SIZE, theme.text_dim, label_transform, None);
+        let label_transform = transform * Affine::translate((chip.x0 + KBD_PAD_X, label_top));
+        text_renderer.draw_text(
+            scene,
+            &label,
+            KBD_LABEL_SIZE,
+            theme.text_dim,
+            label_transform,
+            None,
+        );
     }
 }
 
@@ -273,11 +295,23 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
+        // A fluid control: it asks for the row's width and, when the row
+        // overflows, it is the item that gives — never the fixed targets
+        // beside it. With `flex_shrink: 0` a `percent(100%)` item claimed
+        // the whole row and pushed every later sibling to zero width (the
+        // F2-16 shape recorded against `Dropdown`). The floor keeps the two
+        // gutters plus two pointer targets of text, so it cannot vanish.
+        let min_width =
+            ICON_GUTTER + CLEAR_GUTTER + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
                 align_items: Some(taffy::AlignItems::Center),
-                flex_shrink: 0.0,
+                flex_shrink: 1.0,
+                min_size: taffy::Size {
+                    width: length(min_width as f32),
+                    height: taffy::Dimension::auto(),
+                },
                 padding: taffy::Rect {
                     left: length(ICON_GUTTER as f32),
                     right: length(CLEAR_GUTTER as f32),
@@ -323,24 +357,27 @@ impl Widget for SearchField {
         }
         let focused = self.input.is_focused();
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
+        let pill_fill = theme.tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            pill_fill,
             None,
             &pill,
         );
+        // Rest edge derived from the pill (HIG §9.5); focus keeps `border_focus`.
         let border = if focused {
             theme.border_focus
         } else {
-            theme.border_standard
+            crate::surface::edge_on(pill_fill)
         };
+        // Rest edge and focus ring share one half-pixel-inset outline.
         scene.stroke(
             &Stroke::new(if focused { 1.5 } else { 1.0 }),
             transform,
             border,
             None,
-            &pill,
+            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.full)),
         );
 
         let icon_rect = Rect::from_center_size(
@@ -520,6 +557,39 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The palette key cap centres its label on the measured 11 px line
+    /// inside the 20 px cap — not on the former hand-tuned `cy - 6.5`.
+    #[test]
+    fn palette_keycap_label_centres_its_measured_line() {
+        let mut field = SearchField::new().opens_palette();
+        lay_out(&mut field, 400.0);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        field.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let label = Shortcut::command("K").label(field.platform);
+        // The cap is painted after the (empty) input, so its label is the
+        // last glyph run of the frame.
+        let runs = scene.encoding().resources.glyph_runs.len();
+        assert!(runs > 0, "key cap label glyphs");
+        crate::widget::text::assert_glyph_run_centred_in_band(
+            &scene,
+            runs - 1,
+            &label,
+            KBD_LABEL_SIZE,
+            field.rect.center().y - KBD_HEIGHT / 2.0,
+            KBD_HEIGHT,
+            &mut tr,
+            theme.text_dim,
+        );
+    }
 
     #[allow(
         clippy::cast_possible_truncation,

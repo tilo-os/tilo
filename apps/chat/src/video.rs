@@ -93,7 +93,7 @@ impl Drop for CameraCapture {
 
 /// Portal `ScreenCast` `PipeWire` node → RGBA frames. `None` when the `pipewiresrc`
 /// element is unavailable or the node can't be opened. `node_id` comes from
-/// [`crate::media::request_screencast`]. The captured RGBA is handed to a
+/// the host's screen-capture service (`ui::capture`). The captured RGBA is handed to a
 /// [`tilo_callstream::VideoStreamSender`] for encode + framing — the source
 /// selection stays the xdg `ScreenCast` portal, the encode + transport reuse the
 /// shared stack.

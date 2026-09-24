@@ -4,6 +4,12 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 
+pub(crate) mod owned_restore;
+#[cfg(test)]
+pub(crate) mod owned_restore_tests;
+
+pub mod collab;
+pub use collab::{CollaborationState, RemoteCursor};
 pub mod diagnostics;
 pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
 pub mod revision;
@@ -345,37 +351,18 @@ impl UndoLog {
         if !self.can_bump() {
             return false;
         }
-        let before = self.last_heads.clone();
-        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
-        // automerge's advisory timestamp at zero, which is why a history pane
-        // built over a document committed that way can show authorship but not
-        // *when* — and why a date-range filter over it matches nothing.
-        if qdoc::history::commit_stamped_with_message(doc, message).is_some() {
-            let after = doc.get_heads();
-            push_history(
-                &mut self.undo_stack,
-                UndoEntry {
-                    before,
-                    after,
-                    focused_node_idx,
-                    widget_metadata: metadata,
-                    author,
-                    instance_id: None,
-                },
-            );
-            self.redo_stack.clear();
-            self.last_heads = doc.get_heads();
-            self.bump();
-            true
-        } else {
-            // Nothing to undo, but the baseline still moves up: `last_heads` is
-            // where the *next* action starts from, and changes reach a document
-            // by routes that never pass through here — a peer's ops merged in,
-            // the shared schema genesis. A baseline left behind would put those
-            // inside the next action's bracket, and one Ctrl+Z would revert both.
-            self.last_heads = doc.get_heads();
-            false
-        }
+        self.commit_owned_pending(
+            doc,
+            self.last_heads.clone(),
+            owned_restore::OwnedActionAttribution {
+                author,
+                instance_id: None,
+                focused_node_idx,
+                widget_metadata: metadata,
+                message,
+            },
+        )
+        .changed
     }
 
     /// Record an action already committed into `doc` out-of-band, bracketed
@@ -788,6 +775,8 @@ impl UndoLog {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
+    /// Compatibility cursor surface; modern collaboration uses `PresenceCtx`.
+    pub collab: CollaborationState,
     /// Process-local document lifetime, distinct from a persistent record name
     /// or committed frontier. Captured readers must not survive replacement.
     document_identity: uuid::Uuid,
@@ -818,6 +807,7 @@ impl State {
             doc,
             root,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -1116,7 +1106,7 @@ impl State {
 
     /// Wrap an already-loaded document.
     ///
-    /// The entry point for persistence (`ui::persist`): the store hands back
+    /// The entry point for persistence (`tilo_ui::persist`): the store hands back
     /// the previous session's `AutoCommit` — history, actor identity and all
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
@@ -1127,6 +1117,7 @@ impl State {
             doc,
             root: automerge::ROOT,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -1147,6 +1138,7 @@ impl State {
             doc,
             root,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         })
     }
@@ -1640,7 +1632,7 @@ mod tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str()
+                        .as_str()
                         .unwrap()
                         .to_string();
                     let text = doc.get(&block, "text").unwrap().unwrap().1;
@@ -1720,7 +1712,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("first")
         );
     }
@@ -1955,7 +1947,7 @@ mod tests {
         // Sanity: the doc itself is back at the post-second-mutation
         // state so renderers stay in sync.
         let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
-        assert_eq!(val.to_str(), Some("v2"));
+        assert_eq!(val.as_str(), Some("v2"));
     }
 
     use crate::permissions::UserId;
@@ -2058,7 +2050,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_string()
         };

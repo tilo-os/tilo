@@ -164,7 +164,8 @@ click handler is invisible to every one of them.
 **There is one story. Do not build a second one.**
 
 `tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
-default `/tmp/tilo.sock`. It is a `shell` binary and is **not on PATH**; run it with
+default `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (never `/tmp`: anyone could bind a
+shared name first). It is a `shell` binary and is **not on PATH**; run it with
 `cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
 if you use it often. It has two halves; reach for the first.
 
@@ -185,7 +186,11 @@ cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 ```
 
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
-is worth more than a synthetic click that proves only geometry. Add `fn test_id(&self) ->
+is worth more than a synthetic click that proves only geometry.
+
+The installer and the greeter run before any compositor exists; they answer the same semantic
+ops on their own console socket, so it is still `tilo-control --socket <path> actions list`
+(docs/agent-action-api.md). In a VM that socket is `os/dev/vm.sh console`. Add `fn test_id(&self) ->
 Option<&str>` to a widget to make it addressable by name; `Parent/Child[index]` paths work
 without opting in.
 
@@ -208,13 +213,44 @@ rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five sec
 **Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
 Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
+## Dev VMs
+
+To run your build in the real Tilo OS image (a headful session, real DRM and input, VM-wide
+services), use the one tool, `tilo-vm`. Start here:
+
+```bash
+cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+```
+
+You get a **slot** in a shared dev VM: your own user, session and layer stack, swapped with
+`tilo-vm swap <component>` and undone with `tilo-vm rollback`. Driving stays the one story above:
+`tilo-vm control …` runs the VM's `tilo-control` against your slot, and `tilo-vm shot` is its
+snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy into a VM with raw
+`ssh`/`scp`. Image-level changes (Containerfiles, units, `/etc`, packages) go through
+`tilo-vm vm upgrade --from local`: it rebuilds only what changed, moves the running VM onto the new
+image with bootc and reboots it; `tilo-vm vm rollback-image` goes back (`tilo-vm guide images`).
+Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go through
+`tilo-vm swap kernel`: it builds incrementally from the release build's inputs, installs the
+kernel VM-wide and reboots (`tilo-vm guide kernel`). Installer changes go through
+`tilo-vm scenario install`: a throwaway VM installs from your medium through the installer's
+actions and cold-boots the result (`tilo-vm guide scenarios`).
+
 ## Cargo.lock is committed — do not regenerate it
 
-A fresh resolve does not produce a working tree: `iroh` pulls a pre-release
-`ed25519-dalek 3.0.0-pre.1` stack that fails to compile against newer transitive versions, and
-the failure surfaces inside a dependency rather than where you touched. Tilo's own identities
-resolve to the stable `ed25519-dalek 2.2.0`, which is why `rand` is pinned to 0.8. Treat a
-lock change as a real change: read the diff and rebuild before pushing. `--locked` in CI.
+Move one crate at a time with `cargo update -p <crate> --precise <version>`. A fresh resolve
+moves hundreds of transitive versions at once, and a break surfaces inside a dependency rather
+than where you touched. Treat a lock change as a real change: read the diff and rebuild before
+pushing. `--locked` in CI.
+
+Tilo's own crates use one RustCrypto generation, the one iroh uses: `ed25519-dalek` and
+`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13,
+`chacha20poly1305` 0.11. Take OS randomness from `getrandom::SysRng`, wrapped as
+`UnwrapErr(SysRng)` where an infallible `CryptoRng` is required. The previous generation is in
+the lock only through third-party crates (openmls, frost-ed25519, authenticode, smithay, …); do
+not add a direct dependency on it. The two sanctioned exceptions exist because the newest
+releases of those dependencies still require it: frost's `rand_core` 0.6 is reached only
+through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's stack
+(`authenticode-sha2`, `x509-cert`/`cms` 0.2 on `der` 0.7).
 
 ## Traps that have cost real time
 
@@ -249,16 +285,15 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 Use a task branch and a pull request for routine integration. Group related,
 tested changes into small coherent increments; do not push work-in-progress or
 minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. Obtain successful applicable CI for the current
-head and post the author's `/merge <full-head-sha>` or `/queue <full-head-sha>`
-intent. Review is optional and informational for every path: review requests,
-approvals and change requests never block integration. CI policy, publication,
-signing and named security-boundary changes retain protected-path CI and
-provenance checks, but require no review. Follow `DEVELOPMENT.md` and the
-controller's scope decision. Explicitly authorized emergency CI/infra fixes may
-be integrated directly.
+another PR for each iteration. Open the PR ready (not draft) and move on: it lands
+automatically once the required checks (`CI / affected packages` and
+`CI / fast quality`) pass on its current head. It does not need to be up to date
+with main; resolve only real conflicts. Park a PR with draft, the `hold` label or
+a `WIP` title. If a landed PR breaks main, it is reverted automatically and the
+PR gets a comment on how to reland. Review is optional and informational and never
+blocks integration. See `DEVELOPMENT.md`.
 
-Keep check/lint results for every main commit. Affected qOS/Linux apps package
+Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS
 and desktop distribution builds remain explicit or scheduled; do not restore
 broad per-push full builds to obtain a development artifact. Use the existing workflow's

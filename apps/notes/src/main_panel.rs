@@ -102,6 +102,50 @@ fn notes_editor() -> BlockEditor {
         .with_compact_paragraph_spacing(true)
 }
 
+/// The tag-chip row under the title (HIG §7b): title and tags read as one
+/// group (title + explanation), so the chips start one `s2` under the title
+/// — which also keeps them clear of the focused title's 2 px ring — each
+/// chip is the measured label line plus `s2`, padded `s2` each side, and
+/// chips sit `s2` apart (related siblings). One description for the painter
+/// and the layout tests, so the band the row reserves (`TAG_ROW_HEIGHT` plus
+/// the title ↔ editor gap) is checked against what is drawn.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TagChipBand {
+    /// Base size of a chip label. A *base* size, not `typography.scale.sm`:
+    /// `Theme::with_text_scale` has already multiplied that token and
+    /// `TextRenderer` applies the accessibility scale again, so a scaled
+    /// token would grow large-text chips twice.
+    pub text: f32,
+    pub y0: f64,
+    pub height: f64,
+    pub pad_x: f64,
+    pub gap: f64,
+}
+
+#[cfg(test)]
+impl TagChipBand {
+    /// Base size of the chip label (see [`TagChipBand::text`]).
+    pub(crate) fn label_size() -> f32 {
+        12.0
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tag_chip_band(
+    spacing: &ui::tokens::spacing::Spacing,
+    title_bottom: f64,
+    label_line_h: f64,
+) -> TagChipBand {
+    TagChipBand {
+        text: TagChipBand::label_size(),
+        y0: title_bottom + f64::from(spacing.s2),
+        height: label_line_h + f64::from(spacing.s2),
+        pad_x: f64::from(spacing.s2),
+        gap: f64::from(spacing.s2),
+    }
+}
+
 use crate::markdown::block_kind_wire;
 
 #[allow(
@@ -2524,15 +2568,26 @@ mod tests {
 
         let title_top = PADDING_PX;
         let title_bottom = title_top + panel.title_height();
-        let tags_top = title_bottom + (TITLE_TO_EDITOR_GAP + 4.0) * panel.text_scale;
-        let tags_bottom = tags_top + 22.0 * panel.text_scale;
+        let theme = Theme::dark();
+        let label_line_h = ui::text_metrics::line_height_px(
+            TagChipBand::label_size(),
+            num::f32_of_f64(panel.text_scale),
+        );
+        let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
+        let tags_bottom = band.y0 + band.height;
         let first_block_top = panel.editor_top_inset();
 
-        assert!(title_bottom < tags_top, "title must not overlap tag chips");
+        assert!(title_bottom < band.y0, "title must not overlap tag chips");
         assert!(
             tags_bottom <= first_block_top,
-            "tag chips must clear the first block"
+            "tag chips ({tags_bottom}) must clear the first block ({first_block_top})"
         );
+        // Neighbouring chips keep the related-sibling step apart, and the
+        // chip row keeps the title + explanation step under the title — clear
+        // of a focused title's 2 px ring as well.
+        assert_eq!(band.gap, f64::from(theme.tokens.spacing.s2));
+        assert_eq!(band.y0 - title_bottom, f64::from(theme.tokens.spacing.s2));
+        assert!(band.y0 - title_bottom - 2.0 >= f64::from(theme.tokens.spacing.s1));
     }
 
     #[test]

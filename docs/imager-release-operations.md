@@ -5,7 +5,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/OVMF tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/4 MiB measured OVMF, swtpm, `virt-fw-vars`, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
 | `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, Docker/Buildx, ARM64 QEMU/UEFI, and UDisks2 service, running natively |
 | `imager-windows-x86_64` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `imager-windows-aarch64` | Windows ARM64 | Native ARM64 Rust MSVC and C++ build tools, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6.3 or newer, WinGet client |
@@ -269,7 +269,7 @@ newline-terminated `NAME=value` per line:
   token only after Forgejo OIDC validation, and revoke it after submission when
   supported.
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Give its bot write access only to `qos/site`. After all
+  complete raw output. Give its bot write access only to `tilo/site`. After all
   native and package-index gates pass, the workflow updates only
   `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
   the site's release contract and full production build, and pushes that
@@ -342,6 +342,11 @@ Before creating a release tag, verify all of the following:
 
 First publish and promote the multi-architecture Tilo image from the exact commit
 to be tagged, then record its manifest-list digest in `TILO_INSTALLER_OS_IMAGE`.
+Protected manual `main` publication uses the native large-disk x86-64 and ARM64
+fleet with QEMU's TCG fallback; version tags remain reserved for the dedicated
+KVM/DRI release runners. Both routes keep the same reproducibility, encrypted
+install/boot, signature, SBOM, SLSA provenance, and two-architecture promotion
+gates.
 Dispatch `Release / imager` manually on that commit with `full_native` enabled.
 That run does not sign or publish, but proves every native label and packaged UI.
 Only after it is green should a maintainer create a protected semantic tag such

@@ -45,12 +45,11 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::io::{self, Read};
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -69,6 +68,9 @@ mod backup;
 pub mod broker;
 #[path = "secure_store.rs"]
 mod secure_store;
+#[cfg(test)]
+#[path = "service_connection_tests.rs"]
+mod service_connection_tests;
 
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
@@ -93,14 +95,46 @@ pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
     matches!(
         error,
         NotAvailable::ConnectionFailed(io_error)
-            if io_error.raw_os_error() == Some(libc::ENOKEY)
+            if is_secret_service_unavailable_io(io_error)
     )
 }
 
 /// Equivalent classifier for callers that add context while preserving the
 /// original provider error as the source of an `io::Error`.
 pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::ENOKEY)
+    #[cfg(target_os = "linux")]
+    {
+        error.raw_os_error() == Some(libc::ENOKEY)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        error
+            .get_ref()
+            .is_some_and(|source| source.is::<SecretServiceUnavailable>())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+struct SecretServiceUnavailable;
+#[cfg(not(target_os = "linux"))]
+impl std::fmt::Display for SecretServiceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("identity Secret Service item is unavailable")
+    }
+}
+#[cfg(not(target_os = "linux"))]
+impl std::error::Error for SecretServiceUnavailable {}
+
+pub fn secret_service_unavailable_error() -> io::Error {
+    #[cfg(target_os = "linux")]
+    {
+        io::Error::from_raw_os_error(libc::ENOKEY)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        io::Error::other(SecretServiceUnavailable)
+    }
 }
 
 /// Legacy unsandboxed-development path. The Tilo launcher uses
@@ -157,38 +191,18 @@ pub struct IdentitySummary {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
-
-/// Symlink-safe, exclusive staging plus file+directory fsync. The shared
-/// atomic-file helper predates hostile-directory use and opens a predictable
-/// temp name without `O_NOFOLLOW`; identity state needs the stronger form.
+/// Durable owner-only replacement through atomic-file, with the staging file
+/// opened exclusively and without following links, so a planted symlink can
+/// never redirect identity bytes.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("identity");
-    let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
-    let result = (|| {
-        let mut file = OpenOptions::new()
+    atomic_file::write_with_temp_opener(path, bytes, |temp| {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+            .open(temp)
+    })
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -197,17 +211,27 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 ///
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
+fn compatible_identity_dir(config: &std::path::Path) -> PathBuf {
+    let current = config.join("tilo").join("identity");
+    let legacy = config.join("qos").join("identity");
+    if !current.exists() && legacy.is_dir() {
+        legacy
+    } else {
+        current
+    }
+}
+
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
         if xdg.is_absolute() {
-            return Ok(xdg.join("tilo").join("identity"));
+            return Ok(compatible_identity_dir(&xdg));
         }
     }
     if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
         let home = PathBuf::from(home);
         if home.is_absolute() {
-            return Ok(home.join(".config").join("tilo").join("identity"));
+            return Ok(compatible_identity_dir(&home.join(".config")));
         }
     }
     Err(io::Error::new(
@@ -914,7 +938,7 @@ enum SigningSource {
     /// the identity lock is poisoned, or FROST round-one generation fails.
     LocalThreshold(Mutex<ThresholdIdentity>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
-    ActionBroker(BrokerSigningIdentity),
+    ActionBroker(Arc<BrokerSigningIdentity>),
 }
 
 #[allow(
@@ -953,7 +977,7 @@ impl SigningIdentity {
     ///
     /// Returns [`NotAvailable`] when this is not a host-local threshold share,
     /// the identity lock is poisoned, or FROST round-one setup fails.
-    pub fn threshold_sign_round1<R: rand_core::CryptoRng + rand_core::RngCore>(
+    pub fn threshold_sign_round1<R: rand_core::CryptoRng + ?Sized>(
         &self,
         rng: &mut R,
     ) -> Result<SigningRound1, NotAvailable> {
@@ -1271,9 +1295,7 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
 }
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
-    // The launcher gives this process exclusive ownership of the inherited fd.
-    let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    let identity = BrokerSigningIdentity::from_connected_io(stream)?;
+    let identity = shared_service_connection(fd)?;
     Ok(SigningIdentity {
         display_name: identity.display_name().to_owned(),
         avatar_color: identity.avatar_color(),
@@ -1286,6 +1308,41 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
         single_device: identity.is_single_device(),
         source: SigningSource::ActionBroker(identity),
     })
+}
+
+type IdentityConnections =
+    Mutex<std::collections::HashMap<std::os::fd::RawFd, Weak<BrokerSigningIdentity>>>;
+
+fn shared_service_connection(
+    fd: std::os::fd::RawFd,
+) -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
+    static CONNECTIONS: OnceLock<IdentityConnections> = OnceLock::new();
+    let mut connections = CONNECTIONS
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| {
+            NotAvailable::ConnectionFailed(io::Error::other(
+                "identity connection registry poisoned",
+            ))
+        })?;
+    connections.retain(|_, connection| connection.strong_count() > 0);
+    if let Some(connection) = connections.get(&fd).and_then(Weak::upgrade) {
+        return Ok(connection);
+    }
+    // SAFETY: fcntl operates on the validated inherited descriptor only.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+            return Err(NotAvailable::ConnectionFailed(io::Error::last_os_error()));
+        }
+    }
+    // SAFETY: borrow only long enough to duplicate the launcher-owned handle.
+    let owned = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
+    let identity = Arc::new(BrokerSigningIdentity::from_connected_io(UnixStream::from(
+        owned,
+    ))?);
+    connections.insert(fd, Arc::downgrade(&identity));
+    Ok(identity)
 }
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
@@ -1567,6 +1624,7 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn secret_service_unavailability_has_a_typed_classification() {
@@ -1610,7 +1668,7 @@ mod tests {
                 &mut writer,
                 &wire::Request::CollaborationOp {
                     workspace_id: "workspace".into(),
-                    app_id: "dev.tilo.notes".into(),
+                    app_id: "so.tilo.notes".into(),
                     record_id: "record".into(),
                     unsigned_op: sent,
                 },
@@ -1626,19 +1684,18 @@ mod tests {
         assert_eq!(unsigned_op, document);
     }
 
-    fn clear_env() {
-        // SAFETY: tests in this module all touch TILO_USER_IDENTITY
-        // and are logically serial.
-        unsafe {
-            env::remove_var(IDENTITY_ENV_VAR);
-            env::remove_var(broker::BROKER_ENV_VAR);
-        };
+    fn clear_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
+        scoped
+            .remove(IDENTITY_ENV_VAR)
+            .remove(broker::BROKER_ENV_VAR);
+        scoped
     }
 
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_without_env_returns_service_fd_missing() {
-        clear_env();
+        let _env = clear_env();
         match load() {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1648,12 +1705,10 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_with_empty_env_returns_service_fd_missing() {
-        clear_env();
-        // SAFETY: see clear_env
-        unsafe { env::set_var(IDENTITY_ENV_VAR, "") };
+        let mut env = clear_env();
+        env.set(IDENTITY_ENV_VAR, "");
         let out = load();
-        // SAFETY: cleanup
-        unsafe { env::remove_var(IDENTITY_ENV_VAR) };
+        drop(env);
         match out {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1663,28 +1718,13 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn relative_xdg_config_home_never_relocates_identity_by_cwd() {
-        let old_xdg = env::var_os("XDG_CONFIG_HOME");
-        let old_home = env::var_os("HOME");
-        // SAFETY: serialised with every identity env test.
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", "relative/config");
-            env::set_var("HOME", "/home/ada");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", "relative/config")
+            .set("HOME", "/home/ada");
         assert_eq!(
             identity_dir_from_env().unwrap(),
             PathBuf::from("/home/ada/.config/tilo/identity")
         );
-        // SAFETY: restore the process environment under the same serial lock.
-        unsafe {
-            match old_xdg {
-                Some(value) => env::set_var("XDG_CONFIG_HOME", value),
-                None => env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_home {
-                Some(value) => env::set_var("HOME", value),
-                None => env::remove_var("HOME"),
-            }
-        }
     }
 
     #[test]
@@ -1897,7 +1937,7 @@ mod tests {
 
     #[test]
     fn real_threshold_share_restores_and_participates_in_broker_rounds() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();

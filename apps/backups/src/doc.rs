@@ -18,8 +18,9 @@
 //! cleanly even before [`BackupsDoc::seed`] has run.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
+use ui::doc::read_i64_coerced;
 
 use crate::model::RetentionPolicy;
 
@@ -38,17 +39,8 @@ impl BackupsDoc {
     }
 
     fn seed_int(doc: &mut AutoCommit, root: &ObjId, key: &str, val: i64) {
-        if Self::get_int(doc, root, key).is_none() {
+        if read_i64_coerced(doc, root, key).is_none() {
             let _ = doc.put(root, key, val);
-        }
-    }
-
-    // --- typed scalar readers -------------------------------------------
-
-    fn get_int(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => s.as_ref().to_i64(),
-            _ => None,
         }
     }
 
@@ -57,16 +49,16 @@ impl BackupsDoc {
     pub fn policy(doc: &AutoCommit, root: &ObjId) -> RetentionPolicy {
         let d = RetentionPolicy::default();
         RetentionPolicy {
-            hourly: Self::get_int(doc, root, "ret_hourly")
+            hourly: read_i64_coerced(doc, root, "ret_hourly")
                 .unwrap_or_else(|| i64::from(d.hourly))
                 .max(0) as u32,
-            daily: Self::get_int(doc, root, "ret_daily")
+            daily: read_i64_coerced(doc, root, "ret_daily")
                 .unwrap_or_else(|| i64::from(d.daily))
                 .max(0) as u32,
-            weekly: Self::get_int(doc, root, "ret_weekly")
+            weekly: read_i64_coerced(doc, root, "ret_weekly")
                 .unwrap_or_else(|| i64::from(d.weekly))
                 .max(0) as u32,
-            monthly: Self::get_int(doc, root, "ret_monthly")
+            monthly: read_i64_coerced(doc, root, "ret_monthly")
                 .unwrap_or_else(|| i64::from(d.monthly))
                 .max(0) as u32,
         }
@@ -83,7 +75,7 @@ impl BackupsDoc {
             PolicyField::Weekly => d.weekly,
             PolicyField::Monthly => d.monthly,
         });
-        Self::get_int(doc, root, field.key())
+        read_i64_coerced(doc, root, field.key())
             .unwrap_or(default)
             .clamp(0, 999) as u32
     }
@@ -144,7 +136,7 @@ impl PolicyField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ROOT;
+    use automerge::{ROOT, ReadDoc};
 
     #[test]
     fn seed_then_read_defaults() {

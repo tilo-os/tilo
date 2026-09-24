@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use vello::peniko::Color;
 
 // --- Book content ------------------------------------------------------------
 
@@ -621,154 +622,6 @@ pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     ]
 }
 
-#[allow(
-    clippy::many_single_char_names,
-    reason = "r, g, b, h, s, l are the standard RGB/HSL channel names; inventing longer ones \
-              would only hurt readability here"
-)]
-fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
-    let (r, g, b) = (
-        f32::from(c[0]) / 255.0,
-        f32::from(c[1]) / 255.0,
-        f32::from(c[2]) / 255.0,
-    );
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let l = f32::midpoint(max, min);
-    if (max - min).abs() < 1e-6 {
-        return (0.0, 0.0, l);
-    }
-    let d = max - min;
-    let s = if l > 0.5 {
-        d / (2.0 - max - min)
-    } else {
-        d / (max + min)
-    };
-    #[allow(
-        clippy::float_cmp,
-        reason = "max is exactly one of r/g/b via f32::max (a selection, not an independent \
-                  computation), so exact equality is the correct test"
-    )]
-    let h = if max == r {
-        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
-    } else if max == g {
-        ((b - r) / d + 2.0) * 60.0
-    } else {
-        ((r - g) / d + 4.0) * 60.0
-    };
-    (h, s, l)
-}
-
-/// Standard HSV → sRGB. `h` in degrees (any range; wrapped), `s`/`v` in 0..1.
-/// The colour picker edits in HSV so hue stays stable while dragging value on
-/// the achromatic axis; this is the conversion it commits back through.
-#[allow(
-    clippy::many_single_char_names,
-    reason = "h, s, v, i, f, p, q, t, r, g, b are the standard HSV/RGB channel and \
-              interpolation names; inventing longer ones would only hurt readability here"
-)]
-pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
-    let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
-    let s = s.clamp(0.0, 1.0);
-    let v = v.clamp(0.0, 1.0);
-    let i = h.floor() as i32;
-    let f = h - i as f32;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - f * s);
-    let t = v * (1.0 - (1.0 - f) * s);
-    let (r, g, b) = match i.rem_euclid(6) {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q),
-    };
-    [
-        (r * 255.0).round().clamp(0.0, 255.0) as u8,
-        (g * 255.0).round().clamp(0.0, 255.0) as u8,
-        (b * 255.0).round().clamp(0.0, 255.0) as u8,
-    ]
-}
-
-/// Inverse of [`hsv_to_rgb`]. Returns `(h_degrees, s, v)`; hue is 0 on the
-/// achromatic axis (callers editing a grey preserve their prior hue).
-#[allow(
-    clippy::many_single_char_names,
-    reason = "r, g, b, h, s, v are the standard RGB/HSV channel names; inventing longer ones \
-              would only hurt readability here"
-)]
-pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
-    let (r, g, b) = (
-        f32::from(c[0]) / 255.0,
-        f32::from(c[1]) / 255.0,
-        f32::from(c[2]) / 255.0,
-    );
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let d = max - min;
-    let v = max;
-    let s = if max <= f32::EPSILON { 0.0 } else { d / max };
-    #[allow(
-        clippy::float_cmp,
-        reason = "max is exactly one of r/g/b via f32::max (a selection, not an independent \
-                  computation), so exact equality is the correct test"
-    )]
-    let h = if d <= f32::EPSILON {
-        0.0
-    } else if max == r {
-        60.0 * (((g - b) / d).rem_euclid(6.0))
-    } else if max == g {
-        60.0 * (((b - r) / d) + 2.0)
-    } else {
-        60.0 * (((r - g) / d) + 4.0)
-    };
-    (((h % 360.0) + 360.0) % 360.0, s, v)
-}
-
-/// Parse a `#RRGGBB` / `RRGGBB` hex string into an sRGB triple.
-pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let v = u32::from_str_radix(s, 16).ok()?;
-    Some([
-        ((v >> 16) & 0xFF) as u8,
-        ((v >> 8) & 0xFF) as u8,
-        (v & 0xFF) as u8,
-    ])
-}
-
-/// `#RRGGBB` hex string for an sRGB triple.
-pub fn hex_string(c: [u8; 3]) -> String {
-    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
-}
-
-#[allow(
-    clippy::many_single_char_names,
-    reason = "h, s, l, c, x, m, r, g, b are the standard HSL-to-RGB algorithm variable names"
-)]
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
-    let h = ((h % 360.0) + 360.0) % 360.0;
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - (((h / 60.0) % 2.0) - 1.0).abs());
-    let m = l - c / 2.0;
-    let (r, g, b) = match (h / 60.0) as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    [
-        ((r + m) * 255.0).round() as u8,
-        ((g + m) * 255.0).round() as u8,
-        ((b + m) * 255.0).round() as u8,
-    ]
-}
-
 /// The derived palette parts returned by [`ColorScheme::palette_parts`]:
 /// `(page, page_edge, ink, ink_dim, rule, code_bg)`.
 pub type PaletteParts = ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]);
@@ -821,9 +674,10 @@ impl ColorScheme {
         } else {
             [0x22, 0x20, 0x1E]
         };
-        let (h, _s, _l) = rgb_to_hsl(bg);
+        let (h, _s, _l) = ui::color::rgb_to_hsl(Color::from_rgb8(bg[0], bg[1], bg[2]));
         let acc_l = if dark { 0.64 } else { 0.48 };
-        let accent = hsl_to_rgb(h + 150.0, 0.62, acc_l);
+        let accent = ui::color::hsl_to_rgb(h + 150.0, 0.62, acc_l);
+        let accent = ui::color::to_rgb8(accent);
         Self {
             id: id.to_string(),
             name: name.to_string(),
@@ -1213,45 +1067,6 @@ mod tests {
         // Derived tones are genuine blends, never equal to an endpoint.
         assert_ne!(edge, page);
         assert_ne!(dim, ink);
-    }
-
-    #[test]
-    fn hsv_round_trips_through_rgb() {
-        for c in [
-            [0xFA, 0xCC, 0x15],
-            [0x34, 0xD3, 0x99],
-            [0x3B, 0x82, 0xF6],
-            [0x10, 0x10, 0x12],
-        ] {
-            let (h, s, v) = rgb_to_hsv(c);
-            let back = hsv_to_rgb(h, s, v);
-            for i in 0..3 {
-                assert!(
-                    (i32::from(c[i]) - i32::from(back[i])).abs() <= 1,
-                    "channel {i}: {c:?} -> {back:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn hsv_value_axis_controls_lightness() {
-        // Full value is bright; zero value is black, hue preserved on the way.
-        assert_eq!(hsv_to_rgb(210.0, 0.6, 0.0), [0, 0, 0]);
-        let bright = hsv_to_rgb(210.0, 0.6, 1.0);
-        assert!(
-            bright.iter().any(|&c| c > 200),
-            "high value is a bright colour"
-        );
-    }
-
-    #[test]
-    fn hex_parses_and_formats_round_trip() {
-        assert_eq!(parse_hex("#3B82F6"), Some([0x3B, 0x82, 0xF6]));
-        assert_eq!(parse_hex("3b82f6"), Some([0x3B, 0x82, 0xF6]));
-        assert_eq!(parse_hex("nope"), None);
-        assert_eq!(parse_hex("#12345"), None);
-        assert_eq!(hex_string([0x3B, 0x82, 0xF6]), "#3B82F6");
     }
 
     #[test]

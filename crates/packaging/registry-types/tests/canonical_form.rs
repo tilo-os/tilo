@@ -14,7 +14,7 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, RegistryVersion, sign_change_request,
     sign_entry, verify_change_request, verify_entry_signature,
@@ -22,22 +22,32 @@ use registry_types::{
 
 fn sample_entry(pubkey_hex: String) -> RegistryEntry {
     RegistryEntry {
-        package_id: "dev.tilo.editor".into(),
+        package_id: "so.tilo.editor".into(),
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
+        tagline: "Edit together".into(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
+        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into(), "Text".into()],
-        icon_url: Some("https://apps.tilo.dev/editor/icon.png".into()),
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: pubkey_hex,
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
-            qpkg_root_hash_hex: "cd".repeat(32),
-            qpkg_size_bytes: 12_345,
+            tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+            tapp_root_hash_hex: "cd".repeat(32),
+            tapp_size_bytes: 12_345,
             released_at_unix: 1_800_000_000,
-            qpkg_blake3_hex: None,
-            target: None,
+            tapp_blake3_hex: "ef".repeat(32),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            },
         }],
         updated_at_unix: 1_800_000_100,
         signature_hex: String::new(),
@@ -46,7 +56,7 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
 
 #[test]
 fn entry_json_roundtrip_preserves_signature() {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     sign_entry(&mut entry, &key);
     assert!(verify_entry_signature(&entry));
@@ -62,7 +72,7 @@ fn entry_json_roundtrip_preserves_signature() {
 
 #[test]
 fn change_request_json_roundtrip_still_verifies() {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     let req = sign_change_request(EntryAction::Add, entry, &key);
     let allow = [key.verifying_key().to_bytes()];
@@ -76,7 +86,7 @@ fn change_request_json_roundtrip_still_verifies() {
 fn canonical_form_is_deterministic_across_two_processes_worth_of_encoders() {
     // Same value → identical signing bytes. This is what makes
     // a detached signature portable across implementations.
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     let m1 = entry.signing_message();
     let m2 = entry.signing_message();
@@ -93,7 +103,7 @@ fn signature_survives_field_reorder_in_json() {
     // JSON key order is defined by the encoder; the signing form
     // is postcard so a client parsing JSON and re-serialising it
     // with a different key order must still verify.
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     sign_entry(&mut entry, &key);
 

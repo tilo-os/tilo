@@ -350,7 +350,7 @@ mod tests {
     fn build_mime_produces_valid_rfc5322() {
         let attachment =
             crate::attachment_store::stage_bytes(b"%PDF-1.4 report body", "report.pdf").unwrap();
-        let from = Addr::new("Me", "me@tilo.example");
+        let from = Addr::new("Me", "me@example.test");
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Hello".into(),
@@ -362,7 +362,7 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("Subject: Hello"));
         assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
-        assert!(text.contains("me@tilo.example"));
+        assert!(text.contains("me@example.test"));
     }
 
     #[test]
@@ -372,7 +372,7 @@ mod tests {
         // reader drew its header once per copy. A stable id keyed on the
         // Message-ID must collapse them to one.
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-42@x.example>\r\n\
 \r\n\
@@ -394,7 +394,7 @@ Body of the message.\r\n";
     #[test]
     fn parse_eml_retains_rfc_reply_linkage_for_threading() {
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-reply@x.example>\r\n\
 In-Reply-To: <thread-root@x.example>\r\n\
@@ -414,7 +414,7 @@ Reply body.\r\n";
     #[test]
     fn parse_eml_uses_the_references_root_over_an_intermediate_reply() {
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-latest@x.example>\r\n\
 References: <thread-root@x.example> <thread-middle@x.example>\r\n\
@@ -459,7 +459,7 @@ Content-Type: text/html; charset=utf-8\r\n\
         // back, and confirm the headers survive.
         let from = Addr::new("Ada", "ada@analytical.example");
         let draft = Draft {
-            to: "you@tilo.example".into(),
+            to: "you@example.test".into(),
             subject: "Notes from the Analytical Engine".into(),
             body: "The Engine weaves algebraic patterns.".into(),
             ..Default::default()
@@ -478,7 +478,7 @@ Content-Type: text/html; charset=utf-8\r\n\
             "report.txt",
         )
         .unwrap();
-        let from = Addr::new("Me", "me@tilo.example");
+        let from = Addr::new("Me", "me@example.test");
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Files".into(),

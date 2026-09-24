@@ -198,7 +198,7 @@ fn instances() -> Vec<String> {
 pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
     // Bounded so slow/down instances can't stall the resolve: a short
     // per-request timeout + an overall deadline.
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_millis(2500))
         .user_agent(BROWSER_UA)
         .build()
@@ -381,7 +381,7 @@ mod tests {
             stream.url.contains("local=true"),
             "resolved a proxied URL without the required local=true flag"
         );
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(std::time::Duration::from_secs(20))
             .build()
         else {

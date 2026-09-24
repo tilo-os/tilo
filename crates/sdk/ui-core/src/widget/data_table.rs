@@ -10,21 +10,24 @@
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
+use crate::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
@@ -35,6 +38,48 @@ use crate::widget::{Element, TaffyTreeExt, Widget};
 /// wrapping `Scrollable` bar read identically.
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
+
+/// One line of `size` type as the renderer will lay it out. Theme type sizes
+/// already carry the accessibility text scale, and a single line of
+/// `TextStyle::new(size)` measures exactly `size × line_height` tall (see
+/// `TextRenderer::measure_style`), so a band sized from this at layout time
+/// agrees with the line the widget measures and centres at paint time.
+pub fn type_line_height(size: f32) -> f64 {
+    f64::from(crate::text_render::TextStyle::new(size).line_height_px())
+}
+
+/// A structural band that follows the type: `floor` is the widget's 1×
+/// default, which `content + padding` never undercuts at the default text
+/// scale, so 1× layouts are unchanged and only larger type grows the band.
+pub fn text_band(floor: f64, content: f64, padding: f64) -> f64 {
+    floor.max(content + padding)
+}
+
+/// The estimated height of an unmeasured row: the host's authored estimate
+/// (from `set_viewport`), raised only once the label line plus `authored_pad`
+/// would not fit, or — unauthored — the widget's `default` grown to the line
+/// plus `default_pad`. `line` is `None` before the first layout, when no
+/// theme has been seen and the estimate is exactly what the host set. This
+/// deliberately does not use `SparseVirtualViewport::set_minimum_height`:
+/// that floor also applies to heights set per row (`set_row_height`), which
+/// are the host's exact values.
+pub(crate) fn row_estimate(authored: Option<f64>, default: f64, row_type: Option<RowType>) -> f64 {
+    match (authored, row_type) {
+        (Some(authored), Some(t)) => text_band(authored, t.line, t.authored_pad),
+        (Some(authored), None) => authored,
+        (None, Some(t)) => text_band(default, t.line, t.default_pad),
+        (None, None) => default,
+    }
+}
+
+/// What a row widget learned about its label type at its last layout: the
+/// line box and the padding each kind of estimate keeps around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RowType {
+    pub(crate) line: f64,
+    pub(crate) default_pad: f64,
+    pub(crate) authored_pad: f64,
+}
 
 /// `Auto` is sized to content at build time (treated as `Flex(1.0)` until
 /// the layout pass can measure it).
@@ -115,18 +160,25 @@ impl<Row> ColumnDef<Row> {
     {
         let value: CellAccessibleValue<Row> = Arc::new(value);
         self.accessible_value = Some(Arc::clone(&value));
-        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, selected| {
-            let color = if selected {
-                theme.tokens.colors.on_accent(4.5)
-            } else {
-                theme.text_primary
-            };
+        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, _selected| {
+            // A selected row is a lift (HIG §9.3), so its ink stays the
+            // ordinary text colour on every theme.
+            let color = theme.text_primary;
+            let size = renderer_type_size(text, theme.tokens.typography.scale.sm);
+            let label = value(row);
+            let (_, text_h) = text.measure(&label, size, None);
+            // `rect` is the whole row's cell (the body clip layer trims what
+            // scrolls out), so the text is centred on the row and never
+            // slides as the row enters or leaves the viewport.
             text.draw_text(
                 scene,
-                &value(row),
-                theme.tokens.typography.scale.sm,
+                &label,
+                size,
                 color,
-                Affine::translate((rect.x0 + CELL_PADDING_X, rect.y0 + 5.0)),
+                Affine::translate((
+                    rect.x0 + f64::from(theme.tokens.spacing.s2),
+                    centered_text_top(rect.y0, rect.height(), text_h),
+                )),
                 None,
             );
         }));
@@ -350,7 +402,7 @@ pub struct DataTable<Row> {
     on_header_click: Option<Box<dyn FnMut(usize)>>,
     /// For internal double-click detection (used only when `on_activate` is
     /// set and the table is long-lived).
-    last_click_row: Option<(usize, std::time::Instant)>,
+    last_click_row: Option<(usize, crate::time::Instant)>,
     /// Active only in internal-virtualization mode (host called
     /// `set_viewport` and rows overflow it); dormant when wrapped in an
     /// outer [`crate::widget::Scrollable`], to avoid a double bar.
@@ -359,6 +411,17 @@ pub struct DataTable<Row> {
     momentum: ScrollMomentum,
     reduce_motion: bool,
     last_tick: Option<Instant>,
+    /// Header band, resolved from the theme's label line at layout time
+    /// (`HEADER_HEIGHT` at the default text scale, taller at 2×).
+    header_h: f64,
+    /// The estimated row height the host authored through `set_viewport`,
+    /// if any. It is honoured as written at the default text scale and only
+    /// raised once the label line itself would not fit; the unauthored
+    /// default follows the type with its 1× padding.
+    authored_row_height: Option<f64>,
+    /// The label type seen at the last layout; `None` until then, when the
+    /// estimate is exactly the authored or default height.
+    row_type: Option<RowType>,
 }
 
 impl<Row> DataTable<Row> {
@@ -412,6 +475,9 @@ impl<Row> DataTable<Row> {
             momentum: ScrollMomentum::new(),
             reduce_motion: false,
             last_tick: None,
+            header_h: HEADER_HEIGHT,
+            authored_row_height: None,
+            row_type: None,
         }
     }
 
@@ -532,7 +598,7 @@ impl<Row> DataTable<Row> {
         if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
             return None;
         }
-        let body_top = self.rect.y0 + HEADER_HEIGHT;
+        let body_top = self.rect.y0 + self.header_h;
         if pt.y < body_top {
             return None;
         }
@@ -902,7 +968,8 @@ impl<Row> DataTable<Row> {
     /// Enables the [`visible_row_range`] windowing so only rows intersecting
     /// the viewport (plus overscan) are rendered.
     pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
-        self.viewport.set_estimated_height(f64::from(row_height_px));
+        self.authored_row_height = Some(f64::from(row_height_px));
+        self.refresh_row_estimate();
         self.viewport.set_viewport(f64::from(height_px));
         self.viewport
             .set_overscan(self.viewport.estimated_height() * 2.0);
@@ -971,6 +1038,39 @@ impl<Row> DataTable<Row> {
         self.structure_dirty = true;
         self.layout_dirty = true;
         self.refresh_view_anchor();
+    }
+
+    /// Size the header band and the estimated row height from the theme's
+    /// label line. At the default text scale both resolve to the pinned
+    /// `HEADER_HEIGHT` / `ROW_HEIGHT`; at 2× they grow so the (now correctly
+    /// sized) text has the same padding it had at 1×. An estimate the host
+    /// authored through [`Self::set_viewport`] is kept as written and raised
+    /// only once the line plus the smallest step would not fit; heights set
+    /// per row (`set_row_height`, mounted cells) are never touched.
+    fn apply_type_metrics(&mut self, theme: &Theme) {
+        let tokens = &theme.tokens;
+        let line = type_line_height(tokens.typography.scale.sm);
+        self.header_h = text_band(HEADER_HEIGHT, line, f64::from(tokens.spacing.s3));
+        self.row_type = Some(RowType {
+            line,
+            default_pad: f64::from(tokens.spacing.s2),
+            authored_pad: f64::from(tokens.spacing.s1),
+        });
+        self.refresh_row_estimate();
+    }
+
+    /// The one place the viewport's estimated row height is set, from the
+    /// authored estimate and the label type seen so far (see
+    /// [`row_estimate`]). Called when either input changes.
+    fn refresh_row_estimate(&mut self) {
+        let estimate = row_estimate(self.authored_row_height, ROW_HEIGHT, self.row_type);
+        let before = self.viewport.estimated_height();
+        self.viewport.set_estimated_height(estimate);
+        if self.viewport.estimated_height().to_bits() != before.to_bits() {
+            self.viewport
+                .set_overscan(self.viewport.estimated_height() * 2.0);
+            self.visible_window_changed();
+        }
     }
 
     fn reconcile_mounted_cells(&mut self) {
@@ -1064,7 +1164,7 @@ impl<Row> DataTable<Row> {
         if self.viewport.viewport() > 0.0 {
             self.viewport.viewport()
         } else {
-            (self.rect.height() - HEADER_HEIGHT).max(0.0)
+            (self.rect.height() - self.header_h).max(0.0)
         }
     }
 
@@ -1096,8 +1196,8 @@ impl<Row> DataTable<Row> {
         }
         let x1 = self.rect.x1 - BAR_MARGIN;
         let x0 = x1 - BAR_THICKNESS;
-        let y0 = self.rect.y0 + HEADER_HEIGHT + BAR_MARGIN;
-        let y1 = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h() - BAR_MARGIN;
+        let y0 = self.rect.y0 + self.header_h + BAR_MARGIN;
+        let y1 = self.rect.y0 + self.header_h + self.body_viewport_h() - BAR_MARGIN;
         if y1 - y0 <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
             return None;
         }
@@ -1116,16 +1216,12 @@ impl<Row> DataTable<Row> {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surface_white_5,
+            crate::widget::scrollbar::track_color(theme),
             None,
             &RoundedRect::from_rect(track, radius),
         );
         if let Some(thumb) = self.vbar.thumb_rect(track, self.v_metrics()) {
-            let color = if self.vbar.is_active() {
-                theme.text_dim
-            } else {
-                theme.border_standard
-            };
+            let color = crate::widget::scrollbar::thumb_color(theme, self.vbar.is_active());
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1144,7 +1240,7 @@ impl<Row> DataTable<Row> {
             cr.x1 - w,
             self.rect.y0,
             cr.x1,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
         ))
     }
 
@@ -1190,7 +1286,7 @@ impl<Row> DataTable<Row> {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1199,43 +1295,63 @@ impl<Row> DataTable<Row> {
             None,
             &header_rect,
         );
+        // The header rule derives from the band it closes (HIG §9.5), on
+        // the band's last pixel row so it never lands on the body.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::surface::edge_on(tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
-                (header_rect.x0, header_rect.y1),
-                (header_rect.x1, header_rect.y1),
+                (header_rect.x0, header_rect.y1 - 0.5),
+                (header_rect.x1, header_rect.y1 - 0.5),
             ),
         );
 
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let pad_x = f64::from(tokens.spacing.s2);
         for (i, col) in self.columns.iter().enumerate() {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
-            let label_y = header_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
             let header = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let (_, header_h) = text_renderer.measure(&header, text_size, None);
+            let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
             text_renderer.draw_text(
                 scene,
                 &header,
                 text_size,
                 tokens.colors.text_primary,
-                translated(transform, cr.x0 + CELL_PADDING_X, label_y),
+                translated(transform, cr.x0 + pad_x, label_y),
                 None,
             );
             if let Some(s) = &self.sort
                 && s.key == col.key
             {
-                let arrow = if s.ascending { "\u{25B2}" } else { "\u{25BC}" };
-                text_renderer.draw_text(
-                    scene,
-                    arrow,
-                    text_size,
+                // Use geometry rather than a font triangle: the latter's ink
+                // sits below its line-box centre and drifts farther at large
+                // text sizes. This marker stays visually centred by construction.
+                let d = f64::from(tokens.typography.scale.sm) * 0.65;
+                let x1 = cr.x1 - pad_x;
+                let x0 = x1 - d;
+                let cy = header_rect.center().y;
+                let mut arrow = BezPath::new();
+                if s.ascending {
+                    arrow.move_to((x0, cy + d / 2.0));
+                    arrow.line_to((x1, cy + d / 2.0));
+                    arrow.line_to((f64::midpoint(x0, x1), cy - d / 2.0));
+                } else {
+                    arrow.move_to((x0, cy - d / 2.0));
+                    arrow.line_to((x1, cy - d / 2.0));
+                    arrow.line_to((f64::midpoint(x0, x1), cy + d / 2.0));
+                }
+                arrow.close_path();
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
                     tokens.colors.text_dim,
-                    translated(transform, cr.x1 - 16.0, label_y),
                     None,
+                    &arrow,
                 );
             }
         }
@@ -1252,7 +1368,7 @@ impl<Row> DataTable<Row> {
     ) {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
-        let body_bottom = self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h();
+        let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
@@ -1266,30 +1382,28 @@ impl<Row> DataTable<Row> {
             let Some(row_h) = self.viewport.item_height(ri) else {
                 continue;
             };
-            let y0 = self.rect.y0 + HEADER_HEIGHT + view_top;
+            let y0 = self.rect.y0 + self.header_h + view_top;
             let y1 = y0 + row_h;
-            if y1 <= self.rect.y0 + HEADER_HEIGHT {
+            if y1 <= self.rect.y0 + self.header_h {
                 continue;
             }
             if y0 >= body_bottom {
                 break;
             }
             let selected = self.selectable && self.is_row_selected(ri);
-            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(body_bottom));
-            // Selection fill takes precedence over the zebra stripe.
+            // Whole-row geometry: the caller's body clip layer trims the part
+            // that scrolls past the viewport, so cells see their real row.
+            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
+            // Selection is a lift (HIG §9.3), never an accent wash, and
+            // takes precedence over the zebra stripe; the stripe is the
+            // faintest derived tier on the ground, not a ramp slot.
             if selected {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &row_rect,
-                );
+                paint_selected_row(scene, transform, theme, row_rect, 1.0);
             } else if ri % 2 == 1 {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.neutral[5],
+                    tier_on(tokens.colors.surfaces.base, ZEBRA_ALPHA),
                     None,
                     &row_rect,
                 );
@@ -1298,7 +1412,7 @@ impl<Row> DataTable<Row> {
                 TableRowState::Ready(row) => {
                     for (i, col) in self.columns.iter().enumerate() {
                         let cell_rect = match self.col_rects.get(i) {
-                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(body_bottom)),
+                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1),
                             None => continue,
                         };
                         (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
@@ -1307,23 +1421,23 @@ impl<Row> DataTable<Row> {
                         }
                     }
                 }
-                TableRowState::Loading => {
+                TableRowState::Loading | TableRowState::Error(_) => {
+                    let (label, color) = match row_state {
+                        TableRowState::Error(message) => (message, tokens.colors.text_primary),
+                        _ => ("Loading…", tokens.colors.text_dim),
+                    };
+                    let size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+                    let (_, text_h) = text_renderer.measure(label, size, None);
                     text_renderer.draw_text(
                         scene,
-                        "Loading…",
-                        tokens.typography.scale.sm,
-                        tokens.colors.text_dim,
-                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
-                        None,
-                    );
-                }
-                TableRowState::Error(message) => {
-                    text_renderer.draw_text(
-                        scene,
-                        message,
-                        tokens.typography.scale.sm,
-                        tokens.colors.text_primary,
-                        translated(transform, self.rect.x0 + CELL_PADDING_X, y0 + 5.0),
+                        label,
+                        size,
+                        color,
+                        translated(
+                            transform,
+                            self.rect.x0 + f64::from(tokens.spacing.s2),
+                            centered_text_top(y0, row_h, text_h),
+                        ),
                         None,
                     );
                 }
@@ -1351,7 +1465,7 @@ impl<Row> DataTable<Row> {
             return;
         }
         if self.drag_scroll.is_tracking() {
-            let now = Instant::now();
+            let now = crate::time::now();
             if let Some(update) = self.drag_scroll.update(pt.y, now) {
                 self.momentum.stop();
                 self.set_scroll_offset(update.target_offset);
@@ -1409,7 +1523,7 @@ impl<Row> DataTable<Row> {
         }
         // 2. Header click → sort (host-owned via on_header_click, else internal toggle).
         let in_header = pt.y >= self.rect.y0
-            && pt.y < self.rect.y0 + HEADER_HEIGHT
+            && pt.y < self.rect.y0 + self.header_h
             && pt.x >= self.rect.x0
             && pt.x <= self.rect.x1;
         if in_header {
@@ -1432,11 +1546,11 @@ impl<Row> DataTable<Row> {
         // release so the same gesture can become a drag without selecting.
         let in_body = pt.x >= self.rect.x0
             && pt.x <= self.rect.x1
-            && pt.y >= self.rect.y0 + HEADER_HEIGHT
+            && pt.y >= self.rect.y0 + self.header_h
             && pt.y <= self.rect.y1;
         if self.internal_scroll() && in_body {
             self.drag_scroll
-                .begin(pt.y, self.viewport.offset(), Instant::now());
+                .begin(pt.y, self.viewport.offset(), crate::time::now());
             *focus_target = Some(node_id);
             *handled = true;
             return;
@@ -1463,7 +1577,7 @@ impl<Row> DataTable<Row> {
                 cb(ri, ctrl, shift);
             }
             // Internal double-click → activate (long-lived hosts).
-            let now = std::time::Instant::now();
+            let now = crate::time::now();
             let is_double = matches!(
                 self.last_click_row,
                 Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
@@ -1497,13 +1611,13 @@ impl<Row> DataTable<Row> {
         if self.vbar.release() {
             did = true;
         }
-        if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+        if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
             if drag.dragged {
                 if self.reduce_motion {
                     self.momentum.stop();
                 } else {
                     self.momentum.fling(drag.velocity);
-                    self.last_tick = Some(Instant::now());
+                    self.last_tick = Some(crate::time::now());
                 }
             } else {
                 self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
@@ -1533,7 +1647,7 @@ impl<Row> DataTable<Row> {
                     -pp.y
                 }
             };
-            self.last_tick = Some(Instant::now());
+            self.last_tick = Some(crate::time::now());
             let before = self.viewport.offset();
             self.set_scroll_offset(before + dy);
             *handled = self.viewport.offset().to_bits() != before.to_bits();
@@ -1679,8 +1793,21 @@ impl<Row> DataTable<Row> {
 
 const HEADER_HEIGHT: f64 = 28.0;
 const ROW_HEIGHT: f64 = 24.0;
-const CELL_PADDING_X: f64 = 8.0;
 const WHEEL_LINE_PX: f64 = 60.0;
+
+/// Theme type sizes already carry the accessibility text scale, and the
+/// renderer applies that same scale once more inside `draw_text`/`measure`.
+/// The size-only twin of [`TextRenderer::renderer_input_style`], defined in
+/// [`crate::text_metrics`]; re-exported here for the immediate-mode data
+/// widgets that learned it from this module.
+pub(crate) use crate::text_metrics::renderer_type_size;
+
+/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
+/// taller than the band starts at the band's top rather than bleeding into
+/// the row above, which the unclamped rule would let it do.
+pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
+    crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
+}
 
 /// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
 /// vello/taffy; table content stays far below `f32::MAX`.
@@ -1743,11 +1870,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if received_changes {
             self.notify_model_changes(&model_changes);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed = self
             .last_tick
             .replace(now)
-            .map_or(std::time::Duration::ZERO, |last| {
+            .map_or(crate::time::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
         let mut children_changed = false;
@@ -1785,6 +1912,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        self.apply_type_metrics(theme);
         self.reconcile_mounted_cells();
         let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
         for cell in &mut self.mounted_cells {
@@ -1803,7 +1931,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .viewport
                 .item_view_top(cell.row_index)
                 .unwrap_or_default();
-            style.inset.top = length(px(HEADER_HEIGHT + top));
+            style.inset.top = length(px(self.header_h + top));
             let _ = taffy.set_style(child, style);
             cell.node = Some(child);
             child_nodes.push(child);
@@ -1815,7 +1943,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .content_extent()
                 .max(self.viewport.estimated_height())
         };
-        let height = HEADER_HEIGHT + body_height;
+        let height = self.header_h + body_height;
         let node = taffy.parent_node(
             Style {
                 size: Size {
@@ -1856,7 +1984,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .get(cell.column_index)
                 .map_or(self.rect.x0, |column| column.x0);
             let desired_y = self.rect.y0
-                + HEADER_HEIGHT
+                + self.header_h
                 + self
                     .viewport
                     .item_view_top(cell.row_index)
@@ -1875,12 +2003,13 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .and_modify(|height| *height = height.max(cell.widget.get_rect().height()))
                 .or_insert_with(|| cell.widget.get_rect().height());
         }
+        // A mounted cell never makes its row shorter than the estimate the
+        // plain text rows use, so retained and text rows stay one height.
+        let row_floor = self.viewport.estimated_height();
         let mut measured = false;
         for (row_index, height) in row_heights {
             if let Some(key) = self.row_identity_at(row_index) {
-                measured |= self
-                    .viewport
-                    .measure(row_index, key, height.max(ROW_HEIGHT));
+                measured |= self.viewport.measure(row_index, key, height.max(row_floor));
             }
         }
         if columns_changed {
@@ -1915,13 +2044,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
         );
 
         self.draw_header(scene, transform, text_renderer, theme);
-        self.draw_rows(scene, transform, text_renderer, theme);
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_h,
             self.rect.x1,
-            self.rect.y0 + HEADER_HEIGHT + self.body_viewport_h(),
+            self.rect.y0 + self.header_h + self.body_viewport_h(),
         );
+        // Rows and mounted cells paint whole-row geometry inside one body
+        // clip, so a row leaving the viewport is trimmed rather than re-laid.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1929,6 +2059,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             transform,
             &body,
         );
+        self.draw_rows(scene, transform, text_renderer, theme);
         for cell in &mut self.mounted_cells {
             cell.widget
                 .draw(scene, transform, text_renderer, theme, presence);
@@ -2154,7 +2285,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     .item_view_top(ri)
                     .zip(self.viewport.item_height(ri))
                     .map(|(top, height)| {
-                        let y0 = self.rect.y0 + HEADER_HEIGHT + top;
+                        let y0 = self.rect.y0 + self.header_h + top;
                         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height)
                     });
                 let cells: Vec<AccessNode> = self
@@ -2372,13 +2503,193 @@ fn compute_column_rects<Row>(
     rects
 }
 
+/// Alpha of a zebra stripe: the faintest derived tier on the table's
+/// ground (HIG §9.5), shared by [`DataTable`] and [`crate::widget::Table`].
+pub(crate) const ZEBRA_ALPHA: u8 = 13;
+
+/// A ground is *near black* below this relative luminance. sRGB is compressed
+/// there, so a white veneer moves the luminance far less than the same alpha
+/// does on the dark preset's `#16171B` (0.0086): white at 26 lifts that ground
+/// by 0.023 but pure black by only 0.010. The high-contrast and OLED presets
+/// sit on pure black, which is why `Theme::high_contrast` re-solves its
+/// veneers to roughly three times the dark tiers.
+pub(crate) const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
+
+/// Gain applied to a derived tier's alpha on a near-black ground, and the
+/// alpha it never drops below — the high-contrast preset's own faintest
+/// re-solved veneer (`theme.rs`, `set_overlays`: 51 / 77 / 110 / 153 / 217
+/// against the dark 13 / 26 / 40 / 51 / 72). An alpha multiplier, not a
+/// pixel value.
+pub(crate) const NEAR_BLACK_TIER_GAIN: u32 = 3;
+pub(crate) const NEAR_BLACK_TIER_FLOOR: u8 = 51;
+
+/// Alpha of the selected-row fill on a near-black ground: the high-contrast
+/// preset's middle re-solved tier, a 4.1:1 step off black that still carries
+/// white text at 5.1:1. On such a ground `Colors::lift(1.0)` collapses to its
+/// hairline fallback (HIG §9.3 names this weakness), so the row takes a floor
+/// of its own; idle rows stay transparent, so the state order is kept.
+pub(crate) const NEAR_BLACK_SELECTED_ALPHA: u8 = 110;
+
+/// A derived fill tier (band, stripe, track, thumb) on `surface`:
+/// [`Colors::hairline_on`] at `alpha`, with the near-black gain where the
+/// ground would otherwise swallow it. On the dark and light presets this is
+/// exactly `hairline_on(surface, alpha)`.
+#[must_use]
+pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
+    use crate::a11y::relative_luminance;
+    let alpha = if relative_luminance(surface) < NEAR_BLACK_GROUND_LUMINANCE {
+        let boosted =
+            u8::try_from((u32::from(alpha) * NEAR_BLACK_TIER_GAIN).min(255)).unwrap_or(u8::MAX);
+        boosted.max(NEAR_BLACK_TIER_FLOOR)
+    } else {
+        alpha
+    };
+    Colors::hairline_on(surface, alpha)
+}
+
+/// The fill of a selected row (HIG §9.3): the shared active tier, or the
+/// near-black floor where that tier does not register against the ground.
+#[must_use]
+pub(crate) fn selection_fill(theme: &Theme) -> Color {
+    use crate::a11y::relative_luminance;
+    let base = theme.tokens.colors.surfaces.base;
+    if relative_luminance(base) < NEAR_BLACK_GROUND_LUMINANCE {
+        return Colors::hairline_on(base, NEAR_BLACK_SELECTED_ALPHA);
+    }
+    crate::chrome::selection_tier(theme, crate::chrome::SelectionState::active(true)).fill
+}
+
+/// Paint one selected row as the shared selection lift (HIG §9.3), never an
+/// accent wash. Rows stack full-width, so — unlike an isolated pill — the
+/// tier's hairline is not stroked: adjacent selected rows would otherwise
+/// meet in a doubled rule (HIG §7 "nothing touches") and the run would read
+/// as a ruled table rather than one lift. `opacity` fades a row
+/// mid-transition; a settled row passes `1.0`.
+pub(crate) fn paint_selected_row(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    row: Rect,
+    opacity: f32,
+) {
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        selection_fill(theme).with_alpha_factor(opacity),
+        None,
+        &row,
+    );
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+    use crate::a11y::contrast_ratio;
+    use crate::surface::edge_delta;
+    use crate::tokens::colors::{HAIRLINE_MIN_DELTA, NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+
+    fn presets() -> [Theme; 3] {
+        [Theme::dark(), Theme::light(), Theme::high_contrast()]
+    }
+
+    /// Composite `over` (with its alpha) onto an opaque `ground`.
+    fn blend(over: Color, ground: Color) -> Color {
+        let a = over.components[3];
+        let o = over.components;
+        let g = ground.components;
+        Color::new([
+            o[0] * a + g[0] * (1.0 - a),
+            o[1] * a + g[1] * (1.0 - a),
+            o[2] * a + g[2] * (1.0 - a),
+            1.0,
+        ])
+    }
+
+    #[test]
+    fn selected_row_fill_registers_on_every_preset() {
+        for theme in presets() {
+            let base = theme.tokens.colors.surfaces.base;
+            let fill = selection_fill(&theme);
+            let moved = edge_delta(fill, base);
+            assert!(
+                moved >= HAIRLINE_MIN_DELTA,
+                "{}: selected row moved the ground only {moved:.4}",
+                theme.name
+            );
+        }
+    }
+
+    /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
+    /// the shared lift is weaker than a floor, so the row takes one that reads
+    /// as a control and still carries the theme's text.
+    #[test]
+    fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
+        let theme = Theme::high_contrast();
+        let base = theme.tokens.colors.surfaces.base;
+        let shared =
+            crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true)).fill;
+        assert!(
+            edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
+            "fixture: the shared lift is expected to collapse on this ground"
+        );
+        let fill = blend(selection_fill(&theme), base);
+        let step = contrast_ratio(fill, base);
+        assert!(
+            step >= NON_TEXT_MIN_CONTRAST,
+            "selected row step {step:.2}:1"
+        );
+        let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
+        assert!(
+            ink >= ON_FILL_MIN_CONTRAST,
+            "text on the selected row {ink:.2}:1"
+        );
+    }
+
+    /// Pins the dark and light screenshots: on the two grounds this module's
+    /// callers paint tiers on, the gain never engages. (The dark preset's
+    /// overlay tier is itself near black and does take it, by design.)
+    #[test]
+    fn tier_on_is_plain_hairline_on_ordinary_grounds() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.base, s.raised] {
+                for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
+                    assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
+                }
+            }
+        }
+    }
+
+    /// The stripe stays fainter than the band on every preset, and on black
+    /// both still register (the high-contrast preset's own floor).
+    #[test]
+    fn tiers_keep_their_order_and_register_on_black() {
+        for theme in presets() {
+            let raised = theme.tokens.colors.surfaces.raised;
+            let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
+            let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
+            assert!(
+                zebra < band,
+                "{}: zebra {zebra:.4} vs band {band:.4}",
+                theme.name
+            );
+        }
+        let black = Theme::high_contrast().tokens.colors.surfaces.raised;
+        assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
+        assert_eq!(
+            tier_on(black, ZEBRA_ALPHA),
+            Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::Button;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
 
     #[derive(Clone)]
     struct R {
@@ -3569,8 +3880,8 @@ mod tests {
         assert_eq!(immediate, 60.0);
         assert!(table.needs_animation_frame());
         table.last_tick = Some(
-            Instant::now()
-                .checked_sub(std::time::Duration::from_millis(16))
+            crate::time::now()
+                .checked_sub(crate::time::Duration::from_millis(16))
                 .expect("a 16 ms earlier instant is representable"),
         );
         assert!(Widget::update(
@@ -3972,7 +4283,7 @@ mod tests {
         assert_eq!(table.scroll_y(), 60.0_f32);
         assert!(!table.momentum.is_active());
 
-        let now = Instant::now();
+        let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
         let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
         table

@@ -39,6 +39,9 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
 # Portal-only (feature-gated; never compiled for the default hermetic build).
 
 [lints]

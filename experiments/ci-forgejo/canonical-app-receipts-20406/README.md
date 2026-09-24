@@ -1,6 +1,6 @@
 # Canonical verification of retained artifact 34748
 
-This is actual native ARM64 execution of the retained Rust `tilo-pkg` and
+This is actual native ARM64 execution of the retained Rust `tilo-app-package` and
 `tilo-runtime-bundle` tools against the historical x86_64 collection from run
 20406, source `525aa7824c7a8476aa5ea006499ddd01a8b3c2ea`. Verification does not
 execute application binaries or establish native application compatibility.
@@ -30,8 +30,8 @@ The real audit used WSL Fedora Linux 42 system Python (standard library only),
 and `tools/apps/canonical_app_verifier.py`. Both actual canonical commands were invoked:
 
 ```sh
-tilo-pkg verify --trusted-key EXPLICIT_APP_KEY package.qpkg
-tilo-pkg inspect package.qpkg
+tilo-app-package verify --trusted-key EXPLICIT_APP_KEY package.tapp
+tilo-app-package inspect package.tapp
 tilo-runtime-bundle verify runtime-directory --require-publisher EXPLICIT_RUNTIME_KEY --require-signature --require-arch x86_64
 ```
 

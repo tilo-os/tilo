@@ -18,8 +18,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use pkg::validate::validate_manifest;
-use pkg::{Kind, Manifest};
+use tilo_app_package::validate::validate_manifest;
+use tilo_app_package::{Kind, Manifest};
 
 fn manifest() -> Manifest {
     let src = include_str!("../tilo-app.toml");
@@ -29,7 +29,7 @@ fn manifest() -> Manifest {
 #[test]
 fn manifest_is_a_valid_tilo_app() {
     let m = manifest();
-    assert_eq!(m.package.id, "dev.tilo.contacts");
+    assert_eq!(m.package.id, "so.tilo.contacts");
     assert_eq!(m.package.kind, Kind::App, "contacts ships as an app");
     // Passes the real schema validation (identity, entrypoint, runtime form…).
     validate_manifest(&m).expect("the contacts manifest is schema-valid");
@@ -66,7 +66,7 @@ fn manifest_declares_the_vcard_file_types() {
 fn manifest_declares_the_file_chooser_portal() {
     // Import/Export use the host XDG file-chooser portal; the launcher only
     // plumbs the D-Bus session bus in when the manifest declares the intent.
-    use pkg::manifest::PortalPolicy;
+    use tilo_app_package::manifest::PortalPolicy;
     let m = manifest();
     assert_eq!(
         m.sandbox.portals.get("file-chooser"),

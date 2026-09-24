@@ -7,12 +7,10 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::OnceLock;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -29,6 +27,7 @@ use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{
@@ -46,11 +45,6 @@ pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 pub enum LinkTarget {
     Page(PageId),
     External(String),
-}
-
-fn syntax_set() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
 /// Case-insensitive byte ranges without assuming that Unicode case folding
@@ -100,55 +94,20 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
     ranges
 }
 
-fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
-    let rendered = scopes
-        .as_slice()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    for scope in rendered.split_whitespace().rev() {
-        let role = if scope.starts_with("comment") {
-            TransientColorRole::Comment
-        } else if scope.starts_with("string") || scope.starts_with("constant.character") {
-            TransientColorRole::String
-        } else if scope.starts_with("constant.numeric") || scope.starts_with("constant.language") {
-            TransientColorRole::Number
-        } else if scope.starts_with("entity.name.function")
-            || scope.starts_with("support.function")
-            || scope.starts_with("meta.function-call")
-            || scope.starts_with("variable.function")
-        {
-            TransientColorRole::Function
-        } else if scope.starts_with("entity.name.type")
-            || scope.starts_with("entity.name.class")
-            || scope.starts_with("entity.name.struct")
-            || scope.starts_with("entity.name.enum")
-            || scope.starts_with("entity.name.trait")
-            || scope.starts_with("support.type")
-            || scope.starts_with("support.class")
-        {
-            TransientColorRole::Type
-        } else if scope.starts_with("keyword")
-            || scope.starts_with("storage.type")
-            || scope.starts_with("storage.modifier")
-        {
-            TransientColorRole::Keyword
-        } else if scope.starts_with("entity.name.macro")
-            || scope.starts_with("support.macro")
-            || scope.starts_with("meta.attribute")
-            || scope.starts_with("meta.annotation")
-        {
-            TransientColorRole::Macro
-        } else if scope.starts_with("keyword.operator") || scope.starts_with("punctuation.accessor")
-        {
-            TransientColorRole::Operator
-        } else {
-            continue;
-        };
-        return Some(role);
-    }
-    None
+/// The block editor's colour role for a grammar token; body text stays in the
+/// block's own colour.
+fn syntax_role(kind: TokenKind) -> Option<TransientColorRole> {
+    Some(match kind {
+        TokenKind::Comment => TransientColorRole::Comment,
+        TokenKind::StringLit | TokenKind::CharLit => TransientColorRole::String,
+        TokenKind::Number | TokenKind::Constant => TransientColorRole::Number,
+        TokenKind::Function => TransientColorRole::Function,
+        TokenKind::Type => TransientColorRole::Type,
+        TokenKind::Keyword => TransientColorRole::Keyword,
+        TokenKind::Attribute | TokenKind::Preprocessor => TransientColorRole::Macro,
+        TokenKind::Operator => TransientColorRole::Operator,
+        _ => return None,
+    })
 }
 
 #[expect(
@@ -156,55 +115,36 @@ fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
     reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
 )]
 fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
-    let set = syntax_set();
     let mut index = 0usize;
     while index < blocks.len() {
         let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            blocks[index].line.set_transient_colors(Vec::new());
+            let Some(block) = blocks.get_mut(index) else {
+                break;
+            };
+            block.line.set_transient_colors(Vec::new());
             index = index.saturating_add(1);
             continue;
         };
-        let syntax = set
-            .find_syntax_by_token(language)
-            .or_else(|| set.find_syntax_by_extension(language))
-            .unwrap_or_else(|| set.find_syntax_plain_text());
-        let mut parse = ParseState::new(syntax);
-        let mut scopes = ScopeStack::new();
+        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
         while index < blocks.len()
             && languages.get(index).and_then(Option::as_deref) == Some(language)
             && blocks[start].same_code_group(&blocks[index])
         {
-            let source = blocks[index].text();
-            let with_newline = format!("{source}\n");
-            let mut colors = Vec::new();
-            let mut last = 0usize;
-            let mut role = syntax_role(&scopes);
-            if let Ok(ops) = parse.parse_line(&with_newline, set) {
-                for (offset, op) in ops {
-                    if offset > last {
-                        if let Some(role) = role {
-                            colors.push(TransientColorSpan {
-                                range: last..offset.min(source.len()),
-                                role,
-                            });
-                        }
-                        last = offset;
-                    }
-                    let _ = scopes.apply(&op);
-                    role = syntax_role(&scopes);
-                }
-                if last < source.len()
-                    && let Some(role) = role
-                {
-                    colors.push(TransientColorSpan {
-                        range: last..source.len(),
+            let Some(block) = blocks.get_mut(index) else {
+                break;
+            };
+            let colors = state
+                .highlight_line(block.text())
+                .into_iter()
+                .filter_map(|span| {
+                    syntax_role(span.kind).map(|role| TransientColorSpan {
+                        range: span.range,
                         role,
-                    });
-                }
-            }
-            colors.retain(|span| span.range.start < span.range.end);
-            blocks[index].line.set_transient_colors(colors);
+                    })
+                })
+                .collect();
+            block.line.set_transient_colors(colors);
             index = index.saturating_add(1);
         }
     }
@@ -245,18 +185,26 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
+    /// Unscaled type size of a block's line — steps of the shared
+    /// [`TypeScale`](crate::tokens::TypeScale), so a page's body, headings
+    /// and code use the same ladder as every other surface: body `lg`
+    /// (16), H1 `x3l` (32, twice the body), H2 `x2l` (24), H3+ `xl` (20),
+    /// code `base` (14). The accessibility text scale is applied where
+    /// this is consumed (`RichTextLine`, the prefix painters). Before the
+    /// 2026-09-17 review the headings were 28 / 22 / 18 — off every step.
     pub fn font_size(&self) -> f32 {
+        let scale = crate::tokens::TypeScale::default();
         match self {
             BlockKind::Paragraph
             | BlockKind::Quote
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Divider => 16.0,
-            BlockKind::Heading(1) => 28.0,
-            BlockKind::Heading(2) => 22.0,
-            BlockKind::Heading(_) => 18.0,
-            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => 14.0,
+            | BlockKind::Divider => scale.lg,
+            BlockKind::Heading(1) => scale.x3l,
+            BlockKind::Heading(2) => scale.x2l,
+            BlockKind::Heading(_) => scale.xl,
+            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => scale.base,
         }
     }
 
@@ -569,6 +517,8 @@ pub struct BlockEditor {
     /// Current accessibility text scale, retained for prefix and gutter
     /// geometry that is resolved after the taffy pass.
     text_scale: f64,
+    /// Drag-handle geometry captured from the active theme.
+    handle: HandleMetrics,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -624,7 +574,7 @@ pub struct BlockEditor {
     /// exact source, including newlines, without touching document state.
     code_copy_hits: Vec<(Rect, usize, usize)>,
     copied_code_start: Option<usize>,
-    copied_code_feedback: Option<(String, std::time::Instant)>,
+    copied_code_feedback: Option<(String, crate::time::Instant)>,
     /// A freshly typed fence edits its language until Enter. The language is
     /// canonical block metadata; this only remembers the local input mode.
     opening_code_fence: Option<(String, Option<String>)>,
@@ -716,6 +666,7 @@ impl BlockEditor {
             caret_paint_suppressed: false,
             rect: Rect::ZERO,
             text_scale: 1.0,
+            handle: HandleMetrics::default(),
             wrap_lines: false,
             compact_paragraph_spacing: false,
             child_nodes: Vec::new(),
@@ -1275,7 +1226,7 @@ impl BlockEditor {
                     .map_err(|e| invalid(&e.to_string()))?;
                 match values.as_slice() {
                     [(Value::Scalar(value), _)] => value
-                        .to_str()
+                        .as_str()
                         .map(str::to_string)
                         .ok_or_else(|| invalid("canonical block field must be a string")),
                     _ => Err(invalid("canonical block field is missing or conflicted")),
@@ -1357,7 +1308,7 @@ impl BlockEditor {
                         .ok()
                         .flatten()
                         .is_some_and(|(value, _)| {
-                            value.to_str() == Some(kind_to_str(&block.kind).as_str())
+                            value.as_str() == Some(kind_to_str(&block.kind).as_str())
                         })
                     && state
                         .get(object, "text")
@@ -1865,7 +1816,7 @@ impl BlockEditor {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::RoundedRect::from_rect(controls, 8.0 * self.text_scale),
         );
@@ -2448,9 +2399,14 @@ impl BlockEditor {
         })
     }
 
-    /// Small reserved target just left of an editable block. The main Notes
-    /// panel deliberately leaves a 32px gutter, so this never narrows text or
-    /// steals list/checkbox clicks.
+    /// Reserved target just left of an editable block, inside the gutter the
+    /// host leaves there (Notes: 32 px), so it never narrows text or steals
+    /// list/checkbox clicks. Geometry from [`HandleMetrics`]: a `width`
+    /// column ending `gap` before the block's leading edge, `height` tall at
+    /// 1× and growing with the text scale like the line beside it. The rect
+    /// is also the hit target, so it grows to the pointer minimum where the
+    /// block itself is that tall — never taller than the block, or two
+    /// single-line paragraphs would share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         let block = self.blocks.get(index)?;
         let line = self.block_paint_rect(index)?;
@@ -2461,11 +2417,21 @@ impl BlockEditor {
             block.kind.font_size(),
             self.text_scale,
         );
+        let HandleMetrics {
+            width,
+            height,
+            gap,
+            min_target,
+        } = self.handle;
+        let half_height = ((height * self.text_scale) / 2.0)
+            .max(min_target.min(line.height()) / 2.0)
+            .min(line.height() / 2.0);
+        let right = leading_edge - gap;
         Some(Rect::new(
-            leading_edge - 22.0,
-            center_y - 10.0,
-            leading_edge - 6.0,
-            center_y + 10.0,
+            right - width,
+            center_y - half_height,
+            right,
+            center_y + half_height,
         ))
     }
 
@@ -2770,6 +2736,10 @@ impl BlockEditor {
             }
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
+            let scale = self.text_scale;
+            let dot_r = 1.25 * scale;
+            let col_pitch = (3.0 * scale).min(handle.width() / 2.0 - dot_r);
+            let row_pitch = 5.0 * scale;
             if active || handle.contains(self.last_mouse_pos) {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -2779,13 +2749,13 @@ impl BlockEditor {
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
             }
-            for col in [-3.0, 3.0] {
-                for row in [-5.0, 0.0, 5.0] {
+            for col in [-col_pitch, col_pitch] {
+                for row in [-row_pitch, 0.0, row_pitch] {
                     let dot = Rect::new(
-                        center.x + col - 1.25,
-                        center.y + row - 1.25,
-                        center.x + col + 1.25,
-                        center.y + row + 1.25,
+                        center.x + col - dot_r,
+                        center.y + row - dot_r,
+                        center.x + col + dot_r,
+                        center.y + row + dot_r,
                     );
                     scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
                 }
@@ -3164,7 +3134,7 @@ impl BlockEditor {
             sources.push(source);
             let _ = store.get(source);
         }
-        store.block_until_idle(std::time::Duration::from_secs(2));
+        store.block_until_idle(crate::time::Duration::from_secs(2));
         !sources.is_empty()
             && sources
                 .into_iter()
@@ -3232,7 +3202,7 @@ impl BlockEditor {
         }
         clipboard_copy(&run.iter().map(Block::text).collect::<Vec<_>>().join("\n"));
         self.copied_code_start = Some(start);
-        self.copied_code_feedback = Some((first.id.clone(), std::time::Instant::now()));
+        self.copied_code_feedback = Some((first.id.clone(), crate::time::now()));
         self.dirty = true;
         true
     }
@@ -3720,6 +3690,44 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 
+/// Geometry of the block drag handle, resolved from `theme.tokens` in
+/// `build_layout` (the `Metrics::BASE` / `Spacing::BASE` values until then).
+///
+/// The handle lives in the gutter the host leaves left of the text (Notes
+/// reserves 32 px), so its **width** and the gap to the text are `ui_scale`
+/// metrics that stay inside that gutter; its **height** and the dot cluster
+/// follow the accessibility text scale like the line beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HandleMetrics {
+    /// Handle column width (`spacing.s4`, 16 px at 1×).
+    width: f64,
+    /// Handle height at 1× text (`metrics.icon_md`, 20 px), text-scaled.
+    height: f64,
+    /// Gap between the handle and the text's leading edge
+    /// (`metrics.icon_label_gap`, 6 px).
+    gap: f64,
+    /// `metrics.min_pointer_target`: the hit rect grows to this where the
+    /// block is tall enough not to overlap its neighbours' handles.
+    min_target: f64,
+}
+
+impl Default for HandleMetrics {
+    fn default() -> Self {
+        Self::from_tokens(&crate::tokens::Spacing::BASE, &crate::tokens::Metrics::BASE)
+    }
+}
+
+impl HandleMetrics {
+    fn from_tokens(spacing: &crate::tokens::Spacing, metrics: &crate::tokens::Metrics) -> Self {
+        Self {
+            width: f64::from(spacing.s4),
+            height: f64::from(metrics.icon_md),
+            gap: f64::from(metrics.icon_label_gap),
+            min_target: f64::from(metrics.min_pointer_target),
+        }
+    }
+}
+
 fn formula_descriptor(kind: &BlockKind) -> Option<crate::math::FormulaDescriptor> {
     let BlockKind::CodeBlock { lang } = kind else {
         return None;
@@ -3995,7 +4003,6 @@ fn markdown_table_layout(
     theme: &Theme,
 ) -> TablePreviewLayout {
     use crate::text_render::TextWeight;
-    use unicode_segmentation::UnicodeSegmentation;
     let mut rows = markdown_table_data_rows(source);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let scale = f64::from(theme.text_scale);
@@ -4012,7 +4019,7 @@ fn markdown_table_layout(
                 .0
                 > text_width
             {
-                for (index, grapheme) in word.graphemes(true).enumerate() {
+                for (index, grapheme) in crate::text_break::graphemes(word).enumerate() {
                     if index > 0 {
                         display.push('\u{200b}');
                     }
@@ -4080,7 +4087,8 @@ fn markdown_table_layout(
                             .0
                             > text_width
                         {
-                            for (index, grapheme) in word.graphemes(true).enumerate() {
+                            for (index, grapheme) in crate::text_break::graphemes(word).enumerate()
+                            {
                                 if index > 0 {
                                     display.push('\u{200b}');
                                 }
@@ -4918,7 +4926,7 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
     {
         [] => Ok(0),
         [(Value::Scalar(value), _)] => value
-            .to_u64()
+            .as_u64()
             .filter(|depth| *depth <= u64::from(MAX_LIST_INDENT))
             .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
@@ -4943,7 +4951,7 @@ fn read_code_group(
     match values.as_slice() {
         [] => Ok(None),
         [(Value::Scalar(value), _)] => {
-            let raw = value.to_str().ok_or_else(invalid)?;
+            let raw = value.as_str().ok_or_else(invalid)?;
             let id = Uuid::parse_str(raw).map_err(|_| invalid())?;
             if id.is_nil() {
                 return Err(invalid());
@@ -5545,6 +5553,14 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "text layout accepts f32 widths; these values are finite viewport-sized geometry, so f64 precision beyond f32 subpixels is immaterial"
+)]
+fn text_layout_width(width: f64) -> f32 {
+    width as f32
+}
+
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -5630,7 +5646,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(scale),
                 ctx.transform,
-                ctx.theme.tokens.colors.border_standard,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
                 None,
                 &shape,
             );
@@ -5703,7 +5719,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((x, table_rect.y0), (x, table_rect.y1)),
         );
@@ -5718,7 +5734,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((table_rect.x0, y), (table_rect.x1, y)),
         );
@@ -5779,7 +5795,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &shape,
         );
@@ -5788,7 +5804,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(scale),
         ctx.transform,
-        ctx.theme.tokens.colors.border_standard,
+        crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
         None,
         &shape,
     );
@@ -5817,7 +5833,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 18.0 * scale,
         ),
-        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
         crate::text_render::TextWeight::Medium,
         false,
         false,
@@ -5832,7 +5848,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 42.0 * scale,
         ),
-        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
 
@@ -5954,7 +5970,7 @@ fn draw_block(
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ctx.theme.tokens.colors.border_standard,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
                 None,
                 &rule,
             );
@@ -6016,7 +6032,7 @@ fn draw_transclusion_card(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        tokens.colors.border_standard,
+        crate::surface::edge_on(tokens.colors.surfaces.raised),
         None,
         &card,
     );
@@ -6088,20 +6104,43 @@ fn draw_numbered_prefix(
     let num = ctx.ordinals.get(idx).copied().unwrap_or(1).max(1);
     let label = format!("{num}.");
     let (label_w, _) = ctx.text_renderer.measure(&label, font_size, None);
-    // Matches RichTextLine's line height so the ordinal
-    // sits on the item text's baseline.
-    let line_height = f64::from(font_size * ctx.theme.text_scale) * 1.25;
-    let text_y =
-        first_row_center(line_rect, font_size, f64::from(ctx.theme.text_scale)) - line_height / 2.0;
-    let x = (line_rect.x0 - 6.0 - f64::from(label_w)).max(prefix_x0);
+    let origin = numbered_prefix_origin(
+        line_rect,
+        prefix_x0,
+        f64::from(label_w),
+        font_size,
+        ctx.theme.text_scale,
+        ctx.theme.tokens.metrics.icon_label_gap,
+    );
     ctx.text_renderer.draw_text(
         ctx.scene,
         &label,
         font_size,
         ctx.theme.tokens.colors.text_primary,
-        translated(ctx.transform, x, text_y),
+        translated(ctx.transform, origin.x, origin.y),
         None,
     );
+}
+
+/// `icon_label_gap` is the theme's `metrics.icon_label_gap` — the ordinal
+/// keeps the glyph-to-label gap from the item text and, like the prefix
+/// gutter it sits in, that gap follows the text scale.
+fn numbered_prefix_origin(
+    line_rect: Rect,
+    prefix_x0: f64,
+    label_width: f64,
+    font_size: f32,
+    text_scale: f32,
+    icon_label_gap: f32,
+) -> Point {
+    // Matches RichTextLine's resolved shaped line height so the ordinal sits
+    // on the item text's baseline at every accessibility scale.
+    let line_height = f64::from(font_size * text_scale) * 1.25;
+    let gap = f64::from(icon_label_gap) * f64::from(text_scale);
+    Point::new(
+        (line_rect.x0 - gap - label_width).max(prefix_x0),
+        line_rect.y0 + (line_rect.height() - line_height) / 2.0,
+    )
 }
 
 fn draw_checklist_prefix(
@@ -6149,6 +6188,8 @@ fn draw_checklist_prefix(
             &path,
         );
     } else {
+        // An unchecked box is an outline on the page: derived against the
+        // editor surface at the panel-edge strength so it reads as a control.
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(1.5 * scale),
             ctx.transform,
@@ -6408,6 +6449,7 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
         self.refresh_image_attachments();
         self.refresh_image_dimensions();
         self.table_editors.retain(|id, _| {
@@ -6787,8 +6829,6 @@ impl Widget for BlockEditor {
         presence: &PresenceCtx,
     ) {
         self.refresh_image_dimensions();
-        self.refresh_live_link_hits(theme);
-
         let single_block = self.blocks.len() == 1;
         for block in &mut self.blocks {
             let hint = if single_block && matches!(block.kind, BlockKind::Paragraph) {
@@ -7090,7 +7130,7 @@ impl Widget for BlockEditor {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 ghost_transform,
-                theme.tokens.colors.border_standard,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
                 None,
                 &card,
             );
@@ -7232,6 +7272,10 @@ impl Widget for BlockEditor {
             self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.accent[5], drag);
         }
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
+        // Link hit geometry depends on the shaped positions produced by this
+        // frame's block draw. Refreshing it before that draw made first-frame
+        // style, scale, and BiDi changes unclickable.
+        self.refresh_live_link_hits(theme);
     }
 
     fn handle_event(
@@ -8351,7 +8395,7 @@ impl BlockEditor {
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
                 continue;
@@ -10116,11 +10160,13 @@ impl BlockEditor {
         }
         let source = block.text();
         let split_at = clamp_char_boundary(source, split_at.min(source.len()));
-        let (prefix, suffix) = source.split_at(split_at);
+        let Some((before, after)) = source.split_at_checked(split_at) else {
+            return false;
+        };
         let mut updated = String::with_capacity(source.len().saturating_add(1));
-        updated.push_str(prefix);
+        updated.push_str(before);
         updated.push('\n');
-        updated.push_str(suffix);
+        updated.push_str(after);
         block.line.set_text(&updated);
         block.line.set_cursor_pos(split_at.saturating_add(1));
         self.dirty = true;
@@ -10275,17 +10321,7 @@ mod tests {
 
     #[test]
     fn image_attachment_sizes_to_available_width_without_layout_feedback() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 160, 100);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&vec![255; 160 * 100 * 4])
-                .unwrap();
-        }
+        let bytes = crate::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
         let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
         let store = crate::ImageStore::new(&fetch);
         let mut editor = BlockEditor::new();
@@ -11115,6 +11151,179 @@ mod tests {
             "converting to a code block switches the cell to monospace"
         );
         assert!(!Block::paragraph("hi").line.inner().is_mono());
+    }
+
+    fn layout_and_draw_editor(editor: &mut BlockEditor, theme: &Theme) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = editor.build_layout(&mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("block editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        editor.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            theme,
+            &PresenceCtx::empty(),
+        );
+    }
+
+    #[test]
+    fn rich_link_hits_follow_current_draw_on_first_frame_style_and_scale_changes() {
+        let target = PageId::from_u128(42);
+        let mut block = Block::paragraph("WWW end");
+        block
+            .line
+            .set_marks(vec![MarkSpan::new(0..3, Mark::Link(target))]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        for (scale, bold) in [(1.0, false), (1.0, true), (2.0, true), (1.0, false)] {
+            let mut marks = vec![MarkSpan::new(0..3, Mark::Link(target))];
+            if bold {
+                marks.push(MarkSpan::new(0..3, Mark::Bold));
+            }
+            editor.blocks[0].line.set_marks(marks);
+            let theme = Theme::dark().with_text_scale(scale);
+            layout_and_draw_editor(&mut editor, &theme);
+            let line = &editor.blocks[0].line;
+            let right = line.pixel_x_for_byte(&theme, 3);
+            let y = line.get_rect().center().y;
+            assert_eq!(
+                editor.link_at_point(Point::new(right - 0.1, y)),
+                Some(LinkTarget::Page(target)),
+                "the final painted sliver must link on this frame at {scale}x, bold={bold}"
+            );
+            assert_eq!(editor.link_at_point(Point::new(right + 0.1, y)), None);
+        }
+    }
+
+    #[test]
+    fn rich_link_hits_cover_the_shaped_rtl_range() {
+        let target = PageId::from_u128(43);
+        let mut block = Block::paragraph("אבג rest");
+        block.line.set_marks(vec![
+            MarkSpan::new(0..6, Mark::Link(target)),
+            MarkSpan::new(0..6, Mark::Bold),
+        ]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        let theme = Theme::dark();
+        layout_and_draw_editor(&mut editor, &theme);
+        let band = editor.blocks[0].line.selection_rect(&theme, 0, 6);
+        assert_eq!(
+            editor.link_at_point(band.center()),
+            Some(LinkTarget::Page(target))
+        );
+    }
+
+    #[test]
+    fn rich_link_hits_exclude_the_gap_between_mixed_direction_segments() {
+        let target = PageId::from_u128(44);
+        let mut block = Block::paragraph("ab אבג cd");
+        block.line.set_marks(vec![
+            MarkSpan::new(0..2, Mark::Link(target)),
+            MarkSpan::new(10..12, Mark::Link(target)),
+            MarkSpan::new(0..12, Mark::Bold),
+        ]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        let theme = Theme::dark();
+        layout_and_draw_editor(&mut editor, &theme);
+        let line = &editor.blocks[0].line;
+        let first = line.selection_rect(&theme, 0, 2);
+        let last = line.selection_rect(&theme, 10, 12);
+        assert_eq!(
+            editor.link_at_point(first.center()),
+            Some(LinkTarget::Page(target))
+        );
+        assert_eq!(
+            editor.link_at_point(last.center()),
+            Some(LinkTarget::Page(target))
+        );
+        let gap = line.selection_rect(&theme, 3, 9);
+        assert!(gap.x0 >= first.x1 && gap.x1 <= last.x0);
+        assert_eq!(
+            editor.link_at_point(gap.center()),
+            None,
+            "unmarked Hebrew remains outside the link"
+        );
+    }
+
+    #[test]
+    fn heading_paragraph_inline_code_and_numbered_prefix_scale_once() {
+        let heading = Block::heading(1, "Heading");
+        let mut paragraph = Block::paragraph("inline code");
+        paragraph
+            .line
+            .set_marks(vec![MarkSpan::new(0..6, Mark::Code)]);
+        paragraph.line.inner_mut().set_selection(0, 6);
+        let numbered = Block::numbered(0, "numbered");
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![heading, paragraph, numbered]);
+
+        // H1 is the `x3l` step (32) — the heading sizes moved onto the type
+        // scale in the 2026-09-17 review; what this test guards is that the
+        // shaped size is that step once, then exactly doubled at 2×.
+        let h1 = BlockKind::Heading(1).font_size();
+        assert_eq!(h1, crate::tokens::TypeScale::default().x3l);
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        assert_eq!(
+            editor.blocks[0].line.inner().shaped_font_size_for_test(),
+            Some(h1)
+        );
+        assert_eq!(
+            editor.blocks[1].line.inner().shaped_font_size_for_test(),
+            Some(16.0)
+        );
+
+        let large = Theme::dark().with_text_scale(2.0);
+        layout_and_draw_editor(&mut editor, &large);
+        assert_eq!(
+            editor.blocks[0].line.inner().shaped_font_size_for_test(),
+            Some(h1 * 2.0)
+        );
+        for index in [1, 2] {
+            assert_eq!(
+                editor.blocks[index]
+                    .line
+                    .inner()
+                    .shaped_font_size_for_test(),
+                Some(32.0)
+            );
+        }
+        let selection = editor.blocks[1].line.selection_rect(&large, 0, 6);
+        assert!((selection.height() - 40.0).abs() < 0.1);
+
+        let numbered_line = &editor.blocks[2].line;
+        let line_rect = numbered_line.get_rect();
+        let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let (label_width, _) = renderer.measure("1.", 16.0, None);
+        let origin = numbered_prefix_origin(
+            line_rect,
+            line_rect.x0 - gutter,
+            f64::from(label_width),
+            16.0,
+            2.0,
+            large.tokens.metrics.icon_label_gap,
+        );
+        let caret = numbered_line.caret_rect(&large, 0);
+        assert!(
+            (origin.y - caret.y0).abs() < 0.1,
+            "numbered prefix and shaped item share a baseline band"
+        );
+        assert!(origin.x < line_rect.x0);
     }
 
     #[test]

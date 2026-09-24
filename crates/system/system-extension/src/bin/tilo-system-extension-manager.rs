@@ -82,7 +82,10 @@ struct PciRecommendation {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the field names mirror the PCI sysfs ABI"
+)]
 struct PciMatch {
     vendor_id: u16,
     device_id: u16,
@@ -99,7 +102,10 @@ struct PciCatalogSigningPayload<'a> {
 }
 
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the field names mirror the PCI sysfs ABI"
+)]
 struct PciDevice {
     vendor_id: u16,
     device_id: u16,
@@ -376,7 +382,7 @@ fn verify_pci_catalog_against(
     let payload = PciCatalogSigningPayload {
         // This is a signed wire-format identifier, independent of product branding.
         // Changing it invalidates the already published v1 catalogue signature.
-        domain: "qos.system-extension.pci-recommendations.v1",
+        domain: "tilo.system-extension.pci-recommendations.v1",
         schema_version: signed.schema_version,
         key_id: &signed.key_id,
         catalog: &signed.catalog,
@@ -705,19 +711,19 @@ mod tests {
         let digest = "a".repeat(64);
         assert_eq!(
             bootc_image_reference(
-                &format!("bootc://registry.tilo.example/drivers@sha256:{digest}"),
+                &format!("bootc://registry.example.test/drivers@sha256:{digest}"),
                 &digest
             )
             .unwrap(),
-            format!("registry.tilo.example/drivers@sha256:{digest}")
+            format!("registry.example.test/drivers@sha256:{digest}")
         );
         assert!(
-            bootc_image_reference("bootc://registry.tilo.example/drivers:latest", &digest).is_err()
+            bootc_image_reference("bootc://registry.example.test/drivers:latest", &digest).is_err()
         );
         assert!(
             bootc_image_reference(
                 &format!(
-                    "bootc://registry.tilo.example/drivers@sha256:{}",
+                    "bootc://registry.example.test/drivers@sha256:{}",
                     "b".repeat(64)
                 ),
                 &digest
@@ -776,7 +782,7 @@ mod tests {
 
         // Renaming the key in both documents cannot authorize unsigned changes.
         let mut renamed = signed.clone();
-        renamed.key_id = "tilo-pci-catalog-v1".into();
+        renamed.key_id = "tilo-pci-catalog-v2".into();
         let renamed_key = PublicKeyDocument {
             key_id: renamed.key_id.clone(),
             ..key
@@ -798,7 +804,7 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
-        let image = format!("registry.tilo.example/boot-pack@sha256:{}", "a".repeat(64));
+        let image = format!("registry.example.test/boot-pack@sha256:{}", "a".repeat(64));
         bootc_switch_with(&command, &image).unwrap();
         assert_eq!(
             fs::read_to_string(capture).unwrap(),

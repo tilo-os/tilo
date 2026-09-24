@@ -4,6 +4,8 @@
 //! that must build matching row metadata or return individually clamped lines
 //! use this module instead of guessing at ASCII spaces.
 
+use std::sync::LazyLock;
+
 /// Whether a UAX #14 opportunity permits or requires a break.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineBreakKind {
@@ -17,13 +19,11 @@ pub enum LineBreakKind {
 pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBreakKind)> {
     use std::collections::BTreeMap;
 
-    use icu_segmenter::LineSegmenter;
-    thread_local! {
-        // The auto model adds dictionary/LSTM boundaries for Khmer, Lao,
-        // Myanmar, and Thai. ICU4X 1.5 uses Rc-backed baked data, so retaining
-        // it per UI thread is intentional (see the word segmenter sibling).
-        static SEGMENTER: LineSegmenter = LineSegmenter::new_auto();
-    }
+    use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
+    // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar,
+    // and Thai. The borrowed segmenter only references baked static data.
+    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
+        LazyLock::new(|| LineSegmenter::new_auto(Default::default()));
 
     let mut breaks = BTreeMap::new();
     for (byte, kind) in unicode_linebreak::linebreaks(text) {
@@ -33,11 +33,9 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
         };
         breaks.insert(byte, kind);
     }
-    SEGMENTER.with(|segmenter| {
-        for byte in segmenter.segment_str(text).filter(|&byte| byte > 0) {
-            breaks.entry(byte).or_insert(LineBreakKind::Allowed);
-        }
-    });
+    for byte in SEGMENTER.segment_str(text).filter(|&byte| byte > 0) {
+        breaks.entry(byte).or_insert(LineBreakKind::Allowed);
+    }
     breaks.into_iter().collect::<Vec<_>>().into_iter()
 }
 
@@ -254,36 +252,54 @@ impl OffsetMap {
     }
 }
 
+/// Extended grapheme clusters (UAX #29) paired with their starting byte
+/// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
+/// whole.
+pub(crate) fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
+    const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
+    let mut start = 0;
+    SEGMENTER
+        .segment_str(text)
+        .filter(|&end| end > 0)
+        .map(move |end| {
+            let cluster = (start, text.get(start..end).unwrap_or_default());
+            start = end;
+            cluster
+        })
+}
+
+/// Extended grapheme clusters (UAX #29) of `text`, in order.
+pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
+    grapheme_indices(text).map(|(_, cluster)| cluster)
+}
+
 /// Return Unicode word-like spans in original UTF-8 byte coordinates.
 /// Uses the same ICU segmentation as toolkit word selection and movement.
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
-    use icu_segmenter::WordSegmenter;
-    thread_local! {
-        static SEGMENTER: WordSegmenter = WordSegmenter::new_auto();
-    }
-    SEGMENTER.with(|segmenter| {
-        let mut iterator = segmenter.segment_str(text);
-        let boundaries: Vec<_> = iterator.iter_with_word_type().collect();
-        boundaries
-            .windows(2)
-            .filter_map(|window| {
-                let [first, second] = window else {
-                    return None;
-                };
-                let range = first.0..second.0;
-                // ICU4X 1.5 can tag a word ending in an Extend scalar as
-                // None before whitespace despite finding the correct span.
-                // Retain that complete segment when it contains a letter or
-                // number, preserving ICU's boundaries and attached marks.
-                let word_like = second.1.is_word_like()
-                    || text
-                        .get(range.clone())
-                        .is_some_and(|word| word.chars().any(char::is_alphanumeric));
-                word_like.then_some(range)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-    })
+    use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
+    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
+        LazyLock::new(|| WordSegmenter::new_auto(Default::default()));
+    let boundaries: Vec<_> = SEGMENTER.segment_str(text).iter_with_word_type().collect();
+    boundaries
+        .windows(2)
+        .filter_map(|window| {
+            let [first, second] = window else {
+                return None;
+            };
+            let range = first.0..second.0;
+            // ICU can tag a word ending in an Extend scalar as None before
+            // whitespace despite finding the correct span. Retain that
+            // complete segment when it contains a letter or number,
+            // preserving ICU's boundaries and attached marks.
+            let word_like = second.1.is_word_like()
+                || text
+                    .get(range.clone())
+                    .is_some_and(|word| word.chars().any(char::is_alphanumeric));
+            word_like.then_some(range)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 #[cfg(test)]
@@ -309,6 +325,17 @@ mod tests {
             );
         }
         assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+    }
+
+    #[test]
+    fn grapheme_indices_keep_extended_clusters_whole() {
+        let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+        let clusters: Vec<_> = grapheme_indices(text).collect();
+        assert_eq!(
+            clusters,
+            vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+        );
+        assert_eq!(graphemes("").count(), 0);
     }
 
     #[test]

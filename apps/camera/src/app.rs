@@ -31,8 +31,10 @@ use vello::peniko::Color;
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::ActionEmitter;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -53,9 +55,48 @@ use crate::paint as p;
 /// Uniform inset for floating controls from the window edge. The camera is an
 /// immersive, full-bleed app: the viewfinder fills the window edge-to-edge and
 /// every control floats over it at this margin — there is no navigation rail
-/// or sidebar (the OS owns window chrome). The recent handoff and Settings are
-/// reached directly from the viewfinder.
-const EDGE: f64 = 18.0;
+/// or sidebar (the OS owns window chrome). Gallery and Settings are reached
+/// from the viewfinder as a push and an overlay sheet, not as rail items.
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+/// The over-media chrome's inset from the window edge: section padding
+/// (HIG §7b `s4`).
+const EDGE: f64 = step(Spacing::BASE.s4);
+/// Siblings beside each other (setting pills, dialog buttons): `s2` on the
+/// dense viewfinder strip, `s3` between a dialog's two actions.
+const PILL_GAP: f64 = step(Spacing::BASE.s2);
+const ACTION_GAP: f64 = step(Spacing::BASE.s3);
+/// Separators inside a grouped card are inset `s3` from both ends (HIG §9.5).
+const SEPARATOR_INSET: f64 = step(Spacing::BASE.s3);
+/// Floating over-viewfinder capsules (the top setting pills and the
+/// Photo/Video/Scan switcher) are authored at these 1× heights and grow only
+/// when the measured label line no longer fits — so 200% text is contained
+/// without changing the 1× viewfinder composition. Label sizes stay literal:
+/// these are over-media overlays (see `docs/hand-rolled-ui-audit.md`), drawn
+/// dark-on-light regardless of theme, and the renderer applies the text scale.
+const CTRL_PILL_MIN_H: f64 = 30.0;
+const CTRL_PILL_LABEL_SIZE: f32 = 12.0;
+const CTRL_PILL_PAD_Y: f64 = 7.5;
+const MODE_SWITCHER_MIN_H: f64 = 34.0;
+const MODE_LABEL_SIZE: f32 = 13.0;
+const MODE_LABEL_PAD_Y: f64 = step(Spacing::BASE.s2);
+/// Horizontal room either side of a segment label. Segments split their
+/// capsule equally, so the widest measured label sets the capsule's floor
+/// (`segmented_min_w`); the authored 1× widths are wider than that floor and
+/// stay in charge until an accessibility text scale needs more.
+const MODE_LABEL_PAD_X: f64 = step(Spacing::BASE.s3);
+/// Over-media badges (detected-code tag, gallery duration/"Unavailable" tags)
+/// keep their authored 1× heights and grow to `label line + 2 × BADGE_PAD_Y`
+/// once the measured line no longer fits.
+const BADGE_PAD_Y: f64 = 3.0;
+/// Recent-scans rows: authored 44 px, measured summary + timestamp block.
+const SCAN_ROW_PAD_Y: f64 = 6.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for the contextual recent-capture preview.
@@ -527,9 +568,9 @@ impl CameraApp {
             initialized: false,
             actions: ui::ActionHost::new(),
             search_provider: crate::search::CameraSearchProvider::new(),
-            photos_handoff: Self::media_handoff_emitter("dev.tilo.photos", "Photos"),
+            photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
             photos_browse: Self::photos_browse_emitter(),
-            video_handoff: Self::media_handoff_emitter("dev.tilo.video-player", "Video Player"),
+            video_handoff: Self::media_handoff_emitter("so.tilo.video-player", "Video Player"),
         }
     }
 
@@ -2435,19 +2476,6 @@ fn now_secs() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-fn ago(ts: i64, now: i64) -> String {
-    let d = (now - ts).max(0);
-    if d < 60 {
-        "just now".into()
-    } else if d < 3600 {
-        format!("{}m ago", d / 60)
-    } else if d < 86_400 {
-        format!("{}h ago", d / 3600)
-    } else {
-        format!("{}d ago", d / 86_400)
-    }
-}
-
 fn fmt_dur(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
     ui::format::timecode(u64::try_from(seconds).unwrap_or(0))
@@ -2467,15 +2495,10 @@ fn valid_frame(frame: &FrameBuf) -> bool {
         && frame.rgba.len() == expected
 }
 
-/// Best-effort hand-off to the system default handler for a URI. Never
-/// blocks and ignores failures — the clipboard copy is the guaranteed path.
+/// Best-effort hand-off to the host's URI handler. Never blocks and ignores
+/// failures — the clipboard copy is the guaranteed path.
 fn open_external(uri: &str) -> bool {
-    std::process::Command::new("xdg-open")
-        .arg(uri)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
+    ui::widget::try_open_external_url(uri).is_ok()
 }
 
 fn frame_image_fill(buf: FrameBuf) -> Image {
@@ -3028,6 +3051,17 @@ impl Widget for CameraApp {
         // Don't let a persisted mode flip mid-record.
         if self.recording.is_none() {
             self.mode = doc::read_mode(state, path);
+            // Dev/screenshot hook (`--mode video`): pose the capture sub-mode
+            // without driving the switcher. Same guard as the persisted mode;
+            // an unrecognised value is ignored (like `CAMERA_SCREEN`) rather
+            // than forcing Photo and making the switcher inert.
+            if let Ok(mode) = std::env::var("CAMERA_MODE") {
+                self.mode = match mode.as_str() {
+                    "photo" => CaptureMode::Photo,
+                    "video" => CaptureMode::Video,
+                    _ => self.mode,
+                };
+            }
         }
         self.facing = doc::read_facing(state, path);
         self.settings = doc::read_settings(state, path);
@@ -3567,27 +3601,10 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         center_x: f64,
-        top_y: f64,
+        bottom_y: f64,
     ) {
         // Keep the four capture destinations inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let available_w = self.rect.width() - EDGE * 2.0;
-        let seg_w = if theme.text_scale >= 1.5 {
-            // Four translated labels need the full compact stage at 200%
-            // text. The old desktop cap made the words collide even though
-            // the surrounding viewport had room; retain a readable maximum
-            // on tablet/desktop widths without shrinking the phone target.
-            available_w.clamp(240.0, 360.0)
-        } else {
-            available_w.clamp(150.0, 240.0)
-        };
-        let height = if theme.text_scale >= 1.5 { 64.0 } else { 34.0 };
-        let seg = Rect::new(
-            center_x - seg_w / 2.0,
-            top_y,
-            center_x + seg_w / 2.0,
-            top_y + height,
-        );
         let on_cam = matches!(self.screen, Screen::Camera);
         let items: Vec<(String, bool, Action)> = vec![
             (
@@ -3611,7 +3628,48 @@ impl CameraApp {
                 Action::Nav(Screen::Document),
             ),
         ];
+        // The capsule is anchored by its bottom edge — it sits directly above
+        // the shutter — and grows *upward* to contain its labels. At 1× the
+        // measured 13 px line fits the authored 34 px, so nothing moves; at an
+        // accessibility text scale the labels stop painting below the selected
+        // segment's background (corrected-review-1, camera P2). Measured from
+        // the labels actually drawn, so a renamed or localized mode still fits.
+        let label_h = items
+            .iter()
+            .map(|(label, _, _)| p::text_h(tr, label, MODE_LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        let seg_h = (label_h + MODE_LABEL_PAD_Y * 2.0)
+            .max(MODE_SWITCHER_MIN_H * f64::from(theme.text_scale));
+        // Keep the three mode targets inside a narrow/high-zoom viewport
+        // instead of letting the fixed desktop-width pill clip off-screen.
+        // The authored 150..240 px capsule is the 1× width; at an accessibility
+        // text scale the measured labels set the floor (they used to crowd
+        // each other in 80 px segments at 200%), capped at the viewport.
+        let available = self.rect.width() - EDGE * 2.0;
+        let labels: Vec<&str> = items.iter().map(|(label, _, _)| label.as_str()).collect();
+        let seg_w = available
+            .clamp(150.0, 240.0)
+            .max(Self::segmented_min_w(tr, &labels))
+            .min(available.max(1.0));
+        let seg = Rect::new(
+            center_x - seg_w / 2.0,
+            bottom_y - seg_h,
+            center_x + seg_w / 2.0,
+            bottom_y,
+        );
         self.segmented(scene, t, tr, theme, seg, items);
+    }
+
+    /// The narrowest capsule whose equal segments each hold the widest
+    /// measured label with [`MODE_LABEL_PAD_X`] either side. Callers take
+    /// the larger of their authored 1× width and this, so nothing moves at
+    /// 1× and 200% labels stop running into their neighbours.
+    fn segmented_min_w(tr: &mut TextRenderer, labels: &[&str]) -> f64 {
+        let widest = labels
+            .iter()
+            .map(|label| f64::from(p::text_w(tr, label, MODE_LABEL_SIZE)))
+            .fold(0.0_f64, f64::max);
+        (widest + MODE_LABEL_PAD_X * 2.0) * labels.len().max(1) as f64
     }
 
     fn segmented(
@@ -3636,7 +3694,7 @@ impl CameraApp {
             t,
             rect,
             rect.height() / 2.0,
-            p::alpha(c.border_standard, 0.5),
+            surface::edge_on(c.neutral[2]),
             1.0,
         );
         let n = items.len().max(1);
@@ -3662,7 +3720,7 @@ impl CameraApp {
             } else {
                 p::alpha(c.text_primary, 0.78)
             };
-            p::text_in(scene, tr, seg, &label, 13.0, col);
+            p::text_in(scene, tr, seg, &label, MODE_LABEL_SIZE, col);
             self.push_tap_region(seg, action);
         }
     }
@@ -3753,10 +3811,10 @@ impl CameraApp {
         let icon_r = Rect::new(icx - 24.0, icy - 24.0, icx + 24.0, icy + 24.0);
         p::icon(scene, t, icon, icon_r, icon_col, 2.0);
         let ty = panel.y0 + 116.0;
-        let title = ellipsize(tr, title, 16.0, panel.width() - 24.0);
+        let title = tr.elide_to_width(title, 16.0, ui::num::f32_of_f64(panel.width() - 24.0));
         p::text_center(scene, tr, icx, ty, &title, 16.0, title_col);
         if let Some(sub) = subtitle {
-            let sub = ellipsize(tr, sub, 12.5, panel.width() - 24.0);
+            let sub = tr.elide_to_width(sub, 12.5, ui::num::f32_of_f64(panel.width() - 24.0));
             p::text_center(scene, tr, icx, ty + 24.0, &sub, 12.5, sub_col);
         }
         EmptyStateLayout {
@@ -3828,7 +3886,7 @@ impl CameraApp {
             actions.push(("Choose camera", Action::OpenCameraChooser));
         }
         let count = actions.len();
-        let gap = 8.0;
+        let gap = PILL_GAP;
         let max_w = panel.width() - 28.0;
         let width = ((max_w - gap * (count.saturating_sub(1) as f64)) / count as f64).max(44.0);
         let y = panel.y1 - 52.0;
@@ -3843,25 +3901,13 @@ impl CameraApp {
                 action,
                 Action::OpenCameraPrivacySettings | Action::RetryCamera
             );
-            p::fill_round(
-                scene,
-                t,
-                button,
-                12.0,
-                if primary {
-                    theme.accent_primary
-                } else {
-                    p::alpha(theme.tokens.colors.neutral[2], 0.92)
-                },
-            );
-            p::stroke_round(
-                scene,
-                t,
-                button,
-                12.0,
-                p::alpha(theme.tokens.colors.border_standard, 0.55),
-                1.0,
-            );
+            let face = if primary {
+                theme.accent_primary
+            } else {
+                p::alpha(theme.tokens.colors.neutral[2], 0.92)
+            };
+            p::fill_round(scene, t, button, 12.0, face);
+            p::stroke_round(scene, t, button, 12.0, surface::edge_on(face), 1.0);
             p::text_in(scene, tr, button, label, 11.5, white());
             self.push_tap_region(button, action);
         }
@@ -3875,13 +3921,14 @@ impl CameraApp {
                 panel.x1 - 14.0,
                 panel.y1 + 10.0 + chooser_h,
             );
-            p::fill_round(scene, t, chooser, 14.0, theme.tokens.colors.surfaces.raised);
+            // A floating chooser: Panel role ground + border (HIG §9.5).
+            p::fill_round(scene, t, chooser, 14.0, ui::chrome::panel_ground(theme));
             p::stroke_round(
                 scene,
                 t,
                 chooser,
                 14.0,
-                p::alpha(theme.tokens.colors.border_standard, 0.65),
+                ui::chrome::panel_border(theme),
                 1.0,
             );
             for (index, device) in devices.iter().enumerate() {
@@ -4138,12 +4185,15 @@ impl CameraApp {
             Action::OpenPhotos,
         );
         // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
-        // whether or not a feed is present so device preferences stay reachable.
+        // whether or not a feed is present so Settings is always reachable.
+        // Centred on the top pill row: both sit on the `EDGE` corner inset's
+        // 32 px circle, so they share one centre line at every text scale.
+        let row_cy = full.y0 + EDGE + 16.0;
         self.glass_button(
             scene,
             t,
             theme,
-            Circle::new(Point::new(full.x1 - EDGE - 16.0, full.y0 + 35.0), 16.0),
+            Circle::new(Point::new(full.x1 - EDGE - 16.0, row_cy), 16.0),
             "settings",
             Action::Nav(Screen::Settings),
         );
@@ -4210,6 +4260,14 @@ impl CameraApp {
         }
     }
 
+    /// Height of every pill in the top control row: the authored
+    /// [`CTRL_PILL_MIN_H`] at 1×, grown to contain the measured 12 px label
+    /// line plus [`CTRL_PILL_PAD_Y`] at an accessibility text scale. The
+    /// settings button centres on the same row.
+    fn ctrl_pill_height(tr: &mut TextRenderer) -> f64 {
+        (p::text_h(tr, "HDR", CTRL_PILL_LABEL_SIZE) + CTRL_PILL_PAD_Y * 2.0).max(CTRL_PILL_MIN_H)
+    }
+
     /// A floating glass control pill (leading icon optional). `active` fills it
     /// with the accent; otherwise it's dark glass with a hairline border.
     /// Returns the pill's rect so the caller can register a hit region.
@@ -4233,7 +4291,7 @@ impl CameraApp {
         let tw = if label.is_empty() {
             0.0
         } else {
-            f64::from(p::text_w(tr, label, 12.0))
+            f64::from(p::text_w(tr, label, CTRL_PILL_LABEL_SIZE))
         };
         let gap = if icon.is_some() && !label.is_empty() {
             5.0
@@ -4241,10 +4299,10 @@ impl CameraApp {
             0.0
         };
         let width = pad * 2.0 + icon_w + gap + tw;
-        // Text is scaled by the system at 200%; reserve a real touch-sized
-        // logical pill instead of allowing larger glyphs to bleed through its
-        // glass edge.
-        let height = if large_type { 44.0 } else { 30.0 };
+        // One height for the whole row — labelled and icon-only pills alike —
+        // so the row reads as one control strip at every text scale.
+        let height = Self::ctrl_pill_height(tr);
+        let th = p::text_h(tr, "HDR", CTRL_PILL_LABEL_SIZE);
         let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + height);
         if active {
             p::fill_round(scene, t, rect, height / 2.0, theme.accent_primary);
@@ -4283,13 +4341,14 @@ impl CameraApp {
             cx += icon_w + gap;
         }
         if !label.is_empty() {
+            // Centre on the measured line, not on `size - k`.
             p::text(
                 scene,
                 tr,
                 cx,
-                rect.center().y - if large_type { 12.0 } else { 8.0 },
+                rect.center().y - th / 2.0,
                 label,
-                12.0,
+                CTRL_PILL_LABEL_SIZE,
                 fg,
             );
         }
@@ -4308,8 +4367,10 @@ impl CameraApp {
         full: Rect,
     ) {
         let mut x = full.x0 + EDGE;
-        let y = full.y0 + 20.0;
-        let gap = 9.0;
+        // The pill row shares the settings gear's centre line (a 32 px circle
+        // on the `EDGE` corner inset), so the four corners read as one frame.
+        let y = full.y0 + EDGE + 16.0 - Self::ctrl_pill_height(tr) / 2.0;
+        let gap = PILL_GAP;
 
         let r = Self::ctrl_pill(
             scene,
@@ -4404,17 +4465,12 @@ impl CameraApp {
         // recording (mode is locked; the stop-square shutter + REC badge carry
         // the state).
         if !state.recording {
-            // Large type turns the selector into a true 64pt band and reserves
-            // a quiet 28pt gap before the shutter ring / thumbnail badge.
-            // This keeps the four bottom controls visibly separate, not just
-            // semantically non-overlapping.
-            let selector_top = full.y1
-                - if theme.text_scale >= 1.5 {
-                    190.0
-                } else {
-                    132.0
-                };
-            self.draw_mode_switcher(scene, t, tr, theme, scx, selector_top);
+            // The switcher is the shutter's sibling: its bottom edge keeps
+            // `s3` above the shutter's top (`cy - 34`). Its segments are
+            // 44 px tap targets centred on the 34 px capsule, so anything
+            // closer put their hit boxes 5 px into the shutter's (HIG §7
+            // "nothing touches" — the geometry audit flagged the overlap).
+            self.draw_mode_switcher(scene, t, tr, theme, scx, cy - 34.0 - ACTION_GAP);
         }
         self.draw_recent_capture_peek(scene, t, tr, theme, full, cy);
         self.draw_shutter(scene, t, theme, scx, cy, state);
@@ -4437,12 +4493,10 @@ impl CameraApp {
         cy: f64,
     ) {
         let ts = 30.0;
-        let thumb = Rect::new(
-            full.x0 + EDGE + 8.0,
-            cy - ts,
-            full.x0 + EDGE + 8.0 + ts * 2.0,
-            cy + ts,
-        );
+        // Same edge inset as every other floating corner control (the top
+        // pills and the settings button), so the four corners read as one
+        // frame around the viewfinder.
+        let thumb = Rect::new(full.x0 + EDGE, cy - ts, full.x0 + EDGE + ts * 2.0, cy + ts);
         if let Some(cap) = self.captures.first().cloned() {
             self.push_region(thumb, Action::OpenRecentCapture);
             self.ensure_thumb(&cap);
@@ -4541,7 +4595,9 @@ impl CameraApp {
         cy: f64,
     ) {
         let c = &theme.tokens.colors;
-        let lx = full.x1 - 60.0;
+        // The 26 px circle's outer edge sits on the same inset as the
+        // top-right settings button, so both right-hand corners align.
+        let lx = full.x1 - EDGE - 26.0;
         p::circle(scene, t, lx, cy, 26.0, p::alpha(c.neutral[0], 0.5));
         p::circle_stroke(
             scene,
@@ -4592,7 +4648,12 @@ impl CameraApp {
         let red = theme.tokens.colors.semantic.danger;
         let tw = f64::from(p::text_w(tr, &label, 12.5));
         let w = 20.0 + 12.0 + tw + 14.0;
-        let pill = Rect::new(scx - w / 2.0, full.y0 + 18.0, scx + w / 2.0, full.y0 + 46.0);
+        let pill = Rect::new(
+            scx - w / 2.0,
+            full.y0 + EDGE,
+            scx + w / 2.0,
+            full.y0 + EDGE + 28.0,
+        );
         p::fill_round(
             scene,
             t,
@@ -5268,7 +5329,10 @@ impl CameraApp {
             scene,
             t,
             theme,
-            Circle::new(Point::new(full.x1 - EDGE - 16.0, full.y0 + 34.0), 16.0),
+            Circle::new(
+                Point::new(full.x1 - EDGE - 16.0, full.y0 + EDGE + 16.0),
+                16.0,
+            ),
             "settings",
             Action::Nav(Screen::Settings),
         );
@@ -5289,7 +5353,9 @@ impl CameraApp {
         // you switch back to the camera the same way you got here. Centred on
         // the feed (clear of the recent-scans panel) to align with the scan
         // window and result card.
-        self.draw_mode_switcher(scene, t, tr, theme, stage.center().x, full.y1 - 56.0);
+        // Bottom edge where the 34 px capsule ended before (`y1 - 56 + 34`), so
+        // 1× placement is unchanged and larger labels grow upward into the feed.
+        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 22.0);
     }
 
     /// A compact floating glass header (title + subtitle) used as an overlay
@@ -5310,8 +5376,9 @@ impl CameraApp {
     ) {
         let colors = &theme.tokens.colors;
         let inner = (max_width - 32.0).max(40.0);
-        let title = ellipsize(tr, title, 15.0, inner);
-        let subtitle = (!subtitle.is_empty()).then(|| ellipsize(tr, subtitle, 11.5, inner));
+        let title = tr.elide_to_width(title, 15.0, ui::num::f32_of_f64(inner));
+        let subtitle = (!subtitle.is_empty())
+            .then(|| tr.elide_to_width(subtitle, 11.5, ui::num::f32_of_f64(inner)));
         let tw = f64::from(p::text_w(tr, &title, 15.0));
         let sw = subtitle
             .as_deref()
@@ -5522,8 +5589,11 @@ impl CameraApp {
         let tw = f64::from(p::text_w(tr, &label_text, 11.0)) + 18.0;
         let label_x = (full.x0 + f64::from(cxy.0) * sx) - tw / 2.0;
         let top = pts.iter().map(|q| q.y).fold(f64::MAX, f64::min);
-        let label_rect = Rect::new(label_x, top - 26.0, label_x + tw, top - 6.0);
-        p::fill_round(scene, t, label_rect, 10.0, green);
+        // Authored 20 px tag at 1×; contains the measured label at any scale
+        // (the 200% line used to spill 5 px past the tag's edges).
+        let th = (p::text_h(tr, &label_text, 11.0) + BADGE_PAD_Y * 2.0).max(20.0);
+        let label_rect = Rect::new(label_x, top - 6.0 - th, label_x + tw, top - 6.0);
+        p::fill_round(scene, t, label_rect, th / 2.0, green);
         p::text_in(scene, tr, label_rect, &label_text, 11.0, white());
     }
 
@@ -5560,11 +5630,10 @@ impl CameraApp {
             19.0,
             white(),
         );
-        let hint = ellipsize(
-            tr,
+        let hint = tr.elide_to_width(
             "Choose a QR or barcode image from this device",
             12.5,
-            (content.width() - 24.0).max(120.0),
+            ui::num::f32_of_f64((content.width() - 24.0).max(120.0)),
         );
         p::text_center(
             scene,
@@ -5689,7 +5758,11 @@ impl CameraApp {
             white(),
         );
         let summ = s.kind.summary(&s.raw);
-        let summ = ellipsize(tr, &summ, summary_size, card.x1 - tx - 40.0);
+        let summ = tr.elide_to_width(
+            &summ,
+            summary_size,
+            ui::num::f32_of_f64(card.x1 - tx - 40.0),
+        );
         p::text(
             scene,
             tr,
@@ -5769,12 +5842,18 @@ impl CameraApp {
                 p::alpha(white(), 0.45),
                 1.8,
             );
+            // The second line follows the first's measured height (13 → 16.25
+            // + 3.75 gap = the authored 20 px pitch at 1×) instead of a fixed
+            // offset that 200% lines painted through.
+            let title = "No codes scanned yet";
+            let title_top = cy + 28.0;
+            let title_h = p::text_h(tr, title, 13.0);
             p::text_center(
                 scene,
                 tr,
                 cx,
-                cy + 28.0,
-                "No codes scanned yet",
+                title_top,
+                title,
                 13.0,
                 p::alpha(white(), 0.7),
             );
@@ -5782,7 +5861,7 @@ impl CameraApp {
                 scene,
                 tr,
                 cx,
-                cy + 48.0,
+                title_top + title_h + 3.75,
                 "Scanned codes show up here",
                 11.5,
                 p::alpha(white(), 0.5),
@@ -5791,13 +5870,19 @@ impl CameraApp {
         }
 
         let now = now_secs();
-        let mut y = panel.y0 + 50.0;
+        // Rows keep the authored 44 px (+2 gap) at 1× and grow to hold the
+        // measured summary + timestamp block, centred, at larger text.
+        let summ_h = p::text_h(tr, "Ag", 13.0);
+        let when_h = p::text_h(tr, "Ag", 11.0);
+        let block_h = summ_h + when_h;
+        let row_h = (block_h + SCAN_ROW_PAD_Y * 2.0).max(44.0);
+        let mut y = panel.y0 + 20.0 + p::text_h(tr, "Recent scans", 14.0) + 12.5;
         for entry in self.scans.clone().iter().take(8) {
-            if y + 44.0 > panel.y1 - 12.0 {
+            if y + row_h > panel.y1 - 12.0 {
                 break;
             }
             let kind = classify(&entry.raw);
-            let row = Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + 44.0);
+            let row = Rect::new(panel.x0 + 8.0, y, panel.x1 - 8.0, y + row_h);
             p::icon(
                 scene,
                 t,
@@ -5811,26 +5896,23 @@ impl CameraApp {
                 p::alpha(c.accent[6], 0.95),
                 1.8,
             );
-            let summ = ellipsize(tr, &kind.summary(&entry.raw), 13.0, row.width() - 44.0);
-            p::text(
-                scene,
-                tr,
-                row.x0 + 36.0,
-                row.center().y - 14.0,
-                &summ,
+            let summ = tr.elide_to_width(
+                &kind.summary(&entry.raw),
                 13.0,
-                white(),
+                ui::num::f32_of_f64(row.width() - 44.0),
             );
+            let summ_top = row.center().y - block_h / 2.0;
+            p::text(scene, tr, row.x0 + 36.0, summ_top, &summ, 13.0, white());
             p::text(
                 scene,
                 tr,
                 row.x0 + 36.0,
-                row.center().y + 2.0,
-                &ago(entry.ts, now),
+                summ_top + summ_h,
+                &ui::format::relative(now - entry.ts),
                 11.0,
                 p::alpha(white(), 0.6),
             );
-            y += 46.0;
+            y += row_h + 2.0;
         }
     }
 }
@@ -5860,6 +5942,113 @@ struct ScrollMetrics {
     max_scroll: f64,
     view_h: f64,
     content_h: f64,
+}
+
+/// One description of the gallery's chrome band — the back button, the
+/// "Library" title with its item count, the All/Photos/Videos/Favorites
+/// filter — and where the grid or a detail panel starts beneath it.
+///
+/// `draw_gallery` derives it once from measured lines; the header, the filter
+/// and the grid all read it. It used to be three sets of literals (title at
+/// +16, count at +44, grid at +64 or +104) that agreed only at 1×: at 200% the
+/// title painted over its count, the filter's fixed 80 px segments over each
+/// other, and on a 480 px window the filter sat on the title's row and ran
+/// into it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg(test)]
+struct GalleryChrome {
+    /// Centre of the 32 px back button.
+    back: Point,
+    title_x: f64,
+    title_top: f64,
+    count_top: f64,
+    /// The segmented filter capsule.
+    filter: Rect,
+    /// Top edge of the grid and of a docked detail panel.
+    content_top: f64,
+}
+
+#[cfg(test)]
+impl GalleryChrome {
+    /// Authored 1× values: title 20 px at +16, count 12.5 px at +44, grid at
+    /// +64 (or +104 when the filter owns the row below the title).
+    const TITLE_SIZE: f32 = 20.0;
+    const COUNT_SIZE: f32 = 12.5;
+    const TITLE_TOP: f64 = 16.0;
+    const TITLE_COUNT_GAP: f64 = 3.0;
+    const HEADER_MIN_BOTTOM: f64 = 64.0;
+    const FILTER_MIN_H: f64 = 32.0;
+    /// Room above and below a filter label (the 16.25 px 1× line + 15 stays
+    /// inside the authored 32; at 200% the capsule grows to hold the line).
+    const FILTER_LABEL_PAD_Y: f64 = 7.5;
+    const FILTER_MAX_W: f64 = 320.0;
+    /// Room between the title and a filter sharing its row, and between the
+    /// filter and the grid when the filter owns its own row.
+    const GAP: f64 = 16.0;
+
+    fn measure(
+        tr: &mut TextRenderer,
+        content: Rect,
+        pad: f64,
+        count: &str,
+        filter_labels: &[&str],
+    ) -> Self {
+        let back = Point::new(content.x0 + pad + 16.0, content.y0 + 30.0);
+        let title_x = back.x + 32.0;
+        let title_top = content.y0 + Self::TITLE_TOP;
+        let title_h = p::text_h(tr, "Library", Self::TITLE_SIZE);
+        let title_w = f64::from(p::text_w(tr, "Library", Self::TITLE_SIZE));
+        let count_top = title_top + title_h + Self::TITLE_COUNT_GAP;
+        let count_h = p::text_h(tr, count, Self::COUNT_SIZE);
+        // The count's line box carries its own leading (18.25 px at 1×, so
+        // 44 + 18.25 = 62.25 and the authored 64 floor holds); at larger text
+        // the header ends where that box ends.
+        let header_bottom = (count_top + count_h).max(content.y0 + Self::HEADER_MIN_BOTTOM);
+
+        let available = (content.width() - 2.0 * pad).max(1.0);
+        let filter_w = available
+            .min(Self::FILTER_MAX_W)
+            .max(CameraApp::segmented_min_w(tr, filter_labels))
+            .min(available);
+        let label_h = filter_labels
+            .iter()
+            .map(|label| p::text_h(tr, label, MODE_LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        let filter_h = (label_h + Self::FILTER_LABEL_PAD_Y * 2.0).max(Self::FILTER_MIN_H);
+        // The filter shares the title's row only when the measured title and
+        // the measured capsule both fit with a gap between them; otherwise it
+        // owns the row beneath the count.
+        let beside = title_x + title_w + Self::GAP + filter_w <= content.x1 - pad;
+        let filter_x1 = content.x1 - pad;
+        let filter = if beside {
+            Rect::new(
+                filter_x1 - filter_w,
+                title_top,
+                filter_x1,
+                title_top + filter_h,
+            )
+        } else {
+            Rect::new(
+                filter_x1 - filter_w,
+                header_bottom,
+                filter_x1,
+                header_bottom + filter_h,
+            )
+        };
+        let content_top = if beside {
+            header_bottom.max(filter.y1 + Self::GAP)
+        } else {
+            filter.y1 + Self::GAP
+        };
+        Self {
+            back,
+            title_x,
+            title_top,
+            count_top,
+            filter,
+            content_top,
+        }
+    }
 }
 
 /// Icon/label/style bundle for compact camera controls.
@@ -5932,9 +6121,10 @@ impl CameraApp {
         let sx = full.center().x - sw / 2.0;
         let sy = full.center().y - sh / 2.0;
         let sheet = Rect::new(sx, sy, sx + sw, sy + sh);
-        // Base-surface sheet so the raised grouped cards read distinctly on it.
+        // Base-surface sheet so the raised grouped cards read distinctly on
+        // it; its edge against the scrim is the Panel border (HIG §9.5).
         p::fill_round(scene, t, sheet, 22.0, c.surfaces.base);
-        p::stroke_round(scene, t, sheet, 22.0, p::alpha(c.border_standard, 0.6), 1.0);
+        p::stroke_round(scene, t, sheet, 22.0, ui::chrome::panel_border(theme), 1.0);
         // Absorb taps on the sheet's own padding so only the scrim dismisses.
         self.push_region(sheet, Action::Nav(Screen::Settings));
 
@@ -6003,20 +6193,11 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Capture");
         let row_height = Self::settings_row_height(theme);
         let cap_rows = 4;
         let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * row_height);
-        p::fill_round(scene, t, cap_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            cap_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, cap_rect);
         let ry = self.value_row(
             scene,
             t,
@@ -6084,19 +6265,10 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Composition");
         let row_height = Self::settings_row_height(theme);
         let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * row_height);
-        p::fill_round(scene, t, comp_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            comp_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, comp_rect);
         let ry = self.toggle_row(
             scene,
             t,
@@ -6155,19 +6327,10 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Privacy & camera");
         let row_height = Self::settings_row_height(theme);
         let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * row_height);
-        p::fill_round(scene, t, pc_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            pc_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, pc_rect);
         let ry = self.toggle_row(
             scene,
             t,
@@ -6234,16 +6397,23 @@ impl CameraApp {
         y + if theme.text_scale >= 1.5 { 32.0 } else { 24.0 }
     }
 
+    /// A grouped settings card: raised fill with its derived rest edge
+    /// (`ui::surface::card`, HIG §9.5).
+    fn group_card(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect) {
+        surface::card(scene, t, rect, 14.0, theme.tokens.colors.surfaces.raised);
+    }
+
+    /// The rule between two rows of a grouped card: derived against the
+    /// card's surface and inset `s3` from both ends (HIG §9.5).
     fn row_sep(scene: &mut Scene, t: Affine, theme: &Theme, x: f64, y: f64, w: f64) {
-        p::line(
+        surface::separator(
             scene,
             t,
-            x + 16.0,
+            x,
+            x + w,
             y,
-            x + w - 16.0,
-            y,
-            p::alpha(theme.tokens.colors.border_standard, 0.35),
-            1.0,
+            SEPARATOR_INSET,
+            theme.tokens.colors.surfaces.raised,
         );
     }
 
@@ -6263,7 +6433,7 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let large_type = theme.text_scale >= 1.5;
         let label = if large_type {
-            ellipsize(tr, label, 14.0, row.width() - 36.0)
+            tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(row.width() - 36.0))
         } else {
             label.to_string()
         };
@@ -6318,7 +6488,7 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let large_type = theme.text_scale >= 1.5;
         let label = if large_type {
-            ellipsize(tr, label, 14.0, row.width() - 36.0)
+            tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(row.width() - 36.0))
         } else {
             label.to_string()
         };
@@ -6418,23 +6588,6 @@ impl CameraApp {
     }
 }
 
-/// Truncate `s` with an ellipsis so it fits in `max_w` pixels at `size`.
-fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if f64::from(p::text_w(tr, s, size)) <= max_w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    for ch in s.chars() {
-        let trial = format!("{out}{ch}…");
-        if f64::from(p::text_w(tr, &trial, size)) > max_w {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
-}
-
 /// Test-only accessors that let sibling modules (`crate::actions` tests) drive
 /// the *real* affordance path and observe its result, without exposing internal
 /// fields to the rest of the crate. Each helper routes through the same
@@ -6457,6 +6610,126 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc, root)
+    }
+
+    /// 2026-09-17 review: the Photo / Video / Scan capsule split its authored
+    /// 240 px into three 80 px segments at every scale, so 200% labels ran
+    /// into each other. The capsule keeps 240 at 1× and takes the measured
+    /// labels' width (plus padding) when they need more.
+    #[test]
+    fn mode_switcher_segments_hold_their_measured_labels_at_2x() {
+        let mut tr = TextRenderer::new();
+        assert_eq!(
+            CameraApp::segmented_min_w(&mut tr, &["Photo", "Video", "Scan"]),
+            3.0 * (f64::from(p::text_w(&mut tr, "Photo", MODE_LABEL_SIZE))
+                + 2.0 * MODE_LABEL_PAD_X),
+            "the widest label sizes every segment"
+        );
+        for scale in [1.0_f32, 2.0] {
+            let (mut app, mut doc, root) = sample_app();
+            render_at_scaled(&mut app, &mut doc, &root, 800.0, 900.0, scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let tree = app.accessibility().expect("camera has a semantic window");
+            let segment = |target: &str| -> Rect {
+                tree.children
+                    .iter()
+                    .find(|node| node.action_target.as_deref() == Some(target))
+                    .and_then(|node| node.bounds)
+                    .map(ui::a11y::AccessBounds::to_rect)
+                    .unwrap_or_else(|| panic!("{target} is a painted segment"))
+            };
+            let photo = segment("camera.mode:photo");
+            let video = segment("camera.mode:video");
+            let scan = segment("camera.nav:scanner");
+            // Tap regions grow narrow segments to the 44 px touch minimum
+            // around their centre, so widths are read from adjacent centres.
+            let seg_w = video.center().x - photo.center().x;
+            assert!(
+                (scan.center().x - video.center().x - seg_w).abs() < 0.5,
+                "{scale}×: equal segments {photo:?} {video:?} {scan:?}"
+            );
+            if (scale - 1.0).abs() < f32::EPSILON {
+                let labels = ["Photo", "Video", "Codes", "Docs"];
+                let expected = 240.0_f64.max(CameraApp::segmented_min_w(&mut tr, &labels))
+                    / labels.len() as f64;
+                assert!(
+                    (seg_w - expected).abs() < 0.5,
+                    "1× keeps the authored width unless its four labels need more: {seg_w}"
+                );
+            } else {
+                let widest = ["Photo", "Video", "Scan"]
+                    .iter()
+                    .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+                    .fold(0.0_f64, f64::max);
+                assert!(
+                    seg_w >= widest + 2.0 * MODE_LABEL_PAD_X,
+                    "{scale}×: {seg_w} px segments hold a {widest} px label with padding"
+                );
+            }
+        }
+    }
+
+    /// The gallery header used three literal sets that agreed only at 1×:
+    /// the title over its count at 200%, fixed 80 px filter segments over
+    /// each other, and on a 480 px window the filter on the title's row
+    /// running into it. One measured description now places all of it.
+    #[test]
+    fn gallery_chrome_keeps_title_count_filter_and_grid_apart() {
+        let labels = vec!["All", "Photos", "Videos", "Favorites"];
+        // 1× desktop: the authored geometry, filter beside the title.
+        let mut tr = TextRenderer::new();
+        let wide = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let one = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
+        assert_eq!(one.title_top, 16.0, "{one:?}");
+        assert_eq!(one.count_top, 44.0, "{one:?}");
+        assert_eq!(
+            one.content_top,
+            64.0,
+            "{one:?} (count line {})",
+            p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE)
+        );
+        assert_eq!(one.filter.y0, 16.0, "1× filter shares the title row");
+        assert_eq!(one.filter.height(), 32.0);
+        assert_eq!(one.filter.width(), 320.0);
+        assert_eq!(one.filter.x1, wide.x1 - 24.0);
+
+        // 480 px: the filter cannot share the title's row without touching
+        // it, so it owns the row under the count and the grid follows it.
+        let phone = Rect::new(0.0, 0.0, 480.0, 900.0);
+        let narrow = GalleryChrome::measure(&mut tr, phone, 24.0, "9 items", &labels);
+        let count_bottom =
+            narrow.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
+        assert!(
+            narrow.filter.y0 >= count_bottom,
+            "phone filter {:?} starts below the count line ending at {count_bottom}",
+            narrow.filter
+        );
+        assert!(narrow.content_top >= narrow.filter.y1 + GalleryChrome::GAP);
+
+        // 2×: the count clears the measured title, every filter segment
+        // holds the widest measured label, and the grid clears both.
+        tr.set_text_scale(2.0);
+        let two = GalleryChrome::measure(&mut tr, wide, 24.0, "9 items", &labels);
+        let title_h = p::text_h(&mut tr, "Library", GalleryChrome::TITLE_SIZE);
+        assert!(
+            two.count_top >= two.title_top + title_h,
+            "2× count below the title: {two:?}"
+        );
+        let widest = labels
+            .iter()
+            .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            two.filter.width() / labels.len() as f64 >= widest + 2.0 * MODE_LABEL_PAD_X,
+            "2× filter segments hold {widest} px labels: {:?}",
+            two.filter
+        );
+        let count_bottom = two.count_top + p::text_h(&mut tr, "9 items", GalleryChrome::COUNT_SIZE);
+        assert!(
+            two.content_top >= count_bottom && two.content_top >= two.filter.y1,
+            "2× grid starts below the header and the filter: {two:?}"
+        );
     }
 
     fn sync_until(
@@ -7284,6 +7557,24 @@ mod tests {
         render_with_theme(app, doc, root, w, h, &Theme::dark());
     }
 
+    fn render_at_scaled(
+        app: &mut CameraApp,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        w: f32,
+        h: f32,
+        text_scale: f32,
+    ) {
+        render_with_theme(
+            app,
+            doc,
+            root,
+            w,
+            h,
+            &Theme::dark().with_text_scale(text_scale),
+        );
+    }
+
     fn render_with_theme(
         app: &mut CameraApp,
         doc: &mut AutoCommit,
@@ -7295,6 +7586,7 @@ mod tests {
         let presence = PresenceCtx::empty();
         let perms = ui::permissions::PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         app.sync(doc, root);
@@ -7341,6 +7633,95 @@ mod tests {
             &presence,
             &perms,
         );
+    }
+
+    /// corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
+    /// HDR / Timer" labels ran below their 30 px pills and "Photo" below its
+    /// selected segment. Capsules now grow from the measured label line, so
+    /// every painted control must contain its label at 1× and 2×, and the
+    /// four floating corner controls must sit on one edge inset.
+    #[test]
+    fn viewfinder_capsules_contain_their_labels_at_accessibility_scale() {
+        for scale in [1.0_f32, 2.0] {
+            let (mut app, mut doc, root) = sample_app();
+            render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
+            let mode_label_h = f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1);
+            let tree = app.accessibility().expect("camera has a semantic window");
+            let bounds_of = |target: &str| -> Rect {
+                tree.children
+                    .iter()
+                    .find(|node| node.action_target.as_deref() == Some(target))
+                    .and_then(|node| node.bounds)
+                    .map(ui::a11y::AccessBounds::to_rect)
+                    .unwrap_or_else(|| panic!("{target} is a painted control"))
+            };
+            // Tap regions are the painted rect grown to the 44 px touch minimum
+            // around its centre (`push_tap_region`): anything taller than 44 is
+            // the painted capsule itself, and centres are always painted centres.
+            const TOUCH_MIN: f64 = 44.0;
+            let photo = bounds_of("camera.mode:photo");
+            let shutter = bounds_of("camera.shutter");
+            let pill = bounds_of("camera.resolution");
+            if (scale - 1.0).abs() < f32::EPSILON {
+                // 1× keeps the authored 30 / 34 px capsules (both under the
+                // touch minimum, so their regions read exactly 44) and the
+                // 34 px switcher ends `ACTION_GAP` above the shutter's top
+                // edge, so the two 44 px tap boxes never overlap (HIG §7).
+                assert!((pill.height() - TOUCH_MIN).abs() < 0.5, "1× pill: {pill:?}");
+                assert!(
+                    (photo.height() - TOUCH_MIN).abs() < 0.5,
+                    "1× segment: {photo:?}"
+                );
+                assert!(
+                    (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 + ACTION_GAP - shutter.y0).abs()
+                        < 0.5,
+                    "1×: switcher centre {photo:?} puts its bottom `s3` above the shutter {shutter:?}"
+                );
+                assert!(
+                    shutter.y0 - photo.y1 >= step(Spacing::BASE.s1),
+                    "1×: the switcher's tap box {photo:?} keeps a token gap to the shutter's {shutter:?}"
+                );
+            } else {
+                // 2×: the measured label lines exceed the minima, so the grown
+                // capsules are what the regions report — and they contain the
+                // labels with their padding, bottom edge still on the shutter.
+                for target in ["camera.resolution"] {
+                    let pill = bounds_of(target);
+                    assert!(
+                        pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
+                        "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
+                    );
+                }
+                assert!(
+                    photo.height() + 0.5 >= mode_label_h + MODE_LABEL_PAD_Y * 2.0,
+                    "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
+                );
+                assert!(
+                    (shutter.y0 - photo.y1 - ACTION_GAP).abs() < 0.5,
+                    "2×: switcher {photo:?} is bottom-anchored `s3` above the shutter {shutter:?}"
+                );
+            }
+            // Corner controls share one edge inset (checked through their
+            // painted centres, which touch inflation never moves).
+            let photos = bounds_of("camera.open-photos");
+            let lens = bounds_of("camera.facing");
+            let settings = bounds_of("camera.nav:settings");
+            assert!(
+                (photos.center().x - (app.rect.x1 - EDGE - 58.0)).abs() < 0.5,
+                "Photos handoff on the top control row: {photos:?}"
+            );
+            assert!(
+                (lens.center().x - (app.rect.x1 - EDGE - 26.0)).abs() < 0.5,
+                "lens switch (r 26) on EDGE: {lens:?}"
+            );
+            assert!(
+                (settings.center().x - (app.rect.x1 - EDGE - 16.0)).abs() < 0.5,
+                "settings (r 16) on EDGE: {settings:?}"
+            );
+        }
     }
 
     #[test]
@@ -7716,7 +8097,7 @@ mod tests {
     fn portal_selected_image_decodes_a_real_qr_without_media_indexing() {
         // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
         // it through the production code path — no camera involved.
-        let payload = "https://tilo.example/scanned-from-a-saved-photo";
+        let payload = "https://example.test/scanned-from-a-saved-photo";
         let m = crate::scan::encode(payload).expect("encode");
         let (scale, quiet) = (8usize, 4usize);
         let dim = (m.size + quiet * 2) * scale;

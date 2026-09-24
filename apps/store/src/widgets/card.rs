@@ -16,7 +16,7 @@
 //! caller: this fn is pure composition.
 
 use ui::text_render::TextWeight;
-use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
+use ui::widget::{Actions, Button, Card, Column, Container, Row, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -59,7 +59,7 @@ pub fn store_card(
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(3.0)
+        .with_gap(theme.tokens.spacing.s1)
         .push(Box::new(
             Text::new(&item.name)
                 .with_scaled_size(if compact { 18.0 } else { 20.0 })
@@ -107,108 +107,32 @@ pub fn store_card(
     let details = details.fit_content(40.0).tooltip(card_summary(item));
     let action_btn = action_btn.fit_content(40.0);
 
-    let content: Box<dyn Widget> = if compact {
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(icon_artwork(item, images, large_text))
-                    .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_flex_grow()
-                            .with_child(Box::new(identity)),
-                    )),
-            ));
-        if !large_text {
-            // Intrinsic `Column`s deliberately use Taffy's block stack so a
-            // scroll body can grow beyond its viewport. Block does not apply
-            // flex `gap`, though, which previously made the description and
-            // action row paint on top of the identity row on a phone-sized
-            // Store window. These are real layout children rather than a
-            // cosmetic margin, so the measured card height and painted rhythm
-            // stay in agreement for every description length.
-            column = column.push(Box::new(
-                Container::new().with_no_padding().with_height(8.0),
-            ));
-            column = column.push(Box::new(
-                Text::new(&item.description)
-                    .with_scaled_size(14.0)
-                    .with_color(theme.text_dim),
-            ));
-        }
-        column = column.push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_height(if large_text { 6.0 } else { 8.0 }),
-        ));
-        column = column.push(Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(details))
-                .push(Box::new(action_btn)),
-        ));
-        Box::new(column)
+    let artwork = if compact {
+        icon_artwork(item, images, large_text)
     } else {
-        // A vertical desktop tile gives discovery copy and the action rail
-        // stable, independent regions. The old horizontal row was readable
-        // only in two very wide columns; at three useful desktop columns it
-        // turned titles, artwork and buttons into one cramped line.
-        let header = Row::new()
-            .no_wrap()
-            .push(Box::new(super::Artwork::new(
-                images,
-                item.icon_url.as_deref(),
-                &item.name,
-                58.0,
-                58.0,
-            )))
-            .push(Box::new(
-                Container::new().with_no_padding().with_width(10.0),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_child(Box::new(identity)),
-            ));
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_fill_remaining_height()
-                .push(Box::new(header))
-                .push(Box::new(
-                    Container::new().with_no_padding().with_height(10.0),
-                ))
-                .push(Box::new(
-                    Text::new(&item.description)
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(details))
-                        .push(Box::new(action_btn)),
-                )),
-        )
+        Box::new(super::Artwork::new(
+            images,
+            item.icon_url.as_deref(),
+            &item.name,
+            52.0,
+            52.0,
+        ))
     };
-    // Source is metadata, not branding. A neutral OS surface keeps the browse
-    // page calm and lets artwork plus the primary action establish hierarchy;
-    // Tilo/Flatpak provenance remains explicit in the identity line.
-    let card_fill = theme.bg_primary;
-    let card = Container::new().with_fill(card_fill).with_child(content);
-    if compact {
-        Box::new(card)
-    } else {
-        Box::new(card.filling())
-    }
+    let header = Row::new().no_wrap().push(artwork).push(Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_child(Box::new(identity)),
+    ));
+    Box::new(
+        Card::composed(Box::new(
+            Text::new(&item.description)
+                .with_scaled_size(14.0)
+                .with_color(theme.text_dim),
+        ))
+        .with_header(Box::new(header))
+        .with_footer(Box::new(Actions::new(action_btn).secondary(details))),
+    )
 }
 
 /// Bounded remote icon with the shared deterministic initial-art fallback.
@@ -314,6 +238,8 @@ mod tests {
             id: "org.example.Editor".into(),
             name: "Editor".into(),
             description: "Write without distractions.".into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Development".into(), "Productivity".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

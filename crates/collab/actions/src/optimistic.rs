@@ -383,7 +383,7 @@ mod tests {
                 Self::Increment { key, by } => {
                     let current = doc
                         .get(&ROOT, key)?
-                        .and_then(|(value, _)| value.to_i64())
+                        .and_then(|(value, _)| value.as_i64())
                         .unwrap_or(0);
                     doc.put(&ROOT, key, ScalarValue::Int(current.saturating_add(*by)))?;
                 }
@@ -405,7 +405,7 @@ mod tests {
     fn value(doc: &AutoCommit, key: &str) -> Option<i64> {
         doc.get(&ROOT, key)
             .unwrap()
-            .and_then(|(value, _)| value.to_i64())
+            .and_then(|(value, _)| value.as_i64())
     }
 
     #[test]

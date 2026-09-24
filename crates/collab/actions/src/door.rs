@@ -29,7 +29,7 @@ use crate::resource::{ActionInput, ActionSpec, Collects, KEY_SEP, Resource};
 /// list index — so the same address names the same operation across
 /// layouts, themes, resolutions, and a caller with no display can work
 /// from ids and labels alone.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionAddress {
     pub resource: String,
     pub action: String,
@@ -64,7 +64,7 @@ impl ActionAddress {
 /// What an invocation of one action must carry, advertised on the
 /// descriptor rather than discovered by trying — enumeration is the only
 /// thing a caller that can't see the screen has to work from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InputSpec {
     /// Takes nothing. The majority.
     None,
@@ -117,7 +117,7 @@ impl InputSpec {
 /// decide whether to perform it, nothing that could perform it — an
 /// [`ActionSpec`]'s closure never appears here or crosses a boundary,
 /// only the address does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDescriptor {
     pub address: ActionAddress,
     /// The publishing resource's stable kind tag (`word_processor.section`,
@@ -367,7 +367,10 @@ pub fn invoke(
 /// # Errors
 ///
 /// Returns the same errors as [`invoke`].
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+)]
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -382,7 +385,10 @@ pub fn invoke_confirmed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+)]
 fn invoke_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -438,7 +444,10 @@ pub fn invoke_with_context(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+)]
 fn invoke_with_context_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -482,7 +491,10 @@ pub fn invoke_json(
 /// # Errors
 ///
 /// Returns the same errors as [`invoke_json`].
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+)]
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.
 ///
@@ -504,7 +516,10 @@ pub fn invoke_json_confirmed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one door invocation binds the document, published tree, address, argument, actor, registry and transport together"
+)]
 fn invoke_json_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -706,7 +721,7 @@ mod tests {
         perform(&mut b, &hijacked, &star(), None).unwrap();
 
         assert_eq!(
-            a.get(&ROOT, "starred").unwrap().unwrap().0.to_bool(),
+            a.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
         );
         assert!(b.get(&ROOT, "starred").unwrap().is_none());
@@ -898,7 +913,7 @@ mod tests {
         assert_eq!(
             change
                 .message()
-                .and_then(|message| ActionContext::from_change_message(message)),
+                .and_then(ActionContext::from_change_message),
             env.context,
             "semantic provenance survives as part of the durable change"
         );
@@ -995,7 +1010,7 @@ mod tests {
         )
         .expect("a policy gate may explicitly attest confirmation");
         assert_eq!(
-            doc.get(&ROOT, "starred").unwrap().unwrap().0.to_bool(),
+            doc.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
         );
     }

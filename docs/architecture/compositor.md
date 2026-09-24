@@ -141,23 +141,31 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).
 
-### No fullscreen fast path — none of it exists
+### Composited frames: GBM render targets, dumb-buffer fallback
 
-**There is no direct scanout in this compositor, in any partial form.** A
-fullscreen client pays exactly the same cost as a windowed one: its
-buffer is imported to bytes, drawn into the scene as a full-viewport
-image, and the whole scene is rendered and presented. If you are here
-because you expect a fast path to exist and be disabled, or half-wired,
-or gated behind a flag — it is none of those. Nothing was started.
+On a single output with a normal transform, no colour transform, a hardware
+cursor plane, event-driven page flips, and a renderer on the same PCI
+function as the scanout card, the DRM backend allocates two linear
+XRGB8888 GBM buffer objects with `SCANOUT | RENDERING`, registers them as
+KMS framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
+render targets (`ui::dmabuf_import`). Vello renders the composited scene
+straight into the back slot and the backend flips to it; a slot stays
+owned by KMS until its page-flip event retires it, so the renderer never
+touches the front or flip-pending slot. When any eligibility check fails
+(`direct_scanout_rejection` in `backend/drm/mod.rs` names the reason in
+the log), or a direct submission fails, presentation falls back to the
+readback path: render, copy to CPU bytes, write the two dumb buffers the
+backend allocates at modeset.
 
-**What is absent, concretely.** There is no dmabuf→KMS import anywhere in
-`crates/session/shell/src/compositor/backend/drm/`. `add_framebuffer` is called in
-exactly one place — `scanout.rs`, on the two dumb buffers the backend
-allocates for itself at modeset — and nowhere else. The compositor never
-hands a client's buffer to KMS. `compositor::gpu_import` does import
-client dma-bufs, but via EGL into a GL texture that it *reads back to
-CPU bytes*; that is a path to `peniko::ImageBrush`, the opposite
-direction from scanout.
+### No client fullscreen fast path
+
+These are the compositor's own buffers. **A client's buffer is never
+handed to KMS**: a fullscreen client pays exactly the same cost as a
+windowed one — its buffer is imported, drawn into the scene as a
+full-viewport image, and the whole scene is rendered and presented.
+`compositor::gpu_import` imports client dma-bufs via EGL into a GL texture
+that it *reads back to CPU bytes*; that is a path to `peniko::ImageBrush`,
+the opposite direction from scanout.
 
 **What building it entails.** Importing a client dmabuf as a KMS
 framebuffer (`drmModeAddFB2WithModifiers`); negotiating format and
@@ -166,17 +174,14 @@ when the client's allocation changes; holding the buffer alive and
 un-released until the flip that shows it retires, or the client
 overwrites a buffer mid-scanout; and a tested fallback for every case
 where the plane refuses — wrong format, wrong modifier, scaling needed,
-a flip that fails at commit time. It is a project, not a branch in
-`submit_frame`.
+a flip that fails at commit time.
 
-**No qualification logic is wired either**, deliberately. Deciding
+**No client qualification logic is wired either**, deliberately. Deciding
 "does this frame qualify for the short route" (one visible surface,
 covering the output, no chrome overlay, not locked, no notifications, no
-remote cursors) is tractable on its own and tempting to land early. It
-was left out because a decision with no route behind it is a switch
-wired to nothing: it reads as progress, it accumulates callers, and the
-first person to implement scanout has to re-derive whether the existing
-predicate was ever right. The decision and the route land together.
+remote cursors) is tractable on its own, but a decision with no route
+behind it is a switch wired to nothing. The decision and the route land
+together.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 
@@ -216,7 +221,7 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 
 ### Test-control input (`TILO_TEST_CONTROL`)
 
-When the env var is set, the compositor binds an additional unix socket alongside the wayland one. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
+When the env var is set, the compositor binds an additional unix socket alongside the wayland one. The socket drives the shell as the user, so it is published 0600 (bound in a 0700 staging directory, then renamed into place) and a missing parent is created 0700; anything other than a stale socket at the path is refused. The conventional path, and `tilo-control`'s default, is `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` — never `/tmp`. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
 `crates/session/shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `crates/session/shell/tests/control_socket_test.rs` covers the live socket.
 
@@ -237,13 +242,25 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 
 `OutputManagerState` advertises outputs to clients, and `compositor::output_globals` keeps one `wl_output` global per backend output in step with it — created on plug, **updated in place** on a mode or scale change (so a client sees a re-mode rather than a monitor disappearing and a different one appearing), withdrawn on unplug. Matching is by `OutputId`, which the DRM registry mints per `(device, connector)` and keeps stable across re-enumeration.
 
-The winit backend exposes a single output sized to the winit window. The drm backend enumerates DRM connectors via udev, configures their preferred mode, and drives every connected connector on the primary card from one card fd.
+The winit backend exposes a single output sized to the winit window. The DRM
+backend enumerates every seat GPU and connector via udev, configures the saved
+or preferred mode, and drives every enabled connector across all retained
+cards.
 
-**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Outputs are re-packed side by side so an unplugged monitor leaves no hole in the combined coordinate space, and the pointer is clamped back into what remains. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. The card is held open on the loop thread for the whole session because libseat refuses a second `open` of a node.
+**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Configured `x/y`, rotation and mirror topology is reapplied after every change; connectors without saved placement fall back to a gap-free side-by-side layout. The pointer is projected back onto the nearest live output rectangle, never merely into the arrangement's bounding box. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. Each card is held open on the loop thread for the whole session because libseat refuses a second `open` of the same node.
 
 **Per-output scale.** Each output's factor is derived from the panel's physical size against its resolution (`backend::drm::scale`), snapped to quarter steps and clamped to 100–200 %, with the `display.scale` setting as an override. Each surface is told the scale of the output it is actually on as its preferred `wp_fractional_scale` — a laptop docked to an external monitor has two right answers.
 
-Multi-monitor support is feature-complete for the single-workspace case; multi-workspace-per-output and per-output workspace pinning are tracked in the foundation spec §4 follow-up. Connectors on *secondary* GPUs need a second card fd plus cross-GPU buffer handling and remain a follow-up.
+Multi-monitor support is feature-complete for the shared-workspace-plane model.
+Every usable seat GPU is retained once through libseat; its connector scanouts
+receive duplicate fds and consume the same combined scene, so hybrid-GPU docks
+participate in topology, input routing, hotplug, VT resume and presentation.
+The cursor is confined to the union of live output rectangles rather than the
+combined bounding box, which keeps L-shaped and vertically offset layouts from
+creating invisible dead regions. Tilo deliberately does not implement
+multi-workspace-per-output or workspace pinning: displays are private viewports
+onto one collaborative workspace plane (see
+[`displays-and-infinite-workspaces.md`](displays-and-infinite-workspaces.md)).
 
 ## Sessions and seat acquisition (DRM mode)
 
@@ -271,7 +288,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
-- **Future**: vello → DMA-BUF direct interop, libei input emulation in addition to the control socket, multi-monitor workspace pinning.
+- **Future**: vello → DMA-BUF direct interop and libei input emulation in addition to the control socket.
 
 ## Where to read first
 

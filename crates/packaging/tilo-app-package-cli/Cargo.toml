@@ -1,0 +1,53 @@
+[package]
+name = "tilo-app-package-cli"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-app-package"
+path = "src/main.rs"
+
+# CLI driver for `tilo-app-package`. Pack a payload + manifest into a
+# `.tapp` file, sign / verify / inspect / unpack it. The .tapp
+# file format is a tarball with the following entries:
+#
+# ```
+# tapp.toml                # tiny header naming the PackageId and format
+# signed-root              # the 173-byte signed-root blob
+# manifest.toml            # the manifest (UTF-8 TOML)
+# collection.qcl           # the encoded payload Collection (binary)
+# blobs/<hex>              # each payload blob, named by its BLAKE3 hex hash
+# ```
+#
+# The tar layout is convention-only — it is NOT what the package
+# id covers (the id covers the signed-root blob, which transitively
+# binds the manifest hash, collection hash, and per-file hashes).
+# So the tar archive can be rebuilt by anyone holding the four
+# in-band blobs and the .tapp's PackageId.
+
+[dependencies]
+tilo-app-package = { path = "../tilo-app-package" }
+app-registry = { path = "../app-registry" }
+# Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
+registry-types = { path = "../registry-types" }
+getrandom.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+toml.workspace = true
+# Async runtime for the `publish` path (iroh-blobs upload + HTTP emit).
+# The other subcommands stay synchronous; publish drives a runtime inline.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

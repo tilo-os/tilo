@@ -27,7 +27,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, NavSplit, SplitMode, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, AuthoredExtent, FullscreenProvider, NavSplit, SplitMode, VideoPlayer, Widget,
+};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
@@ -189,6 +191,14 @@ pub struct TubeApp {
     /// wrong — a wide window re-seeds its rail open on the next frame instead
     /// of being stuck on the unknown-width default.
     built_overlay: Option<bool>,
+    /// `NAV_BREAKPOINT` as the live split resolves it under the theme the
+    /// tree was last built with (`AuthoredExtent::text`, HIG §9.6). The app's
+    /// own narrow/wide decisions compare against this, never the constant,
+    /// so they agree with the split at every text scale.
+    nav_breakpoint: f64,
+    /// `screens::NAV_RAIL_W` resolved like the split's icon sidebar
+    /// (`AuthoredExtent::icon`: follows `ui_scale`, not the text scale).
+    nav_rail_w: f64,
 
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
@@ -308,6 +318,8 @@ impl TubeApp {
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
             built_overlay: None,
+            nav_breakpoint: NAV_BREAKPOINT,
+            nav_rail_w: screens::NAV_RAIL_W,
             online: false,
             kicked_off: false,
             playing_id: None,
@@ -858,7 +870,7 @@ impl TubeApp {
     pub fn with_device_sync_shot(mut self) -> Self {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();
-        let y = if self.rect.width() < NAV_BREAKPOINT {
+        let y = if self.rect.width() < self.nav_breakpoint {
             1_330.0
         } else {
             930.0
@@ -2144,7 +2156,7 @@ impl TubeApp {
                         .get(&likes, video.id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .map(|video| video.id.clone())
@@ -2162,7 +2174,7 @@ impl TubeApp {
                         .get(&likes, comment_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .map(|liked| (comment_id, liked))
                 })
                 .collect();
@@ -2185,7 +2197,7 @@ impl TubeApp {
                         .get(&subscriptions, channel_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
@@ -2205,7 +2217,7 @@ impl TubeApp {
                         .get(&queue, video_id.as_str())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_bool())
+                        .and_then(|(value, _)| value.as_bool())
                         .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
@@ -2237,7 +2249,7 @@ impl TubeApp {
                     .get(&settings, key)
                     .ok()
                     .flatten()
-                    .and_then(|(value, _)| value.to_bool())
+                    .and_then(|(value, _)| value.as_bool())
                     && *slot != enabled
                 {
                     *slot = enabled;
@@ -2248,7 +2260,7 @@ impl TubeApp {
                 .get(&settings, "preferred_quality")
                 .ok()
                 .flatten()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
                 && QUALITIES.contains(&quality.as_str())
                 && self.model.settings.preferred_quality != quality
             {
@@ -2263,7 +2275,7 @@ impl TubeApp {
                         .get(&categories, category.api_key())
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned))
                         .and_then(|value| match value.as_str() {
                             "skip" => Some(crate::model::SkipMode::Skip),
                             "show" => Some(crate::model::SkipMode::Show),
@@ -2327,7 +2339,7 @@ impl TubeApp {
                             values
                                 .into_iter()
                                 .filter_map(|(value, _)| {
-                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
                                 })
                                 .max()
                         })
@@ -2350,7 +2362,7 @@ impl TubeApp {
                         let record = newest_history_record(
                             values
                                 .into_iter()
-                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                                .filter_map(|(value, _)| value.as_str().map(str::to_owned))
                                 .filter_map(|value| {
                                     serde_json::from_str::<HistoryEntryRecord>(&value).ok()
                                 }),
@@ -2400,7 +2412,7 @@ impl TubeApp {
                             values
                                 .into_iter()
                                 .filter_map(|(value, _)| {
-                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
                                 })
                                 .max()
                         })
@@ -2423,7 +2435,7 @@ impl TubeApp {
                             .get_all(&entries, video_id.as_str())
                             .ok()?
                             .into_iter()
-                            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                            .filter_map(|(value, _)| value.as_str().map(str::to_owned))
                             .filter_map(|value| {
                                 serde_json::from_str::<HistoryEntryRecord>(&value).ok()
                             });
@@ -2439,7 +2451,28 @@ impl TubeApp {
     }
 }
 
+impl FullscreenProvider for TubeApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&*self.player.borrow())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&*self.player.borrow())
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut *self.player.borrow_mut(), active);
+    }
+}
+
 impl Widget for TubeApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
     }
@@ -2609,6 +2642,11 @@ impl Widget for TubeApp {
     ) -> NodeId {
         self.text_scale = theme.text_scale;
         self.refresh_watch_control_bindings();
+        // Resolve the split's authored breakpoint and rail width under this
+        // theme before judging narrow/wide, so the seed below and the split
+        // built from it read the same numbers.
+        self.nav_breakpoint = AuthoredExtent::text(NAV_BREAKPOINT).resolve(theme);
+        self.nav_rail_w = AuthoredExtent::icon(screens::NAV_RAIL_W).resolve(theme);
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
         // first build runs before any width is known) and rebuild once.
@@ -3064,23 +3102,6 @@ impl Widget for TubeApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-
-    // Forward the watch-page player's fullscreen contract up to `ui::App` (which
-    // only polls the ROOT widget). Without this the player's fullscreen button
-    // flips its own flag but never reaches the window. The player names the
-    // largest output via `fullscreen_params`, so hitting fullscreen promotes the
-    // surface onto the big screen through the shared mechanism.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.borrow().fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        self.player.borrow().fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.borrow_mut().on_fullscreen_changed(active);
-    }
 }
 
 #[cfg(test)]
@@ -3202,24 +3223,24 @@ mod tests {
         // since `ui::App` only polls the root widget.
         let (mut app, _) = fresh_synth();
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             None,
             "no opinion until the user acts"
         );
         app.player.borrow_mut().toggle_fullscreen();
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             Some(true),
             "toggle reaches the root"
         );
         assert_eq!(
-            Widget::fullscreen_params(&app).target,
+            FullscreenProvider::fullscreen_params(&app).target,
             ui::fullscreen::FullscreenTarget::Largest,
             "immersive video targets the big screen"
         );
         // A compositor-driven exit flows back to the player through the root.
-        Widget::on_fullscreen_changed(&mut app, false);
-        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+        FullscreenProvider::on_fullscreen_changed(&mut app, false);
+        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
     }
 
     #[test]

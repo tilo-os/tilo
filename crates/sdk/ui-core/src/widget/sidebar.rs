@@ -17,19 +17,29 @@
 //!
 //! The eased reveal uses the shared [`FlapState`] kernel.
 
-use std::time::Instant;
+use crate::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::Metrics;
+use crate::widget::AuthoredExtent;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 
-pub const DEFAULT_DRAWER_WIDTH: f64 = 320.0;
-/// At/above this width the drawer docks; below it overlays.
+/// The OS-wide drawer / utility-panel width (`Metrics::drawer_width`).
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_DRAWER_WIDTH: f64 = Metrics::BASE.drawer_width as f64;
+/// At/above this width the drawer docks; below it overlays. 40 px over
+/// `Metrics::compact_breakpoint` (720) because the drawer is 40 px wider
+/// than the sidebar that breakpoint was sized for.
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = 760.0;
 /// Upper bound (seconds) on the per-frame delta used to advance the slide, so
 /// a stale clock (first frame, or a parked event loop) can't teleport it.
@@ -354,11 +364,19 @@ fn draw_nav_text(
 #[derive(Clone, Debug)]
 pub struct SidebarDrawer {
     side: SidebarSide,
-    breakpoint: f64,
-    docked_width: f64,
-    overlay_width: f64,
+    /// Authored at 1× (HIG §9.6, [`AuthoredExtent`]); resolved through the
+    /// factors [`Self::scale_for`] caches.
+    breakpoint: AuthoredExtent,
+    docked_width: AuthoredExtent,
+    overlay_width: AuthoredExtent,
     /// Width left behind when collapsed while docked. `0.0` ⇒ fully hidden.
-    rail_width: f64,
+    /// An icon rail: follows `ui_scale`, never the text.
+    rail_width: AuthoredExtent,
+    /// `Theme::responsive_scale` and `Theme::ui_scale` of the theme last
+    /// handed to [`Self::scale_for`]; `1.0` until then, so a host that never
+    /// calls it lays out exactly what it authored.
+    responsive_scale: f64,
+    ui_scale: f64,
     flap: FlapState,
 
     // --- resolved geometry (last `resolve`) ---
@@ -388,10 +406,12 @@ impl SidebarDrawer {
     pub fn new() -> Self {
         Self {
             side: SidebarSide::Left,
-            breakpoint: DEFAULT_DRAWER_BREAKPOINT,
-            docked_width: DEFAULT_DRAWER_WIDTH,
-            overlay_width: DEFAULT_DRAWER_WIDTH,
-            rail_width: 0.0,
+            breakpoint: AuthoredExtent::text(DEFAULT_DRAWER_BREAKPOINT),
+            docked_width: AuthoredExtent::text(DEFAULT_DRAWER_WIDTH),
+            overlay_width: AuthoredExtent::text(DEFAULT_DRAWER_WIDTH),
+            rail_width: AuthoredExtent::icon(0.0),
+            responsive_scale: 1.0,
+            ui_scale: 1.0,
             flap: FlapState::open_when_docked(),
             outer: Rect::ZERO,
             layout: SplitLayout::Docked,
@@ -419,25 +439,36 @@ impl SidebarDrawer {
     pub fn right(self) -> Self {
         self.side(SidebarSide::Right)
     }
+    /// Authored at 1× (text-sized); see [`Self::scale_for`].
     #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
-        self.breakpoint = px;
+        self.breakpoint = AuthoredExtent::text(px);
         self
     }
+    /// Docked width of a text-sized drawer (a page or destination list),
+    /// authored at 1×.
     #[must_use]
     pub fn docked_width(mut self, px: f64) -> Self {
-        self.docked_width = px;
+        self.docked_width = AuthoredExtent::text(px);
         self
     }
+    /// Docked width of an **icon rail** (firewall / backups / `api_tester`
+    /// dock a glyph column): follows `ui_scale`, never the text.
+    #[must_use]
+    pub fn icon_docked_width(mut self, px: f64) -> Self {
+        self.docked_width = AuthoredExtent::icon(px);
+        self
+    }
+    /// Overlay width of the text-sized drawer, authored at 1×.
     #[must_use]
     pub fn overlay_width(mut self, px: f64) -> Self {
-        self.overlay_width = px;
+        self.overlay_width = AuthoredExtent::text(px);
         self
     }
-    /// `0.0` hides it entirely.
+    /// `0.0` hides it entirely. An icon rail: `ui_scale` only.
     #[must_use]
     pub fn rail_width(mut self, px: f64) -> Self {
-        self.rail_width = px;
+        self.rail_width = AuthoredExtent::icon(px);
         self
     }
     /// A summon-on-demand panel.
@@ -448,16 +479,53 @@ impl SidebarDrawer {
     }
 
     // --- dynamic setters (per-frame reconfig) -------------------------------
+    //
+    // Each keeps the sizing its builder chose (a rail stays a rail).
 
     /// E.g. a width computed as a fraction of the window each layout pass.
     pub fn set_docked_width(&mut self, px: f64) {
-        self.docked_width = px;
+        self.docked_width = self.docked_width.with_px(px);
     }
     pub fn set_overlay_width(&mut self, px: f64) {
-        self.overlay_width = px;
+        self.overlay_width = self.overlay_width.with_px(px);
     }
     pub fn set_breakpoint(&mut self, px: f64) {
-        self.breakpoint = px;
+        self.breakpoint = self.breakpoint.with_px(px);
+    }
+
+    /// Adopt the theme's scale so the authored breakpoint and the
+    /// text-sized docked / overlay widths grow by [`Theme::responsive_scale`]
+    /// and an icon rail by `ui_scale` (HIG §9.6) — the same rule the widget
+    /// shells apply in `build_layout`. The drawer is a geometry helper with
+    /// no `build_layout` of its own, so a host adopting the rule calls this
+    /// from its `build_layout` with the theme it receives, once, and deletes
+    /// its own `× text_scale` arithmetic. Never called ⇒ authored geometry,
+    /// which is what every current host lays out.
+    pub fn scale_for(&mut self, theme: &Theme) {
+        self.responsive_scale = theme.responsive_scale();
+        self.ui_scale = f64::from(theme.ui_scale);
+    }
+
+    fn resolve_extent(&self, extent: AuthoredExtent) -> f64 {
+        extent.resolve_with(self.responsive_scale, self.ui_scale)
+    }
+
+    /// The breakpoint as laid out (text-sized).
+    pub fn resolved_breakpoint(&self) -> f64 {
+        self.resolve_extent(self.breakpoint)
+    }
+    /// The docked width as laid out (text-sized, or `ui_scale` only for an
+    /// [`Self::icon_docked_width`]).
+    pub fn resolved_docked_width(&self) -> f64 {
+        self.resolve_extent(self.docked_width)
+    }
+    /// The overlay width as laid out (text-sized).
+    pub fn resolved_overlay_width(&self) -> f64 {
+        self.resolve_extent(self.overlay_width)
+    }
+    /// The collapsed rail width as laid out (icon-sized: `ui_scale` only).
+    pub fn resolved_rail_width(&self) -> f64 {
+        self.resolve_extent(self.rail_width)
     }
 
     // --- state --------------------------------------------------------------
@@ -465,9 +533,9 @@ impl SidebarDrawer {
     pub fn anchored_side(&self) -> SidebarSide {
         self.side
     }
-    /// Docked at/above the breakpoint.
+    /// Docked at/above the (resolved) breakpoint.
     pub fn layout_for(&self, width: f64) -> SplitLayout {
-        SplitLayout::from_width(width, self.breakpoint)
+        SplitLayout::from_width(width, self.resolved_breakpoint())
     }
     pub fn layout(&self) -> SplitLayout {
         self.layout
@@ -526,7 +594,7 @@ impl SidebarDrawer {
     /// first tick establishes the clock (`dt == 0`, no jump); later deltas are
     /// clamped to [`MAX_FRAME_DT`]. Returns whether it is still animating.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {
-        let now = Instant::now();
+        let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
         });
@@ -574,8 +642,8 @@ impl SidebarDrawer {
         match self.layout {
             SplitLayout::Docked => {
                 let r = self.flap.reveal();
-                let full = self.docked_width.min(o.width());
-                let rail = self.rail_width.min(full);
+                let full = self.resolved_docked_width().min(o.width());
+                let rail = self.resolved_rail_width().min(full);
                 let inset = rail + (full - rail) * r;
                 match self.side {
                     SidebarSide::Left => {
@@ -593,7 +661,7 @@ impl SidebarDrawer {
                 // Content spans the full width; the drawer slides in over it.
                 self.content_rect = o;
                 let slide = self.flap.slide();
-                let w = self.overlay_width.min(o.width());
+                let w = self.resolved_overlay_width().min(o.width());
                 self.sidebar_rect = match self.side {
                     SidebarSide::Left => {
                         let x0 = o.x0 - w * (1.0 - slide);
@@ -707,19 +775,22 @@ impl SidebarDrawer {
         let open = self.is_open();
         let radius = f64::from(theme.tokens.radii.md).min(rect.height() * 0.5);
 
+        // Rest face and edge follow the Neutral button (HIG §9.5): the
+        // raised surface with its derived edge, `bg_hover` under the
+        // pointer. Open is the toggle's "on" state and keeps the accent.
         let bg = if open {
             mix(c.surfaces.raised, c.accent[ACCENT_IDX], 0.20)
         } else if hovered {
-            c.neutral[3]
+            theme.bg_hover
         } else {
-            c.neutral[2]
+            c.surfaces.raised
         };
         let pill = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
         let border = if open {
             c.accent[ACCENT_IDX]
         } else {
-            c.border_standard
+            crate::surface::edge_on(bg)
         };
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 
@@ -798,10 +869,6 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
         lerp(a.b(), b.b()),
         255,
     )
-}
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
 #[cfg(test)]
@@ -946,7 +1013,7 @@ mod tests {
         d.tick(false);
         assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
 
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(crate::time::Duration::from_millis(16));
         d.tick(false);
         let r = d.reveal();
         assert!(
@@ -959,7 +1026,7 @@ mod tests {
         );
 
         for _ in 0..300 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::time::Duration::from_millis(1));
             d.tick(false);
             if !d.is_animating() {
                 break;
@@ -1007,6 +1074,98 @@ mod tests {
         assert!(
             scene.encoding().draw_tags.len() >= 3,
             "toggle + scrim must paint"
+        );
+    }
+
+    /// HIG §9.6: once the host hands the drawer its theme, the authored
+    /// breakpoint and text-sized widths grow by `ui_scale × text_growth`
+    /// and the icon rail by `ui_scale` alone; a host that never calls
+    /// `scale_for` lays out exactly what it authored.
+    #[test]
+    fn scale_for_grows_text_sized_extents_and_leaves_the_icon_rail() {
+        let authored = || {
+            SidebarDrawer::new()
+                .breakpoint(760.0)
+                .docked_width(240.0)
+                .overlay_width(320.0)
+                .rail_width(56.0)
+        };
+        let mut plain = authored();
+        plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+        assert_eq!(plain.layout(), SplitLayout::Docked);
+        assert_eq!(
+            plain.sidebar_rect().width(),
+            240.0,
+            "authored geometry until scaled"
+        );
+        assert_eq!(
+            (
+                plain.resolved_breakpoint(),
+                plain.resolved_overlay_width(),
+                plain.resolved_rail_width()
+            ),
+            (760.0, 320.0, 56.0)
+        );
+
+        let mut large = authored();
+        large.scale_for(&Theme::dark().with_text_scale(2.0));
+        assert_eq!(
+            (
+                large.resolved_breakpoint(),
+                large.resolved_docked_width(),
+                large.resolved_overlay_width()
+            ),
+            (1520.0, 480.0, 640.0)
+        );
+        assert_eq!(
+            large.resolved_rail_width(),
+            56.0,
+            "an icon rail never grows with the text"
+        );
+        large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+        assert_eq!(
+            large.layout(),
+            SplitLayout::Overlay,
+            "a 1000 px window at 2× has the room a 500 px window has at 1×"
+        );
+        large.open();
+        large.snap(true);
+        large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
+        assert_eq!(
+            large.sidebar_rect().width(),
+            640.0,
+            "the overlay drawer lays out at the resolved width"
+        );
+
+        let mut smaller = authored();
+        smaller.scale_for(&Theme::dark().with_text_scale(0.75));
+        assert_eq!(
+            smaller.resolved_docked_width(),
+            240.0,
+            "text never shrinks a pane"
+        );
+
+        let mut dense = authored();
+        dense.scale_for(&Theme::dark().with_ui_scale(1.5));
+        assert!(
+            (dense.resolved_rail_width() - 84.0).abs() < 1e-9,
+            "ui_scale grows the rail too"
+        );
+        assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
+
+        // A docked icon rail (firewall / backups) keeps its width at 2× text,
+        // and a per-frame setter keeps the sizing its builder chose.
+        let mut glyphs = SidebarDrawer::new()
+            .icon_docked_width(56.0)
+            .overlay_width(288.0);
+        glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
+        assert_eq!(glyphs.resolved_docked_width(), 56.0);
+        assert_eq!(glyphs.resolved_overlay_width(), 576.0);
+        glyphs.set_docked_width(64.0);
+        assert_eq!(
+            glyphs.resolved_docked_width(),
+            64.0,
+            "still an icon rail after a setter"
         );
     }
 

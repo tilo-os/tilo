@@ -7,14 +7,14 @@
 //! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
-//! ui::App::from_factory(ui::State::new(), my_app::app_root).run();
+//! tilo_ui::App::from_factory(tilo_ui::State::new(), my_app::app_root).run();
 //! ```
 //!
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = ui::persist::open("dev.tilo.my-app");
-//! ui::App::from_factory(state, my_app::app_root)
+//! let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
+//! tilo_ui::App::from_factory(state, my_app::app_root)
 //!     .with_autosave(autosave)
 //!     .run();
 //! ```
@@ -30,20 +30,29 @@
 //! Apps carrying state an older release wrote elsewhere call
 //! [`open_migrating`] once with that legacy path; the old document is
 //! merged in, so the migration is safe to run repeatedly.
+//!
+//! Every function here resolves storage from the native process
+//! environment (`TILO_PACKAGE_ID`, the XDG data directory) and the local
+//! filesystem. A host with an explicit profile opens records through
+//! [`crate::record::RecordOwners`] instead, which persists through any
+//! [`durable_store::DurableStore`].
 
 // `app_state::StoreError` (144+ bytes) is what makes every `Result<_,
 // StoreError>` in this module large. Shrinking it means editing the
 // `app_state` crate; boxing it here instead means changing the return
 // type of these `pub fn`s, a public-API change that ripples to every
-// crate that calls into `ui::persist` (`shell` included). Neither is a
+// crate that calls into `tilo_ui::persist` (`shell` included). Neither is a
 // same-crate lint fix, so the size is accepted rather than exempted
 // function-by-function.
 #![allow(clippy::result_large_err)]
 
+use crate::time::Duration;
 use std::path::Path;
-use std::time::Duration;
+use std::rc::Rc;
 
-pub use app_state::{Autosave, DEFAULT_DEBOUNCE, DocStore, StoreError};
+use durable_store::{DurableStore, StorageKey};
+
+pub use app_state::{DEFAULT_DEBOUNCE, DocStore, DocWriter, StoreError};
 
 use crate::state::State;
 
@@ -53,7 +62,7 @@ use crate::state::State;
 /// home, missing `HOME`, a corrupt document) the error is logged and the app
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
-pub fn open(manifest_id: &str) -> (State, Autosave) {
+pub fn open(manifest_id: &str) -> (State, DocWriter) {
     try_open(manifest_id).unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
@@ -68,19 +77,39 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
 /// On the first scoped open the legacy package document is merged, never
 /// moved or deleted.  The next autosave lands in the room directory, so a
 /// crash during migration still leaves the legacy source intact.
-pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
-    let package_id = std::env::var("TILO_PACKAGE_ID")
-        .ok()
-        .filter(|id| !id.is_empty())
+///
+/// The host's package id, when set, wins over `manifest_id`.
+pub fn open_room(manifest_id: &str, room_id: &str) -> (State, DocWriter) {
+    let package_id = crate::host::environment()
+        .identity
+        .package_id
+        .clone()
         .unwrap_or_else(|| manifest_id.to_string());
-    let attempt = || -> Result<(State, Autosave), StoreError> {
-        let mut store = DocStore::open_room(&package_id, room_id)?;
-        let legacy = DocStore::legacy_package_document_path(&package_id)?;
-        if legacy.is_file() && DocStore::claim_legacy_package_migration(&package_id, room_id)? {
-            match store.migrate_from(&legacy) {
+    open_room_in(DocStore::native_store(), &package_id, room_id)
+}
+
+/// [`open_room`] over an explicit store and package, consulting no
+/// environment.
+pub fn open_room_in(
+    documents: Rc<dyn DurableStore>,
+    package_id: &str,
+    room_id: &str,
+) -> (State, DocWriter) {
+    let attempt = || -> Result<(State, DocWriter), StoreError> {
+        app_state::validate_record_identity(package_id, room_id, "index")?;
+        let legacy = StorageKey::package(package_id);
+        let has_legacy = documents
+            .read(&legacy)?
+            .is_some_and(|stored| !stored.bytes.is_empty());
+        let mut store = DocStore::shared(
+            Rc::clone(&documents),
+            StorageKey::room_index(package_id, room_id),
+        )?;
+        if has_legacy && documents.claim(&legacy, room_id)? {
+            match store.import_from(&legacy) {
                 Ok(true) => tracing::info!(
                     room = room_id,
-                    from = %legacy.display(),
+                    from = %legacy,
                     to = %store.document_path().display(),
                     "migrated package-global record index into its room"
                 ),
@@ -91,10 +120,10 @@ pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
                     "legacy package record index could not be imported"
                 ),
             }
-        } else if legacy.is_file() {
+        } else if has_legacy {
             tracing::info!(
                 room = room_id,
-                from = %legacy.display(),
+                from = %legacy,
                 "legacy package record index belongs to another room; not importing"
             );
         }
@@ -113,8 +142,8 @@ pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
 /// preserved and running the migration twice is a no-op. The old file is
 /// left on disk; deleting it is a decision for whoever knows whether
 /// anything else still reads it.
-pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
-    let attempt = || -> Result<(State, Autosave), StoreError> {
+pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
+    let attempt = || -> Result<(State, DocWriter), StoreError> {
         let mut store = DocStore::open_with_manifest_id(manifest_id)?;
         match store.migrate_from(legacy) {
             Ok(true) => tracing::info!(
@@ -140,11 +169,11 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
 /// Returns [`StoreError`] when the state directory can't be opened (a
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
-pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
+pub fn try_open(manifest_id: &str) -> Result<(State, DocWriter), StoreError> {
     Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
 }
 
-fn finish(mut store: DocStore) -> (State, Autosave) {
+fn finish(mut store: DocStore) -> (State, DocWriter) {
     let mut doc = store.load_or_new();
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
@@ -160,21 +189,21 @@ fn finish(mut store: DocStore) -> (State, Autosave) {
         );
         eprintln!("tilo: {reason}");
         eprintln!("tilo: this session starts empty and will NOT be saved.");
-        return (State::from_doc(doc), Autosave::disabled(reason));
+        return (State::from_doc(doc), DocWriter::disabled(reason));
     }
-    let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
+    let mut autosave = store.writer();
     autosave.seed(&mut doc);
     (State::from_doc(doc), autosave)
 }
 
 /// The degraded path: an empty document and a disabled writer.
-/// [`Autosave::is_enabled`] returns `false` and
-/// [`Autosave::last_error`] carries the reason, so nothing downstream can
+/// [`DocWriter::is_enabled`] returns `false` and
+/// [`DocWriter::last_error`] carries the reason, so nothing downstream can
 /// mistake this for a working store.
-fn in_memory_fallback() -> (State, Autosave) {
+fn in_memory_fallback() -> (State, DocWriter) {
     (
         State::new(),
-        Autosave::disabled("state directory unavailable"),
+        DocWriter::disabled("state directory unavailable"),
     )
 }
 
@@ -186,12 +215,27 @@ fn in_memory_fallback() -> (State, Autosave) {
 /// Returns [`StoreError`] when the state directory can't be opened (a
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
-pub fn open_for(package_id: &str) -> Result<(State, Autosave), StoreError> {
+pub fn open_for(package_id: &str) -> Result<(State, DocWriter), StoreError> {
     Ok(finish(DocStore::open_for(package_id)?))
 }
 
-/// The debounce window [`open`] uses. Re-exported so an app that wants a
-/// different one can build its own [`Autosave`] from a [`DocStore`].
+/// [`open_for`] over an explicit store, consulting no environment.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the package id is invalid or the store
+/// refuses the document.
+pub fn open_in(
+    documents: Rc<dyn DurableStore>,
+    package_id: &str,
+) -> Result<(State, DocWriter), StoreError> {
+    Ok(finish(DocStore::shared(
+        documents,
+        StorageKey::package(package_id),
+    )?))
+}
+
+/// The debounce window the native store applies to [`open`]'s writes.
 pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
 
 #[cfg(test)]
@@ -199,6 +243,14 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    fn native(root: &std::path::Path) -> Rc<dyn DurableStore> {
+        Rc::new(app_state::FsStore::new(root))
+    }
+
+    fn open_at(root: &std::path::Path, package: &str) -> (State, DocWriter) {
+        open_in(native(root), package).expect("open")
+    }
 
     fn note(state: &crate::state::State) -> Option<String> {
         match state.doc.get(&ROOT, "note") {
@@ -217,24 +269,17 @@ mod tests {
     /// fresh-XDG CI never exercises, so this test creates the directory
     /// up front and drives two opens against it.
     #[test]
-    #[serial_test::serial(process_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.persist-open-twice";
+        let pkg = "so.tilo.persist-open-twice";
 
         // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: serialised on `process_env`; no other thread reads the var
-        // between the set here and the removal at the end.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
         // Run 1: write and flush a value.
         {
-            let (mut state, mut autosave) = open_for(pkg).expect("run 1 open");
+            let (mut state, mut autosave) = open_in(native(tmp.path()), pkg).expect("run 1 open");
             assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
             state
                 .doc
@@ -247,7 +292,7 @@ mod tests {
 
         // Run 2: the directory still exists; persistence must stay enabled
         // and run 1's value must load.
-        let (state, autosave) = open(pkg);
+        let (state, autosave) = open_at(tmp.path(), pkg);
         assert!(
             autosave.is_enabled(),
             "the SECOND open against an existing state dir must keep persistence \
@@ -258,36 +303,38 @@ mod tests {
             Some("survives"),
             "state written on the first run must load on the second open"
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn legacy_record_index_is_imported_by_one_room_only() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "dev.tilo.legacy-room-index";
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
+        let package = "so.tilo.legacy-room-index";
         let id = crate::record::RecordId::minted();
         let kind = crate::record::RecordKind::new("note");
-        let mut legacy = DocStore::open_for(package).expect("legacy store");
+        let mut legacy = DocStore::shared(native(tmp.path()), StorageKey::package(package))
+            .expect("legacy store");
         let mut legacy_doc = legacy.load_or_new();
         crate::record::room::reference(&mut legacy_doc, &id, &kind);
         legacy.save(&mut legacy_doc).expect("write legacy index");
         let source = legacy.document_path().to_path_buf();
+        drop(legacy);
 
-        let (a, _) = open_room(package, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let (a, _) = open_room_in(
+            native(tmp.path()),
+            package,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
         assert!(crate::record::room::holds(&a.doc, &id));
-        let (b, _) = open_room(package, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let (b, _) = open_room_in(
+            native(tmp.path()),
+            package,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        );
         assert!(
             !crate::record::room::holds(&b.doc, &id),
             "a second room must not re-import a package-global index"
         );
         assert!(source.is_file(), "legacy source is retained for recovery");
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     /// An older app layout wrote the document as a zero-byte *file* at the
@@ -295,24 +342,18 @@ mod tests {
     /// persistence enabled, not swallow the `EEXIST` and fall back to the
     /// disabled in-memory store.
     #[test]
-    #[serial_test::serial(process_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.stale-file-open";
+        let pkg = "so.tilo.stale-file-open";
 
         // Old layout's leftover: a file where the new layout wants a directory.
         let path = tmp.path().join(pkg);
         std::fs::write(&path, b"").unwrap();
         assert!(path.is_file(), "the leftover is a file, not a directory");
-        // SAFETY: serialised on `process_env`.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
         // Run 1: `open` must recover to enabled persistence.
         {
-            let (mut state, mut autosave) = open(pkg);
+            let (mut state, mut autosave) = open_at(tmp.path(), pkg);
             assert!(
                 autosave.is_enabled(),
                 "opening over a stale file must recover to enabled persistence, \
@@ -328,7 +369,7 @@ mod tests {
         }
 
         // Run 2: the path is a directory now, and the value survives.
-        let (state, autosave) = open(pkg);
+        let (state, autosave) = open_at(tmp.path(), pkg);
         assert!(
             autosave.is_enabled(),
             "persistence stays enabled after recovery"
@@ -338,7 +379,5 @@ mod tests {
             Some("recovered"),
             "state written after recovery must load on the next open"
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 }

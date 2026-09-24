@@ -472,11 +472,7 @@ impl ImageEditorApp {
             state,
             type_id,
             action,
-            tilo_actions::ActionContext::for_action(
-                "dev.tilo.image-editor",
-                "Image Editor",
-                action,
-            ),
+            tilo_actions::ActionContext::for_action("so.tilo.image-editor", "Image Editor", action),
         );
         self.project = ProjectDoc::read(state);
         self.rendered_project = None;
@@ -3313,9 +3309,11 @@ mod portal_tests {
         let mut app = ImageEditorApp::new();
         let mut doc = AutoCommit::new();
         ProjectDoc::seed(&mut doc);
-        app.picker = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(path.clone()),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        app.request_open();
+        assert_eq!(recorder.pick_requests()[0].title(), "Open an image");
         app.poll_picker(&mut doc);
         let project = ProjectDoc::read(&doc);
         assert!(
@@ -3328,9 +3326,10 @@ mod portal_tests {
     fn cancelling_the_host_picker_is_quiet_and_retryable() {
         let mut app = ImageEditorApp::new();
         let mut doc = AutoCommit::new();
-        app.picker = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Cancelled,
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+        app.request_open();
         app.poll_picker(&mut doc);
         assert_eq!(app.notice, "Open cancelled");
         assert!(app.picker.is_none());

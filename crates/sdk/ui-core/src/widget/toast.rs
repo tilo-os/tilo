@@ -13,8 +13,8 @@
 //! state — enter/exit motion is wired by the shell consumer that owns the
 //! animation driver — so tests stay deterministic.
 
+use crate::time::Duration;
 use automerge::{AutoCommit, ObjId};
-use std::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -22,6 +22,7 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -469,28 +470,34 @@ pub fn paint_card(
     elev.color = elev.color.with_alpha_factor(a);
     crate::surface::shadow(scene, transform, rect, radius, &elev);
 
-    // Raised surface + hairline border.
+    // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+    // crisp 1 px inset stroke, both fading with the card. The declared
+    // `border_standard` on `raised` was invisible on the dark preset.
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.raised.with_alpha(a),
+        crate::chrome::panel_ground(theme).with_alpha(a),
         None,
         &shape,
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        theme.tokens.colors.border_standard.with_alpha(a),
+        crate::chrome::panel_border(theme).with_alpha_factor(a),
         None,
-        &shape,
+        &crate::surface::edge_outline(rect, radius),
     );
 
     // Left severity accent stripe — the at-a-glance state form (HIG §7).
+    // Inset a token step from the 1 px edge so the two never touch, and
+    // `s2` from the top and bottom like the card's own vertical padding.
+    let bar_x0 = rect.x0 + 1.0 + f64::from(theme.tokens.spacing.s1);
+    let bar_inset_y = f64::from(theme.tokens.spacing.s2);
     let bar = Rect::new(
-        rect.x0 + 1.5,
-        rect.y0 + 8.0,
-        rect.x0 + 1.5 + CARD_ACCENT_BAR_W,
-        rect.y1 - 8.0,
+        bar_x0,
+        rect.y0 + bar_inset_y,
+        bar_x0 + CARD_ACCENT_BAR_W,
+        rect.y1 - bar_inset_y,
     );
     scene.fill(
         Fill::NonZero,
@@ -634,7 +641,7 @@ pub fn paint_transient(
         return ToastCardHit::default();
     }
 
-    let title_size = theme.tokens.typography.scale.sm;
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let title_width = f64::from(
         text_renderer
             .measure_weighted(card.title, title_size, None, TextWeight::Semibold)
@@ -728,9 +735,9 @@ fn paint_card_text(
 ) {
     let text_x = rect.x0 + CARD_PAD_X;
     let width_avail = to_f32((text_right - text_x).max(0.0));
-    let caption_size = theme.tokens.typography.scale.xs;
-    let title_size = theme.tokens.typography.scale.sm;
-    let body_size = theme.tokens.typography.scale.xs;
+    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
 
     // A desktop notification may carry arbitrary localized or application
     // text. Keep every field one-line before deriving heights and widths;
@@ -741,13 +748,31 @@ fn paint_card_text(
     let body_text = single_line_text(card.body);
     let has_caption = !caption_text.is_empty();
     let has_body = !body_text.is_empty();
+    // Stack the measured line boxes, not the font sizes: a face's line
+    // height is ~1.2–1.3× its size, so size-derived heights under-reserved
+    // every line and the block sat high in the card. `spacing.s1` between
+    // lines.
+    let line_gap = f64::from(theme.tokens.spacing.s1);
+    let line_h = |text_renderer: &mut TextRenderer, text: &str, size: f32, weight: TextWeight| {
+        f64::from(text_renderer.measure_weighted(text, size, None, weight).1)
+    };
     let cap_h = if has_caption {
-        f64::from(caption_size) + 4.0
+        line_h(
+            text_renderer,
+            &caption_text,
+            caption_size,
+            TextWeight::Semibold,
+        ) + line_gap
     } else {
         0.0
     };
-    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
-    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
+    let title_h = line_h(text_renderer, &title_text, title_size, TextWeight::Semibold)
+        + if has_body { line_gap } else { 0.0 };
+    let body_h = if has_body {
+        line_h(text_renderer, &body_text, body_size, TextWeight::Regular)
+    } else {
+        0.0
+    };
     let block_h = cap_h + title_h + body_h;
     let text_height = (text_bottom - rect.y0).max(0.0);
     let mut ty = rect.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);
@@ -986,6 +1011,49 @@ mod tests {
             node,
             &tree,
         );
+    }
+
+    /// Caption, title and body stack on their measured line boxes with an
+    /// `s1` gap, so in the 64 px card a desktop notification uses every
+    /// painted glyph line lands inside the card.
+    #[test]
+    fn three_line_text_block_stays_inside_the_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+        paint_card(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            rect,
+            &ToastCard::new("Build finished", ToastKind::Success)
+                .caption("Terminal")
+                .body("3 warnings, 0 errors")
+                .closable(true),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(runs.len() >= 3, "caption, title and body all paint");
+        let mut tops: Vec<f64> = Vec::new();
+        for run in runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, h) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                top >= rect.y0 - 0.01 && top + f64::from(h) <= rect.y1 + 0.01,
+                "a glyph line at y={top} (h={h}) leaves the {rect:?} card",
+            );
+            tops.push(top);
+        }
+        tops.sort_by(f64::total_cmp);
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        assert_eq!(tops.len(), 3, "three distinct baselines: {tops:?}");
+        for pair in tops.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= f64::from(theme.tokens.typography.scale.xs),
+                "lines do not overlap: {tops:?}"
+            );
+        }
     }
 
     #[test]

@@ -36,24 +36,14 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::widget::{FloatingSurfaceWidgetExt as _, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     // An older release kept the workspace in its own file. Hand that path to
     // `open_migrating` so existing history is merged into the shared store on
     // first launch rather than orphaned; the merge is idempotent.
@@ -74,7 +64,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         app,
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        args.text_scale,
+        ui::launch::shot_theme(args),
         out,
         scenario,
     )
@@ -92,7 +82,7 @@ pub fn main() {
         qdoc::blobstore::FsBlobStore::default_root(),
     )));
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.chat", chat::app_root)
+        &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
@@ -122,114 +112,27 @@ pub fn main() {
     );
 }
 
-/// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
-/// `apply_layout` → draw) and additionally pre-warms the attachment image cache
-/// so the single frame paints real decoded thumbnails rather than a loading
-/// placeholder.
+/// Run one offscreen frame against `app` and write RGBA to `out` as PNG,
+/// pre-warming the attachment image cache so the single frame paints real
+/// decoded thumbnails rather than a loading placeholder.
 fn render_shot_to_png(
     mut app: chat::ChatApp,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut app);
     app.prewarm_images();
-    let widget: &mut dyn Widget = &mut app;
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    frame.layout(&mut app)?;
     app.debug_stage_floating_call_for_shot(scenario);
-    let widget: &mut dyn Widget = &mut app;
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-    widget.draw_floating_surfaces(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
-
-    let parent = out.parent().unwrap_or_else(|| std::path::Path::new("."));
-    if !parent.as_os_str().is_empty() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    // Render into a sibling temp path and publish only after PNG encoding
-    // returns. A killed headless renderer must leave no valid-looking but
-    // truncated screenshot at the requested path for visual review tools to
-    // mistake for an inspected frame.
-    let name = out
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("chat.png");
-    let tmp = parent.join(format!(".{name}.partial-{}", std::process::id()));
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, &tmp);
-    std::fs::rename(&tmp, out)?;
+    let mut scene = frame.draw(&mut app);
+    frame.draw_floating_surfaces(&mut app, &mut scene);
+    // The offscreen renderer publishes the PNG atomically, so a killed
+    // headless renderer never leaves a truncated screenshot at `out` for
+    // visual review tools to mistake for an inspected frame.
+    frame.write_png(&scene, out);
     println!("chat: wrote shot to {}", out.display());
     Ok(())
 }

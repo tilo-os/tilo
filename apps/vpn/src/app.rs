@@ -13,20 +13,28 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::chrome::{
+    PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
+};
 use ui::icons::Icon;
+use ui::paint::{fill_round, stroke_round};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ControlInvocation};
-use ui::widget::{Button, ButtonFace, EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
+use ui::tokens::Spacing;
+use ui::widget::{
+    Button, ButtonFace, EmptyState, ModalDialog, SegmentedFace, Toggle, ToggleFace, ToggleGroup,
+    Widget,
+};
 use zeroize::Zeroize;
 
 use crate::actions::{self, VPN_ACTION_TYPE};
@@ -108,6 +116,10 @@ impl TransferHistory {
 
 const HEADER_H: f64 = 72.0;
 const LIST_W: f64 = 440.0;
+/// Height of the header's control band (Tor pill + Import) at 1× text. The
+/// live value is measured from the button label each frame so a doubled
+/// accessibility scale grows the band instead of sinking the labels.
+const HEADER_CONTROL_H: f64 = 36.0;
 
 fn tunnel_import_request(kind: ConnKind) -> PickRequest {
     let (title, filter) = match kind {
@@ -125,8 +137,26 @@ fn tunnel_import_request(kind: ConnKind) -> PickRequest {
         .filter(filter)
         .all_files()
 }
+/// Connection-row height: 1× floor of the renderer-measured `row_h`.
 const ROW_H: f64 = 74.0;
-const ROW_GAP: f64 = 8.0;
+/// The 15px name line at 1× measures 18.75px under a 14px top padding; its
+/// centre, and the top of the endpoint line beneath it (44px: the name line
+/// plus an 11.25px gap — the floor of the renderer-measured `row_line2_top`).
+const ROW_NAME_LINE_1X: f64 = 18.75;
+const ROW_NAME_CY: f64 = 14.0 + ROW_NAME_LINE_1X / 2.0;
+const ROW_LINE2_TOP: f64 = 14.0 + ROW_NAME_LINE_1X + 11.25;
+
+// ---- spacing rhythm (HIG §7b) ------------------------------------------
+//
+// One rhythm for the whole window, read from the unscaled token scale so a
+// gap in this file is always a named step: `S2` between related rows (the
+// connection list), `S3` between sibling tiles and controls, `S4` between
+// sections (tiles → chart → facts), `S6` before the next group.
+const S2: f64 = Spacing::BASE.s2 as f64;
+const S3: f64 = Spacing::BASE.s3 as f64;
+const S4: f64 = Spacing::BASE.s4 as f64;
+/// Connection rows are related rows: `S2` apart.
+const ROW_GAP: f64 = S2;
 
 /// Deterministic fictional values used only by the hermetic visual-review
 /// build. Live instances populate this map solely from the locally selected
@@ -280,20 +310,13 @@ impl Widget for ConfirmBody {
         // Command preview box below the summary.
         let box_top = self.rect.y0 + 36.0;
         let cmd_box = Rect::new(x, box_top, self.rect.x1, (box_top + 56.0).min(self.rect.y1));
-        fill_round(
+        // A well in the dialog: the window tier with its derived edge.
+        ui::surface::card(
             scene,
             t,
             cmd_box,
             f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            cmd_box,
-            f64::from(theme.tokens.radii.md),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.base,
         );
         text_w(
             tr,
@@ -425,6 +448,18 @@ pub struct VpnApp {
     /// never synchronized with the shared profile document.
     detail_scroll: f64,
     shot_loading: bool,
+    /// Measured header control height (see [`HEADER_CONTROL_H`]); refreshed
+    /// from the renderer in `adjust_layout_with_measure` before geometry is
+    /// applied, so layout, paint and hit-testing read one value.
+    control_h: f64,
+    /// Connection-row height and the top of its second line, measured from
+    /// the renderer in `adjust_layout_with_measure` (`ROW_H` / 44px floors at
+    /// 1×) so `layout` — which has no renderer — builds the rows the painter
+    /// fills.
+    row_h: f64,
+    row_line2_top: f64,
+    /// Centre of the name line (status dot, badge and tor mark ride it).
+    row_name_cy: f64,
 }
 
 impl Default for VpnApp {
@@ -504,6 +539,10 @@ impl VpnApp {
             compact_detail_open: false,
             detail_scroll: 0.0,
             shot_loading: false,
+            control_h: HEADER_CONTROL_H,
+            row_h: ROW_H,
+            row_line2_top: ROW_LINE2_TOP,
+            row_name_cy: ROW_NAME_CY,
         }
     }
 
@@ -1240,7 +1279,17 @@ impl VpnApp {
     fn layout(&self) -> LayoutRects {
         let r = self.rect;
         let compact = r.width() < 720.0;
-        let base_header_h = if compact { 144.0 } else { HEADER_H };
+        // The compact title occupies the first row; controls occupy the second.
+        // The body and optional notice follow the actual control band.
+        let controls_top = if compact { 52.0 } else { 18.0 };
+        let controls_bottom = controls_top + self.control_h;
+        // Both header forms end below the control band: the wide header keeps
+        // its 72px minimum but grows once the measured band no longer fits.
+        let base_header_h = if compact {
+            controls_bottom + 16.0
+        } else {
+            HEADER_H.max(controls_bottom + controls_top)
+        };
         let has_notice =
             self.import_rx.is_some() || self.operation_error.is_some() || self.shot_loading;
         let header_h = base_header_h + if has_notice { 48.0 } else { 0.0 };
@@ -1280,12 +1329,8 @@ impl VpnApp {
 
         // One clear import entry point. Protocol-specific imports remain
         // available as typed resource actions for keyboard/agent invocation.
-        let by0 = if compact {
-            header.y0 + 52.0
-        } else {
-            header.y0 + 18.0
-        };
-        let by1 = by0 + 36.0;
+        let by0 = header.y0 + controls_top;
+        let by1 = header.y0 + controls_bottom;
         let (add_btn, tor_pill, imp_conf, imp_ovpn) = if compact {
             let left = header.x0 + 16.0;
             let right = header.x1 - 16.0;
@@ -1307,7 +1352,7 @@ impl VpnApp {
         let mut rows = Vec::new();
         let mut y = list.y0 + 44.0; // leave room for the list section title
         for c in &self.vault.connections {
-            let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + ROW_H);
+            let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + self.row_h);
             let toggle = Rect::new(
                 row.x1 - 16.0 - 46.0,
                 row.center().y - 13.0,
@@ -1315,7 +1360,7 @@ impl VpnApp {
                 row.center().y + 13.0,
             );
             rows.push((c.id, row, toggle));
-            y += ROW_H + ROW_GAP;
+            y += self.row_h + ROW_GAP;
         }
 
         // Detail header + tabs + content.
@@ -1327,7 +1372,13 @@ impl VpnApp {
             detail.x1 - dpad,
             detail.y1 - dpad,
         );
-        let connect_btn = if compact {
+        // The title row cannot carry the 150px action beside the 24px name,
+        // its status pill and the subtitle once the pane is narrower than
+        // ~560px (a docked list beside a tablet-width window): the action
+        // then takes its own full-width row under the subtitle, as it does
+        // in the compact route, instead of painting over the title.
+        let stack_header = compact || dinner.width() < 560.0;
+        let connect_btn = if stack_header {
             Rect::new(dinner.x0, dinner.y0 + 62.0, dinner.x1, dinner.y0 + 104.0)
         } else {
             Rect::new(
@@ -1337,7 +1388,7 @@ impl VpnApp {
                 dinner.y0 + 48.0,
             )
         };
-        let tabs_y = dinner.y0 + if compact { 120.0 } else { 76.0 };
+        let tabs_y = dinner.y0 + if stack_header { 120.0 } else { 76.0 };
         let mut tabs = Vec::new();
         let mut tx = dinner.x0;
         for t in DetailTab::ALL {
@@ -1415,16 +1466,48 @@ struct LayoutRects {
     notice_dismiss: Option<Rect>,
 }
 
+/// The Status tab's kv table: `(top, row stride)`. The table starts `S4`
+/// under the chart `status_geometry` places, and the one stride is shared by
+/// the painter, the Tor-toggle hit rect and the scroll extent so all three
+/// agree (a fixed 72px tile band once put the toggle 30px low).
+fn status_kv_table(content: Rect) -> (f64, f64) {
+    let (_, chart) = status_geometry(content);
+    (chart.y1 + S4, 30.0)
+}
+
+/// How tall the Status tab's content is: tiles, chart and the five kv rows
+/// (four facts and the Tor row). The detail pane scrolls by the difference
+/// to its height, so the Tor row stays reachable in a short window.
+fn status_content_height(content: Rect) -> f64 {
+    let (kv_top, row_h) = status_kv_table(content);
+    kv_top + 5.0 * row_h - content.y0
+}
+
 /// Position of the per-tunnel-Tor pill inside the Status kv table.
 fn kv_tor_rect(content: Rect) -> Rect {
-    // 5th kv row; rows are 30px tall starting after the chart.
-    let kv_top = content.y0 + 72.0 + 16.0 + 176.0 + 16.0;
-    let row_y = kv_top + 4.0 * 30.0;
+    // 5th kv row.
+    let (kv_top, row_h) = status_kv_table(content);
+    let row_y = kv_top + 4.0 * row_h;
     Rect::new(
         content.x1 - 84.0,
         row_y + 2.0,
         content.x1 - 84.0 + 64.0,
         row_y + 26.0,
+    )
+}
+
+/// The Status tab's vertical rhythm from the content rect alone, shared by
+/// the painter and the hit layout: the stat-tile band height (one row of
+/// 72px tiles, or two rows of 56px tiles `S3` apart when the pane is
+/// narrow) and the throughput chart `S4` under it.
+fn status_geometry(content: Rect) -> (f64, Rect) {
+    let compact = content.width() < 500.0;
+    let tiles_h = if compact { 2.0 * 56.0 + S3 } else { 72.0 };
+    let chart_top = content.y0 + tiles_h + S4;
+    let chart_h = if compact { 96.0 } else { 176.0 };
+    (
+        tiles_h,
+        Rect::new(content.x0, chart_top, content.x1, chart_top + chart_h),
     )
 }
 
@@ -1436,26 +1519,10 @@ fn point_in(r: Rect, p: Point) -> bool {
 // Drawing primitives
 // ----------------------------------------------------------------------
 
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "weighted text painting passes render context alongside content, size, color, coordinates and weight"
+)]
 fn text_w(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -1479,7 +1546,10 @@ fn text_w(
 }
 
 /// Center text vertically within a box and left-align at `x`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "vertical text alignment shares render context and typography with the label position and containing box"
+)]
 fn text_vc(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -1492,7 +1562,11 @@ fn text_vc(
     box_h: f64,
     weight: TextWeight,
 ) {
-    let top = box_y0 + (box_h - f64::from(size)) / 2.0;
+    // Centre on the line the renderer will paint (weight and accessibility
+    // scale included), not on the nominal size: the nominal box under-reads
+    // by a few pixels at 1× and by half a line at 2×.
+    let (_, th) = tr.measure_weighted(s, size, None, weight);
+    let top = box_y0 + (box_h - f64::from(th)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -1511,9 +1585,9 @@ fn text_center(
     r: Rect,
     weight: TextWeight,
 ) {
-    let (tw, _) = tr.measure_weighted(s, size, None, weight);
+    let (tw, th) = tr.measure_weighted(s, size, None, weight);
     let x = r.center().x - f64::from(tw) / 2.0;
-    let top = r.y0 + (r.height() - f64::from(size)) / 2.0;
+    let top = r.y0 + (r.height() - f64::from(th)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -1532,7 +1606,7 @@ impl VpnApp {
         match status {
             ConnStatus::Connected => theme.tokens.colors.semantic.success,
             ConnStatus::Connecting => theme.tokens.colors.semantic.warning,
-            ConnStatus::Disconnected => theme.tokens.colors.neutral[5],
+            ConnStatus::Disconnected => theme.text_dim,
         }
     }
 
@@ -1562,7 +1636,8 @@ impl VpnApp {
             ConnKind::WireGuard => theme.tokens.colors.accent[6],
             ConnKind::OpenVpn => theme.tokens.colors.semantic.info,
         };
-        fill_round(scene, t, r, 9.0, bg);
+        // A tinted capsule: the tint is its contrast step against the row.
+        ui::surface::pill(scene, t, r, bg, None, Some(9.0));
         text_center(tr, scene, t, label, 11.0, fg, r, TextWeight::Bold);
         bw
     }
@@ -1587,12 +1662,13 @@ impl VpnApp {
             0.0,
             theme.tokens.colors.surfaces.raised,
         );
+        // Bar role: one derived hairline under the raised band.
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
+            chrome_hairline(theme),
             None,
-            &Line::new(Point::new(h.x0, h.y1), Point::new(h.x1, h.y1)),
+            &Line::new(Point::new(h.x0, h.y1 - 0.5), Point::new(h.x1, h.y1 - 0.5)),
         );
         // Primary left label: the contextual saved/active tally. The compositor
         // owns window chrome, so the app draws no wordmark or brand mark here.
@@ -1601,7 +1677,14 @@ impl VpnApp {
             self.vault.connections.len(),
             self.vault.active_count()
         );
-        text_w(
+        // The tally shares the controls' centre line when they sit beside it,
+        // and centres in its own first row when the compact header stacks.
+        let tally_band = if lay.compact {
+            Rect::new(h.x0, h.y0, h.x1, lay.add_btn.y0)
+        } else {
+            lay.add_btn
+        };
+        text_vc(
             tr,
             scene,
             t,
@@ -1609,7 +1692,8 @@ impl VpnApp {
             14.0,
             theme.text_primary,
             h.x0 + 24.0,
-            h.y0 + if lay.compact { 15.0 } else { 25.0 },
+            tally_band.y0,
+            tally_band.height(),
             TextWeight::Semibold,
         );
 
@@ -1665,12 +1749,13 @@ impl VpnApp {
             } else {
                 notice.x1 - 24.0
             };
-            let message_chars = ((text_right - notice.x0 - 24.0) / 6.5).max(12.0).floor() as usize;
+            let message_w = (text_right - notice.x0 - 24.0).max(40.0) as f32;
+            let message = tr.elide_to_width_weighted(&label, 12.0, message_w, TextWeight::Semibold);
             text_vc(
                 tr,
                 scene,
                 t,
-                &ellipsize(&label, message_chars),
+                &message,
                 12.0,
                 color,
                 notice.x0 + 24.0,
@@ -1725,24 +1810,25 @@ impl VpnApp {
         } else {
             theme.tokens.colors.surfaces.base
         };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), bg);
-        stroke_round(
+        // Off: the window tier with its derived rest edge; on: the accent tint
+        // with the accent as its edge (live state).
+        ui::surface::pill(
             scene,
             t,
             r,
-            f64::from(theme.tokens.radii.full),
-            if on {
+            bg,
+            Some(if on {
                 theme.tokens.colors.accent[5]
             } else {
-                theme.tokens.colors.border_standard
-            },
-            1.0,
+                ui::surface::edge_on(bg)
+            }),
+            Some(f64::from(theme.tokens.radii.full)),
         );
         // status dot
         let dot: Color = if on {
             theme.tokens.colors.accent[6]
         } else {
-            theme.tokens.colors.neutral[5]
+            theme.text_dim
         };
         scene.fill(
             Fill::NonZero,
@@ -1777,12 +1863,13 @@ impl VpnApp {
         let l = lay.list;
         // pane bg
         fill_round(scene, t, l, 0.0, theme.tokens.colors.surfaces.base);
+        // The pane's right edge is derived against the tier it is painted on.
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
+            ui::surface::edge_on(theme.tokens.colors.surfaces.base),
             None,
-            &Line::new(Point::new(l.x1, l.y0), Point::new(l.x1, l.y1)),
+            &Line::new(Point::new(l.x1 - 0.5, l.y0), Point::new(l.x1 - 0.5, l.y1)),
         );
         text_w(
             tr,
@@ -1804,7 +1891,18 @@ impl VpnApp {
             let hovered = self.hovered_row == Some(*id);
             let details = self.local_details.get(id);
             Self::draw_list_row(
-                scene, tr, t, theme, c, details, row, toggle, selected, hovered,
+                scene,
+                tr,
+                t,
+                theme,
+                c,
+                details,
+                row,
+                toggle,
+                selected,
+                hovered,
+                self.row_name_cy,
+                self.row_line2_top,
             );
         }
     }
@@ -1828,27 +1926,32 @@ impl VpnApp {
         toggle: &Rect,
         selected: bool,
         hovered: bool,
+        name_cy_offset: f64,
+        line2_top: f64,
     ) {
         let radius = f64::from(theme.tokens.radii.lg);
+        // Selection is a lift with a derived edge, hover half a lift (HIG
+        // §9.3); the accent stays for the *live* connected state. The rows
+        // sit on the window tier, so the shared tier registers on every
+        // preset; the ring is the panel-strength derived edge.
         if selected {
-            fill_round(
-                scene,
-                t,
-                *row,
-                radius,
-                theme.tokens.colors.accent[5].multiply_alpha(0.16),
-            );
+            let tier = selection_tier(theme, SelectionState::active(true));
+            fill_round(scene, t, *row, radius, tier.fill);
             stroke_round(
                 scene,
                 t,
-                *row,
-                radius,
-                theme.tokens.colors.accent[5].multiply_alpha(0.7),
+                row.inset(-0.5),
+                radius - 0.5,
+                ui::surface::edge_on_with(tier.fill, PANEL_BORDER_ALPHA),
                 1.0,
             );
         } else if hovered {
-            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.35));
+            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.5));
         }
+
+        // The first line's centre is the name's measured centre (from the
+        // layout metrics); the status dot and the badges ride it.
+        let name_cy = row.y0 + name_cy_offset;
 
         // status dot
         let sc = Self::status_color(theme, c.status);
@@ -1857,7 +1960,7 @@ impl VpnApp {
             t,
             sc,
             None,
-            &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 5.0),
+            &Circle::new(Point::new(row.x0 + 22.0, name_cy), 5.0),
         );
         if c.is_connected() {
             scene.stroke(
@@ -1865,12 +1968,24 @@ impl VpnApp {
                 t,
                 sc.multiply_alpha(0.4),
                 None,
-                &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 9.0),
+                &Circle::new(Point::new(row.x0 + 22.0, name_cy), 9.0),
             );
         }
 
-        // name + badge
-        let name = ellipsize(&c.name, 18);
+        // name + badge (+ tor mark) — elided against the space the measured
+        // badge, the tor mark and the toggle leave, at the weight the name is
+        // painted with.
+        let name_x = row.x0 + 38.0;
+        let (badge_label_w, _) = tr.measure_weighted(c.kind.badge(), 11.0, None, TextWeight::Bold);
+        let badge_slot = 10.0 + f64::from(badge_label_w) + 16.0;
+        let tor_slot = if c.tor {
+            let (tor_w, _) = tr.measure_weighted("tor", 10.0, None, TextWeight::Bold);
+            f64::from(tor_w) + 8.0
+        } else {
+            0.0
+        };
+        let name_max_w = ((toggle.x0 - 16.0 - badge_slot - tor_slot) - name_x).max(40.0) as f32;
+        let name = tr.elide_to_width_weighted(&c.name, 15.0, name_max_w, TextWeight::Semibold);
         text_w(
             tr,
             scene,
@@ -1883,20 +1998,32 @@ impl VpnApp {
             TextWeight::Semibold,
         );
         let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Semibold);
-        Self::draw_badge(
-            scene,
-            tr,
-            t,
-            theme,
-            row.x0 + 38.0 + f64::from(nw) + 10.0,
-            row.y0 + 24.0,
-            c.kind,
-        );
+        let badge_x = row.x0 + 38.0 + f64::from(nw) + 10.0;
+        let badge_w = Self::draw_badge(scene, tr, t, theme, badge_x, name_cy, c.kind);
+
+        // Per-tunnel Tor mark: beside the protocol badge, on the badge's own
+        // centre line — it qualifies the tunnel the way the badge does, rather
+        // than floating at the row's top-right above the toggle.
+        if c.tor {
+            let (_, tor_h) = tr.measure_weighted("tor", 10.0, None, TextWeight::Bold);
+            text_w(
+                tr,
+                scene,
+                t,
+                "tor",
+                10.0,
+                theme.tokens.colors.accent[6],
+                badge_x + badge_w + 8.0,
+                name_cy - f64::from(tor_h) / 2.0,
+                TextWeight::Bold,
+            );
+        }
 
         let endpoint = details.map_or("Credentials unavailable on this device", |d| {
             d.endpoint.as_str()
         });
-        let line2 = format!("{} · {}", ellipsize(endpoint, 28), c.last_used);
+        let line2_max_w = ((toggle.x0 - 16.0) - name_x).max(40.0) as f32;
+        let line2 = tr.elide_to_width(&format!("{endpoint} · {}", c.last_used), 12.0, line2_max_w);
         text_w(
             tr,
             scene,
@@ -1905,24 +2032,9 @@ impl VpnApp {
             12.0,
             theme.text_dim,
             row.x0 + 38.0,
-            row.y0 + 44.0,
+            row.y0 + line2_top,
             TextWeight::Regular,
         );
-
-        // per-tunnel tor flag mark
-        if c.tor {
-            text_w(
-                tr,
-                scene,
-                t,
-                "tor",
-                10.0,
-                theme.tokens.colors.accent[6],
-                toggle.x0 - 36.0,
-                row.y0 + 14.0,
-                TextWeight::Bold,
-            );
-        }
 
         // toggle switch
         Self::draw_switch(scene, t, theme, *toggle, c.is_connected());
@@ -1980,12 +2092,10 @@ impl VpnApp {
         self.draw_detail_connect_button(scene, tr, t, theme, lay, c);
         self.draw_detail_tabs(scene, tr, t, theme, lay);
 
-        let content_transform = if lay.compact {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &lay.content);
-            t * Affine::translate((0.0, -self.detail_scroll))
-        } else {
-            t
-        };
+        // The tab content is clipped to its pane and scrolls whenever it is
+        // taller than the pane (`detail_scroll_max`), docked or compact.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &lay.content);
+        let content_transform = t * Affine::translate((0.0, -self.detail_scroll));
         match self.detail_tab {
             DetailTab::Status => {
                 self.draw_status_tab(scene, tr, content_transform, theme, lay, c);
@@ -1997,9 +2107,7 @@ impl VpnApp {
                 self.draw_logs_tab(scene, tr, content_transform, theme, lay, c);
             }
         }
-        if lay.compact {
-            scene.pop_layer();
-        }
+        scene.pop_layer();
     }
 
     /// Composed zero-state centered in the detail pane. Distinguishes "no
@@ -2074,12 +2182,15 @@ impl VpnApp {
             pill_x + f64::from(pw) + 28.0,
             dinner.y0 + 26.0,
         );
-        fill_round(
+        // A tone-tinted capsule with the tone as its edge, so the status pill
+        // reads on both palettes.
+        ui::surface::pill(
             scene,
             t,
             pill,
-            f64::from(theme.tokens.radii.full),
             sc.multiply_alpha(0.18),
+            Some(sc.multiply_alpha(0.55)),
+            Some(f64::from(theme.tokens.radii.full)),
         );
         scene.fill(
             Fill::NonZero,
@@ -2172,23 +2283,12 @@ impl VpnApp {
         for (tab, r) in &lay.tabs {
             let active = *tab == self.detail_tab;
             if active {
-                fill_round(
+                ui::surface::card(
                     scene,
                     t,
                     *r,
                     f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.surfaces.raised,
-                );
-                stroke_round(
-                    scene,
-                    t,
-                    *r,
-                    f64::from(theme.tokens.radii.md),
-                    ui::tokens::colors::Colors::hairline_on(
-                        theme.tokens.colors.surfaces.raised,
-                        26,
-                    ),
-                    1.0,
                 );
             }
             let col = if active {
@@ -2233,35 +2333,25 @@ impl VpnApp {
         let latest = hist.and_then(TransferHistory::latest);
         let down_now = down_series.last().copied();
         let up_now = up_series.last().copied();
-        let tiles_h = if content.width() < 500.0 { 120.0 } else { 72.0 };
+        // One geometry for the painter and the hit layout (`kv_tor_rect`).
+        let (tiles_h, chart) = status_geometry(content);
 
         Self::draw_status_tiles(
             scene, tr, t, theme, content, c, details, has_rate, down_now, up_now, tiles_h,
         );
-        let chart = Self::draw_status_throughput(
+        Self::draw_status_throughput(
             scene,
             tr,
             t,
             theme,
-            content,
-            tiles_h,
+            chart,
             &down_series,
             &up_series,
             has_rate,
             latest,
             c,
         );
-        Self::draw_status_kv_rows(
-            scene,
-            tr,
-            t,
-            theme,
-            content,
-            chart.y1 + 16.0,
-            lay,
-            c,
-            details,
-        );
+        Self::draw_status_kv_rows(scene, tr, t, theme, content, lay, c, details);
     }
 
     /// The four-across stat tiles (local state / handshake age / measured
@@ -2292,7 +2382,8 @@ impl VpnApp {
         // These values are local-only: they never enter the document, actions
         // or resource search index.
         let compact = content.width() < 500.0;
-        let gap = if compact { 8.0 } else { 12.0 };
+        // Sibling tiles sit `S3` apart in either arrangement.
+        let gap = S3;
         let columns = if compact { 2.0 } else { 4.0 };
         let tw = (content.width() - gap * (columns - 1.0)) / columns;
         let rate_or_dash = |v: Option<f64>| match v {
@@ -2321,20 +2412,12 @@ impl VpnApp {
             let x = content.x0 + column as f64 * (tw + gap);
             let y = content.y0 + row as f64 * (tile_h + gap);
             let r = Rect::new(x, y, x + tw, y + tile_h);
-            fill_round(
+            ui::surface::card(
                 scene,
                 t,
                 r,
                 f64::from(theme.tokens.radii.lg),
                 theme.tokens.colors.surfaces.raised,
-            );
-            stroke_round(
-                scene,
-                t,
-                r,
-                f64::from(theme.tokens.radii.lg),
-                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-                1.0,
             );
             text_w(
                 tr,
@@ -2373,22 +2456,17 @@ impl VpnApp {
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
-        content: Rect,
-        tiles_h: f64,
+        chart: Rect,
         down_series: &[f64],
         up_series: &[f64],
         has_rate: bool,
         latest: Option<Transfer>,
         c: &Connection,
-    ) -> Rect {
-        // Throughput panel — plots the measured rate series. When there is no
-        // live data yet the plot stays empty with a note.
-        let chart = Rect::new(
-            content.x0,
-            content.y0 + tiles_h + 16.0,
-            content.x1,
-            content.y0 + tiles_h + 16.0 + if content.width() < 500.0 { 96.0 } else { 176.0 },
-        );
+    ) {
+        // Throughput panel — plots the REAL measured rate series. When there
+        // is no live data yet the plot stays empty with an honest note; the
+        // app never draws a synthesized waveform. `chart` comes from
+        // `status_geometry`, the rhythm the hit layout reads too.
         throughput::draw_chart(scene, t, chart, theme, down_series, up_series, has_rate);
         text_w(
             tr,
@@ -2443,14 +2521,13 @@ impl VpnApp {
                 TextWeight::Regular,
             );
         }
-        chart
     }
 
     /// The secret-free provisioning explanation plus the per-tunnel Tor
     /// toggle row. Split out of [`Self::draw_status_tab`].
     #[allow(
         clippy::too_many_arguments,
-        reason = "the kv table is scene + renderer + transform + theme + layout + the top y-offset + the connection; grouping into a struct would only move the fields, not reduce them"
+        reason = "the kv table is scene + renderer + transform + theme + content + layout + the connection and its local details; grouping into a struct would only move the fields, not reduce them"
     )]
     fn draw_status_kv_rows(
         scene: &mut Scene,
@@ -2458,11 +2535,11 @@ impl VpnApp {
         t: Affine,
         theme: &Theme,
         content: Rect,
-        kv_top: f64,
         lay: &LayoutRects,
         c: &Connection,
         details: Option<&LocalProfileDetails>,
     ) {
+        let (kv_top, row_h) = status_kv_table(content);
         let rows = [
             (
                 "Endpoint",
@@ -2482,7 +2559,7 @@ impl VpnApp {
             ),
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
-            let ry = kv_top + i as f64 * 30.0;
+            let ry = kv_top + i as f64 * row_h;
             text_w(
                 tr,
                 scene,
@@ -2505,20 +2582,19 @@ impl VpnApp {
                 ry + 6.0,
                 TextWeight::Regular,
             );
-            scene.stroke(
-                &Stroke::new(1.0),
+            // Row rules derived against the pane they lie on (HIG §9.5).
+            ui::surface::separator(
+                scene,
                 t,
-                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26)
-                    .multiply_alpha(0.5),
-                None,
-                &Line::new(
-                    Point::new(content.x0, ry + 30.0),
-                    Point::new(content.x1, ry + 30.0),
-                ),
+                content.x0,
+                content.x1,
+                ry + row_h,
+                0.0,
+                theme.tokens.colors.surfaces.base,
             );
         }
         // Per-tunnel Tor row (with a small toggle).
-        let ry = kv_top + 4.0 * 30.0;
+        let ry = kv_top + 4.0 * row_h;
         text_w(
             tr,
             scene,
@@ -2549,20 +2625,13 @@ impl VpnApp {
             content.x1,
             content.y1.min(content.y0 + 360.0),
         );
-        fill_round(
+        // A raised card with its derived edge, like the Status tiles.
+        ui::surface::card(
             scene,
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.raised,
         );
         let text = render_config_text(c, self.local_details.get(&c.id));
         let mut y = card.y0 + 14.0;
@@ -2608,20 +2677,13 @@ impl VpnApp {
             content.x1,
             content.y1.min(content.y0 + 360.0),
         );
-        fill_round(
+        // A raised card with its derived edge, like the Status tiles.
+        ui::surface::card(
             scene,
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.raised,
         );
         let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
         let lines = synth_logs(c, self.local_details.get(&c.id), &self.activity, xfer);
@@ -2675,20 +2737,16 @@ impl VpnApp {
             None,
             &self.rect,
         );
+        // Panel role: the panel ground with its derived panel edge (HIG §9.5).
         let card = lay.modal_card;
-        fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.xl),
-            theme.tokens.colors.surfaces.raised,
-        );
+        let radius = f64::from(theme.tokens.radii.xl);
+        fill_round(scene, t, card, radius, panel_ground(theme));
         stroke_round(
             scene,
             t,
-            card,
-            f64::from(theme.tokens.radii.xl),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 51),
+            card.inset(-0.5),
+            radius - 0.5,
+            panel_border(theme),
             1.0,
         );
         self.draw_add_modal(scene, tr, t, theme, presence, card);
@@ -2730,7 +2788,7 @@ impl VpnApp {
             card.y0 + 60.0,
             TextWeight::Bold,
         );
-        self.draw_add_kind_selector(scene, tr, t, theme, card, x);
+        self.draw_add_kind_selector(scene, tr, t, theme, card);
         Self::draw_add_fields(scene, tr, t, theme, presence, card);
         self.draw_add_modal_footer(scene, tr, t, theme, card);
     }
@@ -2749,51 +2807,29 @@ impl VpnApp {
         t: Affine,
         theme: &Theme,
         card: Rect,
-        x: f64,
     ) {
-        // segmented kind selector
-        let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
-            .into_iter()
-            .enumerate()
-        {
-            let sx = x + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
-            let active = self.add_kind == k;
-            let bg = if active {
-                theme.tokens.colors.accent[5].multiply_alpha(0.22)
-            } else {
-                theme.tokens.colors.surfaces.base
-            };
-            fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
-            stroke_round(
-                scene,
-                t,
-                r,
-                f64::from(theme.tokens.radii.md),
-                if active {
-                    theme.tokens.colors.accent[5]
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                1.0,
-            );
-            let lbl = format!("{} (.{})", k.long_name(), k.ext());
-            text_center(
-                tr,
-                scene,
-                t,
-                &lbl,
-                12.0,
-                theme.text_primary,
-                r,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
-            );
-        }
+        // Shared segmented control over the one geometry the hit test reads.
+        let rects = add_modal_kind_rects(card);
+        let labels: Vec<String> = ADD_MODAL_KINDS
+            .iter()
+            .map(|k| format!("{} (.{})", k.long_name(), k.ext()))
+            .collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let selected = ADD_MODAL_KINDS
+            .iter()
+            .position(|k| *k == self.add_kind)
+            .unwrap_or(0);
+        let hovered = rects.iter().position(|r| point_in(*r, self.last_mouse));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(hovered),
+        );
     }
 
     /// Honest provisioning and credential-ownership explanation.
@@ -3029,14 +3065,8 @@ impl VpnApp {
 
     fn add_modal_hit(&mut self, p: Point, lay: &LayoutRects) {
         let card = lay.modal_card;
-        // kind segments
-        let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
-            .into_iter()
-            .enumerate()
-        {
-            let sx = card.x0 + 28.0 + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
+        // kind segments — the same rects the painter draws
+        for (r, k) in add_modal_kind_rects(card).into_iter().zip(ADD_MODAL_KINDS) {
             if point_in(r, p) {
                 self.add_kind = k;
                 return;
@@ -3108,6 +3138,19 @@ impl VpnApp {
 
         *handled = true;
     }
+}
+
+/// Protocol choices of the import sheet, in segment order.
+const ADD_MODAL_KINDS: [ConnKind; 2] = [ConnKind::WireGuard, ConnKind::OpenVpn];
+
+/// The protocol segments of the import sheet: one contiguous strip so the
+/// shared segmented control paints it, and the only geometry the hit test
+/// consults, so a face can never drift from its click target.
+fn add_modal_kind_rects(card: Rect) -> [Rect; 2] {
+    let seg_y = card.y0 + 78.0;
+    let x = card.x0 + 28.0;
+    let seg_w = 130.0;
+    [0.0, 1.0].map(|i: f64| Rect::new(x + i * seg_w, seg_y, x + (i + 1.0) * seg_w, seg_y + 34.0))
 }
 
 fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
@@ -3283,6 +3326,35 @@ impl Widget for VpnApp {
         self.sample_throughput();
     }
 
+    /// Size the header control band from the label the renderer will paint,
+    /// so an enlarged accessibility scale grows the band (and the tally that
+    /// centres on it) instead of sinking the labels to the pill's edge.
+    fn adjust_layout_with_measure(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        tr: &mut TextRenderer,
+    ) -> bool {
+        let (_, label_h) = tr.measure_weighted("+ Import", 13.0, None, TextWeight::Semibold);
+        let control_h = HEADER_CONTROL_H.max(f64::from(label_h).ceil() + 16.0);
+        // Rows: the 15px name line, the 12px endpoint line beneath it and the
+        // paddings the 1× row implied (14 / 11.25 / 15).
+        let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
+        let (_, line2_h) = tr.measure("Hg", 12.0, None);
+        let row_line2_top = ROW_LINE2_TOP.max(14.0 + f64::from(name_h) + 11.25);
+        let row_h = ROW_H.max(row_line2_top + f64::from(line2_h) + 15.0);
+        let row_name_cy = 14.0 + f64::from(name_h) / 2.0;
+        let changed = (control_h - self.control_h).abs() > f64::EPSILON
+            || (row_h - self.row_h).abs() > f64::EPSILON
+            || (row_line2_top - self.row_line2_top).abs() > f64::EPSILON
+            || (row_name_cy - self.row_name_cy).abs() > f64::EPSILON;
+        self.control_h = control_h;
+        self.row_h = row_h;
+        self.row_line2_top = row_line2_top;
+        self.row_name_cy = row_name_cy;
+        changed
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3315,6 +3387,9 @@ impl Widget for VpnApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // A taller pane shrinks the scroll range under the current offset.
+        let lay = self.layout();
+        self.detail_scroll = self.detail_scroll.min(self.detail_scroll_max(&lay));
     }
 
     fn draw(
@@ -4015,23 +4090,42 @@ impl VpnApp {
         }
     }
 
+    /// Wheel over the detail pane scrolls its tab content wherever the pane
+    /// is shown — docked beside the list as well as in the compact route —
+    /// so a short window (1024×640 with a stacked header) still reaches the
+    /// Tor row at the bottom of the Status table.
     fn handle_detail_scroll(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let lay = self.layout();
-        if !lay.compact || !self.compact_detail_open || !point_in(lay.detail, self.last_mouse) {
+        if !self.detail_shown(&lay) || !point_in(lay.detail, self.last_mouse) {
             return;
         }
         let delta_y = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 32.0,
             MouseScrollDelta::PixelDelta(position) => position.y,
         };
+        let max_scroll = self.detail_scroll_max(&lay);
+        self.detail_scroll = (self.detail_scroll - delta_y).clamp(0.0, max_scroll);
+        *handled = true;
+    }
+
+    /// Whether the detail pane is on screen: always beside the list when
+    /// docked, only after a row was opened in the compact route.
+    fn detail_shown(&self, lay: &LayoutRects) -> bool {
+        self.vault.selected_conn().is_some() && (!lay.compact || self.compact_detail_open)
+    }
+
+    /// How far the current tab's content can scroll inside `lay.content`.
+    /// The Status extent is the geometry the painter and the Tor-toggle hit
+    /// rect share (`status_content_height`); Config and Logs paint a card
+    /// clamped to the pane, so their fixed extents only matter once the pane
+    /// is shorter than the card.
+    fn detail_scroll_max(&self, lay: &LayoutRects) -> f64 {
         let content_height: f64 = match self.detail_tab {
-            DetailTab::Status => 410.0,
+            DetailTab::Status => status_content_height(lay.content),
             DetailTab::Config => 360.0,
             DetailTab::Logs => 420.0,
         };
-        let max_scroll = (content_height - lay.content.height()).max(0.0);
-        self.detail_scroll = (self.detail_scroll - delta_y).clamp(0.0, max_scroll);
-        *handled = true;
+        (content_height - lay.content.height()).max(0.0)
     }
 
     /// A pressed global shortcut (the Add modal returns before reaching this
@@ -4100,6 +4194,121 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    /// At 1024×640 the docked detail pane is 536px wide, so its header
+    /// stacks (the 150px action cannot share the title row) and the Status
+    /// table's Tor row lands below the pane. The pane scrolls — docked as
+    /// well as compact — by the extent the painter, the Tor hit rect and
+    /// `status_content_height` share, so the row is reachable with the wheel.
+    #[test]
+    fn docked_detail_scrolls_the_tor_row_into_view_at_1024x640() {
+        let (mut app, _doc) = demo_with_doc();
+        if app.vault.selected.is_none() {
+            let first = app.vault.connections[0].id;
+            app.select(first);
+        }
+        app.detail_tab = DetailTab::Status;
+        app.rect = Rect::new(0.0, 0.0, 1024.0, 640.0);
+        let lay = app.layout();
+        assert!(!lay.compact);
+        assert!(
+            lay.tor_row.y1 > lay.content.y1,
+            "without scrolling the Tor row starts below the pane"
+        );
+        let extent = lay.content.y0 + status_content_height(lay.content);
+        assert!(
+            lay.tor_row.y1 <= extent + 1e-6,
+            "the Tor row lies inside the Status extent"
+        );
+
+        app.last_mouse = lay.content.center();
+        let mut handled = false;
+        app.handle_detail_scroll(&MouseScrollDelta::LineDelta(0.0, -40.0), &mut handled);
+        assert!(handled, "the docked pane takes the wheel");
+        let max = app.detail_scroll_max(&lay);
+        assert!(
+            max > 0.0 && (app.detail_scroll - max).abs() < 1e-6,
+            "clamped to the content extent"
+        );
+        assert!(
+            lay.tor_row.y1 - app.detail_scroll <= lay.content.y1 + 1e-6,
+            "the Tor row is inside the pane after scrolling"
+        );
+
+        // A tall window shows the whole table: nothing to scroll.
+        app.rect = Rect::new(0.0, 0.0, 1024.0, 900.0);
+        let tall = app.layout();
+        assert!(tall.tor_row.y1 <= tall.content.y1);
+        assert!(app.detail_scroll_max(&tall).abs() < 1e-6);
+    }
+
+    /// Connection rows keep their 74px band at 1× and grow with the measured
+    /// name + endpoint lines at 2×; the rows the layout builds (and hit-tests)
+    /// never overlap and the second line always clears the first.
+    #[test]
+    fn connection_rows_follow_the_text_scale() {
+        let (mut app, _doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut tr = TextRenderer::new();
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        assert!((app.row_h - ROW_H).abs() < 1e-6, "1× keeps the 74px row");
+        assert!((app.row_line2_top - ROW_LINE2_TOP).abs() < 1e-6);
+        let rows = app.layout().rows;
+        assert!(rows.len() > 1);
+        assert!(
+            rows.iter()
+                .all(|(_, r, _)| (r.height() - ROW_H).abs() < 1e-6)
+        );
+
+        tr.set_text_scale(2.0);
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let (_, name_h) = tr.measure_weighted("Hg", 15.0, None, TextWeight::Semibold);
+        let (_, line2_h) = tr.measure("Hg", 12.0, None);
+        assert!(
+            app.row_line2_top >= 14.0 + f64::from(name_h),
+            "the endpoint line starts under the doubled name line"
+        );
+        assert!(app.row_h >= app.row_line2_top + f64::from(line2_h));
+        let rows = app.layout().rows;
+        assert!(
+            rows.iter()
+                .all(|(_, r, _)| (r.height() - app.row_h).abs() < 1e-6)
+        );
+        for pair in rows.windows(2) {
+            assert!(pair[1].1.y0 >= pair[0].1.y1, "2× rows never overlap");
+        }
+        // The toggle stays centred in the taller row.
+        let (_, row, toggle) = rows[0];
+        assert!((toggle.center().y - row.center().y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn narrow_header_ends_after_controls_and_keeps_notice_actions_in_band() {
+        let (mut app, mut doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+        let clean = app.layout();
+        assert!(clean.header.y1 - clean.add_btn.y1 <= 16.0);
+        assert!(clean.rows[0].1.y0 >= clean.header.y1);
+        app.shot_loading = true;
+        let busy = app.layout();
+        let notice = busy.notice.unwrap();
+        assert!(notice.y0 >= busy.add_btn.y1);
+        for target in [busy.notice_retry.unwrap(), busy.notice_dismiss.unwrap()] {
+            assert!(notice.contains(target.origin()) && target.y1 <= notice.y1);
+        }
+        assert!(busy.rows[0].1.y0 >= notice.y1);
+        app.shot_loading = false;
+        let p = app.layout().tor_pill.center();
+        let before = app.vault.tor_global;
+        dispatch(&mut app, &mut doc, &cursor_at(p));
+        dispatch(&mut app, &mut doc, &press());
+        assert!(matches!(app.pending, Some(Pending::TorGlobal(next, _)) if next != before));
+        dispatch(&mut app, &mut doc, &esc_key());
+        assert!(app.pending.is_none());
+        assert_eq!(app.vault.tor_global, before);
     }
 
     #[test]
@@ -4187,7 +4396,8 @@ mod tests {
     #[test]
     #[serial_test::serial(vpn_env)]
     fn confirm_dialog_routes_through_modaldialog() {
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
         let work = app
@@ -4311,7 +4521,8 @@ mod tests {
     fn confirm_connect_without_exec_stays_disconnected() {
         // Honesty: with execution disabled (the default) confirming a connect
         // must NOT claim the tunnel is connected — the real command never ran.
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         let work = app
             .vault
@@ -4349,9 +4560,13 @@ mod tests {
         let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
 
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_import(ConnKind::WireGuard));
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Import WireGuard tunnel"
+        );
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);
@@ -4385,10 +4600,9 @@ mod tests {
         let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
         let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.request_local_provision(id));
         assert!(app.drain_import(&mut doc));
         assert_eq!(
             app.vault.connections.len(),
@@ -4412,8 +4626,9 @@ mod tests {
     fn cancelled_setup_cannot_capture_a_later_generic_import() {
         let (mut app, _doc) = demo_with_doc();
         let id = app.vault.selected.expect("demo selection");
-        app.request_local_provision(id);
-        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.request_local_provision(id));
         let mut doc = AutoCommit::new();
         assert!(!app.drain_import(&mut doc));
         assert_eq!(app.provision_target, None);
@@ -4468,6 +4683,73 @@ mod tests {
         app.commit_add();
         assert_eq!(app.vault.connections.len(), before);
         assert!(app.pending_control_invocation.is_some());
+    }
+
+    /// The protocol segments are painted and hit-tested from one geometry:
+    /// pressing inside the second painted segment selects OpenVPN, the strip
+    /// is contiguous (so the shared segmented control can draw it) and stays
+    /// inside the sheet at the narrowest supported width.
+    #[test]
+    fn add_modal_kind_segments_hit_where_they_are_painted() {
+        for width in [1200.0, 480.0] {
+            let (mut app, _doc) = demo_with_doc();
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.open_add(ConnKind::WireGuard);
+            let lay = app.layout();
+            let rects = add_modal_kind_rects(lay.modal_card);
+            assert!(
+                (rects[0].x1 - rects[1].x0).abs() < 1e-6,
+                "segments are contiguous"
+            );
+            assert!(
+                rects[1].x1 <= lay.modal_card.x1 - 28.0 + 1e-6,
+                "strip stays in the card"
+            );
+            app.add_modal_hit(rects[1].center(), &lay);
+            assert_eq!(app.add_kind, ConnKind::OpenVpn);
+            app.add_modal_hit(rects[0].center(), &lay);
+            assert_eq!(app.add_kind, ConnKind::WireGuard);
+        }
+    }
+
+    /// The header control band follows the measured Import label: at 2× it is
+    /// taller than the 1× constant and the layout's control rects grow with
+    /// it, so the tally and pill labels stay centred inside their band.
+    #[test]
+    fn header_control_band_grows_with_the_text_scale() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut tr = TextRenderer::new();
+        let (mut app, _doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        let base = app.layout();
+        assert!((base.add_btn.height() - HEADER_CONTROL_H).abs() < 1e-6);
+
+        tr.set_text_scale(2.0);
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let large = app.layout();
+        assert!(large.add_btn.height() > HEADER_CONTROL_H + 8.0);
+        assert!(large.header.height() > base.header.height());
+        assert!(
+            large.list.y0 >= large.header.y1,
+            "body starts below the grown header"
+        );
+
+        // The wide header must also contain the grown band, at 2× and at the
+        // renderer's 4× clamp; before, only the compact form grew.
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        for scale in [2.0, 4.0] {
+            tr.set_text_scale(scale);
+            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+            let wide = app.layout();
+            assert!(!wide.compact);
+            assert!(
+                wide.add_btn.y1 + 18.0 <= wide.header.y1 + 1e-6,
+                "controls end inside the wide header at {scale}x"
+            );
+            assert!(wide.tor_pill.y1 <= wide.header.y1);
+        }
     }
 
     #[test]

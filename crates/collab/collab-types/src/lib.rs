@@ -1,3 +1,8 @@
+#![allow(
+    clippy::large_enum_variant,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! `collab-types` — the cryptographic foundation for Tilo Spaces,
 //! Channels, and role-based access control.
 //!
@@ -58,6 +63,7 @@ pub mod caps;
 pub mod channel;
 pub mod compaction;
 pub mod crypto;
+pub mod document_transfer;
 pub mod event;
 pub mod file_invite;
 pub mod files;
@@ -96,6 +102,10 @@ pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
     verify_op,
 };
+pub use document_transfer::{
+    DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
+    MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
+};
 pub use event::{ChannelEvent, RoleAttestation};
 pub use file_invite::{
     BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
@@ -106,15 +116,20 @@ pub use files::{
     CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution, ConflictStatus,
     ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
     FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperationV1,
-    FileMutationParticipantRoleV1, FileMutationParticipantV1, FileMutationTransactionError,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1, FileNameV1, FileNodeKind,
-    FilePropertiesV1, FileProvenance, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
-    HISTORY_CONTROL_VERSION, HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1,
-    HistoryControlRequestV1, IndexStatus, MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES,
-    MAX_HISTORY_PREVIEW_BYTES, MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS,
-    MERGE_PREFLIGHT_VERSION, MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1,
-    PreviewStatus, PreviewVariant, prefer_conflict_resolution,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
+    FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionError,
+    FileMutationTransactionManifest, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,
+    FileRecordError, FileRecordId, FileVersionId, FileVersionV1, HISTORY_CONTROL_VERSION,
+    HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1, HistoryControlRequestV1, IndexStatus,
+    MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES, MAX_HISTORY_PREVIEW_BYTES,
+    MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS, MERGE_PREFLIGHT_VERSION,
+    MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
+    prefer_conflict_resolution,
+};
+#[allow(deprecated, reason = "stable collab-types source compatibility")]
+pub use files::{
+    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
+    FileMutationTransactionManifestV1, FileMutationTransactionV1,
 };
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{
@@ -125,9 +140,9 @@ pub use mls_governance::{
     MlsGovernanceFrameV1,
 };
 pub use op::{
-    DocumentMutation, DocumentMutationError, EncryptionMetadata, RoutedDocumentPayload, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
-    validate_document_payload_route,
+    DocumentMutation, DocumentMutationEncodeError, DocumentMutationError, EncryptionMetadata,
+    MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload, SignedOp, document_artifact_id,
+    document_attestation_id, document_channel_id, validate_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,

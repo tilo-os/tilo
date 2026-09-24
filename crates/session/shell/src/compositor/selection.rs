@@ -798,6 +798,89 @@ pub struct SelectionState {
     /// What the drag in flight is carrying, as something a person can
     /// read. See [`crate::compositor::drag_feedback`].
     pub dnd_label: DragLabel,
+    /// Payload requested while a client drag is still alive. Wayland cancels
+    /// a source released over compositor chrome (there is no target
+    /// `wl_surface`) before `ClientDndGrabHandler::dropped` returns, so the
+    /// shell must begin this transfer before release.
+    client_drag_capture: Option<Arc<Mutex<ClientDragCapture>>>,
+    /// A release over shell-owned space waiting for the asynchronous pipe
+    /// reads above. The native frame pump resolves its point through the same
+    /// placement grammar as an app/tab drag.
+    pending_shell_drop: Option<PendingShellDrop>,
+    /// Exact shared-row target painted for a client drag. Captured on motion
+    /// and committed after the asynchronous payload transfer completes.
+    pub(crate) shell_drop_placement: Option<crate::shell::tab_binding::Placement>,
+}
+
+struct ClientDragCapture {
+    /// 0 = drag live, 1 = shell owns the drop, 2 = another client/cancel owns it.
+    disposition: u8,
+    paths: Option<Vec<std::path::PathBuf>>,
+    raw_path: Option<std::path::PathBuf>,
+    wait_timeout: std::time::Duration,
+    uri_transfer_complete: bool,
+    raw_transfer_complete: bool,
+}
+
+impl Default for ClientDragCapture {
+    fn default() -> Self {
+        Self {
+            disposition: 0,
+            paths: None,
+            raw_path: None,
+            wait_timeout: std::time::Duration::from_secs(10),
+            uri_transfer_complete: true,
+            raw_transfer_complete: true,
+        }
+    }
+}
+
+struct DragTransferCompletion {
+    capture: Arc<Mutex<ClientDragCapture>>,
+    uri: bool,
+}
+
+impl Drop for DragTransferCompletion {
+    fn drop(&mut self) {
+        let mut capture = self
+            .capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.uri {
+            capture.uri_transfer_complete = true;
+        } else {
+            capture.raw_transfer_complete = true;
+        }
+    }
+}
+
+struct PendingShellDrop {
+    placement: crate::shell::tab_binding::Placement,
+    capture: Arc<Mutex<ClientDragCapture>>,
+    queued_at: std::time::Instant,
+    wait_timeout: std::time::Duration,
+}
+
+fn drag_import_directory() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .map(|runtime| runtime.join(format!("tilo-drag-imports-{}", std::process::id())))
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SelectionState {
+    fn drop(&mut self) {
+        let Some(directory) = drag_import_directory() else {
+            return;
+        };
+        // This directory is owned by this compositor process. Refuse to
+        // recurse through a replacement symlink even during teardown.
+        if std::fs::symlink_metadata(&directory).is_ok_and(|metadata| {
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink()
+        }) {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
 }
 
 /// Name painted beside the pointer during a drag, answered in two stages:
@@ -805,17 +888,37 @@ pub struct SelectionState {
 /// real name arrives later via a threaded read of `text/uri-list` and
 /// replaces it — "Image" becomes `photo.png`.
 #[derive(Clone, Default)]
-pub struct DragLabel(Arc<Mutex<Option<String>>>);
+pub struct DragLabel(Arc<Mutex<crate::compositor::drag_feedback::DragVisual>>);
 
 impl DragLabel {
     pub fn set(&self, label: Option<String>) {
-        *self
+        let mut visual = self
             .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = label;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if label.is_none() {
+            *visual = crate::compositor::drag_feedback::DragVisual::default();
+        } else {
+            visual.label = label;
+        }
     }
 
     pub fn get(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .label
+            .clone()
+    }
+
+    pub fn set_preview(&self, preview: crate::compositor::drag_feedback::DragPreview) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .preview = Some(preview);
+    }
+
+    pub fn snapshot(&self) -> crate::compositor::drag_feedback::DragVisual {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -863,6 +966,9 @@ impl SelectionState {
             dnd_active: false,
             dnd_label: DragLabel::default(),
             chrome_drag: None,
+            client_drag_capture: None,
+            pending_shell_drop: None,
+            shell_drop_placement: None,
         }
     }
 }
@@ -877,8 +983,7 @@ pub struct ChromeDrag {
     pub mime_types: Vec<String>,
 }
 
-/// The mime type a list of `file://` URIs travels as.
-pub const URI_LIST_MIME: &str = "text/uri-list";
+pub use ui::dnd::{URI_LIST_MIME, mime_for_path};
 
 impl ChromeDrag {
     pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
@@ -894,13 +999,7 @@ impl ChromeDrag {
     /// The `text/uri-list` body: one `file://` URI per line, CRLF-terminated
     /// per RFC 2483, percent-encoded.
     pub fn uri_list(&self) -> String {
-        let mut out = String::new();
-        for p in &self.paths {
-            out.push_str("file://");
-            out.push_str(&percent_encode_path(&p.to_string_lossy()));
-            out.push_str("\r\n");
-        }
-        out
+        ui::dnd::uri_list(&self.paths)
     }
 
     /// The single file whose bytes `mime` asks for, if that is what the
@@ -914,39 +1013,6 @@ impl ChromeDrag {
             _ => None,
         }
     }
-}
-
-/// The mime type of a file by extension. Only types an app can do
-/// something with as raw bytes; anything else travels as a path only.
-pub fn mime_for_path(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => return None,
-    })
-}
-
-fn percent_encode_path(path: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(path.len());
-    for b in path.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                out.push(b as char);
-            }
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
 }
 
 /// Write `bytes` into `fd` without stalling: small payloads fit the pipe
@@ -1273,17 +1339,9 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         if rgba.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
             return false;
         }
-        let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(&mut png, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let Ok(mut writer) = encoder.write_header() else {
+        let Ok(png) = ui::png::encode_rgba8(width, height, rgba) else {
             return false;
         };
-        if writer.write_image_data(rgba).is_err() {
-            return false;
-        }
-        drop(writer);
         if png.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
             return false;
         }
@@ -1304,11 +1362,18 @@ fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
     }
 }
 
-/// Point `ui`'s clipboard at the compositor's mirror, for hosted widgets.
-/// Called once at startup; without it hosted widgets fall back to `ui`'s
-/// in-process buffer, invisible to every client.
-pub fn install_host_clipboard(store: SharedSelection) {
-    ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
+/// Install the host services hosted widgets use: the native desktop's, with
+/// the clipboard pointed at the compositor's mirror. Called once at startup;
+/// without it hosted widgets fall back to `ui`'s in-process buffer, invisible
+/// to every client.
+pub fn install_host_services(store: SharedSelection) {
+    ui::host::install_default(host_services(store));
+}
+
+/// The services in-process widgets see: native, except that the clipboard is
+/// the compositor's own mirror.
+fn host_services(store: SharedSelection) -> ui::host::HostServices {
+    ui::host::native::services(None).with_clipboard(Arc::new(HostClipboard { store }))
 }
 
 #[cfg(target_os = "linux")]
@@ -1383,7 +1448,11 @@ impl ExtDataControlHandler for State {
 /// large payload). May be asked any number of times without disturbing the
 /// drop; reads happen on a thread since the client can't answer while this loop blocks.
 #[cfg(target_os = "linux")]
-fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
+fn request_dragged_name(
+    source: &WlDataSource,
+    label: DragLabel,
+    capture: Arc<Mutex<ClientDragCapture>>,
+) {
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,
         Err(e) => {
@@ -1395,10 +1464,20 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     // Our copy of the write end must close too, or the read below never sees
     // EOF — the client's copy closing alone isn't enough.
     drop(writer);
+    capture
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .uri_transfer_complete = false;
+    let completion = DragTransferCompletion {
+        capture: capture.clone(),
+        uri: true,
+    };
     let _ = std::thread::Builder::new()
         .name("tilo-drag-name".into())
         .spawn(move || {
-            use std::io::Read;
+            use std::io::Read as _;
+
+            let _completion = completion;
             let mut reader = reader;
             let mut body = Vec::new();
             // Bounded: a URI list is small, and a source that streams forever must not
@@ -1413,6 +1492,285 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
             }
             if let Some(name) = crate::compositor::drag_feedback::name_from_uri_list(&body) {
                 label.set(Some(name));
+            }
+            let paths = paths_from_uri_list(&body);
+            if !paths.is_empty() {
+                let previewable: Vec<_> = paths
+                    .iter()
+                    .filter(|path| path.starts_with("/var/workspace"))
+                    .cloned()
+                    .collect();
+                if !previewable.is_empty() {
+                    request_path_drag_preview(&previewable, label.clone());
+                }
+                capture
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .paths = Some(paths);
+            }
+        });
+}
+
+fn paths_from_uri_list(body: &[u8]) -> Vec<std::path::PathBuf> {
+    String::from_utf8_lossy(body)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            let encoded = line.strip_prefix("file://")?;
+            let local = encoded
+                .strip_prefix("localhost/")
+                .map_or(encoded, |path| path.strip_prefix('/').map_or(path, |p| p));
+            let local = if encoded.starts_with("localhost/") {
+                format!("/{local}")
+            } else if encoded.starts_with('/') {
+                local.to_string()
+            } else {
+                return None;
+            };
+            Some(std::path::PathBuf::from(percent_decode_uri_path(&local)))
+        })
+        .collect()
+}
+
+fn percent_decode_uri_path(path: &str) -> String {
+    let mut out = Vec::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%'
+            && let Some(hex_start) = index.checked_add(1)
+            && let Some(next_index) = index.checked_add(3)
+            && let Some(hex_bytes) = bytes.get(hex_start..next_index)
+            && let Ok(hex) = std::str::from_utf8(hex_bytes)
+            && let Ok(value) = u8::from_str_radix(hex, 16)
+        {
+            out.push(value);
+            index = next_index;
+            continue;
+        }
+        out.push(byte);
+        let Some(next_index) = index.checked_add(1) else {
+            break;
+        };
+        index = next_index;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn preferred_drag_content_mime(mimes: &[String]) -> Option<&str> {
+    mimes.iter().map(String::as_str).find(|mime| {
+        *mime != URI_LIST_MIME
+            && *mime != SECRET_MIME
+            && (mime.starts_with("image/")
+                || mime.starts_with("video/")
+                || mime.starts_with("audio/")
+                || mime.starts_with("text/")
+                || matches!(
+                    *mime,
+                    "application/pdf"
+                        | "application/json"
+                        | "application/javascript"
+                        | "application/xml"
+                ))
+    })
+}
+
+fn drag_content_suffix(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "image/bmp" => ".bmp",
+        "image/avif" => ".avif",
+        "image/svg+xml" => ".svg",
+        "video/mp4" => ".mp4",
+        "video/webm" => ".webm",
+        "video/x-matroska" => ".mkv",
+        "video/quicktime" => ".mov",
+        "audio/mpeg" => ".mp3",
+        "audio/ogg" => ".ogg",
+        "application/pdf" => ".pdf",
+        "application/json" => ".json",
+        "application/javascript" | "text/javascript" => ".js",
+        "application/xml" => ".xml",
+        "text/html" => ".html",
+        "text/markdown" | "text/x-markdown" => ".md",
+        "text/css" => ".css",
+        mime if mime.starts_with("text/") => ".txt",
+        _ => ".bin",
+    }
+}
+
+fn drag_content_limit(mime: &str) -> (u64, std::time::Duration) {
+    if mime.starts_with("video/") {
+        (512 * 1024 * 1024, std::time::Duration::from_secs(60))
+    } else if mime.starts_with("audio/") {
+        (256 * 1024 * 1024, std::time::Duration::from_secs(30))
+    } else {
+        (32 * 1024 * 1024, std::time::Duration::from_secs(10))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn request_dragged_content(
+    source: &WlDataSource,
+    mime: &str,
+    capture: Arc<Mutex<ClientDragCapture>>,
+    visual: DragLabel,
+) {
+    let (reader, writer) = match std::io::pipe() {
+        Ok(pair) => pair,
+        Err(error) => {
+            tracing::debug!(target: "shell::selection", %error, "no pipe for dragged content");
+            return;
+        }
+    };
+    source.send(mime.to_string(), writer.as_fd());
+    drop(writer);
+    let suffix = drag_content_suffix(mime);
+    let (max_content_bytes, wait_timeout) = drag_content_limit(mime);
+    capture
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .wait_timeout = wait_timeout;
+    capture
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .raw_transfer_complete = false;
+    let completion = DragTransferCompletion {
+        capture: capture.clone(),
+        uri: false,
+    };
+    let mime = mime.to_string();
+    let _ = std::thread::Builder::new()
+        .name("tilo-drag-content".into())
+        .spawn(move || {
+            use std::io::{Read as _, Write as _};
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let _completion = completion;
+            // This transfer begins speculatively so a shell drop can survive
+            // Wayland cancelling its source. Keep it modest: ordinary file
+            // drags also offer a URI, and merely crossing the desktop must not
+            // hydrate or copy a multi-gigabyte video.
+            // The spool is session-owned capability material. Never fall back
+            // to a predictable directory in world-writable /tmp: an attacker
+            // could pre-create that path as a symlink before the compositor.
+            let Some(base) = drag_import_directory() else {
+                return;
+            };
+            match std::fs::symlink_metadata(&base) {
+                Ok(metadata)
+                    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() =>
+                {
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if std::fs::create_dir(&base).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+            if std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).is_err() {
+                return;
+            }
+            let Ok(mut output) = tempfile::Builder::new()
+                .prefix("dragged-content-")
+                .suffix(suffix)
+                .tempfile_in(&base)
+            else {
+                return;
+            };
+            let mut bounded = reader.take(max_content_bytes.saturating_add(1));
+            let Ok(written) = std::io::copy(&mut bounded, output.as_file_mut()) else {
+                return;
+            };
+            if written > max_content_bytes || output.as_file_mut().flush().is_err() {
+                return;
+            }
+            let Ok((_file, path)) = output.keep() else {
+                return;
+            };
+            {
+                // The transfer already ran off-thread; enrich the visual from
+                // the same bounded local copy rather than opening a second
+                // Wayland pipe or doing decode work on the frame thread.
+                if written <= 16 * 1024 * 1024
+                    && let Ok(bytes) = std::fs::read(&path)
+                {
+                    let preview = if mime.starts_with("image/") {
+                        crate::compositor::drag_feedback::image_preview(&bytes)
+                    } else if mime.starts_with("text/") {
+                        crate::compositor::drag_feedback::text_preview(&bytes)
+                    } else {
+                        None
+                    };
+                    if let Some(preview) = preview {
+                        visual.set_preview(preview);
+                    }
+                }
+                let mut state = capture
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.disposition == 2 {
+                    drop(state);
+                    let _ = std::fs::remove_file(path);
+                } else {
+                    state.raw_path = Some(path);
+                }
+            }
+        });
+}
+
+/// Give a compositor-owned Files drag the same visual treatment as a client
+/// drag. Metadata and bytes may hydrate over the collaborative filesystem, so
+/// both are resolved on a worker and the frame thread only sees the result.
+#[cfg(target_os = "linux")]
+pub fn request_path_drag_preview(paths: &[std::path::PathBuf], visual: DragLabel) {
+    let fallback = if let [path] = paths {
+        let mimes: Vec<String> = mime_guess::from_path(path)
+            .first_raw()
+            .map(str::to_string)
+            .into_iter()
+            .collect();
+        crate::compositor::drag_feedback::preview_for_mimes(&mimes)
+    } else {
+        crate::compositor::drag_feedback::DragPreview::Kind(
+            crate::compositor::drag_feedback::DragKind::File,
+        )
+    };
+    visual.set_preview(fallback);
+    let [path] = paths else { return };
+    let path = path.clone();
+    let _ = std::thread::Builder::new()
+        .name("tilo-path-drag-preview".into())
+        .spawn(move || {
+            const MAX_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+            let mime = mime_guess::from_path(&path).first_raw().unwrap_or("");
+            if !(mime.starts_with("image/") || mime.starts_with("text/")) {
+                return;
+            }
+            let Ok(file) = File::open(path) else { return };
+            let mut bytes = Vec::new();
+            if file
+                .take(MAX_PREVIEW_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+                || bytes.len() as u64 > MAX_PREVIEW_BYTES
+            {
+                return;
+            }
+            let preview = if mime.starts_with("image/") {
+                crate::compositor::drag_feedback::image_preview(&bytes)
+            } else {
+                crate::compositor::drag_feedback::text_preview(&bytes)
+            };
+            if let Some(preview) = preview {
+                visual.set_preview(preview);
             }
         });
 }
@@ -1441,12 +1799,26 @@ impl ClientDndGrabHandler for State {
             .set(Some(crate::compositor::drag_feedback::label_for_mimes(
                 &mimes,
             )));
+        self.selection
+            .dnd_label
+            .set_preview(crate::compositor::drag_feedback::preview_for_mimes(&mimes));
+        let capture = Arc::new(Mutex::new(ClientDragCapture::default()));
+        self.selection.client_drag_capture = Some(capture.clone());
+        self.selection.pending_shell_drop = None;
         // Then ask for the name from the URI list the source is already offering —
         // turns "Image" into "photo.png" on screen.
         if let Some(source) = source.as_ref()
             && mimes.iter().any(|m| m == URI_LIST_MIME)
         {
-            request_dragged_name(source, self.selection.dnd_label.clone());
+            request_dragged_name(source, self.selection.dnd_label.clone(), capture.clone());
+        }
+        // Also begin one bounded content transfer while the source is alive.
+        // This is what lets text, an image, or video that has no host-visible
+        // path materialise as a normal file-backed app after a shell drop.
+        if let Some(source) = source.as_ref()
+            && let Some(mime) = preferred_drag_content_mime(&mimes)
+        {
+            request_dragged_content(source, mime, capture, self.selection.dnd_label.clone());
         }
         // The drag icon is a client surface with the `dnd_icon` role, but Tilo
         // doesn't composite it — the compositor draws its own drag feedback, and a
@@ -1471,6 +1843,141 @@ impl ClientDndGrabHandler for State {
         self.selection.dnd_icon = None;
         self.selection.dnd_active = false;
         self.selection.dnd_label.set(None);
+        if let Some(capture) = self.selection.client_drag_capture.take() {
+            if target.is_none()
+                && let Some(placement) = self.selection.shell_drop_placement.take()
+            {
+                capture
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .disposition = 1;
+                let wait_timeout = capture
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .wait_timeout;
+                self.selection.pending_shell_drop = Some(PendingShellDrop {
+                    placement,
+                    wait_timeout,
+                    capture,
+                    queued_at: std::time::Instant::now(),
+                });
+            } else {
+                self.selection.shell_drop_placement = None;
+                let raw = {
+                    let mut state = capture
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.disposition = 2;
+                    state.raw_path.take()
+                };
+                if let Some(path) = raw {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+}
+
+/// Complete a client-to-shell drag once the asynchronous data pipe has
+/// yielded a host path or a spooled content file. Returns whether it changed
+/// desktop state. Called from the native frame loop, where the retained row
+/// geometry is available; protocol callbacks intentionally do not own that UI.
+#[cfg(target_os = "linux")]
+pub fn pump_pending_shell_drop(
+    state: &mut State,
+    frame_builder: &mut crate::shell::frame::FrameBuilder,
+) -> bool {
+    let Some(pending) = state.selection.pending_shell_drop.as_ref() else {
+        return false;
+    };
+    let (paths, unused_raw) = {
+        let mut capture = pending
+            .capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let workspace_root = std::path::Path::new("/var/workspace").canonicalize().ok();
+        let from_uri: Vec<_> = capture
+            .paths
+            .as_ref()
+            .into_iter()
+            .flatten()
+            // Client URI lists are untrusted. A sandbox may nominate a path
+            // directly only inside the collaborative filesystem; every other
+            // payload has to arrive through the bounded data pipe above.
+            .filter_map(|path| {
+                let root = workspace_root.as_ref()?;
+                let canonical = path.canonicalize().ok()?;
+                canonical.starts_with(root).then_some(canonical)
+            })
+            .collect();
+        if from_uri.is_empty() {
+            (capture.raw_path.iter().cloned().collect(), None)
+        } else {
+            (from_uri, capture.raw_path.take())
+        }
+    };
+    if let Some(path) = unused_raw {
+        let _ = std::fs::remove_file(path);
+    }
+    if !paths.is_empty() {
+        let Some(pending) = state.selection.pending_shell_drop.take() else {
+            return false;
+        };
+        let mut changed = false;
+        for (offset, path) in paths.iter().enumerate() {
+            let placement = advance_drop_placement(pending.placement, offset);
+            changed |= frame_builder
+                .host()
+                .open_dropped_path_with_placement(path, placement);
+        }
+        if !changed {
+            let raw = pending
+                .capture
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .raw_path
+                .take();
+            if let Some(path) = raw {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return changed;
+    }
+    let transfers_complete = {
+        let capture = pending
+            .capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        capture.uri_transfer_complete && capture.raw_transfer_complete
+    };
+    if transfers_complete || pending.queued_at.elapsed() > pending.wait_timeout {
+        let Some(pending) = state.selection.pending_shell_drop.take() else {
+            return false;
+        };
+        let raw = {
+            let mut capture = pending
+                .capture
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            capture.disposition = 2;
+            capture.raw_path.take()
+        };
+        if let Some(path) = raw {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    false
+}
+
+fn advance_drop_placement(
+    placement: crate::shell::tab_binding::Placement,
+    offset: usize,
+) -> crate::shell::tab_binding::Placement {
+    use crate::shell::tab_binding::Placement;
+    match placement {
+        Placement::TabAt(group, index) => Placement::TabAt(group, index.saturating_add(offset)),
+        Placement::GroupAt(strip, index) => Placement::GroupAt(strip, index.saturating_add(offset)),
+        other => other,
     }
 }
 
@@ -1531,6 +2038,56 @@ mod tests {
 
     fn store() -> SharedSelection {
         Arc::new(Mutex::new(SelectionStore::default()))
+    }
+
+    #[test]
+    fn client_drag_uri_paths_are_local_absolute_and_percent_decoded() {
+        assert_eq!(
+            paths_from_uri_list(
+                b"# source names\r\nfile:///var/workspace/My%20Photo.png\r\n\
+                  file://localhost/tmp/report%23final.pdf\r\nhttps://example.invalid/nope\r\n"
+            ),
+            vec![
+                std::path::PathBuf::from("/var/workspace/My Photo.png"),
+                std::path::PathBuf::from("/tmp/report#final.pdf"),
+            ]
+        );
+    }
+
+    #[test]
+    fn client_drag_content_prefers_visual_or_text_payload_not_uri_or_secret() {
+        let mimes = vec![
+            URI_LIST_MIME.to_string(),
+            SECRET_MIME.to_string(),
+            "image/png".to_string(),
+            "text/plain".to_string(),
+        ];
+        assert_eq!(preferred_drag_content_mime(&mimes), Some("image/png"));
+        assert_eq!(drag_content_suffix("video/webm"), ".webm");
+        assert_eq!(drag_content_suffix("image/bmp"), ".bmp");
+        assert_eq!(drag_content_suffix("image/avif"), ".avif");
+        assert_eq!(drag_content_suffix("video/x-matroska"), ".mkv");
+        assert_eq!(drag_content_suffix("video/quicktime"), ".mov");
+        assert_eq!(drag_content_suffix("text/plain;charset=utf-8"), ".txt");
+        assert_eq!(drag_content_limit("text/plain").0, 32 * 1024 * 1024);
+        assert_eq!(drag_content_limit("audio/ogg").0, 256 * 1024 * 1024);
+        assert_eq!(drag_content_limit("video/mp4").0, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn multi_item_drop_advances_exact_insertion_side() {
+        use crate::shell::tab_binding::Placement;
+        assert_eq!(
+            advance_drop_placement(Placement::TabAt(7, 2), 3),
+            Placement::TabAt(7, 5)
+        );
+        assert_eq!(
+            advance_drop_placement(
+                Placement::GroupAt(crate::shell::state::StripId::from(8), 1),
+                2
+            ),
+            Placement::GroupAt(crate::shell::state::StripId::from(8), 3)
+        );
     }
 
     /// Chrome's clipboard write must be readable in-process immediately (paste

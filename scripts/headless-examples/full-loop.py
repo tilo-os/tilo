@@ -7,7 +7,7 @@ snapshots, and kills it. Use this as the template for a CI smoke test
 or an AI agent's exploratory probe.
 
 Usage:
-  ./full-loop.py [/tmp/tilo-full-loop.sock]
+  ./full-loop.py [SOCKET]   (default $XDG_RUNTIME_DIR/tilo-session/full-loop.sock)
 
 What it does:
   1. Spawns ./target/debug/shell --backend headless with
@@ -31,9 +31,9 @@ import subprocess
 import sys
 import time
 
-from _control import call, require_ok
+from _control import call, require_ok, runtime_socket_path
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tilo-full-loop.sock"
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = pathlib.Path(
     os.environ.get(

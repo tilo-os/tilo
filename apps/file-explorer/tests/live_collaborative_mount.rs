@@ -18,7 +18,10 @@ use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)] // Mandatory end-to-end FUSE contract is one lifecycle.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mandatory end-to-end FUSE contract is one lifecycle"
+)]
 async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendants() {
     let fuse = match std::fs::metadata("/dev/fuse") {
         Ok(fuse) => fuse,
@@ -91,8 +94,8 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         tokio::task::yield_now().await;
     }
 
-    let previous_roots = std::env::var_os("TILO_WORKSPACE_ROOTS");
-    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &mount) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_WORKSPACE_ROOTS", &mount);
     let mut files = FileExplorerWidget::with_persistence(None, None);
     files.navigate(mount.clone());
     assert_eq!(files.entries().len(), expected.len() + 1);
@@ -204,10 +207,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     assert!(!child.availability.as_ref().unwrap().policy_inherited);
 
     drop(files);
-    match previous_roots {
-        Some(value) => unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", value) },
-        None => unsafe { std::env::remove_var("TILO_WORKSPACE_ROOTS") },
-    }
+    drop(env);
     session.umount_and_join().unwrap();
     shutdown_endpoint.close().await;
     shutdown_store.store().shutdown().await.unwrap();

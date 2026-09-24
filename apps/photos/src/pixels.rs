@@ -179,14 +179,11 @@ fn within_decode_limits(w: u32, h: u32) -> bool {
 /// Encode RGBA8 as a PNG. This is what reaches the clipboard consumer that
 /// wants a file rather than a raw buffer, and what `Save` writes.
 pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
+    use image::{ExtendedColorType, ImageEncoder};
     let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, img.w, img.h);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc.write_header().ok()?;
-        writer.write_image_data(&img.bytes).ok()?;
-    }
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(&img.bytes, img.w, img.h, ExtendedColorType::Rgba8)
+        .ok()?;
     Some(out)
 }
 
@@ -364,6 +361,18 @@ pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
         };
     }
     r.clamped()
+}
+
+/// Wrap prepared pixels for the shared live/history painters.
+pub fn to_peniko(img: &Rgba) -> vello::peniko::ImageData {
+    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+    ImageData {
+        data: Blob::new(std::sync::Arc::new(img.bytes.clone())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: img.w,
+        height: img.h,
+    }
 }
 
 #[cfg(test)]

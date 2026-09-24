@@ -7,18 +7,23 @@
 use std::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use ui::i18n::ArgValue;
+
 use crate::assets::ImageStore;
 use crate::model::{Deck, Palette, PaletteKind, SLIDE_H, SLIDE_W};
+use crate::strings::{tr, tr_args};
 use crate::{chrome, render};
 
 const TRANSITION_MS: u128 = 240;
+/// The presentation / presenter stage ground every frame and panel sits on.
+const STAGE: Color = Color::BLACK;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Blank {
@@ -372,7 +377,7 @@ impl Presentation {
             return;
         }
 
-        chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
+        chrome::fill_rect(scene, transform, frame.rect, STAGE);
         if self.draw_blank(scene, transform, frame.rect) {
             return;
         }
@@ -526,7 +531,7 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
     ) {
         let palette = Palette::resolve(frame.deck.palette, theme);
-        chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
+        chrome::fill_rect(scene, transform, frame.rect, STAGE);
         if self.draw_blank(scene, transform, frame.rect) {
             return;
         }
@@ -605,16 +610,17 @@ impl Presentation {
         palette: &Palette,
         panel: Rect,
     ) {
-        chrome::fill_rect(scene, transform, panel, theme.tokens.colors.surfaces.raised);
-        scene.stroke(
-            &Stroke::new(1.0),
+        let raised = theme.tokens.colors.surfaces.raised;
+        chrome::fill_rect(scene, transform, panel, raised);
+        // The panel's top rule is its own derived edge, crisp on its first
+        // pixel row.
+        chrome::hairline_h(
+            scene,
             transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &Line::new(
-                Point::new(panel.x0, panel.y0),
-                Point::new(panel.x1, panel.y0),
-            ),
+            panel.x0,
+            panel.x1,
+            panel.y0,
+            ui::surface::edge_on(raised),
         );
         let x = panel.x0 + 40.0;
         text.draw_text_weighted(
@@ -678,12 +684,13 @@ impl Presentation {
                 6.0,
                 frame.images,
             );
-            chrome::stroke_rrect(
+            // A frame on the raised notes panel: its derived edge.
+            chrome::stroke_round(
                 scene,
                 transform,
                 preview,
                 6.0,
-                render::with_alpha(Color::WHITE, 40),
+                ui::surface::edge_on(raised),
                 1.0,
             );
         }
@@ -701,24 +708,30 @@ impl Presentation {
         let colors = &theme.tokens.colors;
         chrome::fill_rect(scene, transform, frame.rect, colors.surfaces.base);
         let outer = 28.0;
+        // Header and footer bands follow the measured line boxes of the text
+        // they hold (classic 60 / 40 px as the 1× floors), so a 2× title
+        // never paints over the PRESENTER VIEW caption or the position line
+        // over the timer, and the key hints keep clear of the notes panel.
+        let m = PresenterMetrics::resolve(text, theme);
         let body = Rect::new(
             frame.rect.x0 + outer,
-            frame.rect.y0 + 60.0,
+            frame.rect.y0 + m.header_h(),
             frame.rect.x1 - outer,
-            frame.rect.y1 - 40.0,
+            frame.rect.y1 - m.footer_h(),
         );
-        self.draw_presenter_header(scene, transform, text, frame, colors, palette, outer);
+        self.draw_presenter_header(scene, transform, text, frame, colors, palette, outer, &m);
 
         let left_width = (body.width() * 0.62).min(body.width() - 320.0);
         let current = Rect::new(body.x0, body.y0, body.x0 + left_width, body.y1);
         let right = Rect::new(current.x1 + 24.0, body.y0, body.x1, body.y1);
         draw_presenter_current(
-            scene, transform, text, theme, frame, colors, palette, current,
+            scene, transform, text, theme, frame, colors, palette, current, &m,
         );
-        let next =
-            draw_presenter_next(scene, transform, text, theme, frame, colors, palette, right);
-        draw_presenter_notes(scene, transform, text, frame, colors, right, body, next);
-        draw_presenter_footer(scene, transform, text, frame, colors, palette, outer);
+        let next = draw_presenter_next(
+            scene, transform, text, theme, frame, colors, palette, right, &m,
+        );
+        draw_presenter_notes(scene, transform, text, frame, colors, right, body, next, &m);
+        draw_presenter_footer(scene, transform, text, frame, colors, palette, outer, &m);
     }
 
     #[allow(
@@ -734,31 +747,59 @@ impl Presentation {
         colors: &ui::tokens::Colors,
         palette: &Palette,
         outer: f64,
+        m: &PresenterMetrics,
     ) {
+        let clock = self.clock();
+        let (clock_width, _) = text.measure_weighted(&clock, FONT_CLOCK, None, TextWeight::Bold);
+        let position = tr_args(
+            "slides-position",
+            &[
+                (
+                    "state",
+                    ArgValue::from(tr(if self.is_paused() {
+                        "slides-paused"
+                    } else {
+                        "slides-elapsed"
+                    })),
+                ),
+                ("current", ArgValue::from(frame.current + 1)),
+                ("total", ArgValue::from(frame.deck.slides.len())),
+            ],
+        );
+        let (position_width, _) =
+            text.measure_weighted(&position, FONT_POSITION, None, TextWeight::Semibold);
+        // The title yields to whichever right-hand line is wider, `s4` away,
+        // and is elided rather than running under the clock.
+        let right_w = f64::from(clock_width).max(f64::from(position_width));
+        let title_w = (frame.rect.width() - 2.0 * outer - right_w - m.s4).max(0.0);
+        let title = text.elide_to_width_weighted(
+            &frame.deck.title,
+            FONT_TITLE,
+            title_w as f32,
+            TextWeight::Bold,
+        );
         text.draw_text_weighted(
             scene,
-            &frame.deck.title,
-            18.0,
+            &title,
+            FONT_TITLE,
             colors.text_primary,
-            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + 18.0)),
+            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + TITLE_TOP)),
             None,
             TextWeight::Bold,
         );
         text.draw_text_weighted(
             scene,
-            "PRESENTER VIEW",
-            11.0,
+            &tr("slides-presenter-view"),
+            FONT_CAPTION,
             palette.accent,
-            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + 40.0)),
+            transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y0 + m.caption_top())),
             None,
             TextWeight::Semibold,
         );
-        let clock = self.clock();
-        let (clock_width, _) = text.measure_weighted(&clock, 34.0, None, TextWeight::Bold);
         text.draw_text_weighted(
             scene,
             &clock,
-            34.0,
+            FONT_CLOCK,
             if self.is_paused() {
                 colors.text_dim
             } else {
@@ -767,36 +808,109 @@ impl Presentation {
             transform
                 * Affine::translate((
                     frame.rect.x1 - outer - f64::from(clock_width),
-                    frame.rect.y0 + 12.0,
+                    frame.rect.y0 + CLOCK_TOP,
                 )),
             None,
             TextWeight::Bold,
         );
-        let position = format!(
-            "{}  ·  slide {} / {}",
-            if self.is_paused() {
-                "PAUSED"
-            } else {
-                "ELAPSED"
-            },
-            frame.current + 1,
-            frame.deck.slides.len()
-        );
-        let (position_width, _) =
-            text.measure_weighted(&position, 12.0, None, TextWeight::Semibold);
         text.draw_text_weighted(
             scene,
             &position,
-            12.0,
+            FONT_POSITION,
             colors.text_dim,
             transform
                 * Affine::translate((
                     frame.rect.x1 - outer - f64::from(position_width),
-                    frame.rect.y0 + 44.0,
+                    frame.rect.y0 + m.position_top(),
                 )),
             None,
             TextWeight::Semibold,
         );
+    }
+}
+
+/// Presenter-view chrome fonts. Passed unscaled to the renderer, which
+/// applies the accessibility scale once.
+const FONT_TITLE: f32 = 18.0;
+const FONT_CAPTION: f32 = 11.0;
+const FONT_CLOCK: f32 = 34.0;
+const FONT_POSITION: f32 = 12.0;
+const FONT_FOOTER: f32 = 12.0;
+/// Classic 1× offsets of the header's two columns.
+const TITLE_TOP: f64 = 18.0;
+const CLOCK_TOP: f64 = 12.0;
+/// Classic 1× advances, kept as the floors of the measured ones.
+const CAPTION_ADV_1X: f64 = 22.0;
+const SECTION_CAPTION_ADV_1X: f64 = 20.0;
+const CLOCK_ADV_1X: f64 = 32.0;
+const HEADER_H_1X: f64 = 60.0;
+const FOOTER_H_1X: f64 = 40.0;
+
+/// Measured line boxes of the presenter view's chrome text plus the theme's
+/// spacing tokens: every band and caption advance below derives from these,
+/// with the classic 1× values as floors so the 1× dashboard is unchanged.
+struct PresenterMetrics {
+    lh_title: f64,
+    lh_caption: f64,
+    lh_clock: f64,
+    lh_position: f64,
+    lh_footer: f64,
+    s1: f64,
+    s3: f64,
+    s4: f64,
+}
+
+impl PresenterMetrics {
+    fn resolve(text: &mut TextRenderer, theme: &Theme) -> Self {
+        let lh = |text: &mut TextRenderer, font: f32, weight: TextWeight| {
+            f64::from(text.measure_weighted("Ag", font, None, weight).1)
+        };
+        let sp = &theme.tokens.spacing;
+        Self {
+            lh_title: lh(text, FONT_TITLE, TextWeight::Bold),
+            lh_caption: lh(text, FONT_CAPTION, TextWeight::Semibold),
+            lh_clock: lh(text, FONT_CLOCK, TextWeight::Bold),
+            lh_position: lh(text, FONT_POSITION, TextWeight::Semibold),
+            lh_footer: lh(text, FONT_FOOTER, TextWeight::Regular),
+            s1: f64::from(sp.s1),
+            s3: f64::from(sp.s3),
+            s4: f64::from(sp.s4),
+        }
+    }
+
+    /// Top of the PRESENTER VIEW caption: under the title's line box.
+    fn caption_top(&self) -> f64 {
+        TITLE_TOP + self.lh_title.max(CAPTION_ADV_1X)
+    }
+
+    /// Top of the "ELAPSED · slide n / m" line: under the clock's digits
+    /// (the clock line box carries descender room the digits never use, so
+    /// `s3` of it is reclaimed, never less than the classic advance).
+    fn position_top(&self) -> f64 {
+        CLOCK_TOP + (self.lh_clock - self.s3).max(CLOCK_ADV_1X)
+    }
+
+    /// Advance from a section caption's top to the content under it.
+    fn caption_adv(&self) -> f64 {
+        (self.lh_caption + self.s1).max(SECTION_CAPTION_ADV_1X)
+    }
+
+    /// Header band: whichever column ends lower, never below the classic.
+    fn header_h(&self) -> f64 {
+        (self.caption_top() + self.caption_adv())
+            .max(self.position_top() + self.lh_position)
+            .max(HEADER_H_1X)
+    }
+
+    /// Footer band holding the key hints and the progress track.
+    fn footer_h(&self) -> f64 {
+        (self.lh_footer + 2.0 * self.s3).max(FOOTER_H_1X)
+    }
+
+    /// Top of the key-hint line, centred in the footer band above `y1`.
+    fn footer_text_top(&self, y1: f64) -> f64 {
+        let h = self.footer_h();
+        y1 - h + (h - self.lh_footer) / 2.0
     }
 }
 
@@ -835,7 +949,10 @@ fn draw_progress(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Current-slide painting combines render context, presentation content, chrome colors, slide palette, and presenter geometry."
+)]
 fn draw_presenter_current(
     scene: &mut Scene,
     transform: Affine,
@@ -845,18 +962,24 @@ fn draw_presenter_current(
     colors: &ui::tokens::Colors,
     palette: &Palette,
     area: Rect,
+    m: &PresenterMetrics,
 ) {
     text.draw_text_weighted(
         scene,
-        "CURRENT",
-        11.0,
+        &tr("slides-current"),
+        FONT_CAPTION,
         colors.text_dim,
         transform * Affine::translate((area.x0, area.y0)),
         None,
         TextWeight::Semibold,
     );
-    let destination = fit_slide_top(Rect::new(area.x0, area.y0 + 20.0, area.x1, area.y1));
-    chrome::fill_rrect(
+    let destination = fit_slide_top(Rect::new(
+        area.x0,
+        area.y0 + m.caption_adv(),
+        area.x1,
+        area.y1,
+    ));
+    chrome::fill_round(
         scene,
         transform,
         (destination + Vec2::new(0.0, 6.0)).inflate(2.0, 2.0),
@@ -876,17 +999,22 @@ fn draw_presenter_current(
             frame.images,
         );
     }
-    chrome::stroke_rrect(
+    // The slide frame is the stage's derived edge (the presenter stage is
+    // painted `Color::BLACK`, see `draw_presenter`).
+    chrome::stroke_round(
         scene,
         transform,
         destination,
         12.0,
-        render::with_alpha(colors.text_primary, 30),
+        ui::surface::edge_on(STAGE),
         1.0,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Next-slide painting combines render context, deck position, chrome colors, slide palette, and presenter geometry."
+)]
 fn draw_presenter_next(
     scene: &mut Scene,
     transform: Affine,
@@ -896,17 +1024,18 @@ fn draw_presenter_next(
     colors: &ui::tokens::Colors,
     palette: &Palette,
     area: Rect,
+    m: &PresenterMetrics,
 ) -> Rect {
     text.draw_text_weighted(
         scene,
-        "NEXT",
-        11.0,
+        &tr("slides-next"),
+        FONT_CAPTION,
         colors.text_dim,
         transform * Affine::translate((area.x0, area.y0)),
         None,
         TextWeight::Semibold,
     );
-    let top = area.y0 + 20.0;
+    let top = area.y0 + m.caption_adv();
     let destination = Rect::new(
         area.x0,
         top,
@@ -925,29 +1054,21 @@ fn draw_presenter_next(
             8.0,
             frame.images,
         );
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             transform,
             destination,
             8.0,
-            render::with_alpha(colors.text_primary, 30),
+            ui::surface::edge_on(STAGE),
             1.0,
         );
     } else {
-        chrome::fill_rrect(scene, transform, destination, 8.0, colors.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            transform,
-            destination,
-            8.0,
-            render::with_alpha(colors.text_primary, 24),
-            1.0,
-        );
+        ui::surface::card(scene, transform, destination, 8.0, colors.surfaces.raised);
         chrome::text_centered(
             scene,
             transform,
             text,
-            "End of deck",
+            &tr("slides-end-of-deck"),
             destination,
             14.0,
             colors.text_dim,
@@ -957,7 +1078,10 @@ fn draw_presenter_next(
     destination
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Speaker-note painting uses scene/transform/text, slide content and colors, adjacent panel bounds, and caption metrics."
+)]
 fn draw_presenter_notes(
     scene: &mut Scene,
     transform: Affine,
@@ -967,32 +1091,26 @@ fn draw_presenter_notes(
     right: Rect,
     body: Rect,
     next: Rect,
+    m: &PresenterMetrics,
 ) {
     let top = next.y1 + 22.0;
     text.draw_text_weighted(
         scene,
-        "SPEAKER NOTES",
-        11.0,
+        &tr("slides-speaker-notes"),
+        FONT_CAPTION,
         colors.text_dim,
         transform * Affine::translate((right.x0, top)),
         None,
         TextWeight::Semibold,
     );
-    let panel = Rect::new(right.x0, top + 20.0, right.x1, body.y1);
-    chrome::fill_rrect(scene, transform, panel, 10.0, colors.surfaces.raised);
-    chrome::stroke_rrect(
-        scene,
-        transform,
-        panel,
-        10.0,
-        render::with_alpha(colors.text_primary, 22),
-        1.0,
-    );
+    let panel = Rect::new(right.x0, top + m.caption_adv(), right.x1, body.y1);
+    ui::surface::card(scene, transform, panel, 10.0, colors.surfaces.raised);
     let notes = frame.slide().map_or("", |slide| slide.notes.as_str());
+    let no_notes = tr("slides-no-notes");
     text.draw_text_weighted(
         scene,
         if notes.is_empty() {
-            "No notes for this slide."
+            no_notes.as_str()
         } else {
             notes
         },
@@ -1016,13 +1134,22 @@ fn draw_presenter_footer(
     colors: &ui::tokens::Colors,
     palette: &Palette,
     outer: f64,
+    m: &PresenterMetrics,
 ) {
+    // Centred in the footer band and elided to the window, so the 2× hints
+    // end inside the frame instead of running off its right edge.
+    let hints = text.elide_to_width_weighted(
+        &tr("slides-presenter-keys"),
+        FONT_FOOTER,
+        (frame.rect.width() - 2.0 * outer).max(0.0) as f32,
+        TextWeight::Regular,
+    );
     text.draw_text_weighted(
         scene,
-        "← →  navigate    Home / End  first · last    P  hide dashboard    K  pause timer    0  reset    Esc  exit",
-        12.0,
+        &hints,
+        FONT_FOOTER,
         colors.text_dim,
-        transform * Affine::translate((frame.rect.x0 + outer, frame.rect.y1 - 26.0)),
+        transform * Affine::translate((frame.rect.x0 + outer, m.footer_text_top(frame.rect.y1))),
         None,
         TextWeight::Regular,
     );

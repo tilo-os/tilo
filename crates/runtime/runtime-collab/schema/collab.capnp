@@ -180,22 +180,15 @@ interface ChannelHandle {
   # Cooperative cancellation flag polled by background application jobs.
   invocationCancellation @18 (id :UInt64) -> (cancelled :Bool);
 
-  # Authenticated, session-wide resource/action directory. The broker
-  # derives the caller from this joined channel; no actor string crosses
-  # the wire. JSON preserves the evolving ActionDescriptor vocabulary.
-  actionCatalogue @19 () -> (catalogueJson :Text);
-  subscribeActionCatalogue @20 () -> (stream :ActionCatalogueStream);
-  invokePublishedAction @21 (peerId :UInt64, resource :Text, action :Text,
-                             argument :Text, hasArgument :Bool,
-                             confirmationJson :Text)
-      -> (id :UInt64, updateJson :Text);
-  publishedInvocationStatus @22 (id :UInt64)
-      -> (found :Bool, updateJson :Text);
-  cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
-  # Optional content-addressed object to stage read-only for the launched app.
-  # Empty keeps the ordinary app-launch behavior.
-  launchPublishedApplication @24 (appId :Text, contentHash :Text)
-      -> (id :UInt64, updateJson :Text);
+  # Retired: listing, invoking, observing and cancelling published actions
+  # and launching applications are remoteAction (@42) requests. The
+  # ordinals stay reserved.
+  retiredActionCatalogue @19 () -> ();
+  retiredSubscribeActionCatalogue @20 () -> ();
+  retiredInvokePublishedAction @21 () -> ();
+  retiredPublishedInvocationStatus @22 () -> ();
+  retiredCancelPublishedInvocation @23 () -> ();
+  retiredLaunchPublishedApplication @24 () -> ();
 
   # Ask this session to open the "say something about this" surface.
   #
@@ -240,10 +233,13 @@ interface ChannelHandle {
   reportTaskRun @29 (runId :UInt64, lease :Text, updateJson :Text) -> ();
   # Invoke a published action while carrying the leased task's ActionContext.
   # The broker derives both agent identity and context; no caller-supplied
-  # attribution/context crosses this method.
+  # attribution/context crosses this method. `invocation` is the caller's
+  # tilo_actions::InvocationId: a retry with the same id reports the
+  # original invocation, which remoteAction (@42) observes and cancels.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
-                        hasArgument :Bool, confirmationJson :Text)
+                        hasArgument :Bool, confirmationJson :Text,
+                        invocation :Text)
       -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
@@ -263,19 +259,10 @@ interface ChannelHandle {
   # remains available to old applications and small/static surfaces.
   publishActionDirectory @33 (appId :Text, directory :ActionDirectory) -> ();
 
-  # Query the authenticated, broker-filtered session directory. `cursor` is
-  # opaque and bound to the source revision and caller-visible query. A stale
-  # cursor produces `staleCursor`; callers restart from an empty cursor. The
-  # broker clamps every budget before forwarding it to an app.
-  queryActionDirectory @34 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
-
-  # Resolve exactly one row immediately before invocation. The broker applies
-  # current membership policy and asks the live owner to re-materialize the
-  # descriptor at `revision`; an unavailable, changed, or disconnected owner
-  # returns a non-ok status and is never invoked from cached catalogue data.
-  resolvePublishedAction @35 (peerId :UInt64, revision :Text,
-                              resource :Text, action :Text)
-      -> (resolution :ActionDirectoryResolution);
+  # Retired: callers reach published actions through remoteAction (@42).
+  # The ordinals stay reserved.
+  retiredQueryActionDirectory @34 () -> ();
+  retiredResolvePublishedAction @35 () -> ();
 
   # Level-triggered private media handoff descriptors. The broker binds appId,
   # workspace and process instance to this channel and keeps source locators
@@ -309,6 +296,14 @@ interface ChannelHandle {
   # semantics only; NetworkManager UUIDs are accepted solely as local lookup
   # capabilities and never enter personal-fabric state.
   wifiContinuityCommand @41 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+  # One tilo_actions::remote::RemoteActionFrame request, answered by one
+  # frame: list the actions offered to this connection, invoke one, observe
+  # or cancel an invocation. This is the single caller-side door to
+  # published actions, shared with peers on the shell network. The broker
+  # derives the caller from this admitted channel and confines it to the
+  # channel's room; nothing in the frame names the caller.
+  remoteAction @42 (frame :Data) -> (frame :Data);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -388,12 +383,6 @@ interface WorkspaceControlHandle {
   # target's stream-start consent edge and after any close/revocation edge.
   sendInput @1 (event :Data) -> ();
   close @2 () -> ();
-}
-
-interface ActionCatalogueStream {
-  # Level-triggered: the first read returns the current complete directory,
-  # then each publication/disconnect returns a fresh complete replacement.
-  read @0 () -> (catalogueJson :Text);
 }
 
 interface RealtimeStream {

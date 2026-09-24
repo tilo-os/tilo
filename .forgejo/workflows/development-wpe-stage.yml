@@ -25,7 +25,7 @@ concurrency:
 jobs:
   produce:
     if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/codex/')
-    runs-on: ${{ inputs.architecture == 'aarch64' && 'qos-package-arm64' || 'qos-package' }}
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'tilo-package-arm64' || 'tilo-package' }}
     # Keep within the existing three-hour runner limit.
     timeout-minutes: 170
     steps:

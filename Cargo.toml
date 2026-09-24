@@ -15,7 +15,6 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
-    "vendor/libspa-sys",
     "vendor/wayland-backend",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
@@ -27,10 +26,13 @@ default-members = [
     "crates/system/fs",
     "crates/session/shell",
     "crates/sdk/ui-core",
-    "crates/packaging/pkg",
+    "crates/packaging/tilo-app-package",
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/session/qos-ntfs-helper",
+    "crates/session/qos-ntfs-protocol",
+    "crates/browser/chromium-blocker",
     # Core product surfaces
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -104,6 +106,7 @@ members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
+    "crates/collab/neighbour-wire",
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
@@ -114,19 +117,21 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
+    "crates/dev/test-env",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
+    "crates/dev/tilo-vm",
+    "crates/dev/tilo-vm-protocol",
+    "crates/dev/tilo-vmd",
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
 
     # Doc
+    "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-wit",
     "crates/doc/qdoc",
-    "crates/doc/qdoc-epub",
-    "crates/doc/qdoc-html",
     "crates/doc/qdoc-pdf",
-    "crates/doc/qdoc-rtf",
 
     # Hosting
     "crates/hosting/tilo-relay",
@@ -138,15 +143,15 @@ members = [
     "crates/media/vision",
 
     # Packaging
-    "crates/packaging/app-catalogue",
+    "crates/packaging/app-cli",
     "crates/packaging/app-fs",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
-    "crates/packaging/pkg",
-    "crates/packaging/pkg-cli",
+    "crates/packaging/tilo-app-package",
+    "crates/packaging/tilo-app-package-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",
@@ -159,6 +164,7 @@ members = [
     "crates/runtime/cli",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
+    "crates/runtime/runtime-connected",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     "crates/runtime/runtime-fs",
@@ -168,22 +174,29 @@ members = [
     "crates/runtime/ush",
 
     # Session
+    "crates/session/console-control",
+    "crates/session/desktop-model",
     "crates/session/greeter",
     "crates/session/installer",
+    "crates/session/tilo-connected-protocol",
     "crates/session/tilo-unlock-helper",
 
     # System
     "crates/system/accounts",
     "crates/system/app-state",
     "crates/system/atomic-file",
+    "crates/system/block-devices",
     "crates/system/bounded-command",
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
+    "crates/system/sandbox-core",
+    "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/swipe",
     "crates/system/system-extension",
@@ -191,10 +204,12 @@ members = [
     "crates/system/tilo-cli",
     "crates/system/tilo-crypto",
     "crates/system/tilo-native-certs",
+    "crates/system/tilo-net",
     "crates/system/tilo-rollback",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
+    "crates/system/xdg-paths",
 
     # Text
     "crates/text/spellcheck",
@@ -254,6 +269,9 @@ uninhabited_references = "deny"
 set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
+# Crates list their banned calls in their own clippy.toml; a listed call is an
+# error, not a style suggestion.
+disallowed_methods = "deny"
 
 # `as_conversions` is broad; pedantic already denies the dangerous cast
 # categories more precisely. The blanket lint adds noise to bounded graphics
@@ -281,8 +299,10 @@ vello_encoding = "0.9"
 wgpu = "29"
 taffy = "0.10.1"
 winit = "0.30.13"
-automerge = "0.8.0"
+automerge = "0.12.0"
 pollster = "0.4.0"
+rustc-hash = "2.1"
+cosmic-text = { version = "0.19.0", default-features = false }
 
 # ---------------------------------------------------------------------------
 # Async runtime and networking
@@ -293,12 +313,14 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 futures = { version = "0.3", default-features = false }
 futures-lite = "2"
 futures-util = "0.3"
-# Defaults off keeps the native-tls/OpenSSL backend out of the tree; every
-# member picks rustls explicitly.
-reqwest = { version = "0.12", default-features = false }
+# Defaults off keeps native-tls/OpenSSL and aws-lc-rs out of the tree. Build
+# clients through `tilo_net::http`, which installs the ring provider this
+# configuration requires.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 zstd = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"
+rustls-native-certs = "0.8"
 url = "2"
 
 # ---------------------------------------------------------------------------
@@ -308,11 +330,11 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
 postcard = "1.1.3"
-toml = "0.8"
+toml = "1.0"
 quick-xml = "0.41.0"
+roxmltree = "0.20"
 capnp = "0.26"
 capnp-rpc = "0.26"
-capnp-futures = "0.26"
 capnpc = "0.26"
 base64 = "0.22.1"
 bs58 = "0.5.1"
@@ -320,24 +342,27 @@ base32 = "0.5"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
-zip = { version = "4.6", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
 # Cryptography and identity
 #
-# ed25519-dalek 2.x requires rand_core 0.6 for `SigningKey::generate`.
-# Keep rand at 0.8 for a compatible `OsRng`.
+# ed25519-dalek 3 and x25519-dalek 3 take rand_core 0.10 RNGs; rand,
+# rand_core and rand_chacha stay on that generation with them. OS randomness
+# comes from getrandom's `SysRng` (`UnwrapErr(SysRng)` where an infallible
+# `CryptoRng` is required).
 # ---------------------------------------------------------------------------
-ed25519-dalek = "2"
-rand = "0.8"
-rand_core = "0.6"
-rand_chacha = "0.3"
-getrandom = "0.2"
-sha2 = "0.10"
-hmac = "0.12"
+ed25519-dalek = "3"
+rand = "0.10"
+rand_core = "0.10"
+rand_chacha = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+sha2 = "0.11"
+hmac = "0.13"
 blake3 = "1.8.5"
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# `zeroize` keeps the cipher key wiped on drop; 0.11 made it opt-in.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 zeroize = "1"
 bip39 = "2"
@@ -357,8 +382,9 @@ iroh-mdns-address-lookup = "0.5.0"
 # The gstreamer crates are optional everywhere — the hermetic build, `--shots`
 # and CI must never need the gstreamer-1.0 dev stack.
 # ---------------------------------------------------------------------------
-image = { version = "0.25", default-features = false }
-png = "0.18.1"
+# 0.25.10 decodes TIFF through tiff 0.11, which shares zune-jpeg 0.5 with the
+# JPEG decoder instead of linking a second zune-jpeg/zune-core generation.
+image = { version = "0.25.10", default-features = false }
 qrcode = { version = "0.14", default-features = false }
 rqrr = { version = "0.10", default-features = false }
 openh264 = { version = "0.9", features = ["source"] }
@@ -376,9 +402,11 @@ mdns-sd = "=0.20.3"
 # Desktop and platform integration
 # ---------------------------------------------------------------------------
 wayland-client = "0.31.14"
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-zbus = { version = "4.4", default-features = false }
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
+zbus = { version = "5.16", default-features = false }
+# X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
+# through smithay-clipboard (see crates/sdk/ui-core/src/clipboard.rs).
+arboard = { version = "3.6.1", default-features = false }
 fuser = "0.17.0"
 notify = { version = "8", default-features = false }
 landlock = "0.4"
@@ -387,6 +415,7 @@ sd-notify = "0.4"
 sysinfo = "0.32"
 open = "5.3.5"
 libc = "0.2.186"
+rustix = "1.1.4"
 
 # ---------------------------------------------------------------------------
 # Diagnostics and utilities
@@ -401,9 +430,10 @@ chrono = { version = "0.4", default-features = false }
 dirs = "6.0.0"
 qcms = "0.3.0"
 walkdir = "2.5.0"
+# The one in-memory cache: fs, thumbnail and the app mount share it.
+moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
 semver = "1"
-once_cell = "1.21.4"
 parking_lot = "0.12.5"
 fluent = "0.17.0"
 fluent-syntax = "0.12.0"
@@ -467,16 +497,13 @@ inherits = "release"
 [profile.demo.package.shell]
 debug-assertions = true
 
-# Fast production-speed developer session builds. Packaging never selects
-# this profile; the shell marker still requires the non-default dev-session
-# feature. Avoid release's fat LTO/single-codegen-unit relink on every edit.
-[profile.dev-release]
-inherits = "release"
-lto = false
-codegen-units = 16
-incremental = true
+# The headless harnesses point a demo-profile launcher at their own app store
+# and runtime bundle; those overrides are gated on debug assertions too.
+[profile.demo.package.launcher]
+debug-assertions = true
 
-[profile.dev-release.package.shell]
+# ...and a demo-profile `app` at their own `tilo-install` build.
+[profile.demo.package.app-cli]
 debug-assertions = true
 
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
@@ -490,7 +517,7 @@ openh264-sys2 = { path = "vendor/openh264-sys2" }
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
 # ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
 libspa-sys = { path = "vendor/libspa-sys" }
-# Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
+# Pinned DX12 shader cache and opt-in Metal presentation feedback.
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }

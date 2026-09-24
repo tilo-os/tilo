@@ -28,14 +28,13 @@
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
 
+use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -288,7 +287,7 @@ impl RichTextEditor {
         self.dirty = true;
         self.redraw = true;
         self.layout_dirty = true;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
     }
 
     /// `None` when the document write itself fails (e.g. `parent` turned out
@@ -928,7 +927,7 @@ impl Widget for RichTextEditor {
             let border = if self.focused {
                 theme.border_focus
             } else {
-                theme.border_standard
+                crate::surface::edge_on(theme.bg_primary)
             };
             scene.stroke(&Stroke::new(1.0), transform, border, None, &body);
         }
@@ -1205,8 +1204,7 @@ impl Widget for RichTextEditor {
             }
             Action::SetSelection { anchor, focus } => {
                 let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
+                    crate::text_break::grapheme_indices(&self.text)
                         .nth(character_index)
                         .map_or(self.text.len(), |(byte, _)| byte)
                 };

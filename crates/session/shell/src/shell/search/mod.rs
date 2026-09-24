@@ -177,6 +177,15 @@ pub enum InvocationDisposition {
     Accepted(ActionReceipt),
     Pending(PendingInvocation),
 }
+
+impl std::fmt::Debug for InvocationDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accepted(receipt) => f.debug_tuple("Accepted").field(receipt).finish(),
+            Self::Pending(_) => f.write_str("Pending(<admission ticket>)"),
+        }
+    }
+}
 pub type BeginInvokeFn = dyn Fn(
     &mut AutoCommit,
     &ObjId,
@@ -209,6 +218,9 @@ impl ActionReceipt {
 #[derive(Clone)]
 pub struct SearchResult {
     pub kind: ResourceKind,
+    /// What invoking the row changes. Content/open rows are local views;
+    /// canonical app and shell actions preserve their declared operation kind.
+    pub operation_kind: tilo_actions::OperationKind,
     pub provider_id: String,
     /// Stable identifier within the provider, used for de-dup.
     pub id: String,
@@ -318,7 +330,7 @@ impl SearchPage {
 impl SearchResult {
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
-    #[allow(clippy::too_many_arguments)]
+
     pub fn nullary(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -330,6 +342,7 @@ impl SearchResult {
     ) -> Self {
         Self {
             kind,
+            operation_kind: tilo_actions::OperationKind::View,
             provider_id: provider_id.into(),
             id: id.into(),
             title: title.into(),
@@ -350,7 +363,7 @@ impl SearchResult {
     /// [`SearchResult::nullary`] for a row that can refuse — a launch can
     /// still fail (missing package, declined sandbox, no display), and the
     /// return value is how a control-socket caller learns that.
-    #[allow(clippy::too_many_arguments)]
+
     pub fn nullary_fallible(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -362,6 +375,7 @@ impl SearchResult {
     ) -> Self {
         Self {
             kind,
+            operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: provider_id.into(),
             id: id.into(),
             title: title.into(),
@@ -381,6 +395,7 @@ impl std::fmt::Debug for SearchResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchResult")
             .field("kind", &self.kind)
+            .field("operation_kind", &self.operation_kind)
             .field("provider_id", &self.provider_id)
             .field("id", &self.id)
             .field("title", &self.title)
@@ -411,6 +426,18 @@ pub trait SearchProvider {
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
+
+    /// Resolve one provider-local id from current provider state. The default
+    /// is suitable for small providers whose empty query is their complete
+    /// action surface. Retained or remote providers override this so selecting
+    /// an already-discovered address does not issue a different search query
+    /// and discard the page that disclosed it.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        self.query_page(ctx, None, SearchBudget::PALETTE)
+            .results
+            .into_iter()
+            .find(|result| result.id == id)
+    }
 
     /// Non-query maintenance hook for retained indexes. The compositor calls
     /// this from its frame/timer tick, before an input event is routed. A
@@ -703,6 +730,54 @@ impl SearchRegistry {
     /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
     pub fn providers_iter(&self) -> impl Iterator<Item = &(dyn SearchProvider + '_)> + '_ {
         self.enabled_providers().map(|provider| provider.as_ref())
+    }
+
+    /// Resolve one exact provider-local id under the same scope and kind
+    /// routing used by search. This keeps invocation attached to the source
+    /// that disclosed the id while allowing that provider to revalidate its
+    /// current retained state.
+    pub fn resolve(
+        &self,
+        provider_id: &str,
+        id: &str,
+        args: &QueryArgs<'_>,
+    ) -> Option<SearchResult> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)?;
+        if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+            return None;
+        }
+        let wanted = if args.wanted_kinds.is_empty() {
+            provider.resource_kinds().to_vec()
+        } else {
+            provider
+                .resource_kinds()
+                .iter()
+                .filter(|kind| args.wanted_kinds.contains(kind))
+                .cloned()
+                .collect()
+        };
+        if wanted.is_empty() {
+            return None;
+        }
+        provider
+            .resolve(
+                id,
+                SearchContext {
+                    needle: "",
+                    wanted: &wanted,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                },
+            )
+            .filter(|result| {
+                result.provider_id == provider_id
+                    && result.id == id
+                    && wanted.contains(&result.kind)
+            })
     }
 
     /// Poll/start retained index maintenance without routing a query. This is
@@ -1873,7 +1948,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.calculator",
+                "so.tilo.calculator",
                 "Open Calculator",
                 100,
             )],
@@ -1898,7 +1973,7 @@ mod tests {
             out.iter().filter(|r| r.kind == ResourceKind::File).count(),
             out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
         );
-        assert_eq!(out[0].id, "dev.tilo.calculator");
+        assert_eq!(out[0].id, "so.tilo.calculator");
     }
 
     /// A word that exactly names an app must not lose to a word buried in
@@ -1939,7 +2014,7 @@ mod tests {
                 results: vec![mk_result(
                     ResourceKind::Application,
                     "applications",
-                    "dev.tilo.app",
+                    "so.tilo.app",
                     needle,
                     100,
                 )],
@@ -1988,7 +2063,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.wp",
+                "so.tilo.wp",
                 "Word Processor",
                 20,
             )],
@@ -2111,7 +2186,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.notes",
+                "so.tilo.notes",
                 "Open Notes",
                 100,
             )],
@@ -2144,11 +2219,10 @@ mod tests {
     fn typing_an_installed_apps_name_offers_the_app_first() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.tilo.calculator", "Calculator");
-        install_fake_app(tmp.path(), "dev.tilo.notes", "Notes");
-        // SAFETY: `serial_test::serial` keeps the other tests that
-        // repoint this variable from running concurrently.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
+        install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2204,9 +2278,9 @@ mod tests {
                 out.iter().filter(|r| r.kind == ResourceKind::File).count(),
                 out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
             );
-            assert_eq!(first.id, "dev.tilo.calculator");
+            assert_eq!(first.id, "so.tilo.calculator");
         }
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 
@@ -2217,8 +2291,9 @@ mod tests {
     fn a_capped_palette_still_leads_with_the_app() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.tilo.hex-editor", "Hex Editor");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2292,7 +2367,7 @@ mod tests {
             "the app landed at row {app_row}, past the visible list: {:?}",
             flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
         );
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 

@@ -4,6 +4,7 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 
 use vello::Scene;
@@ -15,6 +16,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::overlay_host::modal_transition_curve;
 use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
@@ -23,9 +25,21 @@ use crate::shell::workspace_settings::{
     permissions_pane_layout,
 };
 
-/// Duration shared by the workspace-settings lens and the global-search
-/// modal, whose travel distance and visual weight are equivalent.
-pub const MODAL_OPEN_ANIM_MS: u64 = 220;
+/// The "At a glance" stat tiles: the base surface inside the raised summary
+/// card, with a hairline derived against the card. Where a palette makes
+/// `base` and `raised` the same colour (high contrast), the lift alone
+/// cannot separate the tile from its card (HIG §9.3's caveat) and the edge
+/// does the job; `tests::stat_tiles_keep_an_edge_on_every_palette` holds it.
+fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
+    let colors = &theme.tokens.colors;
+    (
+        colors.surfaces.base,
+        ui::tokens::colors::Colors::hairline_on(
+            colors.surfaces.raised,
+            ui::chrome::shell::HAIRLINE_ALPHA,
+        ),
+    )
+}
 
 /// The Permissions tab's grant-composer controls, as painted.
 #[derive(Clone, Copy, Debug)]
@@ -177,11 +191,51 @@ impl WorkspaceSettingsOverlay {
         Rect::new(right - lens_w, top, right, bottom)
     }
 
-    pub fn body_rect_for(card: Rect) -> Rect {
+    /// The lens header keeps one rhythm (HIG §7b): `s4` from the panel's
+    /// top to the identity card, `s4` from that card to the tab strip, and
+    /// `s4` from the strip to the first content card. The body rect starts
+    /// `s2` under the strip; every tab's first card or pane pad supplies the
+    /// other `s2` (`PANE_PAD_TOP`, General's `8 × text_scale` lead-in).
+    const HEADER_PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
+    const BODY_LEAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+    /// The identity mark is a `min_pointer_target` glyph tile grown by one
+    /// `s4`; the card is that tile with `s4` above and below, and its text
+    /// column starts `s4 + mark + s3` in.
+    const IDENTITY_MARK: f64 =
+        (ui::tokens::Metrics::BASE.min_pointer_target + ui::tokens::Spacing::BASE.s4) as f64;
+    const IDENTITY_H: f64 = Self::IDENTITY_MARK + 2.0 * Self::HEADER_PAD;
+    /// Tab pills are one pointer target tall inside a track that insets
+    /// them by `s1` on every side.
+    const PILL_INSET: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+    const NAV_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64 + 2.0 * Self::PILL_INSET;
+
+    /// The identity card at the head of the lens.
+    pub fn identity_rect_for(card: Rect) -> Rect {
         Rect::new(
-            card.x0 + 16.0,
-            card.y0 + 160.0,
-            card.x1 - 16.0,
+            card.x0 + Self::HEADER_PAD,
+            card.y0 + Self::HEADER_PAD,
+            card.x1 - Self::HEADER_PAD,
+            card.y0 + Self::HEADER_PAD + Self::IDENTITY_H,
+        )
+    }
+
+    /// The tab strip's track, one `s4` under the identity card.
+    pub fn nav_rect_for(card: Rect) -> Rect {
+        let identity = Self::identity_rect_for(card);
+        Rect::new(
+            card.x0 + Self::HEADER_PAD,
+            identity.y1 + Self::HEADER_PAD,
+            card.x1 - Self::HEADER_PAD,
+            identity.y1 + Self::HEADER_PAD + Self::NAV_H,
+        )
+    }
+
+    pub fn body_rect_for(card: Rect) -> Rect {
+        let nav = Self::nav_rect_for(card);
+        Rect::new(
+            card.x0 + Self::HEADER_PAD,
+            nav.y1 + Self::BODY_LEAD,
+            card.x1 - Self::HEADER_PAD,
             // Reserve a real footer band for the global close hint.  Letting
             // tab content extend to y1-16 painted empty states, policy copy,
             // and the hint into the same last line on compact laptop panels.
@@ -217,14 +271,24 @@ impl WorkspaceSettingsOverlay {
         Self::body_rect_for(self.rect())
     }
 
-    #[cfg(test)]
     pub fn general_summary_rect(&self) -> Rect {
-        let body = self.general_body_rect();
+        Self::summary_card_rect_for(
+            self.general_body_rect(),
+            self.general_text_scale,
+            self.general_scroll_y,
+        )
+    }
+
+    /// The "At a glance" card of the General tab: its authored place under
+    /// the identity and sharing cards, scaled with the body's text and
+    /// shifted by the body's scroll. One definition for hit-testing and
+    /// painting.
+    pub fn summary_card_rect_for(body: Rect, text_scale: f64, scroll_y: f64) -> Rect {
         Rect::new(
             body.x0,
-            body.y0 + 268.0 * self.general_text_scale - self.general_scroll_y,
+            body.y0 + 268.0 * text_scale - scroll_y,
             body.x1,
-            body.y0 + 374.0 * self.general_text_scale - self.general_scroll_y,
+            body.y0 + 374.0 * text_scale - scroll_y,
         )
     }
 
@@ -264,11 +328,18 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn close_rect_for(rect: Rect) -> Rect {
+        // One pointer target (HIG §9.6: 32 × 32 minimum), `s3` inside the
+        // identity card's trailing edge and centred on its centre line — it
+        // was pinned 24 px from the panel top, 14 px above that line.
+        let identity = Self::identity_rect_for(rect);
+        let target = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+        let inset = ui::tokens::Spacing::BASE.s3 as f64;
+        let cy = identity.center().y;
         Rect::new(
-            rect.x1 - 58.0,
-            rect.y0 + 25.0,
-            rect.x1 - 28.0,
-            rect.y0 + 55.0,
+            identity.x1 - inset - target,
+            cy - target / 2.0,
+            identity.x1 - inset,
+            cy + target / 2.0,
         )
     }
 
@@ -445,7 +516,9 @@ impl WorkspaceSettingsOverlay {
             if theme.reduce_motion {
                 Duration::ZERO
             } else {
-                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+                // A Panel opens over `durations.base` (HIG §9.7), read from
+                // the motion tokens rather than a per-surface constant.
+                Duration::from_millis(u64::from(theme.tokens.motion.durations.base_ms))
             },
             ui::Curve::EaseOut,
         );
@@ -488,26 +561,30 @@ impl WorkspaceSettingsOverlay {
                 &self.viewport,
             );
         }
-        let travel = if theme.reduce_motion {
-            0.0
+        // The one Panel entrance (HIG §9.7): opacity, a short rise and a
+        // scale-up about the sheet's centre, shared with the other modal
+        // surfaces through `modal_transition_curve` — not a bespoke 48 px
+        // slide in from the right. Reduced motion keeps the end state.
+        let (_, dy, scale) = if theme.reduce_motion {
+            (alpha, 0.0, 1.0)
         } else {
-            48.0 * (1.0 - f64::from(alpha))
+            modal_transition_curve(&self.transition, now, 0.95)
         };
-        let panel_transform = transform.pre_translate((travel, 0.0).into());
-        ui::surface::soft_shadow(
-            scene,
-            panel_transform,
-            rect,
-            theme.tokens.colors.neutral[0],
-            40.0,
-            16.0,
-            0.62 * alpha,
-        );
-        let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        let centre = rect.center();
+        let panel_transform = transform
+            .pre_translate((centre.x, centre.y + dy).into())
+            .pre_scale(scale)
+            .pre_translate((-centre.x, -centre.y).into());
+        // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
+        // shadow that follows the sheet's own corners and fades with it,
+        // `panel_ground` and the derived Panel border.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+        ui::chrome::shell::panel_shadow(scene, panel_transform, rect, radius, theme, alpha);
+        let card = RoundedRect::from_rect(rect, radius);
         scene.fill(
             Fill::NonZero,
             panel_transform,
-            theme.tokens.colors.surfaces.base,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
@@ -728,7 +805,7 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
             body_y,
         );
-        let can_invite = tree.active_workspace().is_some_and(|workspace| {
+        let can_invite = tree.desktop.active_workspace().is_some_and(|workspace| {
             tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
         });
         let invite_y = self.draw_ws_settings_invite_link(
@@ -802,27 +879,36 @@ impl WorkspaceSettingsOverlay {
             settings_rect.center().x + width / 2.0,
             settings_rect.center().y + height / 2.0,
         );
-        let backdrop = RoundedRect::from_rect(settings_rect, f64::from(tokens.radii.lg));
+        // The scrim behind a modal Panel is the scrim token (HIG §9.2), on
+        // the lens's own corner so it does not leak past the sheet it dims.
+        let backdrop = RoundedRect::from_rect(
+            settings_rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, settings_rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.neutral[0].with_alpha_factor(0.56),
+            colors.surfaces.scrim,
             None,
             &backdrop,
         );
-        let surface = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
-        ui::surface::soft_shadow(scene, transform, card, colors.neutral[0], 24.0, 10.0, 0.52);
+        // Panel role (HIG §9.1–§9.3): Panel radius, elevation-token shadow,
+        // `panel_ground` and the derived border — not a sprite shadow off a
+        // ramp slot over a declared border.
+        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
+        let surface = RoundedRect::from_rect(card, sheet_radius);
+        ui::chrome::shell::panel_shadow(scene, transform, card, sheet_radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &surface,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &surface,
         );
@@ -830,7 +916,7 @@ impl WorkspaceSettingsOverlay {
         let (title, description, subject): (&str, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
                 let current = tree
-                    .active_workspace()
+                    .desktop.active_workspace()
                     .and_then(|workspace| workspace.role_of(user))
                     .map_or("Viewer", crate::shell::workspace_settings::role_label);
                 (
@@ -1025,9 +1111,11 @@ impl WorkspaceSettingsOverlay {
             self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
         if theme.text_scale > 1.0 {
             let name = tree
+                .desktop
                 .active_workspace()
                 .map_or("Workspace", |workspace| workspace.name.as_str());
             let role = tree
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| workspace.role_of(&state.local_user_id))
                 .map_or("Guest", crate::shell::workspace_settings::role_label);
@@ -1055,6 +1143,7 @@ impl WorkspaceSettingsOverlay {
                 None,
             );
             return tree
+                .desktop
                 .active_workspace()
                 .map_or_else(|| "Workspace".into(), |workspace| workspace.name.clone());
         }
@@ -1067,6 +1156,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let active_name = tree
+            .desktop
             .active_workspace()
             .map_or_else(|| "Workspace".into(), |w| w.name.clone());
         let tsize = tokens.typography.scale.xl;
@@ -1084,6 +1174,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let active_role = tree
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
             .map_or("Guest", crate::shell::workspace_settings::role_label);
@@ -1117,32 +1208,22 @@ impl WorkspaceSettingsOverlay {
     ) -> (Rect, Rect) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let identity = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 14.0,
-            rect.x1 - 16.0,
-            rect.y0 + 94.0,
-        );
-        let identity_rr = RoundedRect::from_rect(identity, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
+        let identity = Self::identity_rect_for(rect);
+        // Card with its derived rest edge (HIG §9.5): the hairline is
+        // measured against the card's own fill, so it registers on the
+        // raised tier where a declared `border_standard` vanished.
+        ui::surface::card(
+            scene,
             transform,
+            identity,
+            f64::from(tokens.radii.lg),
             colors.surfaces.raised,
-            None,
-            &identity_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &identity_rr,
         );
         let mark = Rect::new(
-            identity.x0 + 14.0,
-            identity.y0 + 14.0,
-            identity.x0 + 62.0,
-            identity.y1 - 14.0,
+            identity.x0 + Self::HEADER_PAD,
+            identity.y0 + Self::HEADER_PAD,
+            identity.x0 + Self::HEADER_PAD + Self::IDENTITY_MARK,
+            identity.y1 - Self::HEADER_PAD,
         );
         scene.fill(
             Fill::NonZero,
@@ -1160,20 +1241,15 @@ impl WorkspaceSettingsOverlay {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
-        let close_rr = RoundedRect::from_rect(close, f64::from(tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        // Control role (HIG §9.1): a pressable chip at the Control radius,
+        // centred on the identity card's centre line, with its edge derived
+        // from its own fill.
+        ui::surface::card(
+            scene,
             transform,
+            close,
+            ui::chrome::ChromeRole::Control.radius(theme, close.height()),
             colors.surfaces.base,
-            None,
-            &close_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &close_rr,
         );
         ui::icons::draw_icon(
             scene,
@@ -1205,59 +1281,92 @@ impl WorkspaceSettingsOverlay {
         let colors = &tokens.colors;
         let lsize = tokens.typography.scale.base;
         let tabs = WsTab::all();
-        let nav = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 104.0,
-            rect.x1 - 16.0,
-            rect.y0 + 146.0,
-        );
+        let nav = Self::nav_rect_for(rect);
+        // The strip's track: a quiet lift under the Selector pills and a
+        // hairline derived against the panel ground (HIG §9.2/§9.5), not a
+        // ramp slot inside a faded declared border.
         let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
-        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &nav_rr);
+        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard.with_alpha_factor(0.72),
+            ui::tokens::colors::Colors::hairline_on(
+                ui::chrome::shell::panel_ground(theme),
+                ui::chrome::shell::HAIRLINE_ALPHA,
+            ),
             None,
             &nav_rr,
         );
         let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
+        // Every pill gets the same treatment: the plan is measured once for
+        // the whole strip, so the strip never shows one elided label next to
+        // four intact ones or one icon next to four bare labels.
+        let plan = tab_strip_plan(text_renderer, lsize, segment_w - 2.0 * Self::PILL_INSET);
+        // Segment widths follow the measured labels once equal fifths cannot
+        // hold the widest one (the `s1` pill margins each side are part of
+        // the need), so "General" at 200 % is not elided beside pills with
+        // slack.
+        let reserved = TAB_LABEL_INSET
+            + 2.0 * Self::PILL_INSET
+            + if plan.icons {
+                TAB_ICON_PX + TAB_ICON_GAP
+            } else {
+                0.0
+            };
+        let needs: Vec<f64> = tabs
+            .iter()
+            .map(|tab| {
+                let label = if plan.compact {
+                    tab.compact_label()
+                } else {
+                    tab.label()
+                };
+                f64::from(text_renderer.measure(label, lsize, None).0) + reserved
+            })
+            .collect();
+        let widths = tab_pill_widths(&needs, nav.width());
         // Written into the component's cache after the loop
         // so one source of geometry feeds draw and click-routing.
         let mut pill_rects = [Rect::ZERO; 5];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
-            let label = if rect.width() < 680.0 {
+            let label = if plan.compact {
                 tab.compact_label()
             } else {
                 tab.label()
             };
 
-            let ix = usize_to_f64_lossy(i);
+            let seg_x0 = nav.x0 + widths.iter().take(i).sum::<f64>();
+            let seg_w = widths.get(i).copied().unwrap_or(segment_w);
             let pill_rect = Rect::new(
-                nav.x0 + segment_w * ix + 3.0,
-                nav.y0 + 3.0,
-                nav.x0 + segment_w * (ix + 1.0) - 3.0,
-                nav.y1 - 3.0,
+                seg_x0 + Self::PILL_INSET,
+                nav.y0 + Self::PILL_INSET,
+                seg_x0 + seg_w - Self::PILL_INSET,
+                nav.y1 - Self::PILL_INSET,
             );
             if let Some(slot) = pill_rects.get_mut(i) {
                 *slot = pill_rect;
             }
-            let pill = RoundedRect::from_rect(pill_rect, f64::from(tokens.radii.md));
+            // Selector role (HIG §9.1/§9.3): a capsule, and the chosen tab is
+            // a lift with a derived hairline — never a declared border on a
+            // raised fill, which is invisible on the dark preset.
+            let pill_radius = ui::chrome::ChromeRole::Selector.radius(theme, pill_rect.height());
+            let pill = RoundedRect::from_rect(pill_rect, pill_radius);
             if active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.raised,
-                    None,
-                    &pill,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    colors.border_standard,
-                    None,
-                    &pill,
-                );
+                let tier =
+                    ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
+                scene.fill(Fill::NonZero, transform, tier.fill, None, &pill);
+                if let Some(border) = tier.border {
+                    // Crisp: the hairline covers the pill's outermost pixel
+                    // row, the same row every `ui::surface::card` edge uses.
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        transform,
+                        border,
+                        None,
+                        &ui::surface::edge_outline(pill_rect, pill_radius),
+                    );
+                }
             }
             let color = if active {
                 colors.text_primary
@@ -1271,10 +1380,9 @@ impl WorkspaceSettingsOverlay {
                 WsTab::Permissions => ui::icons::Icon::Shield,
                 WsTab::Apps => ui::icons::Icon::LayoutGrid,
             };
-            let show_icon =
-                f64::from(text_renderer.measure(label, lsize, None).0) + 30.0 <= pill_rect.width();
-            let icon_size = if show_icon { 15.0 } else { 0.0 };
-            let icon_gap = if show_icon { 7.0 } else { 0.0 };
+            let show_icon = plan.icons;
+            let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
+            let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
             let label = text_renderer.elide_to_width(
                 label,
                 lsize,
@@ -1425,7 +1533,7 @@ impl WorkspaceSettingsOverlay {
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             let actor = state.active_local_user();
             if !ownership_transfer_resource(ws, &actor).actions.is_empty() {
                 self.ownership_action_rect = ownership_action_rect(body_rect);
@@ -1473,7 +1581,7 @@ impl WorkspaceSettingsOverlay {
         let body_rect = Self::body_rect(rect);
         self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
@@ -1520,7 +1628,7 @@ impl WorkspaceSettingsOverlay {
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
@@ -1573,7 +1681,7 @@ impl WorkspaceSettingsOverlay {
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
         let candidates = crate::shell::launcher::default_app_candidates();
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             self.default_app_rects.extend(
                 default_app_rows(body_rect, &candidates)
                     .into_iter()
@@ -1603,6 +1711,41 @@ impl WorkspaceSettingsOverlay {
         reason = "one positional argument per painted value, plus the state it's read \
                   from; matching every other draw_ws_settings_* helper in this impl"
     )]
+    fn name_selection_geometry(
+        text_renderer: &mut TextRenderer,
+        shown: &str,
+        input_size: f32,
+        input_rect: Rect,
+        selection: ui::text_selection::Selection,
+    ) -> (Rect, Rect) {
+        let x = input_rect.x0 + 12.0;
+        let (_, height) = text_renderer.measure("Ag", input_size, None);
+        let y = input_rect.y0 + (input_rect.height() - f64::from(height)) / 2.0;
+        let advance = |renderer: &mut TextRenderer, offset| {
+            f64::from(
+                renderer
+                    .measure(shown.get(..offset).unwrap_or(shown), input_size, None)
+                    .0,
+            )
+        };
+        let anchor = x + advance(text_renderer, selection.anchor);
+        let focus = x + advance(text_renderer, selection.cursor);
+        (
+            Rect::new(
+                anchor.min(focus),
+                y,
+                anchor.max(focus),
+                y + f64::from(height),
+            ),
+            Rect::new(focus, y, focus + 2.0, y + f64::from(height)),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Workspace identity painting combines render context and card bounds with chrome state, active name, and the existing body-position parameter."
+    )]
+
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -1623,20 +1766,12 @@ impl WorkspaceSettingsOverlay {
             body.x1,
             body.y0 + 112.0 * f64::from(theme.text_scale),
         );
-        let identity_rr = RoundedRect::from_rect(identity_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            identity_card,
+            f64::from(tokens.radii.lg),
             colors.surfaces.raised,
-            None,
-            &identity_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &identity_rr,
         );
         text_renderer.draw_text(
             scene,
@@ -1679,7 +1814,7 @@ impl WorkspaceSettingsOverlay {
         let border_color = if editing {
             colors.accent[5]
         } else {
-            colors.border_standard
+            ui::surface::edge_on(colors.surfaces.base)
         };
         scene.stroke(
             &vello::kurbo::Stroke::new(if editing { 2.0 } else { 1.0 }),
@@ -1696,24 +1831,32 @@ impl WorkspaceSettingsOverlay {
         } else {
             active_name
         };
-        let input_size = tokens.typography.scale.base;
+        let input_size = tokens.typography.scale.base / text_renderer.text_scale();
+        let (selected, caret) = Self::name_selection_geometry(
+            text_renderer,
+            shown,
+            input_size,
+            input_rect,
+            state.editing_workspace_name_selection,
+        );
+        if editing && selected.width() > 0.0 {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.35),
+                None,
+                &selected,
+            );
+        }
         text_renderer.draw_text(
             scene,
             shown,
             input_size,
             colors.text_primary,
-            transform.pre_translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0).into()),
+            transform.pre_translate((input_rect.x0 + 12.0, caret.y0).into()),
             None,
         );
         if editing {
-            let (tw, _th) = text_renderer.measure(shown, input_size, None);
-            let caret_x = input_rect.x0 + 12.0 + f64::from(tw) + 1.0;
-            let caret = Rect::new(
-                caret_x,
-                input_rect.y0 + 6.0,
-                caret_x + 2.0,
-                input_rect.y0 + 6.0 + f64::from(input_size),
-            );
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
         } else if !can_rename {
             text_renderer.draw_text(
@@ -1757,19 +1900,12 @@ impl WorkspaceSettingsOverlay {
             sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale),
             invite_y + 34.0 * f64::from(theme.text_scale),
         );
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
+            url_pill,
+            f64::from(tokens.radii.sm),
+            colors.surfaces.base,
         );
         let invite_url = if can_invite {
             "Choose a person and role; Tilo signs a one-hour invite."
@@ -1846,20 +1982,12 @@ impl WorkspaceSettingsOverlay {
             body.x1,
             body.y0 + 252.0 * f64::from(theme.text_scale),
         );
-        let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            sharing_card,
+            f64::from(tokens.radii.lg),
             colors.surfaces.raised,
-            None,
-            &sharing_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &sharing_rr,
         );
         let share_icon = Rect::new(
             sharing_card.x0 + 16.0,
@@ -1932,32 +2060,14 @@ impl WorkspaceSettingsOverlay {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body = Rect::new(
-            rect.x0 + 16.0,
-            rect.y0 + 160.0,
-            rect.x1 - 16.0,
-            rect.y1 - 16.0,
-        );
-        let summary_card = Rect::new(
-            body.x0,
-            body.y0 + 268.0 * f64::from(theme.text_scale),
-            body.x1,
-            body.y0 + 374.0 * f64::from(theme.text_scale),
-        );
-        let summary_rr = RoundedRect::from_rect(summary_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
+        let body = Self::body_rect(rect);
+        let summary_card = Self::summary_card_rect_for(body, f64::from(theme.text_scale), 0.0);
+        ui::surface::card(
+            scene,
             transform,
+            summary_card,
+            f64::from(tokens.radii.lg),
             colors.surfaces.raised,
-            None,
-            &summary_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &summary_rr,
         );
         text_renderer.draw_text(
             scene,
@@ -1973,17 +2083,19 @@ impl WorkspaceSettingsOverlay {
             ),
             None,
         );
-        let (members, grants, app_rules) = tree.active_workspace().map_or((0, 0, 0), |ws| {
-            let members = ws.roster().len();
-            let grants = ws
-                .capabilities
-                .iter()
-                .filter(|cap| {
-                    cap.effect == crate::shell::state::Effect::Grant && !cap.is_room_membership()
-                })
-                .count();
-            (members, grants, ws.default_apps.policy.len())
-        });
+        let (members, grants, app_rules) =
+            tree.desktop.active_workspace().map_or((0, 0, 0), |ws| {
+                let members = ws.roster().len();
+                let grants = ws
+                    .capabilities
+                    .iter()
+                    .filter(|cap| {
+                        cap.effect == crate::shell::state::Effect::Grant
+                            && !cap.is_room_membership()
+                    })
+                    .count();
+                (members, grants, ws.default_apps.policy.len())
+            });
         let stats = [
             (members.to_string(), "members"),
             (grants.to_string(), "specific grants"),
@@ -2000,12 +2112,15 @@ impl WorkspaceSettingsOverlay {
                 x0 + stat_w,
                 summary_card.y1 - 14.0 * f64::from(theme.text_scale),
             );
-            scene.fill(
-                Fill::NonZero,
+            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.md));
+            let (stat_fill, stat_edge) = stat_tile_face(theme);
+            scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.surfaces.base,
+                stat_edge,
                 None,
-                &RoundedRect::from_rect(stat, f64::from(tokens.radii.md)),
+                &stat_rr,
             );
             text_renderer.draw_text(
                 scene,
@@ -2035,6 +2150,89 @@ impl WorkspaceSettingsOverlay {
     clippy::cast_precision_loss,
     reason = "workspace-settings has at most a handful of rows"
 )]
+/// Glyph size and gap for a tab pill's leading icon.
+const TAB_ICON_PX: f64 = 15.0;
+const TAB_ICON_GAP: f64 = 7.0;
+/// Text inset inside a tab pill, both sides together.
+const TAB_LABEL_INSET: f64 = 8.0;
+
+/// One decision for the whole tab strip: which label set to show, and
+/// whether the pills have room for their icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TabStripPlan {
+    /// Use every tab's `compact_label` instead of its full label.
+    pub compact: bool,
+    /// Paint the leading icon in every pill.
+    pub icons: bool,
+}
+
+/// Measure the strip's labels at the size they are drawn and choose the
+/// densest treatment where **every** tab still fits its pill intact.
+///
+/// The previous rule switched to compact labels on the lens width alone
+/// and decided icons per pill, so at 200 % text the active "General"
+/// pill elided while its neighbours did not and one pill out of five kept
+/// an icon. Elision is the last resort, applied uniformly, never the first.
+pub(crate) fn tab_strip_plan(
+    text_renderer: &mut TextRenderer,
+    size: f32,
+    pill_w: f64,
+) -> TabStripPlan {
+    let mut widest = |labels: &[&str]| -> f64 {
+        labels
+            .iter()
+            .map(|label| f64::from(text_renderer.measure(label, size, None).0))
+            .fold(0.0, f64::max)
+    };
+    let full: Vec<&str> = WsTab::all().iter().map(|tab| tab.label()).collect();
+    let compact: Vec<&str> = WsTab::all().iter().map(|tab| tab.compact_label()).collect();
+    let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
+    let fits = |label_w: f64, with_icon: bool| {
+        label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
+    };
+    let full_w = widest(&full);
+    if fits(full_w, true) {
+        return TabStripPlan {
+            compact: false,
+            icons: true,
+        };
+    }
+    let compact_w = widest(&compact);
+    if fits(compact_w, true) {
+        return TabStripPlan {
+            compact: true,
+            icons: true,
+        };
+    }
+    if fits(full_w, false) {
+        return TabStripPlan {
+            compact: false,
+            icons: false,
+        };
+    }
+    TabStripPlan {
+        compact: true,
+        icons: false,
+    }
+}
+
+/// Segment widths for the tab strip. Equal shares while every label fits
+/// its share; otherwise each segment takes its measured share of the strip,
+/// so one long label is not elided while its neighbours keep slack. Always
+/// sums to `nav_width`.
+pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
+    let count = needs.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let equal = nav_width / usize_to_f64_lossy(count);
+    let total: f64 = needs.iter().sum();
+    if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
+        return vec![equal; count];
+    }
+    needs.iter().map(|need| need / total * nav_width).collect()
+}
+
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
 }
@@ -2059,21 +2257,235 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rename_selection_paint_tracks_selected_range_and_caret() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let rect = Rect::new(20.0, 30.0, 400.0, 100.0);
+        let (selected, caret) = WorkspaceSettingsOverlay::name_selection_geometry(
+            &mut tr,
+            "Home",
+            16.0,
+            rect,
+            ui::text_selection::Selection {
+                anchor: 4,
+                cursor: 0,
+            },
+        );
+        assert!(
+            selected.width() > 20.0,
+            "select-all needs a painted highlight"
+        );
+        assert_eq!(caret.x0, rect.x0 + 12.0);
+        assert!(caret.height() >= 32.0);
+    }
+
+    /// HIG §9.3's caveat: where a palette makes `base` and `raised` the same
+    /// colour, a tile filled with `base` inside a `raised` card has no lift
+    /// left to separate it. The derived hairline must therefore move
+    /// against the card on every shipped palette — measured as the
+    /// composite of the edge over the card, not asserted from its alpha.
+    #[test]
+    fn stat_tiles_keep_an_edge_on_every_palette() {
+        use ui::a11y::relative_luminance;
+        let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
+            let a = top.components[3];
+            let t = top.components;
+            let b = bottom.components;
+            vello::peniko::Color::new([
+                t[0] * a + b[0] * (1.0 - a),
+                t[1] * a + b[1] * (1.0 - a),
+                t[2] * a + b[2] * (1.0 - a),
+                1.0,
+            ])
+        };
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let card = theme.tokens.colors.surfaces.raised;
+            let (_, edge) = stat_tile_face(&theme);
+            let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
+            assert!(
+                delta >= 0.008,
+                "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
+                theme.name
+            );
+        }
+    }
+
+    /// Every card class the lens paints — raised cards (identity, sharing,
+    /// summary), base-filled fields (name, invite link) and the base-filled
+    /// close chip — gets its edge from `ui::surface::edge_on(fill)`; that
+    /// edge must move against its fill on every shipped palette.
+    #[test]
+    fn lens_cards_and_fields_keep_an_edge_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            for (what, fill) in [
+                ("raised card", colors.surfaces.raised),
+                ("base field", colors.surfaces.base),
+            ] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// One rhythm across the header (HIG §7b): `s4` above the identity
+    /// card, `s4` between card and tab strip, `s4` between strip and the
+    /// first content card; the close chip is centred on the card's line.
+    #[test]
+    fn lens_header_keeps_one_rhythm_and_centres_the_close_chip() {
+        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+        let s3 = f64::from(ui::tokens::Spacing::BASE.s3);
+        for card in [
+            Rect::new(880.0, 68.0, 1580.0, 880.0),
+            Rect::new(0.0, 0.0, 540.0, 700.0),
+        ] {
+            let identity = WorkspaceSettingsOverlay::identity_rect_for(card);
+            let nav = WorkspaceSettingsOverlay::nav_rect_for(card);
+            let body = WorkspaceSettingsOverlay::body_rect_for(card);
+            assert_eq!(
+                identity.y0 - card.y0,
+                s4,
+                "panel pad above the identity card"
+            );
+            assert_eq!(nav.y0 - identity.y1, s4, "identity card → tab strip");
+            // General's first card sits `8 × text_scale` under the body top.
+            assert_eq!(body.y0 + 8.0 - nav.y1, s4, "tab strip → first content card");
+            assert_eq!(
+                nav.height() - 2.0 * WorkspaceSettingsOverlay::PILL_INSET,
+                f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
+                "a tab pill is one pointer target tall"
+            );
+            let close = WorkspaceSettingsOverlay::close_rect_for(card);
+            assert!(
+                (close.center().y - identity.center().y).abs() < f64::EPSILON,
+                "close chip is centred on the identity card"
+            );
+            assert!(close.x1 <= identity.x1 - s3 + f64::EPSILON);
+            assert!(close.y0 > identity.y0 && close.y1 < identity.y1);
+        }
+    }
+
+    /// General at 1×: the name field sits on the card pad (`s4`) inside the
+    /// body and the "At a glance" card starts a token step or more under it,
+    /// sharing the body's left edge. ux-bench cannot measure this pair at
+    /// 200 % text, where the two are never co-visible on an 800 px body, so
+    /// the production geometry helpers carry the assertion.
+    #[test]
+    fn general_name_field_sits_on_the_card_pad_and_clears_the_summary_card() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+        for card in [
+            Rect::new(720.0, 68.0, 1260.0, 780.0),
+            Rect::new(0.0, 0.0, 540.0, 700.0),
+        ] {
+            let body = WorkspaceSettingsOverlay::body_rect_for(card);
+            let name = WorkspaceSettingsOverlay::name_rect_for(card);
+            let summary = WorkspaceSettingsOverlay::summary_card_rect_for(body, 1.0, 0.0);
+            assert_eq!(name.x0 - body.x0, s4, "name field sits on the card pad");
+            assert_eq!(
+                body.x1 - name.x1,
+                s4,
+                "name field keeps the card pad on the right"
+            );
+            assert!(
+                summary.y0 - name.y1 >= s1,
+                "summary card clears the name field (gap {})",
+                summary.y0 - name.y1
+            );
+            assert_eq!(
+                summary.x0, body.x0,
+                "summary card shares the body's left edge"
+            );
+            assert_eq!(summary.x1, body.x1);
+        }
+    }
+
+    #[test]
     fn close_transition_remains_visible_until_exit_settles() {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.force_settled();
-        overlay.transition.set_open(
-            false,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
-        );
+        // The lens opens and closes over the motion token's `base` (HIG §9.7).
+        let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
+        overlay
+            .transition
+            .set_open(false, Duration::from_millis(open_ms), ui::Curve::EaseOut);
         let now = Instant::now();
         assert!(overlay.transition.is_visible(now));
         assert!(
             !overlay
                 .transition
-                .is_visible(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 500))
+                .is_visible(now + Duration::from_millis(open_ms + 500))
         );
+    }
+
+    #[test]
+    fn tab_strip_plan_compacts_every_label_before_it_elides_any() {
+        let mut text = TextRenderer::new();
+        // The 540 px laptop lens at 100 %: five ~95 px pills.
+        let base = Theme::dark();
+        let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
+        assert!(plan.icons, "at 100% every pill has room for its icon");
+        // The same lens at 200 % text: no pill can hold a full label, so the
+        // whole strip drops to compact labels (and icons only if they all
+        // fit) instead of eliding the active tab alone.
+        let large = Theme::dark().with_text_scale(2.0);
+        let lsize = large.tokens.typography.scale.base;
+        // In the 540 px lens even compact labels overflow a 95.6 px pill at
+        // 28 px type, so the plan drops to compact labels without icons and
+        // every pill elides by the same rule — never the active tab alone.
+        let plan = tab_strip_plan(&mut text, lsize, 95.6);
+        assert_eq!(
+            plan,
+            TabStripPlan {
+                compact: true,
+                icons: false
+            }
+        );
+        // In the 800 px lens (145.6 px pills) compact labels fit with icons.
+        let plan = tab_strip_plan(&mut text, lsize, 145.6);
+        assert_eq!(
+            plan,
+            TabStripPlan {
+                compact: true,
+                icons: true
+            }
+        );
+        let widest = WsTab::all()
+            .iter()
+            .map(|tab| f64::from(text.measure(tab.compact_label(), lsize, None).0))
+            .fold(0.0, f64::max);
+        assert!(
+            widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
+            "the chosen plan fits its widest label ({widest}) into the pill"
+        );
+    }
+
+    #[test]
+    fn tab_pills_take_measured_widths_only_when_equal_shares_cannot_hold_the_widest_label() {
+        let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
+        assert_eq!(equal.len(), 5);
+        assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
+
+        let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
+        assert!(
+            (measured.iter().sum::<f64>() - 500.0).abs() < 1e-9,
+            "fills the strip exactly"
+        );
+        for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
+            assert!(width >= need, "every label fits its pill: {measured:?}");
+        }
+        assert!(measured[0] > measured[4]);
+        assert!(tab_pill_widths(&[], 500.0).is_empty());
+    }
+
+    #[test]
+    fn close_button_is_one_pointer_target() {
+        let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
+        assert!(close.width() >= 32.0 && close.height() >= 32.0);
     }
 
     #[test]

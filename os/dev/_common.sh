@@ -133,6 +133,18 @@ msg() { printf '\033[1;36m[tilo]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[tilo] WARN:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[tilo] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Rootless podman storage created while native overlay was unavailable keeps
+# committing every layer through fuse-overlayfs, which makes each image build
+# step take minutes. Say so once, with the fix, instead of leaving it a mystery.
+warn_slow_podman_storage() {
+  local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
+  [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
+  warn "podman stores images through fuse-overlayfs ($root/overlay/.has-mount-program),
+  so every image build step is several times slower than on native overlay. This
+  kernel supports native rootless overlay; switching needs a fresh store:
+  export the containers and images you need, then run \`podman system reset\`."
+}
+
 # --- run a command in the build/VM environment (distrobox or host) ------------
 # Usage: inenv 'shell command string'
 # Runs with the *current working directory preserved* (distrobox does this), so
@@ -468,6 +480,18 @@ display_qemu_args() {
       printf -- '-device virtio-gpu-pci,%s -display none' "$res" ;;
     *) die "unsupported display mode/architecture: $mode/$TILO_VM_ARCH" ;;
   esac
+}
+
+# Console channel. The installer and the greeter answer the tilo-control action
+# protocol (actions list / actions invoke / state-dump; see
+# crates/session/console-control) on a virtio-serial port named
+# org.tilo.console.0. This command line is what creates that port; its host end
+# is the Unix socket $TILO_CONSOLE, reachable only by the user running QEMU.
+# Physical machines have no virtio-serial bus, so the channel cannot exist there.
+TILO_CONSOLE="$TILO_RUN/console.sock"
+console_qemu_args() {
+  printf -- '-device virtio-serial-pci -chardev socket,id=tiloconsole,path=%s,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0' \
+    "$TILO_CONSOLE"
 }
 
 input_qemu_args() {

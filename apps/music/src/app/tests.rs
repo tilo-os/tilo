@@ -1,8 +1,5 @@
 use super::*;
-use std::sync::{Mutex, OnceLock};
 use ui::widget::Continuable as _;
-
-static PROFILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn app_with_doc() -> (MusicApp, AutoCommit) {
     let mut app = MusicApp::new();
@@ -15,6 +12,51 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     app.ensure_seeded(&mut doc);
     app.reload(&mut doc);
     (app, doc)
+}
+
+/// 2026-09-16 alignment review: the track context menu used a hand-rolled
+/// "nudge to stay in the app rect" that guessed the menu as 220 × (rows·28
+/// + 24) and laid it out against `Theme::dark()`. It now opens through the
+/// shared `ContextMenu::open_anchored`, whose geometry is measured with the
+/// frame's renderer and theme and clamped to the viewport — including when
+/// the pointer is in the bottom-right corner.
+#[test]
+fn track_context_menu_stays_inside_the_app_rect_from_every_corner() {
+    let (mut app, _doc) = app_with_doc();
+    app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+    // A track from the bundled sample library (see
+    // `open_track_menu_lists_expected_actions`).
+    let track = String::from("tk_g2");
+    assert!(
+        app.lib.tracks.contains_key(&track),
+        "sample library has tk_g2"
+    );
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    for pointer in [
+        Point::new(4.0, 4.0),
+        Point::new(896.0, 4.0),
+        Point::new(4.0, 596.0),
+        Point::new(896.0, 596.0),
+    ] {
+        app.mouse = pointer;
+        app.open_track_menu(track.clone(), None, None);
+        assert!(app.context.is_open(), "menu opens at {pointer:?}");
+        // Settle text metrics the way the paint pass does.
+        app.context.layout_within(&mut tr, &theme);
+        let menu = app.context.get_rect();
+        assert!(
+            menu.width() > 0.0 && menu.height() > 0.0,
+            "menu has measured geometry at {pointer:?}: {menu:?}"
+        );
+        assert!(
+            app.rect.contains(menu.origin())
+                && app.rect.contains(Point::new(menu.x1 - 0.5, menu.y1 - 0.5)),
+            "menu {menu:?} stays inside {:?} for pointer {pointer:?}",
+            app.rect
+        );
+        app.context.close();
+    }
 }
 
 #[test]
@@ -32,10 +74,6 @@ fn test_instances_keep_cache_mutations_in_separate_owned_directories() {
 
 #[test]
 fn shot_constructor_never_reads_tilo_music_profile() {
-    let _lock = PROFILE_ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap();
     let path = std::env::temp_dir().join(format!(
         "tilo-music-shot-profile-{}-{}.json",
         std::process::id(),
@@ -50,18 +88,10 @@ fn shot_constructor_never_reads_tilo_music_profile() {
         .insert("sentinel-track".into(), CacheState::Cached);
     crate::storage::save_device_profile_to(&path, &profile).unwrap();
 
-    let old = std::env::var_os("TILO_MUSIC_PROFILE");
-    // SAFETY: this test serializes its own environment mutation and restores
-    // the prior value before returning.
-    unsafe { std::env::set_var("TILO_MUSIC_PROFILE", &path) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_MUSIC_PROFILE", &path);
     let app = MusicApp::new_for_shot();
-    if let Some(value) = old {
-        // SAFETY: restore the exact process environment value we replaced.
-        unsafe { std::env::set_var("TILO_MUSIC_PROFILE", value) };
-    } else {
-        // SAFETY: remove only the temporary test override above.
-        unsafe { std::env::remove_var("TILO_MUSIC_PROFILE") };
-    }
+    drop(env);
     let _ = std::fs::remove_file(path);
 
     assert!(app.pb.current.is_none());

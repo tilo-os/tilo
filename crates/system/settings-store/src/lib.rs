@@ -11,7 +11,8 @@
 //! ignored; `dirs::config_dir()` implements that, the hand-rolled resolvers did not (they
 //! joined a relative value against the process's working directory). So under a relative
 //! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
-//! another, silently. [`settings_path`] now resolves it once, following the spec.
+//! another, silently. [`settings_path`] now resolves it once, following the spec, through
+//! the workspace's shared resolver (`xdg-paths`).
 //!
 //! # The shape on disk
 //!
@@ -58,16 +59,62 @@ const FILE: &str = "settings.json";
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("tilo"))
+    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+}
+
+/// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
+/// environment, applying the same rules.
+pub fn config_root_from(
+    xdg_config_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    Some(
+        xdg_paths::xdg::Base::Config
+            .resolve_from(xdg_config_home, home)?
+            .join("tilo"),
+    )
+}
+
+/// Resolve one settings file, reusing an existing qOS file in place.
+/// Current Tilo files take precedence independently of unrelated config files.
+pub fn config_path(relative: &Path) -> Option<PathBuf> {
+    let root = config_root()?;
+    Some(compatible_config_path(root.parent()?, relative))
+}
+
+fn compatible_config_path(base: &Path, relative: &Path) -> PathBuf {
+    let current = base.join("tilo").join(relative);
+    let legacy = base.join("qos").join(relative);
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod rename_compatibility_tests {
+    use super::*;
+    #[test]
+    fn settings_survive_unrelated_new_directories_and_current_file_wins() {
+        let root = super::tests::tmpdir();
+        let relative = Path::new("settings.json");
+        let legacy = root.join("qos/settings.json");
+        let current = root.join("tilo/settings.json");
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        std::fs::create_dir_all(root.join("tilo/identity")).unwrap();
+        assert_eq!(compatible_config_path(&root, relative), legacy);
+        std::fs::write(&current, "{}").unwrap();
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// The shared settings file: `<config root>/settings.json`.
 pub fn settings_path() -> Option<PathBuf> {
-    config_root().map(|r| r.join(FILE))
+    config_path(Path::new(FILE))
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
@@ -109,8 +156,17 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
 
 /// Read one top-level section from the configured settings file.
 pub fn load_section(name: &str) -> Map<String, Value> {
-    match load().get(name) {
-        Some(Value::Object(m)) => m.clone(),
+    object_section(load(), name)
+}
+
+/// [`load_section`] from an explicit settings file.
+pub fn load_section_at(path: &Path, name: &str) -> Map<String, Value> {
+    object_section(load_at(path), name)
+}
+
+fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value> {
+    match doc.remove(name) {
+        Some(Value::Object(m)) => m,
         _ => Map::new(),
     }
 }
@@ -206,7 +262,7 @@ mod tests {
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    fn tmpdir() -> PathBuf {
+    pub(super) fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
@@ -223,61 +279,52 @@ mod tests {
     // Path resolution: the divergence this crate ends
 
     #[test]
-    #[serial_test::serial]
     fn an_absolute_xdg_config_home_wins() {
         let dir = tmpdir();
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        assert_eq!(config_root(), Some(dir.join("tilo")));
         assert_eq!(
-            settings_path(),
-            Some(dir.join("tilo").join("settings.json"))
+            config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
+            Some(dir.join("tilo"))
         );
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    #[serial_test::serial]
     fn a_relative_xdg_config_home_is_ignored_not_joined() {
         // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
         // moved with the working directory while `dirs::config_dir()` readers stayed on
         // `$HOME/.config` — one file, two locations, silently.
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/config") };
-
-        let root = config_root().expect("falls back to $HOME/.config");
+        let root = config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
+            .expect("falls back to $HOME/.config");
         assert!(
             root.is_absolute(),
             "a settings path must never be relative: {root:?}"
         );
-        assert!(
-            !root.starts_with("relative"),
-            "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
-        );
-        let home = dirs::home_dir().expect("test needs a home dir");
-        assert_eq!(root, home.join(".config").join("tilo"));
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
+        assert_eq!(root, Path::new("/home/ada/.config/tilo"));
     }
 
     #[test]
-    #[serial_test::serial]
     fn an_empty_xdg_config_home_is_ignored() {
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
-        let root = config_root().expect("falls back to $HOME/.config");
-        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("tilo"));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
+        assert_eq!(
+            config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
+            Some(PathBuf::from("/home/ada/.config/tilo"))
+        );
+        assert_eq!(
+            config_root_from(None, None),
+            None,
+            "no usable variable and no home names no config root"
+        );
+    }
+
+    #[test]
+    fn the_configured_root_applies_the_same_rules_to_the_process_environment() {
+        let home = xdg_paths::home();
+        assert_eq!(
+            config_root(),
+            config_root_from(
+                std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                home.as_deref().map(Path::as_os_str),
+            )
+        );
     }
 
     // Forgiving reads

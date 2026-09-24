@@ -6,7 +6,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -118,7 +118,9 @@ impl Widget for ContentCard {
                 },
                 min_size: Size {
                     width: length(0.0_f32),
-                    height: length(0.0_f32),
+                    // Intrinsic Grid rows need this item's automatic block minimum;
+                    // `flex_shrink` does not protect an item in Grid sizing.
+                    height: auto(),
                 },
                 flex_shrink: 0.0,
                 padding: taffy::Rect {
@@ -149,20 +151,14 @@ impl Widget for ContentCard {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.parts.rect, theme.radius_standard);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The card's rest edge derives from its own fill (HIG §9.5); the
+        // header, body and footer inside get space, never a second edge.
+        crate::surface::card(
+            scene,
             transform,
+            self.parts.rect,
+            theme.radius_standard,
             theme.bg_primary,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &shape,
         );
         self.parts.draw(scene, transform, text, theme, presence);
     }
@@ -222,7 +218,9 @@ impl Widget for Actions {
 mod tests {
     use super::*;
     use crate::headless::{FrameHarness, InspectionNode};
-    use crate::widget::{Card, CardGrid};
+    use crate::widget::{Card, CardGrid, Column, Container, Scrollable};
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     fn fixture() -> Element {
         Box::new(CardGrid::content_sized(vec![
@@ -263,6 +261,121 @@ mod tests {
         for descendant in &node.children {
             assert_contained(descendant, bounds);
         }
+    }
+
+    fn find<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
+        if node.test_id.as_deref() == Some(id) {
+            return node;
+        }
+        node.children
+            .iter()
+            .find_map(|child| find_optional(child, id))
+            .unwrap_or_else(|| panic!("missing inspection node {id:?}"))
+    }
+
+    fn find_optional<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
+        (node.test_id.as_deref() == Some(id))
+            .then_some(node)
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| find_optional(child, id))
+            })
+    }
+
+    fn automatic_card(index: usize) -> Element {
+        Box::new(
+            Card::composed(Box::new(Text::new(
+                &"A useful multi-line description that must remain inside its own card. ".repeat(3),
+            )))
+            .with_header(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_height(40.0)
+                    .with_child(Box::new(Text::new(&format!("Application {index}")))),
+            ))
+            .with_footer(Box::new(Actions::new(Button::new(
+                &format!("details-{index}"),
+                "View details",
+                None,
+            )))),
+        )
+    }
+
+    fn standalone_stack_fixture(invocations: Rc<Cell<usize>>) -> Element {
+        let mut content = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0);
+        for index in 0..8 {
+            content = content.push(automatic_card(index));
+        }
+        content = content
+            .push(Box::new(
+                Text::new("All applications").with_id("trailing-heading"),
+            ))
+            .push(Box::new(
+                Button::new("final-action", "Open all applications", None).on_click(move || {
+                    invocations.set(invocations.get() + 1);
+                }),
+            ));
+        Box::new(Scrollable::new_vertical().with_child(Box::new(content)))
+    }
+
+    fn section_grid(prefix: &str, count: usize) -> Element {
+        Box::new(CardGrid::content_sized(
+            (0..count)
+                .map(|index| {
+                    Box::new(Card::composed(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_height(72.0)
+                            .with_child(Box::new(Text::new(&format!("{prefix} card {index}")))),
+                    ))) as Element
+                })
+                .collect(),
+        ))
+    }
+
+    fn section_fixture(wide: bool) -> Element {
+        let content = if wide {
+            let ready = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(Text::new("Ready").with_id("ready-heading")))
+                .push(Box::new(Text::new("Installed applications")))
+                .push(section_grid("ready", 6));
+            let discover = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(Text::new("Discover").with_id("discover-heading")))
+                .push(Box::new(Text::new("Available applications")))
+                .push(section_grid("discover", 4));
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(0.0)
+                .push(Box::new(ready))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(16.0),
+                ))
+                .push(Box::new(discover))
+        } else {
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(Text::new("Ready").with_id("ready-heading")))
+                .push(section_grid("ready", 6))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(16.0),
+                ))
+                .push(Box::new(Text::new("Discover").with_id("discover-heading")))
+                .push(section_grid("discover", 4))
+        };
+        Box::new(Scrollable::new_vertical().with_child(Box::new(content)))
     }
 
     fn long_fixture() -> Element {
@@ -386,6 +499,181 @@ mod tests {
             rect(action)
         );
         assert!((rect(last).y1 - 400.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn automatic_content_cards_expand_a_short_scroll_stack() {
+        let invocations = Rc::new(Cell::new(0));
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            standalone_stack_fixture(invocations.clone()),
+            (480, 360),
+            Theme::dark(),
+        );
+        let before = harness.inspection();
+        let content = &before.root.children[0];
+        let cards = &content.children[..8];
+        for (index, card) in cards.iter().enumerate() {
+            assert_contained(card, rect(card));
+            if let Some(next) = cards.get(index + 1) {
+                assert!(
+                    rect(next).y0 >= rect(card).y1 + 7.0,
+                    "card {index} {:?} overlaps next card {:?}",
+                    rect(card),
+                    rect(next)
+                );
+            }
+        }
+        let trailing = rect(find(&before.root, "trailing-heading"));
+        assert!(trailing.y0 >= rect(cards.last().unwrap()).y1 + 7.0);
+        assert!(
+            rect(content).height() > 360.0,
+            "content must own scroll extent"
+        );
+        assert_eq!(rect(&before.root).height(), 360.0, "viewport stays fixed");
+
+        harness.click_at(8.0, 8.0);
+        harness.scroll(0.0, -10_000.0);
+        let final_rect = rect(find(&harness.inspection().root, "final-action"));
+        assert!(
+            final_rect.y0 >= 0.0 && final_rect.y1 <= 360.0,
+            "final action must be reachable after scrolling: {final_rect:?}"
+        );
+        harness.click_named("final-action").unwrap();
+        assert_eq!(invocations.get(), 1, "pointer activation fires once");
+        assert_eq!(
+            harness
+                .tab_through()
+                .last()
+                .and_then(|(_, name)| name.as_deref()),
+            Some("Open all applications")
+        );
+        harness
+            .perform_named("final-action", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(invocations.get(), 2, "focused activation fires once");
+    }
+
+    #[test]
+    fn automatic_legacy_card_expands_in_a_short_intrinsic_grid() {
+        let mut rows = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(12.0);
+        for index in 0..6 {
+            rows = rows.push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_height(40.0)
+                    .with_child(Box::new(
+                        Text::new(&format!("Format control {index}"))
+                            .with_id(format!("format-{index}")),
+                    )),
+            ));
+        }
+        let content = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(20.0)
+            .push(Box::new(Card::titled("Region formats", Box::new(rows))))
+            .push(Box::new(Text::new("Preview").with_id("preview-heading")));
+        let harness = FrameHarness::new(
+            crate::State::new(),
+            Box::new(Scrollable::new_vertical().with_child(Box::new(content))),
+            (480, 360),
+        );
+        let snapshot = harness.inspection();
+        let content = &snapshot.root.children[0];
+        let card = &content.children[0];
+        let last_row = rect(find(card, "format-5"));
+        let preview = rect(find(&snapshot.root, "preview-heading"));
+        assert!(
+            last_row.y1 <= rect(card).y1 + 1.0,
+            "{last_row:?} escapes {:?}",
+            rect(card)
+        );
+        assert!(
+            preview.y0 >= rect(card).y1 + 19.0,
+            "preview {preview:?} overlaps legacy card {:?}",
+            rect(card)
+        );
+        assert!(rect(content).height() > 360.0);
+        assert_eq!(rect(&snapshot.root).height(), 360.0);
+    }
+
+    #[test]
+    fn nested_card_grids_propagate_content_minimum_to_following_sections() {
+        for (wide, viewport) in [(false, (480, 360)), (true, (1000, 360))] {
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                section_fixture(wide),
+                viewport,
+                Theme::dark(),
+            );
+            let snapshot = harness.inspection();
+            let content = &snapshot.root.children[0];
+            let (ready_grid, discover_grid) = if wide {
+                (
+                    content.children[0].children.last().unwrap(),
+                    content.children[2].children.last().unwrap(),
+                )
+            } else {
+                (&content.children[1], &content.children[4])
+            };
+            let ready_last_bottom = ready_grid
+                .children
+                .iter()
+                .map(|card| rect(card).y1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let discover_last_bottom = discover_grid
+                .children
+                .iter()
+                .map(|card| rect(card).y1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(ready_last_bottom <= rect(ready_grid).y1 + 1.0);
+            assert!(discover_last_bottom <= rect(discover_grid).y1 + 1.0);
+            assert!(
+                rect(find(content, "discover-heading")).y0 >= ready_last_bottom + 15.0,
+                "{viewport:?}: discover section begins before ready cards end"
+            );
+            assert!(
+                rect(&snapshot.root.children[0]).height() > f64::from(viewport.1),
+                "{viewport:?}: section content must exceed the fixed viewport"
+            );
+        }
+    }
+
+    #[test]
+    fn short_card_stack_resize_and_text_scale_match_fresh_geometry() {
+        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+            let mut all = vec![node.rect];
+            for child in &node.children {
+                all.extend(geometry(child));
+            }
+            all
+        }
+
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut resized = FrameHarness::new_with_theme(
+                crate::State::new(),
+                section_fixture(true),
+                (1000, 360),
+                theme.clone(),
+            );
+            resized.resize((480, 360)).unwrap();
+            resized.resize((1000, 360)).unwrap();
+            let fresh = FrameHarness::new_with_theme(
+                crate::State::new(),
+                section_fixture(true),
+                (1000, 360),
+                theme,
+            );
+            assert_eq!(
+                geometry(&resized.inspection().root),
+                geometry(&fresh.inspection().root)
+            );
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -85,7 +86,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
         // Everything else, including the workspace's durable collaboration room,
         // comes from the builder, so a field added to `Workspace` does not break
         // this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -95,11 +96,14 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
     active_group.insert(s_b, g_b);
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     // Production trees always carry the Automerge mirror established at
@@ -202,6 +206,10 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
     reason = "tree is read from through the end of the function (tree_strip_a/b, \
               tree_a_total/b_total, tree_b_has_dragged), so st can't be dropped any earlier"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the test keeps the complete cross-strip gesture and both topology assertions together"
+)]
 fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let (tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -226,7 +234,10 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
         .group_row_rect_for_tests(s_b)
         .expect("strip B's GroupRow rect must be populated after apply_layout");
     let drop_y = f64::midpoint(dest_rect.y0, dest_rect.y1);
-    let drop_x = f64::midpoint(dest_rect.x0, dest_rect.x1);
+    let destination_group = host
+        .group_at_for_tests(s_b, 0)
+        .expect("strip B destination group");
+    let drop_x = destination_group.get_rect().center().x + 1.0;
     let release = Point::new(drop_x, drop_y);
 
     // Same shape `TabBar::handle_event` writes when a drag releases outside
@@ -266,29 +277,25 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     );
     assert_eq!(
         snap_post_b.1.len(),
-        2,
-        "strip B should hold 2 groups: the original + the new single-tab one"
+        1,
+        "the destination body joins its existing group instead of creating a seam group"
     );
-    let new_group_carries_dragged = snap_post_b
-        .1
-        .iter()
-        .any(|(_, ts)| ts.len() == 1 && ts[0] == dragged);
-    assert!(
-        new_group_carries_dragged,
-        "strip B must carry a NEW single-tab group with dragged id {dragged}, got groups {:?}",
-        snap_post_b.1
+    assert_eq!(
+        snap_post_b.1[0].1,
+        vec![21, 22, dragged],
+        "the right half of the destination body appends at the exact shared target"
     );
 
     // The splice must also reach the persisted tree, or the tab pops back to
     // strip A on the next reload.
     let st = chrome.borrow();
     let tree = st.tree();
-    let tree_strip_a = tree.workspaces[0]
+    let tree_strip_a = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_a)
         .expect("strip A in tree");
-    let tree_strip_b = tree.workspaces[0]
+    let tree_strip_b = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_b)
@@ -318,6 +325,15 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     assert!(
         tree_b_has_dragged,
         "persisted tree: strip B must carry the dragged tab id {dragged}"
+    );
+    assert_eq!(
+        tree_strip_b.window_groups[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>(),
+        vec![21, 22, dragged],
+        "persisted topology must match the live exact-index insertion"
     );
 }
 

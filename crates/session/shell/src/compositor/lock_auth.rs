@@ -373,12 +373,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn verifier_from_env_prefers_injected_fixed_password() {
-        // Serialised via the process env; keep it self-contained.
-        unsafe { std::env::set_var(LOCK_TEST_PASSWORD_ENV, "letmein") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(LOCK_TEST_PASSWORD_ENV, "letmein");
         let v = verifier_from_env();
         assert!(v.verify("bob", "letmein").is_ok());
         assert!(v.verify("bob", "nope").is_err());
-        unsafe { std::env::remove_var(LOCK_TEST_PASSWORD_ENV) };
     }
 
     // HelperVerifier (real subprocess spawn): exercises the *real* production mechanism — spawn a helper, feed the password on stdin, map the exit code — against a fake helper script standing in for `tilo-unlock-helper`.

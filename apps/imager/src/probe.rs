@@ -15,28 +15,16 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use block_devices::BlockDevice;
+
 use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-#[cfg(not(target_os = "linux"))]
-pub fn pick_image_native() -> ui::PortalChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = std::thread::Builder::new()
-        .name("imager-native-picker".into())
-        .spawn(move || {
-            let outcome = native_image_path().map_or_else(
-                |error| ui::PortalOutcome::Failed(error.to_string()),
-                |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
-            );
-            let _ = tx.send(outcome);
-        });
-    rx
-}
-
+/// The platform's own file dialog for a disk image; `None` when dismissed.
 #[cfg(target_os = "macos")]
-fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"try
 set picked to choose file with prompt "Choose a Tilo or disk image"
 POSIX path of picked
@@ -51,8 +39,9 @@ end try"#;
     Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
 }
 
+/// The platform's own file dialog for a disk image; `None` when dismissed.
 #[cfg(target_os = "windows")]
-fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
     let out = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", script])
@@ -71,26 +60,17 @@ pub fn probe() -> Option<Vec<TargetDrive>> {
     probe_platform()
 }
 
+/// Exactly the columns [`parse_lsblk`] reads.
+#[cfg(target_os = "linux")]
+const LSBLK_COLUMNS: &str = "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT";
+
 #[cfg(target_os = "linux")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
-    let out = bounded_command::run(
-        "lsblk",
-        &[
-            "-J",
-            "-b",
-            "-o",
-            "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT",
-        ],
-        None,
-        PROBE_OUTPUT_LIMIT,
-        PROBE_TIMEOUT,
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let json: Value = serde_json::from_slice(&out.stdout).ok()?;
-    let drives = parse_lsblk(&json)?;
+    let devices = block_devices::Lsblk::new(LSBLK_COLUMNS)
+        .output_limit(PROBE_OUTPUT_LIMIT)
+        .timeout(PROBE_TIMEOUT)
+        .list()?;
+    let drives = targets_from(&devices);
     #[cfg(feature = "flatpak-media-writer")]
     if std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1") {
         return harden_flatpak_inventory(drives);
@@ -104,15 +84,10 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
 /// properties fails closed and hides that candidate.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>> {
-    let connection = zbus::blocking::Connection::system().ok()?;
+    let udisks = block_devices::udisks::Udisks::system().ok()?;
     let mut safe = Vec::new();
     for mut drive in drives {
-        let Ok(proxy) = zbus::blocking::Proxy::new(
-            &connection,
-            "org.freedesktop.UDisks2",
-            udisks_object_path(&drive.name),
-            "org.freedesktop.UDisks2.Block",
-        ) else {
+        let Ok(proxy) = udisks.block(&drive.name) else {
             continue;
         };
         let host_size = proxy.get_property::<u64>("Size").ok();
@@ -122,16 +97,7 @@ fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>
         let mut host_system_mount = false;
         let mut complete_partition_evidence = true;
         if root_usage.as_deref() == Some("filesystem") {
-            let root_filesystem = zbus::blocking::Proxy::new(
-                &connection,
-                "org.freedesktop.UDisks2",
-                udisks_object_path(&drive.name),
-                "org.freedesktop.UDisks2.Filesystem",
-            );
-            let root_mounts = root_filesystem
-                .ok()
-                .and_then(|filesystem| filesystem.get_property::<Vec<Vec<u8>>>("MountPoints").ok());
-            if let Some(mounts) = root_mounts {
+            if let Ok(mounts) = udisks.mount_points(&drive.name) {
                 host_system_mount |= mounts.iter().any(|bytes| host_mount_is_system(bytes));
             } else {
                 complete_partition_evidence = false;
@@ -140,12 +106,7 @@ fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>
             complete_partition_evidence = false;
         }
         for partition in &drive.partitions {
-            let Ok(block) = zbus::blocking::Proxy::new(
-                &connection,
-                "org.freedesktop.UDisks2",
-                udisks_object_path(&partition.name),
-                "org.freedesktop.UDisks2.Block",
-            ) else {
+            let Ok(block) = udisks.block(&partition.name) else {
                 complete_partition_evidence = false;
                 break;
             };
@@ -159,16 +120,7 @@ fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>
                 break;
             };
             if usage == "filesystem" {
-                let Ok(filesystem) = zbus::blocking::Proxy::new(
-                    &connection,
-                    "org.freedesktop.UDisks2",
-                    udisks_object_path(&partition.name),
-                    "org.freedesktop.UDisks2.Filesystem",
-                ) else {
-                    complete_partition_evidence = false;
-                    break;
-                };
-                let Ok(mounts) = filesystem.get_property::<Vec<Vec<u8>>>("MountPoints") else {
+                let Ok(mounts) = udisks.mount_points(&partition.name) else {
                     complete_partition_evidence = false;
                     break;
                 };
@@ -212,22 +164,6 @@ fn reconcile_flatpak_host_safety(
     let hint_system = hint_system?;
     let system_mount = system_mount?;
     (!read_only && host_size == expected_size).then_some(hint_system || system_mount)
-}
-
-#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-fn udisks_object_path(device_name: &str) -> String {
-    use std::fmt::Write as _;
-
-    let leaf = device_name.strip_prefix("/dev/").unwrap_or(device_name);
-    let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
-    for byte in leaf.bytes() {
-        if byte.is_ascii_alphanumeric() {
-            path.push(byte as char);
-        } else {
-            let _ = write!(path, "_{byte:02x}");
-        }
-    }
-    path
 }
 
 /// macOS: enumerate external physical media only. Internal disks are omitted
@@ -424,70 +360,61 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
 /// [`probe`] so it can be unit-tested against a fixture without a real
 /// `lsblk`.
 pub fn parse_lsblk(json: &Value) -> Option<Vec<TargetDrive>> {
-    let devs = json.get("blockdevices")?.as_array()?;
+    Some(targets_from(&block_devices::lsblk::parse(json)?))
+}
+
+fn targets_from(devices: &[BlockDevice]) -> Vec<TargetDrive> {
     let mut drives = Vec::new();
-    for dev in devs {
-        if dev.get("type").and_then(|v| v.as_str()) != Some("disk") {
+    for dev in devices {
+        if dev.kind != "disk" {
             continue;
         }
-        let size = dev.get("size").and_then(as_u64).unwrap_or(0);
-        if size == 0 {
+        if dev.size == 0 {
             continue; // skip empty loop / nbd shells
         }
-        let name = str_field(dev, "name").unwrap_or_default();
-        if name.is_empty() {
+        if dev.name.is_empty() {
             continue;
         }
-        let rota = dev.get("rota").and_then(as_bool).unwrap_or(false);
-        let tran = str_field(dev, "tran");
-        let removable = dev.get("rm").and_then(as_bool).unwrap_or(false);
-        let kind = TargetKind::from_lsblk(rota, tran.as_deref(), removable);
+        let kind = TargetKind::from_lsblk(dev.rotational, dev.tran.as_deref(), dev.removable);
 
         let mut partitions = Vec::new();
         let mut is_system = false;
-        if let Some(children) = dev.get("children").and_then(|v| v.as_array()) {
-            collect_parts(children, &mut partitions, &mut is_system);
-        }
+        collect_parts(&dev.children, &mut partitions, &mut is_system);
 
         drives.push(TargetDrive {
-            name: name.clone(),
-            model: str_field(dev, "model").unwrap_or_else(|| name.clone()),
-            stable_id: str_field(dev, "wwn").or_else(|| str_field(dev, "serial")),
-            size,
+            name: dev.name.clone(),
+            model: dev.model.clone().unwrap_or_else(|| dev.name.clone()),
+            stable_id: dev.wwn.clone().or_else(|| dev.serial.clone()),
+            size: dev.size,
             kind,
-            tran,
-            removable,
+            tran: dev.tran.clone(),
+            removable: dev.removable,
             is_system,
             partitions,
         });
     }
-
-    Some(drives)
+    drives
 }
 
 /// Flatten partitions; flag the drive as the system disk if any child is
 /// mounted at `/`, `/boot` or `/boot/efi` (writing there destroys the
 /// running OS).
-fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: &mut bool) {
+fn collect_parts(children: &[BlockDevice], out: &mut Vec<TargetPartition>, is_system: &mut bool) {
     for c in children {
-        let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let size = c.get("size").and_then(as_u64).unwrap_or(0);
-        if let Some(mp) = str_field(c, "mountpoint")
+        if let Some(mp) = c.mountpoint.as_deref()
             && (mp == "/" || mp == "/boot" || mp == "/boot/efi" || mp.starts_with("/var"))
         {
             *is_system = true;
         }
-        if ty == "part" || ty == "crypt" || ty == "lvm" {
+        if matches!(c.kind.as_str(), "part" | "crypt" | "lvm") {
             out.push(TargetPartition {
-                name: str_field(c, "name").unwrap_or_default(),
-                size,
-                fstype: str_field(c, "fstype"),
-                label: str_field(c, "label"),
+                name: c.name.clone(),
+                size: c.size,
+                fstype: c.fstype.clone(),
+                label: c.label.clone(),
             });
         }
-        if let Some(nested) = c.get("children").and_then(|v| v.as_array()) {
-            collect_parts(nested, out, is_system);
-        }
+        collect_parts(&c.children, out, is_system);
     }
 }
 
@@ -496,11 +423,20 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
 // ---------------------------------------------------------------------------
 
 /// Inspect a local image file the user picked (via the portal) and build a
-/// [`Source`] from real metadata: the on-disk size (via `stat`) and, for an
+/// [`Source`] from one opened file: its on-disk size, identity and, for an
 /// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
 /// if the path does not exist or cannot be read.
 pub fn inspect_source(path: &Path) -> Option<Source> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A selected path may be a FIFO (or replaced with one). Reach the
+        // held-file type check without waiting for a writer to open it.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -518,7 +454,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         .to_ascii_lowercase();
 
     // A real volume label beats the file name when we can read one.
-    let label = read_iso_label_from_file(&mut file)
+    let label = read_iso_label_file(&mut file)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             path.file_stem()
@@ -541,7 +477,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: false,
-        identity: SourceIdentity::from_file(&file),
+        identity: SourceIdentity::from_file(&file).ok()?,
         expected_sha256: None,
     })
 }
@@ -552,11 +488,11 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
 /// 40 (file offset 0x8028). Best-effort: any short/mismatched file yields
 /// `None` and the caller falls back to the file name.
 pub fn read_iso_label(path: &Path) -> Option<String> {
-    let mut f = std::fs::File::open(path).ok()?;
-    read_iso_label_from_file(&mut f)
+    let mut file = std::fs::File::open(path).ok()?;
+    read_iso_label_file(&mut file)
 }
 
-fn read_iso_label_from_file(f: &mut std::fs::File) -> Option<String> {
+fn read_iso_label_file(f: &mut std::fs::File) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     f.seek(SeekFrom::Start(0x8000)).ok()?;
     let mut hdr = [0u8; 72];
@@ -581,8 +517,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// `lsblk -b` emits sizes as JSON numbers, but older versions emit
-/// strings — accept both.
+/// Platform inventories emit sizes as JSON numbers or numeric strings.
 fn as_u64(v: &Value) -> Option<u64> {
     if let Some(n) = v.as_u64() {
         return Some(n);
@@ -590,22 +525,10 @@ fn as_u64(v: &Value) -> Option<u64> {
     v.as_str().and_then(|s| s.parse::<u64>().ok())
 }
 
-/// Older `lsblk` emits the `rm`/`rota` flags as `"0"`/`"1"` strings; newer
-/// as booleans. Accept both.
-fn as_bool(v: &Value) -> Option<bool> {
-    if let Some(b) = v.as_bool() {
-        return Some(b);
-    }
-    match v.as_str() {
-        Some("1" | "true") => Some(true),
-        Some("0" | "false") => Some(false),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
     #[test]
@@ -709,6 +632,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_lsblk_matches_the_captured_inventory() {
+        // Real `lsblk` output for exactly the Linux probe's columns, and the
+        // targets this module derived from it before the shared parser existed.
+        let input: Value = serde_json::from_str(include_str!(
+            "../../../crates/system/block-devices/tests/fixtures/imager.json"
+        ))
+        .unwrap();
+        let expected: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/lsblk-targets.json")).unwrap();
+        assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
+    }
+
+    #[test]
     fn successful_linux_probe_can_authoritatively_return_no_drives() {
         let json: Value = serde_json::from_str(
             r#"{"blockdevices":[
@@ -778,6 +714,59 @@ mod tests {
         let src = inspect_source(f.path()).expect("inspect");
         assert_eq!(src.kind, SourceKind::IsoFile);
         assert!(!src.installable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{Duration, Instant};
+
+        const CHILD_FIFO: &str = "QOS_IMAGER_TEST_INSPECTION_FIFO";
+        if let Some(path) = std::env::var_os(CHILD_FIFO) {
+            assert!(inspect_source(Path::new(&path)).is_none());
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("selected.img");
+        let native = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is NUL-terminated and remains live through the call.
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+
+        // Isolate a regressed blocking open in a test subprocess, so timeout
+        // cleanup can always kill and reap it before removing the private FIFO.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "probe::tests::inspect_source_rejects_fifo_without_waiting_for_a_writer",
+            ])
+            .env(CHILD_FIFO, &fifo)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break None,
+            }
+        };
+        if status.is_none() {
+            let _ = child.kill();
+            child.wait().unwrap();
+        }
+        assert!(
+            status.is_some(),
+            "source inspection blocked on a FIFO with no writer"
+        );
+        assert!(
+            status.unwrap().success(),
+            "FIFO inspection must reject the source"
+        );
     }
 
     #[test]

@@ -22,7 +22,10 @@ use ui::floating_surface::{
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "events are moved once through a channel; boxing the message would add an allocation per frame"
+)]
 pub enum FloatingServiceEvent {
     Connected {
         connection: u64,
@@ -188,7 +191,10 @@ impl Drop for FloatingSurfaceService {
 
 // These channel handles are deliberately owned by the per-connection worker,
 // which can outlive the accept-loop stack frame.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the per-connection worker owns its channel handles and may outlive the accept loop"
+)]
 fn serve_connection(
     connection: u64,
     stream: UnixStream,
@@ -300,10 +306,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn drop_stops_acceptor_promptly_and_unlinks_socket() {
         let runtime = tempfile::tempdir().expect("temporary runtime");
-        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: this test is serialised with every test that mutates the
-        // process environment, so the fixture cannot race another runtime.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let socket = launcher::services::socket_for(FLOATING_SURFACE_SERVICE);
         let service = FloatingSurfaceService::start().expect("start floating service");
@@ -318,14 +322,5 @@ mod tests {
             "dropping the service must not wait on an accept() blocked forever"
         );
         assert!(!socket.exists(), "drop must unlink the service socket");
-
-        // SAFETY: restore the process environment after the serial fixture.
-        unsafe {
-            if let Some(previous) = previous_runtime {
-                std::env::set_var("XDG_RUNTIME_DIR", previous);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-        }
     }
 }

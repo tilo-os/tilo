@@ -1091,10 +1091,9 @@ impl DrmDispatchState {
         entries
     }
 
-    /// Re-pack the live outputs side by side, re-derive their scales, and
-    /// bring the pointer and cursor planes back into the new space.
-    ///
-    /// Called after any change to the live set — re-packing (not leaving survivors in place) closes the hole an unplugged middle monitor would leave.
+    /// Apply configured topology (falling back to side-by-side), re-derive
+    /// scales, and bring the pointer and cursor planes back onto a live
+    /// output. Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
         let config = settings_store::hardware::DisplayConfig::load_effective();
         self.live.sort_by_key(|l| {
@@ -1169,7 +1168,13 @@ impl DrmDispatchState {
         }
         let extent = hotplug::combined_extent(&positions, &sizes);
         self.output_size = extent;
-        self.pointer = hotplug::clamp_pointer(self.pointer, extent);
+        self.pointer = hotplug::clamp_pointer_to_outputs(
+            self.pointer,
+            self.live
+                .iter()
+                .zip(&sizes)
+                .map(|(entry, &size)| (entry.position, size)),
+        );
 
         self.output_meta = self
             .live
@@ -1421,8 +1426,9 @@ impl DrmDispatchState {
                 None
             }
             GestureEvent::SwipeUpdate { dx, dy } => self.gestures.swipe_update(dx, dy),
-            GestureEvent::SwipeEnd { .. } | GestureEvent::HoldEnd { .. } => {
-                self.gestures.swipe_end();
+            GestureEvent::SwipeEnd { cancelled } => self.gestures.swipe_end_with_cancel(cancelled),
+            GestureEvent::HoldEnd { .. } => {
+                let _ = self.gestures.swipe_end();
                 None
             }
             GestureEvent::PinchBegin { fingers } => {
@@ -1940,8 +1946,16 @@ impl DrmDispatchState {
         match event {
             InputEvent::PointerMotionAbsolute { event } => {
                 let (w, h) = self.output_size;
-                let x = event.x_transformed(w.max(1));
-                let y = event.y_transformed(h.max(1));
+                let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
+                let (x, y) = hotplug::clamp_pointer_to_outputs(
+                    requested,
+                    self.live.iter().map(|output| {
+                        (
+                            output.position,
+                            logical_output_size(output.size, output.transform),
+                        )
+                    }),
+                );
                 self.pointer = (x, y);
                 // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
                 self.hw_cursor.move_to(x, y);
@@ -1949,14 +1963,19 @@ impl DrmDispatchState {
             }
             // Relative motion (mouse): accumulate + clamp to output.
             InputEvent::PointerMotion { event } => {
-                let (w, h) = self.output_size;
-                // `w`/`h` are clamped to at least 1 just above, so this
-                // never underflows; `saturating_sub` just avoids a raw `-`
-                // clippy can't see is bounded.
-                let max_x = f64::from(w.max(1).saturating_sub(1));
-                let max_y = f64::from(h.max(1).saturating_sub(1));
-                let x = (self.pointer.0 + event.delta_x()).clamp(0.0, max_x);
-                let y = (self.pointer.1 + event.delta_y()).clamp(0.0, max_y);
+                let requested = (
+                    self.pointer.0 + event.delta_x(),
+                    self.pointer.1 + event.delta_y(),
+                );
+                let (x, y) = hotplug::clamp_pointer_to_outputs(
+                    requested,
+                    self.live.iter().map(|output| {
+                        (
+                            output.position,
+                            logical_output_size(output.size, output.transform),
+                        )
+                    }),
+                );
                 self.pointer = (x, y);
                 self.hw_cursor.move_to(x, y);
                 self.push(BackendEvent::RelativePointerMotion {
@@ -4793,6 +4812,49 @@ mod tests {
                 .any(|e| matches!(e, BackendEvent::Gesture(_))),
             "a gesture the shell acted on must not also be delivered to a \
              client — the app would scroll under the workspace switch"
+        );
+    }
+
+    #[test]
+    fn horizontal_three_finger_updates_stream_to_the_shell_until_end() {
+        let mut state = DrmDispatchState::default();
+        for event in [
+            GestureEvent::SwipeBegin { fingers: 3 },
+            GestureEvent::SwipeUpdate { dx: -12.0, dy: 0.0 },
+            GestureEvent::SwipeUpdate { dx: -28.0, dy: 2.0 },
+            GestureEvent::SwipeEnd { cancelled: false },
+        ] {
+            state.handle_gesture(event);
+        }
+
+        let shell: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::ShellGesture(action) => Some(*action),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shell,
+            vec![
+                GestureAction::StripPanUpdate {
+                    travel: 12.0,
+                    began: true,
+                },
+                GestureAction::StripPanUpdate {
+                    travel: 40.0,
+                    began: false,
+                },
+                GestureAction::StripPanEnd { cancelled: false },
+            ]
+        );
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Gesture(_))),
+            "no frame of a shell-owned direct pan may leak to the client"
         );
     }
 

@@ -3,23 +3,51 @@
 //! caller (the theme), nothing is hard-coded.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
 
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
+/// A crisp 1 px horizontal rule covering the pixel row that starts at `y`.
+/// A 1 px *stroke* centred on an integer coordinate straddles two rows and
+/// paints as a 2 px blur; a filled rect never does.
+pub fn hairline_h(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &Rect::new(x0, y, x1, y + 1.0),
+    );
 }
 
-pub fn stroke_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color, w: f64) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(w), t, color, None, &shape);
+/// A crisp 1 px vertical rule covering the pixel column that starts at `x`.
+pub fn hairline_v(scene: &mut Scene, t: Affine, x: f64, y0: f64, y1: f64, color: Color) {
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &Rect::new(x, y0, x + 1.0, y1),
+    );
 }
 
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
+/// A floating panel (HIG §9.1 Panel role: menus, popovers, dialogs): its
+/// elevation, the panel ground and the panel border, all derived from the
+/// theme — never a raised fill under a declared-alpha ink stroke with a
+/// literal black shadow.
+pub fn panel(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
+    ui::chrome::panel_shadow(scene, t, rect, radius, theme, 1.0);
+    fill_round(scene, t, rect, radius, ui::chrome::panel_ground(theme));
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        ui::chrome::panel_border(theme),
+        None,
+        &ui::surface::edge_outline(rect, radius),
+    );
 }
 
 /// Estimated advance width of a label at `font` px. Used for pure
@@ -31,7 +59,10 @@ pub fn est_width(label: &str, font: f64) -> f64 {
 }
 
 /// Draw a single line of text left-aligned at `pos` (top-left).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "weighted text painting passes scene, transform and renderer alongside content, position, size, color and weight"
+)]
 pub fn text(
     scene: &mut Scene,
     t: Affine,
@@ -54,7 +85,10 @@ pub fn text(
 }
 
 /// Draw a line of text centred inside `rect` (both axes).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "centered text painting passes render context and bounds alongside content, size, color and weight"
+)]
 pub fn text_centered(
     scene: &mut Scene,
     t: Affine,
@@ -80,7 +114,10 @@ pub fn text_centered(
 }
 
 /// Draw a line of text vertically centred, left-aligned at `left_x`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "vertically centered text painting passes render context, bounds and left inset alongside text styling"
+)]
 pub fn text_vcenter(
     scene: &mut Scene,
     t: Affine,

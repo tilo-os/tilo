@@ -140,7 +140,7 @@ async fn two_actors_exchange_a_workspace_change() {
             .apply_room_changes(room, &changes, &PeerOrigin::peer(&sender))
             .unwrap()
     );
-    assert_eq!(target.workspaces[0].name, "Renamed");
+    assert_eq!(target.desktop.workspaces[0].name, "Renamed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -222,6 +222,71 @@ async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
     );
 }
 
+/// A remote-action frame reaches exactly the addressed peer over the direct
+/// route, and a byte-identical retry is delivered again rather than being
+/// content-deduplicated away: the receiving host deduplicates by invocation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_action_frames_travel_the_exact_target_route() {
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let target = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let frame = b"{\"version\":1}".to_vec();
+    for attempt in 0..2 {
+        cmd_a
+            .send(NetCmd::PublishRemoteAction {
+                ws: WS,
+                target,
+                msg: NeighbourMsg::RemoteAction {
+                    frame: frame.clone(),
+                },
+            })
+            .await
+            .expect("remote action queued");
+        let received = timeout(Duration::from_secs(5), async {
+            loop {
+                match events_b.recv().await {
+                    Some(NetEvent::Msg {
+                        msg: NeighbourMsg::RemoteAction { frame: received },
+                        ..
+                    }) => return received,
+                    Some(_) => {}
+                    None => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("attempt {attempt} was not delivered"));
+        assert_eq!(received, frame);
+    }
+
+    // Anything else is refused on this route rather than broadcast.
+    cmd_a
+        .send(NetCmd::PublishRemoteAction {
+            ws: WS,
+            target,
+            msg: NeighbourMsg::Heartbeat { peer: 1, ts: 1 },
+        })
+        .await
+        .expect("queued");
+    let stray = timeout(Duration::from_millis(300), async {
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::Heartbeat { peer: 1, ts: 1 },
+                ..
+            }) = events_b.recv().await
+            {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(stray.is_err(), "only remote-action frames use this route");
+}
+
 #[test]
 fn invite_token_carries_an_authenticated_iroh_address() {
     use shell::shell::state::{Workspace, WorkspaceId};
@@ -229,7 +294,7 @@ fn invite_token_carries_an_authenticated_iroh_address() {
     let key = iroh::SecretKey::generate();
     let addr =
         iroh::EndpointAddr::new(key.public()).with_ip_addr("127.0.0.1:8888".parse().unwrap());
-    let workspace = Workspace::test_default(WorkspaceId(99), "Shared");
+    let workspace = Workspace::new(WorkspaceId(99), "Shared");
     let token = make_invite_token(&key, &workspace, &addr, 3600).unwrap();
     let parsed = validate_invite_token(&token).unwrap();
     assert_eq!(parsed.workspace_id, 99);

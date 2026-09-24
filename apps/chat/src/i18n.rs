@@ -4,42 +4,25 @@
 //! [`ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
-//!
-//! The manager is thread-local, so registration is per-thread and idempotent:
-//! [`ensure`] is cheap to call from any string site, and the first call on a
-//! thread is the one that loads the bundle.
 
-use std::cell::Cell;
+use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-use ui::i18n::I18nManager;
-
-const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
-
-thread_local! {
-    static LOADED: Cell<bool> = const { Cell::new(false) };
-}
+/// Loaded per thread on first use; a host's manager is joined, never replaced.
+/// The probe is a key every catalogue revision defines.
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+    "en-US",
+    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    "chat-mention-agent-tag",
+);
 
 /// Load the catalogue on this thread if it is not loaded yet.
-///
-/// Call before resolving a key. A key with no catalogue resolves to the key
-/// itself rather than panicking, so a missed call degrades to something legible
-/// rather than to a crash — but it does look wrong, which is why every string
-/// site goes through [`t`] instead of `ui::i18n!` directly.
 pub fn ensure() {
-    LOADED.with(|l| {
-        if l.get() {
-            return;
-        }
-        I18nManager::init("en-US");
-        I18nManager::add_resource("en-US", SOURCE_FTL.to_string());
-        l.set(true);
-    });
+    CATALOG.ensure();
 }
 
 /// Resolve a Chat string key.
 pub fn t(key: &str) -> String {
-    ensure();
-    I18nManager::lookup(key, None)
+    CATALOG.t(key)
 }
 
 /// Resolve a Chat string key that interpolates variables.
@@ -48,9 +31,8 @@ pub fn t(key: &str) -> String {
 /// name — so the *sentence* around them stays in the catalogue and only the
 /// nouns are substituted. Building the line with `format!` instead would put
 /// English word order in the source and leave nothing to translate.
-pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    ensure();
-    I18nManager::format(key, args)
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
 }
 
 #[cfg(test)]
@@ -61,9 +43,21 @@ mod tests {
     fn every_key_the_app_uses_resolves_to_a_real_string() {
         // A key that resolves to itself is a key with no catalogue entry — the
         // failure mode that ships an untranslatable literal to a screen.
-        let key = "chat-mention-agent-tag";
-        let s = t(key);
-        assert_ne!(s, key, "{key} has no entry in the catalogue");
-        assert!(!s.trim().is_empty(), "{key} resolves to nothing");
+        for key in [
+            "chat-mention-agent-tag",
+            "chat-identity-available",
+            "chat-identity-in-voice",
+            "chat-call-mute",
+            "chat-call-unmute",
+            "chat-call-deafen",
+            "chat-call-undeafen",
+            "chat-call-audio-only",
+            "chat-call-collapse",
+            "chat-call-leave",
+        ] {
+            let s = t(key);
+            assert_ne!(s, key, "{key} has no entry in the catalogue");
+            assert!(!s.trim().is_empty(), "{key} resolves to nothing");
+        }
     }
 }

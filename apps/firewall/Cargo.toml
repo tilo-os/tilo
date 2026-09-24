@@ -32,5 +32,8 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
 [lints]
 workspace = true

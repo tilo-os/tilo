@@ -72,10 +72,9 @@ impl CallPermissions for AllowAll {
     }
 }
 
-/// A screen-capture source handed back by the portal: the `PipeWire` node to
-/// consume plus the capture size to encode at. The single value the share flow
-/// needs from the portal, kept transport-agnostic so a test can mint one
-/// without a real desktop portal.
+/// A screen-capture source the host granted: the `PipeWire` node to consume
+/// plus the capture size to encode at. The single value the share flow needs
+/// from the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenSource {
     /// `PipeWire` node id to open the capture on.
@@ -84,54 +83,33 @@ pub struct ScreenSource {
     pub height: u32,
 }
 
-/// The screen-capture request seam.
-///
-/// A share never invents a stream: it asks a `ScreenPortal` for a source and
-/// only proceeds if one is granted. The real implementation ([`SystemPortal`])
-/// drives the **xdg-desktop-portal `ScreenCast`** picker via ashpd behind the
-/// `live-media` feature and returns `None` everywhere else (headless, the
-/// default build, a cancelled picker) — so the default build gates honestly.
-/// Tests inject a fake that returns a source, exercising the whole share state
-/// machine + CRDT wiring without a desktop portal.
-pub trait ScreenPortal {
-    /// Request a screen-share source from the user. `None` = no source
-    /// available or the user declined; the share must not start.
-    fn request(&self) -> Option<ScreenSource>;
-}
+impl ScreenSource {
+    /// The size a screen share is encoded at: twice the camera's 640×480.
+    pub const SHARE_WIDTH: u32 = 1280;
+    pub const SHARE_HEIGHT: u32 = 960;
 
-/// The production portal: a real xdg-desktop-portal `ScreenCast` request behind
-/// `live-media`, an honest `None` otherwise.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemPortal;
-
-impl ScreenPortal for SystemPortal {
-    fn request(&self) -> Option<ScreenSource> {
-        #[cfg(feature = "live-media")]
-        {
-            crate::media::request_screencast().map(|node| ScreenSource {
-                node,
-                width: crate::video::DEFAULT_W * 2,
-                height: crate::video::DEFAULT_H * 2,
-            })
-        }
-        #[cfg(not(feature = "live-media"))]
-        {
-            None
+    /// The source a host grant describes, encoded at Chat's share size. A
+    /// grant Chat cannot open (a stream kind it does not know) is `None`.
+    pub fn from_grant(grant: &ui::capture::ScreenCaptureGrant) -> Option<Self> {
+        match grant.stream {
+            ui::capture::CaptureStream::PipeWire { node_id } => Some(Self {
+                node: node_id,
+                width: Self::SHARE_WIDTH,
+                height: Self::SHARE_HEIGHT,
+            }),
+            _ => None,
         }
     }
 }
 
-/// Test double: a portal that hands back a fixed source (or nothing), so the
-/// whole share state machine + CRDT wiring can be proven without a real
-/// xdg-desktop-portal picker or a capture device.
-#[cfg(test)]
-pub struct FakePortal(pub Option<ScreenSource>);
-
-#[cfg(test)]
-impl ScreenPortal for FakePortal {
-    fn request(&self) -> Option<ScreenSource> {
-        self.0
-    }
+/// Why a screen-capture request was made, so its answer finishes the right
+/// flow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenCapturePurpose {
+    /// The person pressed Share screen.
+    Share,
+    /// A continued call is resuming a share the source device had running.
+    Resume { session: String },
 }
 
 /// Per-peer call view state. A fresh app is **not** in a call — the user
@@ -163,7 +141,7 @@ pub struct CallState {
     /// Camera off / audio-only.
     pub audio_only: bool,
     /// This peer is sharing its screen into the call. Set only once the portal
-    /// grants a source (see [`crate::app::ChatApp::acquire_screen`]); mirrored
+    /// grants a source (see [`crate::app::ChatApp::request_screen`]); mirrored
     /// into the shared voice membership so remote peers reserve the featured
     /// tile. Never set speculatively — a share the portal declined stays `false`.
     pub sharing: bool,
@@ -200,7 +178,7 @@ impl CallState {
                 title: "Active call".into(),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.tilo.chat".into(),
+                    app_id: "so.tilo.chat".into(),
                     element_id: format!("active-call:{}", self.channel),
                     region: source_region,
                 },
@@ -326,7 +304,7 @@ mod tests {
         assert_eq!(
             request.source,
             ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 element_id: "active-call:c_huddle".into(),
                 region,
             }
@@ -369,30 +347,20 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "live-media"))]
     #[test]
-    fn system_portal_declines_without_a_live_portal() {
-        // The hermetic build has no desktop portal, so the production portal
-        // grants nothing — the honest-gating contract that keeps Chat from
-        // ever faking a screen share. With `live-media`, `request()` opens a
-        // real system picker that may wait for a person for two minutes, so
-        // this hermetic test is deliberately not compiled in that build.
-        assert!(
-            SystemPortal.request().is_none(),
-            "the system portal must decline when no live portal is compiled in"
-        );
-    }
-
-    #[test]
-    fn fake_portal_hands_back_its_configured_source() {
-        // The test seam the share flow is proven against.
-        let src = ScreenSource {
-            node: 9,
-            width: 640,
-            height: 480,
+    fn a_pipewire_grant_becomes_a_share_source() {
+        let grant = ui::capture::ScreenCaptureGrant {
+            stream: ui::capture::CaptureStream::PipeWire { node_id: 9 },
+            size: Some((3840, 2160)),
         };
-        assert_eq!(FakePortal(Some(src)).request(), Some(src));
-        assert_eq!(FakePortal(None).request(), None);
+        assert_eq!(
+            ScreenSource::from_grant(&grant),
+            Some(ScreenSource {
+                node: 9,
+                width: ScreenSource::SHARE_WIDTH,
+                height: ScreenSource::SHARE_HEIGHT,
+            })
+        );
     }
 }
 

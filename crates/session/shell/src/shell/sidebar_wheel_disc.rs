@@ -238,8 +238,10 @@ const FADE_IN_STOP: f32 = 0.13;
 
 /// How far past the footprint's right edge the rim's shadow may reach;
 /// the paint group is clipped this much wider so the shadow can sit
-/// outside the rim and still be faded with everything else.
-const RIM_SHADOW_REACH: f64 = 26.0;
+/// outside the rim and still be faded with everything else. Read by the
+/// host to size the wallpaper gutter between the disc and the first
+/// window (`overlay_host::WHEEL_TO_STRIP_GAP_PX` must exceed it).
+pub(crate) const RIM_SHADOW_REACH: f64 = 26.0;
 
 /// Clear space between the footprint's left edge and the band's inner
 /// arc, so the band visibly ends on its own curve rather than the clip.
@@ -254,6 +256,12 @@ const BAND_TANGENT_FRACTION: f64 = 0.93;
 /// Clearance either side of a sector's label chip. Constant for every
 /// sector since the band has a constant radial depth, so labels form a
 /// ring rather than a ragged column.
+///
+/// These, and [`BAND_LEFT_INSET`], are the `spacing.s3` step. They stay
+/// `const` because the band geometry they feed (`label_band_radii`,
+/// `label_chip_width`) is queried without a theme in hand; the test
+/// `label_metrics_sit_on_the_spacing_scale` pins them to the token so
+/// they cannot drift off it.
 const LABEL_RIM_GAP: f64 = 12.0;
 const LABEL_INNER_INSET: f64 = 12.0;
 
@@ -261,13 +269,25 @@ const LABEL_INNER_INSET: f64 = 12.0;
 /// below this even a truncated name says less than an empty sector does.
 const LABEL_MIN_W: f64 = 62.0;
 
-/// Height of an inactive sector's chip; the active sector's is
-/// [`SECTOR_CHIP_H_ACTIVE`], one step larger. Sized against the slot: it
-/// caps near 330 px so three fit the screen at once, and widening the
-/// slot to fit a bigger chip would push the third workspace off screen.
+/// Height of an inactive sector's chip (`spacing.s12`); the active
+/// sector's is [`SECTOR_CHIP_H_ACTIVE`] (`spacing.s16`), one step larger.
+/// Sized against the slot: it caps near 330 px so three fit the screen at
+/// once, and widening the slot to fit a bigger chip would push the third
+/// workspace off screen.
 const SECTOR_CHIP_H: f64 = 48.0;
 
 const SECTOR_CHIP_H_ACTIVE: f64 = 64.0;
+
+/// Smallest chip a sector label may step down to before it is truncated:
+/// the shared `Chip`'s resting height (HIG §9.6 Selector, 28 px), where
+/// the label is set at exactly `scale.sm` — the person's own text size,
+/// which is the floor a name may shrink to. Below the two family sizes a
+/// chip only gets this small when a name would otherwise lose its letters
+/// — the text scale is up, or a name is long. A name that fits at no step
+/// at all is elided *here*, at the person's own size, which shows the most
+/// letters: eliding it at the family size instead painted a 38 px "H…" for
+/// "Home" in the live 220×343 slot at 200 % text.
+const SECTOR_CHIP_H_MIN: f64 = 28.0;
 
 /// Fill strength of the active sector's wedge, as a factor on the
 /// workspace's colour — enough to be unmistakably lit, quiet enough
@@ -618,10 +638,10 @@ impl SidebarWheelDisc {
         colors.categorical(idx)
     }
 
-    /// Largest chip size step the name fits in. The chip can't widen inward
-    /// (it would swing through the footprint's left edge off-centre), so a
-    /// long name steps down a size instead of truncating; falls back to
-    /// [`SECTOR_CHIP_H`] if even that overflows.
+    /// Largest chip size step the active name fits in, from
+    /// [`SECTOR_CHIP_H_ACTIVE`] down; a name that fits at no step is
+    /// elided at the floor, where the label is the person's own text size.
+    /// See [`Self::chip_height_for`].
     fn active_chip_height(
         &self,
         idx: usize,
@@ -629,23 +649,67 @@ impl SidebarWheelDisc {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
+        self.chip_height_for(idx, chip_w, SECTOR_CHIP_H_ACTIVE, theme, text_renderer)
+            .unwrap_or(SECTOR_CHIP_H_MIN)
+    }
+
+    /// One height for every resting sector, so the ring stays uniform: the
+    /// smallest step at which every name fits, or the floor when one of
+    /// them fits nowhere — the ring steps down as one rather than leaving
+    /// a lone small chip beside full-size neighbours.
+    fn inactive_chip_height(
+        &self,
+        chip_w: f64,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> f64 {
+        (0..self.spokes.len())
+            .map(|idx| {
+                self.chip_height_for(idx, chip_w, SECTOR_CHIP_H, theme, text_renderer)
+                    .unwrap_or(SECTOR_CHIP_H_MIN)
+            })
+            .fold(SECTOR_CHIP_H, f64::min)
+    }
+
+    /// Largest chip size step, from `max_h` down to [`SECTOR_CHIP_H_MIN`],
+    /// whose label size lets the name fit `chip_w` without an ellipsis.
+    /// The chip can't widen inward (it would swing through the footprint's
+    /// left edge off-centre), so a long name — or the same name at a
+    /// larger text scale, where the chip's label grows with it — steps
+    /// down a size instead of truncating. `None` when even the floor
+    /// overflows: the person's own text size is never undercut, and the
+    /// caller decides what to elide.
+    fn chip_height_for(
+        &self,
+        idx: usize,
+        chip_w: f64,
+        max_h: f64,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> Option<f64> {
         const STEP: f64 = 2.0;
         let Some(spoke) = self.spokes.get(idx) else {
-            return SECTOR_CHIP_H_ACTIVE;
+            return Some(max_h);
         };
         let lead = ChipLead::Glyph(self.spoke_icon(idx));
-        let mut chosen = SECTOR_CHIP_H;
-        // (SECTOR_CHIP_H_ACTIVE - SECTOR_CHIP_H) / STEP, spelled as a
-        // plain integer bound so the loop counts steps instead of
-        // comparing floats against an accumulating float.
-        for i in 0_u32..=8 {
-            let step = SECTOR_CHIP_H + f64::from(i) * STEP;
+        // Counted as integer steps up from the floor rather than by
+        // subtracting floats, so the loop can't accumulate drift.
+        let steps = ((max_h - SECTOR_CHIP_H_MIN) / STEP).max(0.0).round();
+        // Bounded by the two family sizes, so this is a handful of steps.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a non-negative step count of at most (64 - 28) / 2 = 18"
+        )]
+        let steps = steps as u32;
+        for i in (0..=steps).rev() {
+            let step = SECTOR_CHIP_H_MIN + f64::from(i) * STEP;
             let need = Chip::natural_width_at(&spoke.text, step, lead, theme, text_renderer);
             if need <= chip_w {
-                chosen = step;
+                return Some(step);
             }
         }
-        chosen
+        None
     }
 
     /// The width available to a sector's label chip, in pixels — what
@@ -1207,6 +1271,122 @@ impl Widget for SidebarWheelDisc {
         Some("wheel_disc")
     }
 
+    /// One button per workspace on the disc plus the add button, each
+    /// with the rect the last paint gave it — so a screen reader, a script
+    /// and the UX bench address a sector by name rather than by guessing
+    /// where a rotated label landed. Names are verbs ("Switch to Home")
+    /// so they never collide with the overview's own "Home" row while both
+    /// are on screen; the stable `wheel:*` keys are the scriptable
+    /// address. A workspace not currently on the band is hidden rather
+    /// than dropped, so its ordinal stays fixed.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<AccessNode> = self
+            .spokes
+            .iter()
+            .enumerate()
+            .map(|(idx, spoke)| {
+                let key = Self::spoke_action_target(idx);
+                let placed = self.spoke_hit_rects.get(idx).copied().unwrap_or(Rect::ZERO);
+                let mut node = AccessNode::new(Role::Button)
+                    .with_name(format!("Switch to {}", spoke.text))
+                    .with_semantic_key(key.clone())
+                    .with_action_target(key)
+                    .with_key(u64::try_from(idx).unwrap_or(u64::MAX))
+                    .with_state(AccessState {
+                        selected: idx == self.active_idx,
+                        hidden: placed.area() <= 0.0,
+                        ..AccessState::default()
+                    });
+                if placed.area() > 0.0 {
+                    node = node.with_bounds(placed);
+                }
+                node
+            })
+            .collect();
+        let mut add = AccessNode::new(Role::Button)
+            .with_name("Add a workspace")
+            .with_semantic_key(Self::ADD_ACTION_TARGET)
+            .with_action_target(Self::ADD_ACTION_TARGET)
+            .with_key(u64::try_from(self.spokes.len()).unwrap_or(u64::MAX))
+            .with_state(AccessState {
+                hidden: self.plus_rect.area() <= 0.0,
+                ..AccessState::default()
+            });
+        if self.plus_rect.area() > 0.0 {
+            add = add.with_bounds(self.plus_rect);
+        }
+        children.push(add);
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Workspace wheel")
+                .with_semantic_key("wheel")
+                .with_children(children),
+        )
+    }
+
+    /// Geometry of the node at `path` — a sector's painted hit rect or the
+    /// add button — so the host's generic fallback (a synthesised click)
+    /// lands on the sector rather than on the middle of the whole disc.
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let &idx = path.first()?;
+        let rect = if idx < self.spokes.len() {
+            self.spoke_hit_rects.get(idx).copied()?
+        } else if idx == self.spokes.len() {
+            self.plus_rect
+        } else {
+            return None;
+        };
+        (rect.area() > 0.0).then_some(rect)
+    }
+
+    /// The production route: the a11y dispatcher hands a node's
+    /// `action_target` here. `wheel:workspace:N` turns the wheel to that
+    /// sector exactly as a click does; `wheel:add` creates a workspace.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let idx = if target == Self::ADD_ACTION_TARGET {
+            self.spokes.len()
+        } else if let Some(n) = target
+            .strip_prefix("wheel:workspace:")
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            n
+        } else {
+            return false;
+        };
+        self.activate_node(idx)
+    }
+
+    /// Key-path route for hosts that address nodes by ordinal; the same
+    /// nodes, the same effect as [`Widget::perform_semantic_action`].
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(&key) = key_path.first() else {
+            return false;
+        };
+        let Ok(idx) = usize::try_from(key) else {
+            return false;
+        };
+        self.activate_node(idx)
+    }
+
     /// Opt into downcasting so the screenshot harness can reach
     /// [`SidebarWheelDisc::hold_rotation_at`].
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -1281,6 +1461,9 @@ struct LabelLayout {
     /// Too shallow to carry a name is a reason to drop the name, not
     /// the sector — it stays drawn and hit-tested with just its icon.
     names_fit: bool,
+    /// The one height every resting sector's chip is drawn at this
+    /// frame — see [`SidebarWheelDisc::inactive_chip_height`].
+    inactive_h: f64,
 }
 
 /// One resolved display slot in the sector loop — a `k` in
@@ -1587,11 +1770,13 @@ impl SidebarWheelDisc {
         let chip_x0 = geom.c.x + geom.r_ref + LABEL_INNER_INSET;
         let chip_x1 = geom.c.x + geom.r_out - LABEL_RIM_GAP;
         let chip_w = chip_x1 - chip_x0;
+        let inactive_h = self.inactive_chip_height(chip_w, ctx.theme, ctx.text_renderer);
         let layout = LabelLayout {
             chip_x0,
             chip_x1,
             chip_w,
             names_fit: chip_w >= LABEL_MIN_W,
+            inactive_h,
         };
 
         self.spoke_hit_rects.clear();
@@ -1648,10 +1833,13 @@ impl SidebarWheelDisc {
         }
 
         let lead = ChipLead::Glyph(self.spoke_icon(slot.idx));
+        // Both family sizes step down for a name that would not fit,
+        // rather than showing "H…" for "Home" at a larger text scale; the
+        // resting sectors step down together so the ring stays uniform.
         let row_h = if slot.is_active {
             self.active_chip_height(slot.idx, layout.chip_w, ctx.theme, ctx.text_renderer)
         } else {
-            SECTOR_CHIP_H
+            layout.inactive_h
         };
         let chip = Rect::new(
             layout.chip_x0,
@@ -1990,6 +2178,33 @@ impl SidebarWheelDisc {
 }
 
 impl SidebarWheelDisc {
+    /// Scriptable address of the add-workspace button's semantic node.
+    const ADD_ACTION_TARGET: &'static str = "wheel:add";
+
+    /// Scriptable address of workspace `idx`'s semantic node — stable
+    /// across rotation, unlike where its label happens to be painted.
+    fn spoke_action_target(idx: usize) -> String {
+        format!("wheel:workspace:{idx}")
+    }
+
+    /// Activate semantic node `idx`: a sector (turn the wheel to it, as a
+    /// click on the sector does) or, one past the last sector, the add
+    /// button. A stale ordinal is refused, never guessed.
+    fn activate_node(&mut self, idx: usize) -> bool {
+        if idx < self.spokes.len() {
+            self.click_to_spoke(idx);
+            self.dismiss_summon();
+            return true;
+        }
+        if idx == self.spokes.len() {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().add_workspace("Untitled");
+            }
+            return true;
+        }
+        false
+    }
+
     /// Slide cached click targets to `target_origin_px` — used on the pan
     /// fast-path, where the scene replays under a translation instead of
     /// re-encoding, so the absolute-coordinate hit rects would otherwise go stale.
@@ -2238,7 +2453,7 @@ impl SidebarWheelDisc {
             return;
         };
         let mut state = chrome.borrow_mut();
-        if state.tree().active == WorkspaceId(id) {
+        if state.tree().desktop.active == WorkspaceId(id) {
             // Already there. Bumping anyway re-syncs the rest of the
             // shell against a tree that didn't change — every gesture
             // that ends where it started does exactly that.
@@ -2542,7 +2757,7 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let before = chrome.borrow().tree().workspaces.len();
+        let before = chrome.borrow().tree().desktop.workspaces.len();
         let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"])
             .with_chrome(chrome.clone());
         layout_into_slot(&mut d, live_slot());
@@ -2566,7 +2781,7 @@ mod tests {
                 d.rotation_deg
             );
             assert_eq!(
-                chrome.borrow().tree().workspaces.len(),
+                chrome.borrow().tree().desktop.workspaces.len(),
                 expected,
                 "the press at {}° did not create a workspace",
                 d.rotation_deg
@@ -3028,9 +3243,9 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let tree = WorkspaceTree::bootstrap_demo();
-        assert_eq!(tree.workspaces.len(), 3);
-        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
-        let initial_active = tree.active;
+        assert_eq!(tree.desktop.workspaces.len(), 3);
+        let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
+        let initial_active = tree.desktop.active;
         assert_eq!(
             initial_active, ws_ids[0],
             "bootstrap_demo should leave active = ws_ids[0]"
@@ -3068,12 +3283,12 @@ mod tests {
         );
         let expected_id = ws_ids[d.selected_idx()];
         assert_eq!(
-            chrome.borrow().tree().active,
+            chrome.borrow().tree().desktop.active,
             expected_id,
             "snap_to_nearest must publish the new active workspace id to chrome"
         );
         assert_ne!(
-            chrome.borrow().tree().active,
+            chrome.borrow().tree().desktop.active,
             initial_active,
             "chrome's tree.active must have changed after the snap"
         );
@@ -3198,8 +3413,8 @@ mod tests {
         // First-boot tree: one empty workspace — the state where "+"
         // matters most, so it has to work from a single spoke.
         let tree = WorkspaceTree::bootstrap_default();
-        let initial_count = tree.workspaces.len();
-        let initial_active = tree.active;
+        let initial_count = tree.desktop.workspaces.len();
+        let initial_active = tree.desktop.active;
         let chrome = ChromeState::new(tree);
 
         let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
@@ -3233,12 +3448,12 @@ mod tests {
 
         let state = chrome.borrow();
         assert_eq!(
-            state.tree().workspaces.len(),
+            state.tree().desktop.workspaces.len(),
             initial_count + 1,
             "plus-press must grow the workspace count by exactly 1"
         );
         assert_ne!(
-            state.tree().active,
+            state.tree().desktop.active,
             initial_active,
             "plus-press must activate the newly-created workspace"
         );
@@ -3801,7 +4016,7 @@ mod tests {
         use crate::shell::state::WorkspaceTree;
 
         let tree = WorkspaceTree::bootstrap_demo();
-        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let ws_ids: Vec<_> = tree.desktop.workspaces.iter().map(|w| w.id).collect();
         let chrome = ChromeState::new(tree);
         let spokes: Vec<SpokeLabel> = ws_ids
             .iter()
@@ -3889,5 +4104,205 @@ mod tests {
             d.sync_active_from_visual();
         }
         assert_eq!(d.active_idx, 2, "the indicator lands on the clicked spoke");
+    }
+
+    /// The band's label metrics are the spacing scale under other names;
+    /// pinned so a later edit cannot move them off the grid unnoticed.
+    #[test]
+    fn label_metrics_sit_on_the_spacing_scale() {
+        let spacing = Theme::default().tokens.spacing;
+        assert_eq!(LABEL_RIM_GAP, f64::from(spacing.s3));
+        assert_eq!(LABEL_INNER_INSET, f64::from(spacing.s3));
+        assert_eq!(BAND_LEFT_INSET, f64::from(spacing.s3));
+        assert_eq!(SECTOR_CHIP_H, f64::from(spacing.s12));
+        assert_eq!(SECTOR_CHIP_H_ACTIVE, f64::from(spacing.s16));
+    }
+
+    /// At 200 % text the chip's label grows with it, and at the family's
+    /// two fixed heights "Home" was painted as "H…". A name steps down to
+    /// a smaller chip — never below the shared Chip's resting height,
+    /// where the label is exactly the person's chosen size — before it
+    /// loses letters. Both the active and the resting size are covered.
+    #[test]
+    fn large_text_steps_a_chip_down_before_it_truncates_a_name() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let chip_w = d.label_chip_width();
+        assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
+
+        let inactive_h = d.inactive_chip_height(chip_w, &theme, &mut tr);
+        for (idx, name) in ["Home", "Research", "Design"].iter().enumerate() {
+            let active_h = d.active_chip_height(idx, chip_w, &theme, &mut tr);
+            for h in [active_h, inactive_h] {
+                assert!(
+                    (SECTOR_CHIP_H_MIN..=SECTOR_CHIP_H_ACTIVE).contains(&h),
+                    "{name}: chip height {h} outside [{SECTOR_CHIP_H_MIN}, {SECTOR_CHIP_H_ACTIVE}]"
+                );
+                let need = Chip::natural_width_at(
+                    name,
+                    h,
+                    ChipLead::Glyph(d.spoke_icon(idx)),
+                    &theme,
+                    &mut tr,
+                );
+                assert!(
+                    need <= chip_w,
+                    "{name} at 200% text needs {need:.0} px at the {h} px step but the band \
+                     only has {chip_w:.0} px — it would be painted with an ellipsis"
+                );
+            }
+        }
+        // The resting ring is one height, chosen for the longest name.
+        assert!(
+            inactive_h <= SECTOR_CHIP_H,
+            "resting chips never exceed the family size: {inactive_h}"
+        );
+    }
+
+    /// A name that fits at no step is elided at the floor — the person's
+    /// own text size, showing the most letters — and the resting ring
+    /// steps down with it as one, never a lone small chip beside full-size
+    /// neighbours.
+    #[test]
+    fn a_name_that_fits_nowhere_is_elided_at_the_persons_text_size() {
+        let mut d = mk(&[
+            "Home",
+            "Quarterly planning retrospective for the platform group",
+        ]);
+        layout_into_slot(&mut d, live_slot());
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let chip_w = d.label_chip_width();
+        assert_eq!(
+            d.chip_height_for(1, chip_w, SECTOR_CHIP_H, &theme, &mut tr),
+            None,
+            "the fixture name must overflow every step for this test to mean anything"
+        );
+        assert_eq!(
+            d.active_chip_height(1, chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
+        assert_eq!(
+            d.inactive_chip_height(chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
+        assert_eq!(
+            Chip::label_size_for_height(SECTOR_CHIP_H_MIN, &theme),
+            theme.tokens.typography.scale.sm,
+            "the floor's label is exactly the theme's control-label size"
+        );
+    }
+
+    /// The live desktop's disc slot at 1280×800 is 220 px wide and 343 px
+    /// tall — far shallower than `live_slot()` — and at 200 % text not even
+    /// the floor holds "Home". The label must then be elided at the floor
+    /// (a 24 px "Hom…"), not at the family size (a 38 px "H…").
+    #[test]
+    fn a_shallow_slot_at_large_text_elides_at_the_floor_not_the_family_size() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, Rect::new(0.0, 168.0, 220.0, 511.0));
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let chip_w = d.label_chip_width();
+        let fits_anywhere = (0..3).any(|idx| {
+            d.chip_height_for(idx, chip_w, SECTOR_CHIP_H_ACTIVE, &theme, &mut tr)
+                .is_some()
+        });
+        if fits_anywhere {
+            // A wider band than expected: then the names simply fit, which
+            // is the better outcome and the other test covers it.
+            return;
+        }
+        for idx in 0..3 {
+            assert_eq!(
+                d.active_chip_height(idx, chip_w, &theme, &mut tr),
+                SECTOR_CHIP_H_MIN,
+                "spoke {idx} must be elided at the person's size, not the family size"
+            );
+        }
+        assert_eq!(
+            d.inactive_chip_height(chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
+    }
+
+    /// Every workspace on the disc is a named, bounded semantic target,
+    /// as is the add button, and activating one turns the wheel exactly
+    /// as a click on its sector does — so a script or a screen reader
+    /// never has to work out where a rotated label landed.
+    #[test]
+    fn every_sector_is_a_bounded_semantic_target_that_activates() {
+        use ui::a11y::{Action, Role};
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+
+        let node = d.accessibility().expect("the disc publishes a tree");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.children.len(), d.spokes.len() + 1);
+        for (idx, spoke) in d.spokes.iter().enumerate() {
+            let child = &node.children[idx];
+            assert_eq!(
+                child.name.as_deref(),
+                Some(format!("Switch to {}", spoke.text).as_str())
+            );
+            assert_ne!(
+                child.name.as_deref(),
+                Some(spoke.text.as_str()),
+                "a sector must not publish the bare workspace name — the overview's row does"
+            );
+            let placed = d.spoke_hit_rects[idx];
+            assert!(
+                placed.area() > 0.0,
+                "spoke {idx} is on the band at the live slot"
+            );
+            assert_eq!(
+                child.bounds.map(ui::AccessBounds::to_rect),
+                Some(placed),
+                "spoke {idx}'s semantic bounds must be the rect its label was painted at"
+            );
+            assert_eq!(child.state.selected, idx == d.active_idx);
+            assert!(!child.state.hidden);
+        }
+        let add = node
+            .children
+            .last()
+            .expect("the add button is the trailing child");
+        assert_eq!(add.name.as_deref(), Some("Add a workspace"));
+        assert_eq!(add.bounds.map(ui::AccessBounds::to_rect), Some(d.plus_rect));
+
+        // The dispatcher hands a node's `action_target` to
+        // `perform_semantic_action`; the click fallback asks
+        // `synthetic_accessibility_rect` where the node is.
+        assert_eq!(
+            d.synthetic_accessibility_rect(&[2]),
+            Some(d.spoke_hit_rects[2]),
+            "the routed geometry for sector 2 is its painted rect"
+        );
+        assert_eq!(d.synthetic_accessibility_rect(&[3]), Some(d.plus_rect));
+        let mut doc = automerge::AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        assert!(d.perform_semantic_action("wheel:workspace:2", &Action::Activate, &mut doc, &path));
+        assert_eq!(
+            d.selected_idx(),
+            2,
+            "activating the third sector chooses it"
+        );
+        assert!(
+            !d.perform_semantic_action("wheel:workspace:9", &Action::Activate, &mut doc, &path),
+            "a stale address is refused, never guessed"
+        );
+        assert!(
+            !d.perform_action_at(&Action::Activate, &[9], &mut doc, &path),
+            "a stale key is refused, never guessed"
+        );
+        assert!(d.perform_action_at(&Action::Activate, &[1], &mut doc, &path));
+        assert_eq!(
+            d.selected_idx(),
+            1,
+            "the key-path route reaches the same sectors"
+        );
     }
 }

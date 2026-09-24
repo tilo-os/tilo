@@ -427,12 +427,17 @@ pub fn render_responsive_to_path_with_text_scale(
     out: &Path,
     text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = responsive_app(viewport);
+    let app = responsive_app(viewport, text_scale.unwrap_or(1.0));
     render_to_path_with_text_scale(Box::new(app), viewport, out, text_scale)
 }
 
-fn responsive_app(viewport: (u32, u32)) -> SettingsApp {
-    if f64::from(viewport.0) < NAV_BREAKPOINT {
+/// The scenario a responsive capture documents at `viewport` under
+/// `text_scale`: the narrow Region formats screen below the shell's
+/// breakpoint, the docked External Accounts page at or above it. The
+/// breakpoint grows with the text scale exactly as the shell's does, so the
+/// scenario and the layout class the shell resolves always agree.
+fn responsive_app(viewport: (u32, u32), text_scale: f32) -> SettingsApp {
+    if f64::from(viewport.0) < NAV_BREAKPOINT * f64::from(text_scale.max(1.0)) {
         SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(viewport.0 as f32)
             .with_deterministic_hardware_for_shot()
@@ -478,6 +483,12 @@ pub fn build_widget_scene_with_text_scale(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    // The live host (`ui::App`), the shared launcher and the headless
+    // harness all hand the theme's text scale to the renderer, so text the
+    // app paints itself through the renderer grows with the preference. A
+    // capture that left the renderer at 1× would under-report every
+    // custom-drawn label (the sidebar rows, for one) at 200 %.
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -589,6 +600,7 @@ mod tests {
 
     #[test]
     fn narrow_app_selects_region_formats() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
         // The width hint + shot flag are applied; the resolved
         // narrow/overlay layout is asserted in the layout-driven tests once a
         // frame is laid out (see settings_app tests).
@@ -597,16 +609,18 @@ mod tests {
 
     #[test]
     fn wide_app_selects_visible_appearance_row() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
         assert_eq!(Scenario::Wide.app().selected(), Category::Appearance);
     }
 
     #[test]
     fn responsive_capture_uses_exact_width_to_select_navigation_mode() {
-        let phone = responsive_app((390, 844));
+        let _config = crate::prefs::test_env::ConfigGuard::new();
+        let phone = responsive_app((390, 844), 1.0);
         assert!(phone.is_narrow());
         assert_eq!(phone.selected(), Category::RegionFormats);
 
-        let desktop = responsive_app((1920, 1080));
+        let desktop = responsive_app((1920, 1080), 1.0);
         assert!(!desktop.is_narrow());
         assert_eq!(desktop.selected(), Category::Appearance);
     }

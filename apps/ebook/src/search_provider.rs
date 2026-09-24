@@ -1799,8 +1799,11 @@ mod tests {
     }
 
     #[test]
-    fn late_metadata_posting_avoids_a_hundred_thousand_row_scan() {
-        let books = (0..100_001)
+    fn late_metadata_posting_avoids_a_library_scan() {
+        // The continuation after the metadata phase streams chapter prose,
+        // which is bounded per page rather than per search, so this checks
+        // the metadata page itself instead of following every page.
+        let books = (0..3_000)
             .map(|i| Book {
                 id: format!("book:{i:06}"),
                 title: format!("Library volume {i}"),
@@ -1808,9 +1811,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let provider = BookSearchProvider::new(&books, &[]);
-        let page = provider.search_page("volume 100000", None, 4, 4);
+        let page = provider.search_page("volume 2999", None, 4, 4);
         assert_eq!(page.inspected, 1);
-        assert_eq!(page.results[0].title, "Library volume 100000");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Library volume 2999");
     }
 
     #[test]

@@ -44,12 +44,22 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only reached from the --shots handler on the main thread before the \
+              headless harness or any camera worker thread exists, so nothing reads \
+              the environment concurrently; the widget reads these variables while \
+              it is constructed"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // These variables are consumed while the widget is constructed. Startup
     // is still single-threaded here, before any camera worker exists.
     unsafe {
         for (option, variable) in [
             ("--screen", "CAMERA_SCREEN"),
+            // `--mode photo|video` poses the viewfinder's capture sub-mode so
+            // the video shutter and switcher state can be captured headless.
+            ("--mode", "CAMERA_MODE"),
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
@@ -98,16 +108,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .value("--height")
         .and_then(|value| value.parse().ok())
         .unwrap_or(default_height);
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => ui::Theme::light(),
-        Some("high-contrast") => ui::Theme::high_contrast(),
-        _ => ui::Theme::dark(),
-    }
-    .with_text_scale(args.text_scale.unwrap_or(1.0))
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
+    let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(
         ui::State::new(),
         shot_root(args)?,
@@ -115,17 +116,18 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         theme,
     )
     .render_png(out);
-    println!("dev.tilo.camera: wrote shot to {}", out.display());
+    println!("so.tilo.camera: wrote shot to {}", out.display());
     Ok(())
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.camera", camera::app_root)
+        &LaunchSpec::new("so.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
             .allowed_flags(&["--scan-first", "--disk", "--crop", "--timer-running"])
             .allowed_options(&[
                 "--screen",
+                "--mode",
                 "--dir",
                 "--scroll",
                 "--hover",

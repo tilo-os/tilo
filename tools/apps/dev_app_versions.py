@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic development identities from complete, authoritative main history."""
+"""Deterministic app identities for development and continuous main releases."""
 import argparse
 import copy
 import json
@@ -32,11 +32,23 @@ def development_version(declared, sequence, source):
     return f"{major}.{minor}.{patch + 1}-dev.{sequence}+g{source}"
 
 
-def version_plan(plan, sequence, source):
+def release_version(declared, sequence, source):
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", declared)
+    if not match or not 0 < sequence < 2**64 or not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise ValueError("release version requires stable SemVer, positive sequence, and full source SHA")
+    major, minor, patch = map(int, match.groups())
+    release_patch = patch + sequence
+    if max(major, minor, release_patch) >= 2**64:
+        raise ValueError("release version exceeds SemVer integer range")
+    return f"{major}.{minor}.{release_patch}+g{source}"
+
+
+def version_plan(plan, sequence, source, *, stable=False):
     result = copy.deepcopy(plan)
     for app in result["catalog"]:
         app["declared_version"] = app["version"]
-        app["version"] = development_version(app["version"], sequence, source)
+        version = release_version if stable else development_version
+        app["version"] = version(app["version"], sequence, source)
     return result
 
 
@@ -88,6 +100,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--source")
+    parser.add_argument("--sequence", type=int)
+    parser.add_argument("--stable", action="store_true")
     parser.add_argument("--main-ref", default="refs/remotes/origin/main")
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--built-index", type=Path)
@@ -109,8 +123,12 @@ def main():
         if head != args.source:
             raise ValueError("development source must match the checked-out commit")
         subprocess.run(["git", "-C", str(args.root), "diff", "--exit-code", "HEAD", "--"], check=True, stdout=subprocess.DEVNULL)
-        sequence = source_identity(args.root, args.source, args.main_ref)
-        plan = version_plan(json.loads(args.plan.read_text()), sequence, args.source)
+        sequence = args.sequence
+        if sequence is None:
+            sequence = source_identity(args.root, args.source, args.main_ref)
+        plan = version_plan(
+            json.loads(args.plan.read_text()), sequence, args.source, stable=args.stable
+        )
         args.plan.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
 

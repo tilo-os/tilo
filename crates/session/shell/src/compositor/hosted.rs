@@ -246,7 +246,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         if let Some(path) = crate::compositor::native::test_control_path(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            std::env::var_os("TILO_TEST_CONTROL"),
+            std::env::var_os(crate::shell::test_control_socket::TEST_CONTROL_ENV),
         ) {
             let socket_path = path;
             tilo_startup_metrics::mark("hosted-event-loop-enter");
@@ -357,12 +357,12 @@ fn attach_peer_sync_bridge(
     let tree_for_bridge = tree_handle;
     host.with_peer_sync_bridge(std::rc::Rc::new(move |req| match req {
         crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
-            let active = tree_for_bridge.read().active;
+            let active = tree_for_bridge.read().desktop.active;
             net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                 .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::ExportIdentity => {
-            let active = tree_for_bridge.read().active;
+            let active = tree_for_bridge.read().desktop.active;
             net.person_identity_card(active)
                 .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
@@ -371,7 +371,7 @@ fn attach_peer_sync_bridge(
             role,
             recipient_user_public_key,
         } => {
-            let active = tree_for_bridge.read().active;
+            let active = tree_for_bridge.read().desktop.active;
             net.issue_invite_bound_with_role(
                 active,
                 INVITE_EXPIRY_SECONDS,
@@ -382,7 +382,7 @@ fn attach_peer_sync_bridge(
             .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
-            let active = tree_for_bridge.read().active;
+            let active = tree_for_bridge.read().desktop.active;
             net.accept_invite(active, &token)
                 .map(|room| room.to_string())
                 .map(crate::shell::overlay_host::PeerSyncResponse::Message)
@@ -390,6 +390,7 @@ fn attach_peer_sync_bridge(
         crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
             let room = tree_for_bridge
                 .read()
+                .desktop
                 .active_workspace()
                 .map(|workspace| workspace.room)
                 .ok_or_else(|| "no active workspace".to_string())?;
@@ -429,9 +430,10 @@ fn attach_peer_sync_bridge(
 /// pointer published under it would arrive addressed to a scope the receiver has never heard of.
 fn set_active_room_presence_scope(app: &mut App, tree_snapshot: &WorkspaceTree) {
     let active_room = tree_snapshot
+        .desktop
         .workspaces
         .iter()
-        .find(|w| w.id == tree_snapshot.active)
+        .find(|w| w.id == tree_snapshot.desktop.active)
         .map(|w| w.room.to_string());
     if let Some(room) = active_room {
         app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
@@ -580,7 +582,7 @@ fn bring_up_portal(
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {
-            let conn = zbus::ConnectionBuilder::session()?.build().await?;
+            let conn = zbus::connection::Builder::session()?.build().await?;
             crate::portal::serve(conn, ctx).await
         });
     let handle = match serve_result {

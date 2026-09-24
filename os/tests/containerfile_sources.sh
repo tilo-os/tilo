@@ -42,7 +42,8 @@ for spec in "os/Containerfile:$REPO" \
             "os/Containerfile.wpe-buildroot:$REPO" \
             "os/Containerfile.installer:$REPO/os" \
             "os/Containerfile.test:$REPO/os" \
-            "os/Containerfile.host:$REPO"; do
+            "os/Containerfile.host:$REPO" \
+            "os/Containerfile.dev:$REPO"; do
   file="${spec%%:*}"; ctx="${spec#*:}"
   [ -f "$REPO/$file" ] || { bad "$file does not exist"; continue; }
 

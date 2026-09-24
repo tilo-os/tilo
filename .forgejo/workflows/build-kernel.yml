@@ -19,7 +19,10 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
   pull_request:
@@ -34,7 +37,10 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
       - "tools/ci/workflow_applicability.py"
@@ -42,8 +48,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
-  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
+  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) }}
 
 jobs:
   applicability:
@@ -75,21 +81,21 @@ jobs:
         run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/build-kernel.yml
 
   signing-preflight:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
       - name: Checkout signing policy
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install checksum-pinned Cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: ${{ runner.arch }}
       - name: Bind kernel signing authority to pinned release identity
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -123,9 +129,11 @@ jobs:
           - arch: x86_64
             platform: linux/amd64
             runner: runner-disk-100g
+            kernel_build_jobs: 6
           - arch: aarch64
             platform: linux/arm64
             runner: runner-disk-100g-arm64
+            kernel_build_jobs: 4
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     # Finish before the existing three-hour runner/server deadline, leaving
@@ -135,7 +143,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require the selected native kernel architecture
@@ -145,11 +155,18 @@ jobs:
       # kernel-devel, gcc, ...) and the Fedora kernel SRPM.  Log in on every
       # run — build-only PRs also need registry read.
       - name: Log in to code.podesta.ai
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.podesta.ai "$REGISTRY_USERNAME"
+
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
         with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          cache-architecture: ${{ matrix.arch }}
 
       # Same mirrored base as the OS image — the modules have to link against
       # the userspace the image ships (os/base-snapshot.env).
@@ -158,6 +175,42 @@ jobs:
 
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+
+      - name: Verify the signed RPM snapshot input
+        run: |
+          set -euo pipefail
+          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] || {
+            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
+            exit 1
+          }
+          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
+          digest="${RPMS_REF##*@}"
+          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
+          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$RPMS_REF")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" \
+            --arg package_arm64_sha256 "$package_arm64_sha256" '
+              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+              | any(
+                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
+                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null || {
+              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
+              exit 1
+            }
 
       # Reproducible: buildkit rewrites layer timestamps + the kernel's
       # KBUILD_BUILD_TIMESTAMP to SOURCE_DATE_EPOCH (see os/kernel/Containerfile).
@@ -197,18 +250,25 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.podesta.ai/qos/qos-kernel
+          images: code.podesta.ai/qos/tilo-kernel
           tags: |
             type=raw,value=latest-${{ matrix.arch }},enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=main-${{ matrix.arch }}-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}-${{ matrix.arch }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=pr-${{ github.event.number }}-${{ matrix.arch }},enable=${{ github.event_name == 'pull_request' }}
-            type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+            type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
 
-      # Push only on tags/dispatch so main-branch commits verify without
-      # touching the registry.
+      # A shared Docker daemon can still hold this commit's image from an
+      # earlier attempt; the registry-push retry below must never publish it.
+      - name: Discard any earlier local image for this commit
+        run: docker image rm -f 'code.podesta.ai/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' >/dev/null 2>&1 || true
+
+      # Publication runs push; pull requests only build and load. A failure
+      # always reaches the next step, which retries only a publication push
+      # of a completed build and otherwise fails the job.
       - name: Build the tilo-kernel image (push only on tags/dispatch)
         id: build
+        continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -219,7 +279,7 @@ jobs:
             github-assets=os/external-assets/kernel-cache
           platforms: ${{ matrix.platform }}
           load: true
-          push: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
           tags: |
             ${{ steps.meta.outputs.tags }}
             code.podesta.ai/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
@@ -228,28 +288,104 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
-            KERNEL_BUILD_JOBS=2
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:${{ matrix.arch }}
-          # The kernel builder's intermediate source tree is tens of GiB.
-          # Export only final-stage dependencies: mode=max duplicated that
-          # tree during export and exhausted the runner after a successful
-          # compile.
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:${{ matrix.arch }},mode=min
+            KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
+          cache-from: type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:${{ matrix.arch }}
+          # PRs consume the shared cache but do not update it: exporting cache
+          # work can outlive a successful compile and exhaust the runner's
+          # hard deadline. Main/tag/dispatch builds refresh final-stage
+          # dependencies only; mode=max duplicates the multi-GiB source tree.
+          # ignore-error: a cache write failure must not fail a build whose
+          # image was already pushed; the next run simply starts colder.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
+
+      # Reached only when the build step failed. Pull request builds do not
+      # push, so their failure is always fatal. The image is loaded before
+      # buildx pushes it, so a present local image means the compile
+      # succeeded and only the registry write failed; an absent one is a real
+      # build failure and stays fatal.
+      - name: Retry the registry push of the completed build
+        id: push-retry
+        if: ${{ steps.build.outcome == 'failure' }}
+        env:
+          PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
+          LOCAL_IMAGE: code.podesta.ai/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
+          PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          [ "$PUBLISH" = true ] || {
+            echo '::error::the kernel image build failed'
+            exit 1
+          }
+          docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1 || {
+            echo '::error::the kernel image build failed before producing an image'
+            exit 1
+          }
+          digest=''
+          for attempt in 1 2 3; do
+            if log="$(docker push "$LOCAL_IMAGE" 2>&1)"; then
+              printf '%s\n' "$log"
+              digest="$(printf '%s\n' "$log" | sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' | tail -1)"
+              break
+            fi
+            printf '%s\n' "$log" >&2
+            [ "$attempt" -lt 3 ] || { echo '::error::registry push failed after 3 attempts'; exit 1; }
+            sleep $((attempt * 30))
+          done
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::registry push did not report a manifest digest'
+            exit 1
+          }
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag "$LOCAL_IMAGE" "$tag"
+            for attempt in 1 2 3; do
+              docker push "$tag" && break
+              [ "$attempt" -lt 3 ] || { echo "::error::could not push $tag"; exit 1; }
+              sleep $((attempt * 30))
+            done
+          done <<< "$PUBLISH_TAGS"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the published kernel digest
+        id: published
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          RETRY_DIGEST: ${{ steps.push-retry.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_OUTCOME" = success ]; then digest="$BUILD_DIGEST"; else digest="$RETRY_DIGEST"; fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::no published kernel manifest digest'
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install native kernel acceptance tools
         run: |
           set -euo pipefail
           case '${{ matrix.arch }}' in
-            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
-            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
+            aarch64)
+              apt_qemu=qemu-system-arm
+              fedora_qemu=qemu-system-aarch64
+              apt_firmware=qemu-efi-aarch64
+              fedora_firmware=edk2-aarch64
+              ;;
+            x86_64)
+              apt_qemu=qemu-system-x86
+              fedora_qemu=qemu-system-x86
+              apt_firmware=ovmf
+              fedora_firmware=edk2-ovmf
+              ;;
             *) exit 2;;
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd dosfstools mtools "$apt_qemu" "$apt_firmware"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"
           fi
 
       - name: Boot the packaged native kernel and verify module signatures
@@ -286,6 +422,7 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}" \
             --output "type=local,dest=$probe" .
           TILO_KERNEL_PATH="$probe/vmlinuz" \
           TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \
@@ -299,14 +436,8 @@ jobs:
       # the OS image. The OS image build verifies this signature before it
       # `dnf swap`s the kernel in — see os/etc/containers/policy.json for
       # the trust root.
-      - name: Install checksum-pinned Cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-        uses: ./.forgejo/actions/install-cosign
-        with:
-          cache-architecture: ${{ matrix.arch }}
-
       - name: Sign the published image
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -317,10 +448,10 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
-          ref="code.podesta.ai/qos/qos-kernel@${{ steps.build.outputs.digest }}"
-          digest='${{ steps.build.outputs.digest }}'
+          ref="code.podesta.ai/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          digest='${{ steps.published.outputs.digest }}'
           jq -n \
-            --arg source "git+ssh://code.podesta.ai/qos/tilo@$GITHUB_SHA" \
+            --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
             --arg digest "$digest" \
             --arg architecture '${{ matrix.arch }}' \
             --arg base "$BASE_REF" \
@@ -328,7 +459,7 @@ jobs:
             --arg epoch "$SOURCE_DATE_EPOCH" '
               {
                 buildDefinition: {
-                  buildType: "https://tilo.dev/buildtypes/kernel-rpm/v1",
+                  buildType: "https://tilo.sh/buildtypes/kernel-rpm/v1",
                   externalParameters: {architecture: $architecture},
                   internalParameters: {
                     sourceDateEpoch: ($epoch | tonumber),
@@ -356,21 +487,26 @@ jobs:
             --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+                  .buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1"
                   and .buildDefinition.externalParameters.architecture == $architecture
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?;
-                    .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source))
+                    .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source))
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
                 )
             ' >/dev/null
 
       - name: Report the new digest to commit
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         run: |
-          ref="code.podesta.ai/qos/qos-kernel@${{ steps.build.outputs.digest }}"
-          variable=KERNEL_RPMS_${{ matrix.arch }}_REF
+          ref="code.podesta.ai/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          # Promotion reads KERNEL_RPMS_X86_64_REF / KERNEL_RPMS_AARCH64_REF.
+          variable="KERNEL_RPMS_$(printf '%s' '${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF"
+          case "$variable" in
+            KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;
+            *) echo "::error::unexpected kernel pin variable $variable"; exit 1 ;;
+          esac
           mkdir -p refs
           printf '%s=%s\n' "$variable" "$ref" > "refs/${{ matrix.arch }}.env"
           echo "::notice::tilo-kernel ${{ matrix.arch }} published. Set os/kernel-snapshot.env to: $variable=$ref"
@@ -385,15 +521,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve native digest for atomic promotion
-        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-kernel-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
 
+      - name: Revoke local registry login
+        if: ${{ always() }}
+        run: docker logout code.podesta.ai >/dev/null 2>&1 || true
+
   promote-native-kernels:
     needs: build-and-push-kernel
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
     runs-on: runner
     timeout-minutes: 60
     env:
@@ -403,6 +543,9 @@ jobs:
         os/base-snapshot.env
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
+        os/dev/derive-rpm-package-set.py
+        os/dev/open-snapshot-pr.py
+        os/dev/login-registry-with-retry.sh
         .forgejo/workflows/build-kernel.yml
     steps:
       - name: Checkout main for atomic pin promotion
@@ -414,7 +557,13 @@ jobs:
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Advance both kernel pins atomically
+      - name: Propose both kernel pins atomically through protected main
+        env:
+          # The automatic job token pushes the branch. Neither it nor
+          # REGISTRY_TOKEN may use the pull-request API (Forgejo answers 404),
+          # so open the PR with RELEASE_TOKEN, which has repository scope; a PR
+          # opened by a real account also triggers its own required checks.
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           x86="$(find refs -type f -name x86_64.env -print -quit)"
@@ -423,7 +572,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$KERNEL_RPMS_X86_64_REF" "$KERNEL_RPMS_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]
           done
           [ "$KERNEL_RPMS_X86_64_REF" != "$KERNEL_RPMS_AARCH64_REF" ] || {
             printf 'native kernel builds unexpectedly produced one shared manifest\n' >&2
@@ -446,9 +595,20 @@ jobs:
           git add os/kernel-snapshot.env
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'build(os): refresh native kernel snapshots'
-          git pull --rebase origin main
+          git fetch --no-tags origin main
+          git rebase origin/main
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed during promotion; refusing stale push\n' >&2
+            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
             exit 1
           fi
-          git push origin HEAD:main
+          snapshot_digest="$(sha256sum os/kernel-snapshot.env | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          branch="automation/kernel-snapshot-${snapshot_digest:0:16}"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+            origin "HEAD:refs/heads/$branch"
+          python3 os/dev/open-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" \
+            kernel --x86-ref "$KERNEL_RPMS_X86_64_REF" \
+            --arm-ref "$KERNEL_RPMS_AARCH64_REF"

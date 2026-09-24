@@ -9,10 +9,10 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
+use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
@@ -433,6 +433,12 @@ pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
     .unwrap()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCloseAdmission {
+    Allow,
+    Defer,
+}
+
 /// Optional cross-device continuation capability for an app root.
 ///
 /// Continuation is deliberately separate from [`Widget`]: ordinary controls
@@ -536,8 +542,208 @@ pub trait FloatingSurfaceProvider {
     }
 }
 
+/// Optional second-output presentation capability for app roots.
+pub trait AudiencePresentationProvider {
+    /// Request a real audience toplevel on a different output.
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        None
+    }
+
+    /// Report whether the audience toplevel is currently live.
+    fn on_audience_presentation_changed(&mut self, _active: bool) {}
+
+    /// Paint the audience-only projection of the app's existing state.
+    fn draw_audience_presentation(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _rect: vello::kurbo::Rect,
+    ) -> bool {
+        false
+    }
+
+    /// Route controls originating on the audience surface.
+    fn handle_audience_presentation_event(
+        &mut self,
+        _event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// Treat closing the audience toplevel as an explicit stop request.
+    fn on_audience_presentation_closed(&mut self) {}
+}
+
+/// Optional OS-fullscreen capability for roots and forwarding containers.
+pub trait FullscreenProvider {
+    /// `None` means no opinion; otherwise this is a level-triggered intent.
+    fn fullscreen_intent(&self) -> Option<bool> {
+        None
+    }
+
+    /// Select the output and mirrored-vs-distinct presentation mode.
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
+    }
+
+    /// Report an actual OS fullscreen transition, including compositor exits.
+    fn on_fullscreen_changed(&mut self, _active: bool) {}
+}
+
+/// Optional full-document/canvas capture capability.
+pub trait CompleteContentProvider {
+    /// Semantic canvas size available without resizing the live widget.
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+
+    /// Paint the complete semantic content without mutating live view state.
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
+/// Host services associated with one retained widget event dispatch.
+pub struct EventCtx<'a> {
+    pub scale_factor: f64,
+    pub modifiers: &'a winit::event::Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub path: &'a ObjId,
+    pub handled: &'a mut bool,
+    pub focus_target: &'a mut Option<NodeId>,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+}
+
+impl EventCtx<'_> {
+    /// Reborrow this event for a retained child with its own document path and node.
+    pub fn reborrow<'b>(&'b mut self, path: &'b ObjId, node_id: NodeId) -> EventCtx<'b> {
+        EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: &mut *self.state,
+            path,
+            handled: &mut *self.handled,
+            focus_target: &mut *self.focus_target,
+            node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 pub trait Widget {
-    /// App-declared external document obligations. An in-memory RecordSet is
+    /// Concrete identity for host-side frame maps that must distinguish a
+    /// wrapper from its first field even when they share a data address.
+    /// Unlike trait-object pointer equality, this does not depend on the
+    /// compiler reusing one vtable instance across codegen units.
+    #[doc(hidden)]
+    fn concrete_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// A successful, locally applied resource Document action on this exact owner.
+    /// Immutable document access permits cache reconciliation only. Not called for
+    /// submissions, failed execution, replay, remote merge, or History restore.
+    fn document_action_applied(
+        &mut self,
+        _action: &tilo_actions::EncodedAction,
+        _before: &[automerge::ChangeHash],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+    }
+
+    /// Explicit root-owned History custody, including selected external resources.
+    /// Runners consume this bundle; preview renderers never receive the root.
+    ///
+    /// # Errors
+    /// Returns a registration error when the root cannot provide valid History custody.
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<crate::history_mode::HistoryRegistration>,
+        crate::history_mode::HistoryRegistrationError,
+    > {
+        Ok(None)
+    }
+    /// Presentation declaration for a legacy tile's eventual checked record.
+    /// The `TileHost` resolves custody after binding; this grants no authority.
+    fn document_history_definition(
+        &self,
+    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
+        None
+    }
+
+    /// Framework lifecycle traversal, independent of visible presentation children.
+    /// Borrowed surfaces and retained children cannot escape this callback.
+    #[doc(hidden)]
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for child in self.children() {
+            child.visit_framework_history(visitor);
+        }
+    }
+    #[doc(hidden)]
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for child in self.children_mut() {
+            child.visit_framework_history_mut(visitor);
+        }
+    }
+    /// Structural chrome can explicitly leave an inherited document callback.
+    #[doc(hidden)]
+    fn resets_callback_binding(&self) -> bool {
+        false
+    }
+    /// A legacy owner's actual live layout boundary, never framework chrome.
+    #[doc(hidden)]
+    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
+        None
+    }
+    /// Drawn live content whose input is suspended by a framework surface.
+    #[doc(hidden)]
+    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// Read-only state evidence for opt-in scheduled native input diagnostics.
+    /// Called only around diagnostic inputs, never during ordinary input or paint.
+    /// Keep this inexpensive and root-local; snapshots may be logged verbatim.
+    /// This verifies widget state, not rendered pixels or display presentation.
+    fn native_input_snapshot(
+        &self,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Admit or defer the primary native window's ordinary close request.
+    /// Roots that defer must later produce a one-shot close intent.
+    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
+        WindowCloseAdmission::Allow
+    }
+
+    /// One-shot approval after an earlier deferred ordinary window close.
+    fn take_window_close_intent(&mut self) -> bool {
+        false
+    }
+
+    /// App-declared external document obligations. An in-memory `RecordSet` is
     /// not evidence that an editable file has been saved.
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
         self.children()
@@ -601,6 +807,19 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget introduces a document owner distinct from the
+    /// runner's outer State. This is a compatibility check, never identity
+    /// or authority for history access or restore.
+    fn has_separate_document_owner(&self) -> bool {
+        self.callback_binding().is_some() || self.record_intent().is_some()
+    }
+
+    /// Opaque actual custody for framework History source registration.
+    fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
+        self.callback_binding()
+            .map(crate::history_mode::HistoryOwner::component)
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -636,6 +855,38 @@ pub trait Widget {
 
     /// Mutable counterpart to [`Widget::floating_surface_provider`].
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        None
+    }
+
+    /// Expose second-output presentation only for app roots that own it.
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::audience_presentation_provider`].
+    fn audience_presentation_provider_mut(
+        &mut self,
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
+        None
+    }
+
+    /// Expose OS fullscreen behavior only for widgets that own or forward it.
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::fullscreen_provider`].
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        None
+    }
+
+    /// Expose full-content capture only for widgets that can reproduce it.
+    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::complete_content_provider`].
+    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
         None
     }
 
@@ -695,6 +946,12 @@ pub trait Widget {
         false
     }
 
+    /// Owned manual policy descriptor; the host invokes it outside widget borrows.
+    #[doc(hidden)]
+    fn manual_layout_policy(&self) -> Option<ManualPolicy> {
+        None
+    }
+
     /// Read-only resolved decisions for widgets with an explicit layout policy.
     /// `None` means the widget has no such policy; ordinary manual widgets remain
     /// valid. Values are available after build/settlement and carry real origins.
@@ -728,39 +985,13 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Semantic canvas size this widget can render for a complete-content
-    /// capture without resizing or scrolling its live presentation. `None`
-    /// means the ordinary window surface is authoritative. Apps opt in only
-    /// when they can reproduce the complete page/document/canvas from their
-    /// own model; the shell never guesses by stitching visible pixels.
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        None
-    }
-
-    /// Paint the complete semantic content into `bounds`, in the same desktop
-    /// coordinate space as [`Widget::get_rect`]. Called only after
-    /// [`Widget::complete_content_size`] returned a usable size. Implementors
-    /// must leave live layout, scroll position, focus and pointer state intact.
-    fn draw_complete_content(
-        &mut self,
-        _scene: &mut Scene,
-        _bounds: vello::kurbo::Rect,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) -> bool {
-        false
-    }
-    // This is the widget system's event-dispatch contract, implemented by
-    // ~90 widgets; every parameter is independently meaningful (the raw
-    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
-    // node's own identity/layout). Bundling it into a context struct would
-    // be a real signature change rippling through every implementor for no
-    // behavioural difference, not a mechanical lint fix.
+    /// Compatibility dispatcher for retained containers and host code.
+    ///
+    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
+    /// implementations remain valid while call sites migrate independently.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the shared Widget event contract exposes independently meaningful input, document, focus and layout parameters"
+        reason = "temporary compatibility adapter; implementations use EventCtx"
     )]
     fn handle_event(
         &mut self,
@@ -773,7 +1004,24 @@ pub trait Widget {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-    );
+    ) {
+        self.handle_event_ctx(
+            event,
+            &mut EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        );
+    }
+
+    /// Handle one input event with the runtime services for this retained node.
+    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -1153,6 +1401,16 @@ pub trait Widget {
         self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
         bindings
     }
+    /// Whether this exposed subtree contains controls consuming action availability.
+    /// The inventory fallback preserves custom widgets that publish their own emitters.
+    /// Overrides must match whether `control_action_bindings` contains an `Action`,
+    /// including the same modal child exposure, regardless of current availability.
+    /// Transparent containers may query their children without building semantics.
+    fn has_action_control_bindings(&self) -> bool {
+        self.control_action_bindings()
+            .iter()
+            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+    }
     /// Push the fresh local permission-filtered action surface into every
     /// retained control. Custom widgets should refresh their own emitter and
     /// then recurse into children.
@@ -1212,75 +1470,6 @@ pub trait Widget {
     fn take_focus_reset(&mut self) -> bool {
         false
     }
-
-    // --- Fullscreen / presentation contract ---
-    /// `None` (default) is "no opinion". **Level-triggered, not
-    /// edge-triggered**: the App only calls `set_fullscreen` when this
-    /// differs from the live window state. Only the root widget is
-    /// consulted.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        None
-    }
-
-    /// Used when [`Self::fullscreen_intent`] resolves `Some(true)` — which
-    /// output to target and whether the fullscreen surface mirrors the
-    /// window or shows a distinct view. Default: largest output, mirroring.
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
-    }
-
-    /// Edge-triggered: fires when the *actual* OS-fullscreen state changed,
-    /// so a compositor-initiated exit (global keybind, lost grant) can be
-    /// reacted to even though the app never asked. Root widget only.
-    fn on_fullscreen_changed(&mut self, _active: bool) {}
-
-    /// Request a separate audience toplevel for a presentation. The host only
-    /// honours this when it can enumerate a *different* output from the local
-    /// presenter window; it never simulates dual-display mode inside one
-    /// window. The regular fullscreen contract remains the safe fallback.
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        None
-    }
-
-    /// The host reports whether a real audience toplevel is live. Widgets use
-    /// this to keep their ordinary window as the presenter surface. It is
-    /// edge-triggered and is also sent during teardown.
-    fn on_audience_presentation_changed(&mut self, _active: bool) {}
-
-    /// Paint only the audience content in a separate surface. This is not a
-    /// second layout pass: it must be a pure projection of already-owned app
-    /// state, so a presenter and audience stay in lock-step without cloning a
-    /// document or rendering a split pane.
-    fn draw_audience_presentation(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _rect: vello::kurbo::Rect,
-    ) -> bool {
-        false
-    }
-
-    /// Route lightweight presentation controls from the audience surface.
-    /// Widgets must not depend on the primary window's layout here: an
-    /// audience surface has its own output dimensions. Returning `true`
-    /// requests a normal model sync and redraw of both surfaces.
-    fn handle_audience_presentation_event(
-        &mut self,
-        _event: &WindowEvent,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        false
-    }
-
-    /// Closing the audience toplevel is a user-visible stop request, not a
-    /// transient output loss. The default is intentionally a no-op because
-    /// only presentation-capable roots own that lifecycle.
-    fn on_audience_presentation_closed(&mut self) {}
 
     /// Which **record** (see [`crate::record`]) this widget's document
     /// should be, so opening a second file checks out a different document
@@ -1440,8 +1629,10 @@ pub trait Widget {
     /// is exactly where the disabled state must be reflected.
     ///
     /// The host sweeps its `node_map`, so this reaches a widget at any depth
-    /// with no container forwarding. Default: ignore it.
-    fn set_undo_status(&mut self, _status: &crate::undo::UndoStatus) {}
+    /// with no container forwarding. Call the provider only when the widget
+    /// consumes status; deriving historical summaries can require a document
+    /// diff. Default: ignore the provider without evaluating it.
+    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
 
     /// Widget → host: an undo or redo the user asked for.
     ///
@@ -1906,6 +2097,148 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     }
 }
 
+/// Ergonomic host API for optional second-output presentation support.
+pub trait AudiencePresentationWidgetExt {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest>;
+    fn on_audience_presentation_changed(&mut self, active: bool);
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: vello::kurbo::Rect,
+    ) -> bool;
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool;
+    fn on_audience_presentation_closed(&mut self);
+}
+
+impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        self.audience_presentation_provider()
+            .and_then(AudiencePresentationProvider::audience_presentation_request)
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        if let Some(provider) = self.audience_presentation_provider_mut() {
+            provider.on_audience_presentation_changed(active);
+        }
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: vello::kurbo::Rect,
+    ) -> bool {
+        self.audience_presentation_provider_mut()
+            .is_some_and(|provider| {
+                provider.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            })
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.audience_presentation_provider_mut()
+            .is_some_and(|provider| provider.handle_audience_presentation_event(event, state, path))
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        if let Some(provider) = self.audience_presentation_provider_mut() {
+            provider.on_audience_presentation_closed();
+        }
+    }
+}
+
+/// Ergonomic host API for optional fullscreen support.
+pub trait FullscreenWidgetExt {
+    fn fullscreen_intent(&self) -> Option<bool>;
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest;
+    fn on_fullscreen_changed(&mut self, active: bool);
+}
+
+impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        self.fullscreen_provider()
+            .and_then(FullscreenProvider::fullscreen_intent)
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        self.fullscreen_provider().map_or_else(
+            || {
+                crate::fullscreen::FullscreenRequest::mirror(
+                    crate::fullscreen::FullscreenTarget::Largest,
+                )
+            },
+            FullscreenProvider::fullscreen_params,
+        )
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let Some(provider) = self.fullscreen_provider_mut() {
+            provider.on_fullscreen_changed(active);
+        }
+    }
+}
+
+/// Ergonomic host API for optional complete-content capture.
+pub trait CompleteContentWidgetExt {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
+impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+        self.complete_content_provider()
+            .and_then(CompleteContentProvider::complete_content_size)
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        self.complete_content_provider_mut()
+            .is_some_and(|provider| {
+                provider.draw_complete_content(
+                    scene,
+                    bounds,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                )
+            })
+    }
+}
+
 /// Drain collaboration capabilities throughout a retained widget tree.
 pub(crate) fn take_collab_requests(
     widget: &mut dyn Widget,
@@ -1999,7 +2332,10 @@ impl TaffyTreeExt for TaffyTree<()> {
 pub type Element = Box<dyn Widget>;
 
 pub(crate) mod layout;
-pub use layout::{WidgetLayoutError, compute_widget_layout};
+pub use layout::{
+    AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
+    insets_xy, text_control_height,
+};
 
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
@@ -2016,7 +2352,11 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    PageLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, SectionLayout,
+};
+mod manual;
+pub use manual::{
+    ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
 };
 mod row;
 pub use row::Row;
@@ -2036,7 +2376,7 @@ mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod nav_split;
 pub use nav_split::{
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushPane, SplitLayout,
+    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushNav, PushPane, SplitLayout,
     SplitMode,
 };
 mod app_shell;
@@ -2159,8 +2499,8 @@ pub use resize_handle::{
 };
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum,
-    wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, TabDropTarget,
+    WheelJumpAccum, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
@@ -2394,8 +2734,24 @@ mod tests {
         }
     }
 
+    impl AudiencePresentationProvider for CollabProbe {
+        fn on_audience_presentation_changed(&mut self, _active: bool) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+    }
+
     impl Widget for CollabProbe {
         fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn AudiencePresentationProvider> {
             Some(self)
         }
 
@@ -2459,6 +2815,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ordinary_window_close_defaults_to_immediate_exit() {
+        let mut spacer = Spacer::new();
+        assert_eq!(
+            spacer.on_window_close_requested(),
+            WindowCloseAdmission::Allow
+        );
+        assert!(!spacer.take_window_close_intent());
+    }
+
+    #[test]
+    fn native_input_snapshot_defaults_to_none() {
+        let state = crate::State::new();
+        assert!(
+            Spacer::new()
+                .native_input_snapshot(&state.doc, &state.root)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn native_input_snapshot_root_fallback_and_explicit_probe_precedence() {
+        struct Observed(std::rc::Rc<std::cell::Cell<usize>>);
+        impl Widget for Observed {
+            fn native_input_snapshot(
+                &self,
+                doc: &AutoCommit,
+                path: &ObjId,
+            ) -> Option<serde_json::Value> {
+                use automerge::ReadDoc;
+                self.0.set(self.0.get() + 1);
+                Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
+            }
+            fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+            fn build_layout(
+                &mut self,
+                _: &mut TaffyTree<()>,
+                _: &Theme,
+                _: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                unreachable!()
+            }
+            fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {
+                unreachable!()
+            }
+            fn draw(
+                &mut self,
+                _: &mut Scene,
+                _: vello::kurbo::Affine,
+                _: &mut TextRenderer,
+                _: &Theme,
+                _: &PresenceCtx,
+            ) {
+                unreachable!()
+            }
+            fn handle_event(
+                &mut self,
+                _: &WindowEvent,
+                _: f64,
+                _: &winit::event::Modifiers,
+                _: &mut AutoCommit,
+                _: &ObjId,
+                _: &mut bool,
+                _: &mut Option<NodeId>,
+                _: NodeId,
+                _: &TaffyTree<()>,
+            ) {
+                unreachable!()
+            }
+            fn name(&self) -> &str {
+                "Observed"
+            }
+            fn get_rect(&self) -> vello::kurbo::Rect {
+                vello::kurbo::Rect::ZERO
+            }
+        }
+        use automerge::transaction::Transactable;
+        let mut state = crate::State::new();
+        state
+            .doc
+            .put(&state.root, "fixture", "actual state")
+            .unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut app = crate::App::new(state, Box::new(Observed(calls.clone())));
+        assert_eq!(
+            app.native_input_snapshot().unwrap()["keys"],
+            serde_json::json!(["fixture"])
+        );
+        assert_eq!(calls.get(), 1);
+        app.set_native_input_probe(|| serde_json::json!({"explicit": true}));
+        assert_eq!(
+            app.native_input_snapshot().unwrap(),
+            serde_json::json!({"explicit": true})
+        );
+        assert_eq!(
+            calls.get(),
+            1,
+            "explicit probe must suppress root observation"
+        );
+    }
+
     /// Pinned so a future edit that removes the default blanket-breaks
     /// every widget impl that hasn't opted into a stable test id.
     #[test]
@@ -2488,6 +2945,18 @@ mod tests {
             &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
         );
         assert_eq!(events.get(), 2);
+    }
+
+    #[test]
+    fn audience_presentation_capability_forwards_through_dyn_widget() {
+        let events = Rc::new(Cell::new(0));
+        let mut widget: Box<dyn Widget> = Box::new(CollabProbe {
+            events: Rc::clone(&events),
+            child: None,
+        });
+
+        widget.on_audience_presentation_changed(true);
+        assert_eq!(events.get(), 1);
     }
 
     #[test]
@@ -2545,6 +3014,10 @@ pub(crate) mod control_result_probe {
                 });
         }
     }
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "independent test switches exercise acceptance, confirmation, typing, and persistence"
+    )]
     pub(crate) struct Probe {
         observed: Observed,
         accepted: bool,
@@ -2782,7 +3255,7 @@ pub(crate) mod control_result_probe {
         fn app_kind(&self) -> AppKind {
             AppKind::Editor
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Control result probe"
         }
         fn app_icon(&self) -> IconDescriptor {

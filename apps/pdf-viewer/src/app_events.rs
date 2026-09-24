@@ -1683,6 +1683,143 @@ mod event_tests {
         }
     }
 
+    /// Hit rect == painted rect: the sidebar body is painted inside a clip, so
+    /// a card (and its delete / resolve chips) scrolled under the tab strip
+    /// must not keep an invisible, clickable rect there. `apply_sidebar` picks
+    /// the smallest containing rect, which is exactly how a hidden 24px delete
+    /// button used to beat the "Contents" tab.
+    #[test]
+    fn sidebar_hits_are_clipped_to_the_scrolled_body() {
+        let (mut app, _st) = app();
+        // A short window so the seeded thread list overflows its body.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 420.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.show_sidebar = true;
+        app.sidebar_tab = SidebarTab::Comments;
+        // Scroll far enough that the first card sits under the tab strip.
+        app.sidebar_scroll = 180.0;
+        let mut scene = vello::Scene::new();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut er = Rect::ZERO;
+        let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
+        let body = app.sidebar_body();
+        let tabs = app.sidebar_tab_rects();
+        let body_hits: Vec<&(SidebarHit, Rect)> = hits
+            .iter()
+            .filter(|(h, _)| !matches!(h, SidebarHit::Tab(_)))
+            .collect();
+        assert!(
+            !body_hits.is_empty(),
+            "the scrolled list still exposes the cards that remain visible"
+        );
+        for (i, (_, r)) in body_hits.iter().enumerate() {
+            assert!(
+                r.x0 >= body.x0 - 0.01
+                    && r.x1 <= body.x1 + 0.01
+                    && r.y0 >= body.y0 - 0.01
+                    && r.y1 <= body.y1 + 0.01,
+                "body hit #{i} {r:?} escapes the painted body {body:?}"
+            );
+            assert!(
+                r.width() > 0.0 && r.height() > 0.0,
+                "body hit #{i} {r:?} is empty and should have been dropped"
+            );
+            for (tab, t) in &tabs {
+                let overlap = r.intersect(*t);
+                assert!(
+                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                    "body hit #{i} {r:?} reaches into the {tab:?} tab {t:?}"
+                );
+            }
+        }
+    }
+
+    /// The first and last toolbar controls sit the same distance from their
+    /// window edges (the right cluster used to be inset 16 against 12).
+    #[test]
+    fn toolbar_edge_insets_are_symmetric() {
+        let (app, _st) = app();
+        let lay = app.toolbar_layout();
+        let left = lay.toggle_rail.x0 - app.toolbar_rect.x0;
+        let right = app.toolbar_rect.x1 - lay.toggle_sidebar.x1;
+        assert!(
+            (left - right).abs() < 0.01,
+            "left inset {left} != right inset {right}"
+        );
+    }
+
+    /// Every toolbar control as `(name, rect)`, hidden (zero) pieces skipped.
+    fn toolbar_controls(lay: &ToolbarLayout) -> Vec<(String, Rect)> {
+        let mut out = vec![
+            ("open".to_string(), lay.open),
+            ("save".to_string(), lay.save),
+            ("zoom_out".to_string(), lay.zoom_out),
+            ("zoom_label".to_string(), lay.zoom_label),
+            ("zoom_in".to_string(), lay.zoom_in),
+            ("fit".to_string(), lay.fit),
+            ("search".to_string(), lay.search),
+            ("toggle_rail".to_string(), lay.toggle_rail),
+            ("toggle_sidebar".to_string(), lay.toggle_sidebar),
+        ];
+        for (t, r) in &lay.tools {
+            out.push((format!("{t:?}"), *r));
+        }
+        for (sw, r) in &lay.swatches {
+            out.push((format!("{sw:?}"), *r));
+        }
+        out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
+        out
+    }
+
+    /// At 480px the tool cluster cannot fit between Open/Save and the zoom
+    /// controls, so it wraps onto a second toolbar row: the bar grows to two
+    /// rows, the canvas starts beneath it, no two controls overlap and every
+    /// control stays inside the bar. At desktop width the bar is one row.
+    #[test]
+    fn toolbar_wraps_the_tool_cluster_onto_a_second_row_when_narrow() {
+        let (mut app, _st) = app();
+        app.tool = Tool::Highlight; // swatches visible when there is room
+        for (width, rows) in [(1280.0, 1_usize), (480.0, 2)] {
+            app.rect = Rect::new(0.0, 0.0, width, 900.0);
+            app.recompute_regions();
+            let lay = app.toolbar_layout();
+            assert_eq!(lay.rows, rows, "rows at {width}px");
+            let tb = app.toolbar_rect;
+            assert!(
+                (tb.height() - TOOLBAR_H * rows as f64).abs() < 1e-9,
+                "toolbar height {} follows its rows at {width}px",
+                tb.height()
+            );
+            assert!(
+                (app.canvas_rect.y0 - tb.y1).abs() < 1e-9,
+                "the canvas starts under the whole bar at {width}px"
+            );
+            let controls = toolbar_controls(&lay);
+            assert_eq!(
+                lay.tools.len(),
+                Tool::ALL.len(),
+                "every tool is laid out at {width}px"
+            );
+            for (name, r) in &controls {
+                assert!(
+                    r.x0 >= tb.x0 && r.x1 <= tb.x1 && r.y0 >= tb.y0 && r.y1 <= tb.y1,
+                    "{name} {r:?} lies inside the toolbar {tb:?} at {width}px"
+                );
+            }
+            for (i, (a_name, a)) in controls.iter().enumerate() {
+                for (b_name, b) in controls.iter().skip(i + 1) {
+                    let o = a.intersect(*b);
+                    assert!(
+                        o.width() <= 0.0 || o.height() <= 0.0,
+                        "{a_name} {a:?} overlaps {b_name} {b:?} at {width}px"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn sidebar_delete_buttons_remove_items() {
         let (mut app, mut st) = app();
@@ -2284,9 +2421,8 @@ mod event_tests {
 
     /// The Open affordance goes to the **host portal**, never an in-app
     /// picker. We assert the click resolves to the Open action and that the
-    /// action routes into the portal-request path — pre-arming an in-flight
-    /// request so the test never actually spawns a real host dialog (the
-    /// in-flight guard makes applying the action a no-op).
+    /// action routes into the portal-request path — under a recording host,
+    /// so the test never actually spawns a real host dialog.
     #[test]
     fn open_affordance_routes_to_the_host_portal() {
         let (mut app, mut st) = app();
@@ -2302,20 +2438,23 @@ mod event_tests {
             "the folder button hit-tests to the Open action"
         );
 
-        // Pre-arm a portal request so applying Open can't launch a real host
-        // dialog during the test; the in-flight guard must preserve it.
-        let sentinel = ui::portal::inject_for_test(ui::portal::PortalOutcome::Cancelled);
-        app.portal_rx = Some(sentinel);
-        app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        // The recording host answers the chooser instead of a real dialog.
+        let (services, recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
         assert!(
             app.portal_rx.is_some(),
             "Open routes to the host portal request path (not an in-app dialog)"
         );
+        let requests = recorder.pick_requests();
+        assert_eq!(requests.len(), 1, "exactly one host chooser request");
+        assert_eq!(requests[0].title(), "Open a PDF");
     }
 
     /// A file chosen by the host portal loads through the per-frame drain in
-    /// `sync` — the portal result is injected (no real dialog) and the next
-    /// frame must load the document.
+    /// `sync` — the recording host answers the chooser (no real dialog) and
+    /// the next frame must load the document.
     #[test]
     #[serial(pdfium)]
     fn portal_open_result_loads_document_via_frame_drain() {
@@ -2331,9 +2470,11 @@ mod event_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample.pdf"
         ));
-        app.portal_rx = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(path),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
 
         // The per-frame sync drains the portal channel and loads the doc.
         app.sync(&mut st.doc, &st.root);
@@ -2357,9 +2498,15 @@ mod event_tests {
         let (mut app, mut st) = app(); // sample document already loaded
         let before = app.has_document;
         let name_before = app.doc_name.clone();
-        app.portal_rx = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Cancelled,
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
+        assert!(
+            app.portal_rx.is_some(),
+            "Open issued a host chooser request"
+        );
         app.sync(&mut st.doc, &st.root);
         assert_eq!(
             app.has_document, before,

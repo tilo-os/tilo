@@ -72,7 +72,7 @@ rpm_repo_generator = (ROOT / "dist/rpm/make-repo-file.sh").read_text()
 rpm_build_deps = (ROOT / "dist/ci/install-build-deps.sh").read_text()
 rpm_release_verifier = (ROOT / "dist/ci/verify-release-artifacts.sh").read_text()
 rpm_spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
-assert "https://code.podesta.ai/api/packages/tilo/rpm/fedora/44.repo" in packaging_docs
+assert "https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo" in packaging_docs
 assert "/api/packages/$owner/rpm/fedora/44/upload" in rpm_publisher
 assert "sudo rpm-ostree install tilo-session" in packaging_docs
 assert "sudo rpm-ostree update" in packaging_docs

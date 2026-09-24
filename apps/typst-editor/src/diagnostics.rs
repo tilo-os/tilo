@@ -34,6 +34,11 @@ impl Default for DiagnosticsPanel {
 }
 
 impl DiagnosticsPanel {
+    #[cfg(test)]
+    pub(crate) fn history_test_row_top(&self, row: usize) -> f64 {
+        self.list_rect().y0 + row as f64 * ROW_H - self.scroll_y
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,6 +89,10 @@ impl DiagnosticsPanel {
         (content - self.list_rect().height()).max(0.0)
     }
 
+    pub(crate) fn scroll_y(&self) -> f64 {
+        self.scroll_y
+    }
+
     pub fn scroll_by(&mut self, dy: f64) {
         self.scroll_y = (self.scroll_y + dy).clamp(0.0, self.max_scroll());
     }
@@ -123,10 +132,11 @@ impl DiagnosticsPanel {
             None,
             &self.rect,
         );
+        // Bar role: the panel's one derived hairline against the editor.
         scene.fill(
             Fill::NonZero,
             transform,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + 1.0),
         );
