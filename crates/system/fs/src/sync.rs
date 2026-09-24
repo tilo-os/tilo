@@ -476,14 +476,14 @@ async fn prefetch_namespace_thumbnails(
     Ok(())
 }
 
-fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
-    let bytes = {
-        let mut namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        namespace.save()
-    };
-    *blake3::hash(&bytes).as_bytes()
+/// The namespace's current generation: its Automerge heads, which change
+/// with every change (reading them commits any open transaction). Cheap,
+/// unlike hashing a full save of the document.
+fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
+    namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .heads()
 }
 
 /// The policy the network planes serve through, or `None` for an
