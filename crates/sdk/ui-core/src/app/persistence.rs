@@ -15,7 +15,7 @@ impl App {
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
     )]
-    pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
+    pub fn with_autosave(mut self, autosave: crate::persist::DocWriter) -> Self {
         self.autosave_generation = self
             .autosave_generation
             .checked_add(1)
@@ -31,6 +31,7 @@ impl App {
         self
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn with_legacy_persistence(
         mut self,
         policy: crate::launch::LegacyPersistencePolicy,
@@ -145,6 +146,7 @@ impl App {
     /// With records in play, the App's autosave writes the room index
     /// instead of the live document — sending the live doc to both would put
     /// a record's content in the room index.
+    #[cfg(feature = "native")]
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         match self.persistence.records.as_mut() {
             Some(set) => {
@@ -193,6 +195,7 @@ impl App {
 
     /// Called on event-loop teardown so a `kill` right after the last
     /// keystroke still finds it on disk.
+    #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
             self.close_components();
@@ -222,9 +225,9 @@ impl App {
         }
     }
 
-    /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
+    /// Lets a caller check [`crate::persist::DocWriter::last_error`] rather
     /// than assuming the disk accepted the writes.
-    pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
+    pub fn autosave(&self) -> Option<&crate::persist::DocWriter> {
         self.persistence.autosave.as_ref()
     }
 }

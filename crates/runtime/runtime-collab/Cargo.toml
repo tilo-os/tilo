@@ -14,22 +14,33 @@ license.workspace = true
 name = "runtime_collab"
 path = "src/lib.rs"
 
+[features]
+default = ["client"]
+# The Cap'n Proto broker client: generated bindings, the RPC runtime and the
+# Unix-socket transport. Without it only the portable vocabulary compiles
+# (action directory, nearby transfer, Wi-Fi continuity, task runs, presence
+# and workspace-control types), for code that speaks the broker's language
+# through some other transport.
+client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
+
 [dependencies]
-runtime-portal = { path = "../runtime-portal" }
-capnp.workspace = true
-capnp-rpc.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
-tokio-util.workspace = true
+runtime-portal = { path = "../runtime-portal", optional = true }
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio-util = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
+required-features = ["client"]
 
 [lints]
 workspace = true

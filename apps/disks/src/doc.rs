@@ -17,7 +17,8 @@
 //! ```
 
 use ui::automerge::transaction::Transactable;
-use ui::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use ui::automerge::{AutoCommit, ROOT, ReadDoc, Value};
+use ui::doc::read_str;
 
 use crate::model::Topology;
 
@@ -33,7 +34,7 @@ impl DisksDoc {
     /// Idempotent: only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit, topo: &Topology) {
         Self::write_topology(doc, topo);
-        if Self::get_str(doc, "tab").is_none() {
+        if read_str(doc, &ROOT, "tab").is_none() {
             let _ = doc.put(&ROOT, "tab", "overview");
         }
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
@@ -45,10 +46,10 @@ impl DisksDoc {
         ) {
             let _ = doc.put(&ROOT, "selected_part", -1i64);
         }
-        if Self::get_str(doc, "pending").is_none() {
+        if read_str(doc, &ROOT, "pending").is_none() {
             let _ = doc.put(&ROOT, "pending", "");
         }
-        if Self::get_str(doc, "status").is_none() {
+        if read_str(doc, &ROOT, "status").is_none() {
             let _ = doc.put(&ROOT, "status", "");
         }
     }
@@ -60,12 +61,12 @@ impl DisksDoc {
 
     /// Read the raw topology JSON, if present.
     pub fn topology_json(doc: &AutoCommit) -> Option<String> {
-        Self::get_str(doc, "topology")
+        read_str(doc, &ROOT, "topology")
     }
 
     pub fn selected(doc: &AutoCommit) -> usize {
         match doc.get(&ROOT, "selected") {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0).max(0) as usize,
+            Ok(Some((Value::Scalar(v), _))) => v.as_i64().unwrap_or(0).max(0) as usize,
             _ => 0,
         }
     }
@@ -79,7 +80,7 @@ impl DisksDoc {
     pub fn selected_part(doc: &AutoCommit) -> Option<usize> {
         match doc.get(&ROOT, "selected_part") {
             Ok(Some((Value::Scalar(v), _))) => {
-                let n = v.to_i64().unwrap_or(-1);
+                let n = v.as_i64().unwrap_or(-1);
                 if n < 0 { None } else { Some(n as usize) }
             }
             _ => None,
@@ -92,7 +93,7 @@ impl DisksDoc {
     }
 
     pub fn tab(doc: &AutoCommit) -> String {
-        Self::get_str(doc, "tab").unwrap_or_else(|| "overview".into())
+        read_str(doc, &ROOT, "tab").unwrap_or_else(|| "overview".into())
     }
 
     pub fn set_tab(doc: &mut AutoCommit, tab: &str) {
@@ -100,7 +101,7 @@ impl DisksDoc {
     }
 
     pub fn pending(doc: &AutoCommit) -> String {
-        Self::get_str(doc, "pending").unwrap_or_default()
+        read_str(doc, &ROOT, "pending").unwrap_or_default()
     }
 
     pub fn set_pending(doc: &mut AutoCommit, p: &str) {
@@ -108,21 +109,11 @@ impl DisksDoc {
     }
 
     pub fn status(doc: &AutoCommit) -> String {
-        Self::get_str(doc, "status").unwrap_or_default()
+        read_str(doc, &ROOT, "status").unwrap_or_default()
     }
 
     pub fn set_status(doc: &mut AutoCommit, s: &str) {
         let _ = doc.put(&ROOT, "status", s);
-    }
-
-    fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
-        match doc.get(&ROOT, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 }
 

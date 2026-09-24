@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Turn a sealed Tilo image root back into an unsealed one, in place.
+
+    unseal-rootfs.py [ROOT]            (default /)
+
+The production image is sealed: its kernel and initramfs live only inside the
+UKI under /boot/EFI/Linux, whose signed command line pins the composefs digest
+of the rootfs. The dev image (os/Containerfile.dev) layers files on top of that
+image, so the digest can no longer match, and its dev layers have to merge into
+/usr with systemd-sysext. It is therefore installed unsealed: a plain
+vmlinuz + initramfs.img in /usr/lib/modules/<kver>/, from which `bootc install`
+writes ordinary boot entries (see docs/security/composefs-decision.md).
+
+This restores that layout from what the sealed image carries: the split-out
+kernel directory (/kernel/<kver>/, which `bootc container split-kernel-and-rootfs`
+leaves in the image) when present, otherwise the UKI's own `.linux` and
+`.initrd` sections. It then removes every UKI, so nothing on the image claims a
+seal it no longer has. A root that is already unsealed (the `rootfs` build
+target) passes through unchanged. Every failure is fatal: a dev image that boots
+the wrong kernel, or no kernel, must not build.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import shutil
+import sys
+from pathlib import Path
+
+UKI_TOOL = "usr/libexec/tilo-uki-cmdline"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"unseal-rootfs: {message}")
+
+
+def only_kernel(root: Path) -> str:
+    modules = root / "usr/lib/modules"
+    versions = sorted(p.name for p in modules.iterdir() if p.is_dir()) if modules.is_dir() else []
+    if len(versions) != 1:
+        fail(f"expected exactly one kernel under {modules}, found {versions or 'none'}")
+    return versions[0]
+
+
+def uki_sections(root: Path, uki: Path) -> dict[str, bytes]:
+    """The UKI's sections by name, parsed by the image's own UKI tool."""
+    tool = root / UKI_TOOL
+    if not tool.is_file():
+        fail(f"{uki} needs {tool} to read its sections, and the image has no such file")
+    loader = importlib.machinery.SourceFileLoader("tilo_uki_cmdline", str(tool))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    data = uki.read_bytes()
+    found: dict[str, bytes] = {}
+    for name, offset, raw_size, size in module.sections(data):
+        if name in found:
+            fail(f"{uki} has two {name} sections")
+        if not size or size > raw_size or offset + size > len(data):
+            fail(f"{uki}: section {name} has invalid bounds")
+        found[name] = data[offset:offset + size]
+    return found
+
+
+def write(path: Path, data: bytes, mode: int) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(data)
+    temporary.chmod(mode)
+    temporary.replace(path)
+
+
+def main(argv: list[str]) -> int:
+    root = Path(argv[1] if len(argv) > 1 else "/")
+    kver = only_kernel(root)
+    kdir = root / "usr/lib/modules" / kver
+    vmlinuz, initramfs = kdir / "vmlinuz", kdir / "initramfs.img"
+    ukis = sorted((root / "boot/EFI/Linux").glob("*.efi"))
+    split = root / "kernel" / kver
+
+    if vmlinuz.is_file() and initramfs.is_file():
+        source = "already unsealed"
+    elif (split / "vmlinuz").is_file() and (split / "initramfs.img").is_file():
+        write(vmlinuz, (split / "vmlinuz").read_bytes(), 0o755)
+        write(initramfs, (split / "initramfs.img").read_bytes(), 0o600)
+        source = f"/kernel/{kver}"
+    elif len(ukis) == 1:
+        sections = uki_sections(root, ukis[0])
+        for required in (".linux", ".initrd"):
+            if required not in sections:
+                fail(f"{ukis[0]} has no {required} section to restore the kernel from")
+        write(vmlinuz, sections[".linux"], 0o755)
+        write(initramfs, sections[".initrd"], 0o600)
+        source = f"the UKI {ukis[0].relative_to(root)}"
+    else:
+        fail(f"no kernel to restore: {kdir} has no vmlinuz + initramfs.img, {split} does not exist, "
+             f"and there are {len(ukis)} UKIs under /boot/EFI/Linux (need exactly one)")
+
+    for uki in ukis:
+        uki.unlink()
+        # Addons (`<uki>.efi.extra.d/*.addon.efi`) only ever extend that UKI.
+        shutil.rmtree(uki.with_name(uki.name + ".extra.d"), ignore_errors=True)
+    shutil.rmtree(root / "boot/tilo-target", ignore_errors=True)
+    shutil.rmtree(root / "kernel", ignore_errors=True)
+
+    left = sorted(str(p.relative_to(root)) for p in (root / "boot").rglob("*.efi")) \
+        if (root / "boot").is_dir() else []
+    if left:
+        fail(f"sealed boot images remain after unsealing: {', '.join(left)}")
+    for path in (vmlinuz, initramfs):
+        if not path.is_file() or path.stat().st_size == 0:
+            fail(f"{path} is missing or empty after unsealing")
+    print(f"unsealed: kernel {kver} from {source}; removed {len(ukis)} UKI(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

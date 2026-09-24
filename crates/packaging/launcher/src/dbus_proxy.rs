@@ -140,12 +140,32 @@ pub enum ProxyError {
 ///
 /// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
 /// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
-/// [`ProxyError::NotReady`] if its listener socket doesn't appear within the
-/// timeout.
+/// [`ProxyError::NotReady`] if its listener socket doesn't appear within
+/// [`PROXY_READY_TIMEOUT`].
 pub fn spawn_dbus_proxy(
     binary: &Path,
     bus_addr: &str,
     socket_path: &Path,
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
+}
+
+/// How long a launch waits for the proxy's listener socket. The real proxy
+/// is ready in ~10ms; a launch does not stall on one that never comes up.
+pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener
+/// socket.
+///
+/// # Errors
+///
+/// As [`spawn_dbus_proxy`], with [`ProxyError::NotReady`] after
+/// `ready_within`.
+pub fn spawn_dbus_proxy_within(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    ready_within: Duration,
 ) -> Result<DBusProxyGuard, ProxyError> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
@@ -168,13 +188,12 @@ pub fn spawn_dbus_proxy(
         socket_path: socket_path.to_path_buf(),
     };
 
-    // The socket appears asynchronously; poll with a bounded 2s timeout —
-    // the real proxy is ready in ~10ms.
-    match wait_for_socket(socket_path, Duration::from_secs(2)) {
+    // The socket appears asynchronously; poll with a bounded timeout.
+    match wait_for_socket(socket_path, ready_within) {
         Ok(()) => Ok(guard),
         Err(_) => Err(ProxyError::NotReady {
             path: socket_path.to_path_buf(),
-            timeout: Duration::from_secs(2),
+            timeout: ready_within,
         }),
     }
 }
@@ -275,43 +294,30 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
-    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), process-wide
-    // state, so they take the same `process_env` lock as the rest of the
-    // crate's env-reading tests to avoid clobbering each other or unrelated
-    // tests.
+    // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which
+    // is the interface these two pin.
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_proxy_binary_honours_env_override() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
         // Env var wins.
-        unsafe { std::env::set_var(PROXY_BIN_ENV, &bin) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(PROXY_BIN_ENV, &bin);
         let found = find_proxy_binary().expect("env override");
         assert_eq!(found, bin);
-        unsafe { std::env::remove_var(PROXY_BIN_ENV) };
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
-        let saved_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
-            // Nuke PATH so the fallback can't find a real binary.
-            std::env::set_var("PATH", "");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        // Empty PATH so the fallback can't find a real binary.
+        env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
+            .set("PATH", "");
         let found = find_proxy_binary();
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-            // Put `PATH` back before asserting: a failed assertion must not strand
-            // the rest of the suite with an empty PATH.
-            match &saved_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
+        // Put `PATH` back before asserting.
+        drop(env);
         assert!(
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
@@ -319,29 +325,29 @@ mod tests {
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)
-    /// so callers waiting on socket existence see it, then installs a
-    /// SIGTERM trap and sleeps. Returns the path to the mock script
-    /// (marked executable).
+    /// so callers waiting on socket existence see it, then becomes a
+    /// `sleep` that the guard's SIGTERM ends. Removing the marker is left
+    /// to the guard, which is what production relies on. Returns the path
+    /// to the mock script (marked executable).
     fn write_mock_proxy(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("mock-xdg-dbus-proxy");
         // Absolute paths for coreutils — bwrap-adjacent test envs sometimes
-        // have a minimal PATH lacking /usr/bin. `sleep infinity` blocks until
-        // SIGTERM interrupts it and the trap fires.
+        // have a minimal PATH lacking /usr/bin.
         std::fs::write(
             &script,
             r#"#!/bin/sh
 # args: SOURCE DEST [filter args...]
 : >"$2"
-trap 'rm -f "$2"; exit 0' TERM
+# exec, not a backgrounded child: the guard signals and reaps this pid,
+# and a child of a shell it killed would be orphaned, never reaped.
 if [ -x /usr/bin/sleep ]; then
-    /usr/bin/sleep infinity &
-elif [ -x /bin/sleep ]; then
-    /bin/sleep infinity &
-else
-    exit 1
+    exec /usr/bin/sleep infinity
 fi
-wait $!
+if [ -x /bin/sleep ]; then
+    exec /bin/sleep infinity
+fi
+exit 1
 "#,
         )
         .unwrap();

@@ -285,7 +285,7 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
     "$repo/apps/imager/src/write.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
@@ -491,10 +491,14 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb' "$cycle" \
-  && grep -Fq "wait_private_screen 'Tilo" "$cycle" \
-  && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
+  && grep -Fq 'python3 "$dev_dir/installer-console.py" --socket "$console"' "$cycle" \
+  && grep -Fq 'ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}"' "$cycle" \
+  && grep -Fq 'installer began an install confirmed with the wrong device' "$cycle" \
+  && grep -Fq -- '--secret passphrase=TILO_PASS --secret confirmation=TILO_PASS' "$cycle" \
+  && grep -Fq 'confirm-saved@installer.recovery' "$cycle" \
+  && grep -Fq 'power-off@installer.power' "$cycle" \
+  && ! grep -Fq 'finish-recovery' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
-  && grep -Fq 'rm -f -- "$run/private-observe.png"' "$cycle" \
   && grep -Fq '::tilo-recovery-key::' "$cycle" \
   && grep -Fq '.artifact-secret-canary.txt' "$cycle" \
   && grep -Fq 'test ! -s "$out/.artifact-secret-canary.txt"' "$cycle" \

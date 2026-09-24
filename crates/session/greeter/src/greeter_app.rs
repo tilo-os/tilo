@@ -28,10 +28,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
+use ui::doc::{read_bool, read_text};
 
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
@@ -55,6 +54,10 @@ use ui::widget::{
     Button, Divider, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput,
     Widget,
 };
+
+mod console;
+
+pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
 use crate::auth::{AuthUpdate, spawn_auth};
 use crate::local_users::{LoginUser, discover_default_login_user};
@@ -621,6 +624,9 @@ pub struct GreeterApp {
     /// The compact-viewport scroll position survives status/caps/auth
     /// rebuilds, which recreate the composed tree.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+    /// Queued console requests (see [`console`]); `None` in shots and tests
+    /// that do not exercise the console.
+    console: Option<console_control::ConsoleServer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -720,6 +726,7 @@ impl GreeterApp {
             composed: None,
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
+            console: None,
         }
     }
 
@@ -1279,13 +1286,6 @@ impl GreeterApp {
         }
     }
 
-    fn read_text(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
-        match state.get(root, path) {
-            Ok(Some((Value::Object(ObjType::Text), obj_id))) => state.text(&obj_id).ok(),
-            _ => None,
-        }
-    }
-
     fn take_auth_secret(&self, method: AuthMethod) -> Result<Zeroizing<String>, &'static str> {
         let mut stored = self
             .password_buffer
@@ -1312,14 +1312,6 @@ impl GreeterApp {
             FingerprintAvailability::Enrolled => true,
             FingerprintAvailability::CheckNamedAccount => (self.fingerprint_probe)(username),
         }
-    }
-
-    fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
-        matches!(
-            state.get(root, path),
-            Ok(Some((Value::Scalar(s), _)))
-                if matches!(s.as_ref(), ScalarValue::Boolean(true))
-        )
     }
 
     /// Whether keyboard focus currently belongs to a button in the composed
@@ -1369,7 +1361,7 @@ impl GreeterApp {
         // field and normalizes incidental surrounding whitespace before both
         // the enrollment check and greetd's account-specific PAM session.
         let username = self.login_user.as_ref().map_or_else(
-            || Self::read_text(state, root, USERNAME_PATH).unwrap_or_default(),
+            || read_text(state, root, USERNAME_PATH).unwrap_or_default(),
             |user| user.username.clone(),
         );
         let username = username.trim().to_owned();
@@ -1518,7 +1510,7 @@ impl Widget for GreeterApp {
         // mirror that back onto the selected index. An unrecognised label
         // (a session that vanished between renders) is ignored rather than
         // resetting the choice out from under the user.
-        if let Some(name) = Self::read_text(state, root, SESSION_PATH)
+        if let Some(name) = read_text(state, root, SESSION_PATH)
             && let Some(idx) = self.sessions.iter().position(|s| s.name == name)
             && idx != self.selected_session
         {
@@ -1535,23 +1527,23 @@ impl Widget for GreeterApp {
 
         // Submit rising edge — reset the flag *before* attempting so a
         // single click fires exactly one attempt.
-        if Self::read_flag(state, root, SUBMIT_PATH) {
+        if read_bool(state, root, SUBMIT_PATH).unwrap_or(false) {
             let _ = state.put(root, SUBMIT_PATH, false);
             self.attempt_login(state, root, AuthMethod::Password);
         }
 
-        if Self::read_flag(state, root, FINGERPRINT_PATH) {
+        if read_bool(state, root, FINGERPRINT_PATH).unwrap_or(false) {
             let _ = state.put(root, FINGERPRINT_PATH, false);
             self.attempt_login(state, root, AuthMethod::Fingerprint);
         }
 
         // Power-action rising edges. Reset the flag first so a single click
         // fires exactly one request.
-        if Self::read_flag(state, root, REBOOT_PATH) {
+        if read_bool(state, root, REBOOT_PATH).unwrap_or(false) {
             let _ = state.put(root, REBOOT_PATH, false);
             self.request_power(PowerAction::Reboot);
         }
-        if Self::read_flag(state, root, POWEROFF_PATH) {
+        if read_bool(state, root, POWEROFF_PATH).unwrap_or(false) {
             let _ = state.put(root, POWEROFF_PATH, false);
             self.request_power(PowerAction::PowerOff);
         }
@@ -1782,6 +1774,10 @@ impl Widget for GreeterApp {
     }
 
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+        if payload == CONSOLE_WAKE {
+            self.serve_console(state);
+            return;
+        }
         // Progress from the background auth worker (see `crate::auth`).
         match AuthUpdate::decode(payload) {
             Some(AuthUpdate::Prompt { text, is_error: _ }) => {
@@ -2230,7 +2226,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 0);
         assert_eq!(
-            GreeterApp::read_text(&doc, &root, SESSION_PATH).as_deref(),
+            read_text(&doc, &root, SESSION_PATH).as_deref(),
             Some("Tilo"),
         );
 
@@ -2280,7 +2276,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.status, "Enter your username");
         assert_eq!(app.status_kind, StatusKind::Hint);
-        assert!(!GreeterApp::read_flag(&doc, &root, SUBMIT_PATH));
+        assert!(!read_bool(&doc, &root, SUBMIT_PATH).unwrap_or(false));
     }
 
     /// The widget tree must mirror the taffy tree **at every depth** — the
@@ -2356,7 +2352,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(
-            GreeterApp::read_text(&doc, &automerge::ROOT, USERNAME_PATH).as_deref(),
+            read_text(&doc, &automerge::ROOT, USERNAME_PATH).as_deref(),
             Some("quickuser"),
             "the authenticated username is seeded without asking the user to type it"
         );
@@ -2430,7 +2426,7 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
-        assert!(GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH));
+        assert!(read_bool(&doc, &automerge::ROOT, SUBMIT_PATH).unwrap_or(false));
     }
 
     #[test]
@@ -2446,7 +2442,7 @@ mod tests {
             let handled = dispatch_enter(&mut app, &mut doc, control);
 
             assert!(
-                !GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH),
+                !read_bool(&doc, &automerge::ROOT, SUBMIT_PATH).unwrap_or(false),
                 "Enter on {control} must not submit the password form"
             );
             if control == "greeter.session" {
@@ -2726,7 +2722,7 @@ mod tests {
         assert!(app.password_buffer.lock().unwrap().is_empty());
         assert!(doc.get(&root, "greeter.password").unwrap().is_none());
         assert_eq!(
-            GreeterApp::read_text(&doc, &root, USERNAME_PATH).as_deref(),
+            read_text(&doc, &root, USERNAME_PATH).as_deref(),
             Some("alice")
         );
     }
@@ -2804,7 +2800,7 @@ mod tests {
         let _ = doc.put(&root, SUBMIT_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.phase, AuthPhase::Authenticating);
-        assert!(!GreeterApp::read_flag(&doc, &root, SUBMIT_PATH));
+        assert!(!read_bool(&doc, &root, SUBMIT_PATH).unwrap_or(false));
         // Password is still intact (no failure was processed).
         assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
         assert!(doc.get(&root, "greeter.password").unwrap().is_none());
@@ -2978,7 +2974,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.last_power_action, Some(PowerAction::Reboot));
         assert!(
-            !GreeterApp::read_flag(&doc, &root, REBOOT_PATH),
+            !read_bool(&doc, &root, REBOOT_PATH).unwrap_or(false),
             "reboot flag reset"
         );
 
@@ -2987,7 +2983,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.last_power_action, Some(PowerAction::PowerOff));
         assert!(
-            !GreeterApp::read_flag(&doc, &root, POWEROFF_PATH),
+            !read_bool(&doc, &root, POWEROFF_PATH).unwrap_or(false),
             "poweroff flag reset"
         );
     }

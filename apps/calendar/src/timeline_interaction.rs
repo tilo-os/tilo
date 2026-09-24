@@ -17,9 +17,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::date;
-use crate::draw_util::{
-    elide_to_width, fill_rect, fill_round, hairline, stroke_line, stroke_round,
-};
+use crate::draw_util::{fill_rect, fill_round, hairline, stroke_line, stroke_round};
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{
     TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
@@ -405,7 +403,7 @@ impl TimelineInteraction {
     ) -> Vec<(Rect, TimelineEffect)> {
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        fill_rect(scene, transform, area, colors.surfaces.base);
 
         let geom = self.geometry(area);
         let grid_x0 = area.x0 + geom.gutter;
@@ -468,7 +466,7 @@ impl TimelineInteraction {
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
             if is_today {
-                fill_rect(scene, transform, colors.accent[5].with_alpha(0.10), header);
+                fill_rect(scene, transform, header, colors.accent[5].with_alpha(0.10));
             }
             text.draw_text(
                 scene,
@@ -512,8 +510,11 @@ impl TimelineInteraction {
             {
                 let strip_fill = event.color.color(theme);
                 card(scene, transform, strip, 4.0, strip_fill);
-                let line =
-                    elide_to_width(text, event.title, TIMELINE_STRIP_TEXT, strip.width() - 12.0);
+                let line = text.elide_to_width(
+                    event.title,
+                    TIMELINE_STRIP_TEXT,
+                    ui::num::f32_of_f64(strip.width() - 12.0),
+                );
                 text.draw_text(
                     scene,
                     &line,
@@ -649,9 +650,9 @@ impl TimelineInteraction {
                 fill_round(
                     scene,
                     transform,
-                    color,
                     Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
                     2.0,
+                    color,
                 );
                 scene.push_layer(
                     Fill::NonZero,
@@ -661,7 +662,11 @@ impl TimelineInteraction {
                     &block,
                 );
                 let text_width = block.width() - 20.0;
-                let title = elide_to_width(text, event.title, TIMELINE_TITLE_TEXT, text_width);
+                let title = text.elide_to_width(
+                    event.title,
+                    TIMELINE_TITLE_TEXT,
+                    ui::num::f32_of_f64(text_width),
+                );
                 // The subtitle starts where the measured title line ends, and
                 // only appears when both lines fit inside the block's padding.
                 let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
@@ -682,8 +687,11 @@ impl TimelineInteraction {
                         fmt_event_min(event.end_min),
                         event.location
                     );
-                    let subtitle =
-                        elide_to_width(text, &subtitle, TIMELINE_SUBTITLE_TEXT, text_width);
+                    let subtitle = text.elide_to_width(
+                        &subtitle,
+                        TIMELINE_SUBTITLE_TEXT,
+                        ui::num::f32_of_f64(text_width),
+                    );
                     text.draw_text(
                         scene,
                         &subtitle,
@@ -764,8 +772,8 @@ impl TimelineInteraction {
             TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return,
         };
         let block = self.block_rect(area, model.days.len(), geom, column, start_min, end_min);
-        fill_round(scene, transform, fill, block, 6.0);
-        stroke_round(scene, transform, stroke, block, 6.0, 1.5);
+        fill_round(scene, transform, block, 6.0, fill);
+        stroke_round(scene, transform, block, 6.0, stroke, 1.5);
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -773,7 +781,11 @@ impl TimelineInteraction {
             transform,
             &block,
         );
-        let title = elide_to_width(text, title, TIMELINE_TITLE_TEXT, block.width() - 16.0);
+        let title = text.elide_to_width(
+            title,
+            TIMELINE_TITLE_TEXT,
+            ui::num::f32_of_f64(block.width() - 16.0),
+        );
         let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
         let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
         let block_pad = f64::from(theme.tokens.spacing.s1);

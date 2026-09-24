@@ -445,7 +445,10 @@ pub fn make_invite_token_with_identity_and_role(
 ///
 /// Returns an error if the workspace, endpoint, device certificate, or
 /// serialized signed token is invalid.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every field of the signed token is an independent input the caller already holds"
+)]
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -521,7 +524,10 @@ pub fn make_invite_token_with_recipient(
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
 /// mismatch, or a signature that verifies against neither the current nor
 /// the legacy signing payload.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear sequence of token checks, each failing with its own message"
+)]
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
@@ -727,7 +733,7 @@ mod tests {
     use super::*;
 
     fn workspace(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), format!("ws-{id}"))
+        Workspace::new(WorkspaceId(id), format!("ws-{id}"))
     }
 
     fn endpoint(key: &iroh::SecretKey, port: u16) -> iroh::EndpointAddr {
@@ -907,7 +913,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::default();
         let local = WorkspaceId(99);
-        tree.workspaces.push(workspace(99));
+        tree.desktop.workspaces.push(workspace(99));
         accept_invite_into(&mut tree, local, &encoded).expect("accept");
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
@@ -917,7 +923,7 @@ mod tests {
             unreachable!()
         };
         assert!(
-            tree.workspaces[0]
+            tree.desktop.workspaces[0]
                 .collaborators
                 .iter()
                 .any(|member| member.id == person)
@@ -1062,14 +1068,15 @@ mod tests {
         let mut guest = WorkspaceTree::default();
         let guest_id = WorkspaceId(4242);
         guest
+            .desktop
             .workspaces
-            .push(Workspace::test_default(guest_id, "guest"));
+            .push(Workspace::new(guest_id, "guest"));
         assert_eq!(
             accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
             host.room
         );
         assert_eq!(guest.room_of(guest_id), Some(host.room));
-        assert_eq!(guest.workspaces[0].collaborators.len(), 1);
+        assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
     }
 
     #[test]

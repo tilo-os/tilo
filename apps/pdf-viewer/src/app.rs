@@ -163,22 +163,10 @@ fn today_ymd() -> String {
     ymd_from_unix_secs(secs)
 }
 
-/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string using
-/// the civil-from-days algorithm (Howard Hinnant, public domain). Pure and
-/// dependency-free so the date logic is unit-testable without a clock.
+/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string. Pure,
+/// so the date logic is unit-testable without a clock.
 fn ymd_from_unix_secs(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    // Shift onto a calendar whose era begins 0000-03-01 (day 0 == that date).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // day-of-era, [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year, [0, 365]
-    let mp = (5 * doy + 2) / 153; // month shifted so March == 0, [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
+    let (year, m, d) = ui::date::civil_from_days(secs.div_euclid(86_400));
     format!("{year:04}-{m:02}-{d:02}")
 }
 
@@ -379,8 +367,8 @@ impl Editing {
 )]
 pub struct PdfApp {
     doc: Document,
-    /// Real page rasteriser (pdfium). `None` means the text backend is in use
-    /// (or no document is open).
+    /// Real page rasteriser (pdfium). `None` means no PDF is open and the
+    /// block model (the bundled sample, or the empty state) is shown.
     #[cfg(test)]
     raster: Option<crate::source::Rasterizer>,
     /// The session-scoped endpoint for production `PDFium` work.  The backend is
@@ -520,13 +508,13 @@ pub struct PdfApp {
     search_whole_word: bool,
     search_case_sensitive: bool,
     /// Raster-backend search hits over the pdfium text layer. Used instead
-    /// of `matches` (which is the text backend's block model) when a PDF
+    /// of `matches` (which searches the bundled sample's block model) when a PDF
     /// is open, so search highlights land on glyph rectangles.
     raster_matches: Vec<TextMatch>,
 
     // Real PDF text layer (raster backend) — glyph geometry per visible page,
-    // refreshed each draw, powering selection + search-hit rectangles. Empty in
-    // the text backend, where the block model handles both.
+    // refreshed each draw, powering selection + search-hit rectangles. Empty when
+    // no PDF is open, where the block model handles both.
     raster_text: std::collections::HashMap<usize, Arc<PageText>>,
     /// A live text selection over the raster text layer, if any.
     selection: Option<TextSelection>,
@@ -676,9 +664,9 @@ pub struct PdfApp {
 }
 
 impl PdfApp {
-    /// Open a real PDF from `path`, rasterising via pdfium when available and
-    /// falling back to pure-Rust text extraction. A failure lands in the empty
-    /// state with the error surfaced, rather than crashing.
+    /// Open a real PDF from `path`, rasterising via pdfium. A failure —
+    /// including a host with no pdfium library — lands in the empty state
+    /// with the error surfaced, rather than crashing.
     pub fn open(path: impl AsRef<std::path::Path>) -> Self {
         let path = path.as_ref();
         #[cfg(not(test))]
@@ -695,7 +683,7 @@ impl PdfApp {
         match crate::source::open(path) {
             Ok(loaded) => {
                 let mut app = Self::build(loaded.doc, false);
-                app.raster = loaded.raster;
+                app.raster = Some(loaded.raster);
                 app.has_document = true;
                 app.doc_name = loaded.name;
                 app.source_path = Some(path.to_path_buf());
@@ -849,7 +837,7 @@ impl PdfApp {
 
     /// Screenshot / demo helper: import a distinctive generated image as a new
     /// page after the current one, so a still frame shows an imported image page
-    /// in the rail + canvas. No-op on the text backend.
+    /// in the rail + canvas. No-op when no PDF is open.
     pub fn demo_import_image(&mut self) {
         self.show_rail = true;
         if !self.raster_active() {
@@ -2437,7 +2425,7 @@ impl PdfApp {
     /// Ask the host portal for a save location (HIG §5 — never an in-app
     /// picker). A second request while one is in flight is ignored.
     fn request_save_via_portal(&mut self) {
-        // Saving flattens via pdfium; the text backend has no library loaded.
+        // Saving flattens via pdfium; without an open PDF there is nothing to save.
         if !self.raster_active() {
             self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
             self.dirty = true;
@@ -3343,7 +3331,7 @@ impl PdfApp {
         match crate::source::open(path) {
             Ok(loaded) => {
                 self.doc = loaded.doc;
-                self.raster = loaded.raster;
+                self.raster = Some(loaded.raster);
                 self.has_document = true;
                 self.doc_name = loaded.name;
                 self.source_path = Some(path.to_path_buf());
@@ -3435,7 +3423,7 @@ impl PdfApp {
                     {
                         self.raster = None;
                     }
-                    self.raster_document = raster;
+                    self.raster_document = Some(raster);
                     self.raster_images.clear();
                     self.raster_render_pending.clear();
                     self.raster_text_pending.clear();
@@ -7768,7 +7756,7 @@ mod tests {
         // content objects, and the signer name + note body are extractable text
         // (so any viewer sees them).
         let reopened = crate::source::open(&out).expect("the saved PDF reopens");
-        let mut rz = reopened.raster.expect("the saved PDF reopens via pdfium");
+        let mut rz = reopened.raster;
         let after = rz
             .page_object_count(0)
             .expect("reopened page 1 object count");
@@ -7809,9 +7797,8 @@ mod tests {
             "a successful save clears the page-dirty flag"
         );
         crate::source::open(&out)
-            .expect("the edited PDF reopens")
-            .raster
             .expect("the edited PDF reopens via pdfium")
+            .raster
     }
 
     #[test]
@@ -8047,7 +8034,7 @@ mod tests {
         let mut tr = ui::text_render::TextRenderer::new();
         let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
         // Measured and painted Semibold, like `draw_comment_header_row`.
-        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max, TextWeight::Semibold);
+        let shown = tr.elide_to_width_weighted(long, 11.5, hdr.name_max, TextWeight::Semibold);
         let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
         assert!(
             w <= hdr.name_max + 0.5,

@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hash.update(client.read_chunk(&entry.token, offset, length)?);
             offset = offset.checked_add(u64::from(length)).ok_or("overflow")?;
         }
-        let digest = format!("{:x}", hash.finalize());
+        let digest = hex::encode(hash.finalize());
         if entry.size == 12 * 1024 * 1024 {
             let expected = std::env::var("QOS_NTFS_NATIVE_FILE_SHA256")?;
             if digest != expected {

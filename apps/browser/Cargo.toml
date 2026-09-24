@@ -36,16 +36,18 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
-dirs.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 libc.workspace = true
 sha2.workspace = true
 base64.workspace = true
-png.workspace = true
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
-# (.crx behind a small binary header); manifest.json describes them.
+# (.crx behind a small binary header); manifest.json describes them. Read
+# under the shared zip-bomb bounds before anything is extracted.
+bounded-zip = { path = "../../crates/doc/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -68,6 +70,7 @@ accesskit_consumer = "0.39"
 tempfile.workspace = true
 # block_on for the headless dmabuf probe examples
 pollster.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # Zero-copy composite probe — needs the WPE engine's dmabuf import.
 [[example]]

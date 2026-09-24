@@ -840,7 +840,7 @@ impl Widget for ContextMenu {
                     // ΔL* ≈ 11 on the near-black `surfaces.overlay` ground,
                     // which reads as "no highlight" on a dark desktop
                     // (2026-09-16 user report); see
-                    // `ui/tests/f4_menu_highlight_render.rs`.
+                    // `tests/menu_highlight_render.rs`.
                     let armed = *enabled && self.hovered == Some(idx);
                     if armed {
                         let inset = f64::from(theme.tokens.spacing.s1);

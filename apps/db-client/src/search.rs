@@ -6,13 +6,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 use ui::tilo_actions::ActionAddress;
 
 use crate::app::catalog_resource_id;
@@ -584,56 +581,26 @@ pub struct DbSearchProvider {
     index: DbSearchIndex,
 }
 
-impl SearchProvider for DbSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for DbSearchProvider {
+    fn provider_name(&self) -> &str {
         KIND
     }
-    fn action_directory_generation(&self) -> Option<u64> {
+
+    fn catalog(&self) -> Option<SearchCatalog> {
         self.index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .catalog
-            .as_ref()
-            .map(|catalog| catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
-    }
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        self.search_page(query, None, limit, limit).results
-    }
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .map_or_else(
-                || SearchCatalog::new(KIND).query_page(query, cursor, work_budget, result_limit),
-                |catalog| catalog.query_page(query, cursor, work_budget, result_limit),
-            )
+            .clone()
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
+    }
+
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         self.index.resource(&address.resource).filter(|resource| {
             resource
                 .actions
@@ -716,13 +683,9 @@ fn push_revision_part(parts: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tilo_actions::Action;
-
-    // Two adversarial 100k fixtures are intentionally large enough to prove
-    // bounded query work. Serialising only those fixtures keeps the normal
-    // parallel test runner below its memory ceiling.
-    static LARGE_CATALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
         let address = result.action_address().expect("canonical action address");
@@ -804,56 +767,51 @@ mod tests {
 
     #[test]
     fn late_relation_is_discoverable_without_scanning_a_large_schema() {
-        let _guard = LARGE_CATALOG_TEST_LOCK.lock().unwrap();
-        let mut session = Session::with_sample();
-        let mut template = session.schema.schemas[0].tables[0].clone();
-        // Keep this adversarial catalog at 100k indexed relations rather than
-        // multiplying the fixture's columns into an unrelated million-entry
-        // allocation.
-        template.columns.clear();
-        session.schema.schemas[0].tables = (0..100_001)
-            .map(|index| {
-                let mut table = template.clone();
-                table.name = format!("table-{index}");
-                table
-            })
-            .collect();
-        session.schema.schemas[0].tables.last_mut().unwrap().name = "late unique relation".into();
-        let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc).unwrap();
-        let page = index.provider().search_page("unique relation", None, 2, 2);
-        assert!(page.inspected <= 2, "query work stays bounded");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late unique relation");
-        assert_address_resolves(&index, &page.results[0]);
+        let (_, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut session = Session::with_sample();
+                let mut template = session.schema.schemas[0].tables[0].clone();
+                // Only relations are under test; the fixture's columns would
+                // multiply the catalogue without adding late relations.
+                template.columns.clear();
+                session.schema.schemas[0].tables = corpus
+                    .map(|row| {
+                        let mut table = template.clone();
+                        table.name = row.text;
+                        table
+                    })
+                    .collect();
+                index.sync(&session, &mut AutoCommit::new()).unwrap();
+                index.provider()
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        assert_address_resolves(&index, &hit);
     }
 
     #[test]
     fn late_column_is_discoverable_through_its_own_exact_browse_address() {
-        let _guard = LARGE_CATALOG_TEST_LOCK.lock().unwrap();
-        let mut session = Session::with_sample();
-        let template = session.schema.schemas[0].tables[0].columns[0].clone();
-        session.schema.schemas[0].tables[0].columns = (0..100_001)
-            .map(|index| {
-                let mut column = template.clone();
-                column.name = format!("column-{index}");
-                column
-            })
-            .collect();
-        session.schema.schemas[0].tables[0]
-            .columns
-            .last_mut()
-            .unwrap()
-            .name = "late unique column".into();
-        let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc).unwrap();
-        let page = index.provider().search_page("unique column", None, 2, 2);
-        assert!(page.inspected <= 2, "query work stays bounded");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late unique column");
-        assert_address_resolves(&index, &page.results[0]);
+        let (_, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut session = Session::with_sample();
+                let template = session.schema.schemas[0].tables[0].columns[0].clone();
+                session.schema.schemas[0].tables[0].columns = corpus
+                    .map(|row| {
+                        let mut column = template.clone();
+                        column.name = row.text;
+                        column
+                    })
+                    .collect();
+                index.sync(&session, &mut AutoCommit::new()).unwrap();
+                index.provider()
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        assert_address_resolves(&index, &hit);
     }
 
     #[test]

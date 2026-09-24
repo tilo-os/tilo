@@ -23,7 +23,7 @@ impl VideoEditorApp {
         if strip.width() < 60.0 || strip.height() < 20.0 {
             return;
         }
-        fill_rect(scene, tf, c.surfaces.raised, strip);
+        fill_rect(scene, tf, strip, c.surfaces.raised);
         // The readout line and the meter under it, centred as one block a
         // step apart (`chrome_layout::master_strip`): the meter used to sit two
         // pixels under the words.
@@ -55,7 +55,7 @@ impl VideoEditorApp {
                 c.semantic.danger
             };
             let (bg, fg) = on_fill(theme, bg);
-            fill_rrect(scene, tf, bg, flag, 4.0);
+            fill_round(scene, tf, flag, 4.0, bg);
             let words = format!("CLIP {:+.1}", self.mix.worst_over_db());
             let at = text_centre(flag, &words, 9.0, TextWeight::Semibold, tr);
             text_w(
@@ -114,7 +114,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, c.surfaces.base, r.timeline);
+        fill_rect(scene, tf, r.timeline, c.surfaces.base);
         // The ruler row's top pixel: derived against the raised ruler and
         // master strip it is drawn on, so the seam shows against the raised
         // side panes above it too.
@@ -133,7 +133,7 @@ impl VideoEditorApp {
         self.draw_master_strip(scene, tf, tr, theme, r);
 
         // --- ruler ticks ---
-        fill_rect(scene, tf, c.surfaces.raised, r.ruler);
+        fill_rect(scene, tf, r.ruler, c.surfaces.raised);
         // Ruler labels are rendered at the user's text scale while time is
         // measured in physical timeline pixels.  Ask for proportionally more
         // spacing so large labels remain individual readings instead of a
@@ -200,8 +200,8 @@ impl VideoEditorApp {
             fill_rect(
                 scene,
                 tf,
-                c.semantic.danger,
                 Rect::new(x - 1.5, r.ruler.y0 + 2.0, x + 1.5, r.ruler.y0 + 9.0),
+                c.semantic.danger,
             );
         }
 
@@ -218,8 +218,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    c.accent[5],
                     Rect::new(ax, r.ruler.y0, bx, r.ruler.y0 + 3.0),
+                    c.accent[5],
                 );
             }
             // A bracket at each mark, opening towards the span it keeps, and
@@ -235,8 +235,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    c.accent[5],
                     Rect::new(x.min(far), r.ruler.y0, x.max(far), r.ruler.y0 + 8.0),
+                    c.accent[5],
                 );
                 // Only down the ruler. A line carried into the lanes is
                 // what the playhead and a marker are, and a third one in the
@@ -272,7 +272,7 @@ impl VideoEditorApp {
             // one: it belongs to the footage, not to the timeline.
             let h = if on_clip.is_some() { 6.0 } else { 10.0 };
             let flag = Rect::new(x, r.ruler.y1 - h, x + 3.0, r.ruler.y1);
-            fill_rect(scene, tf, col, flag);
+            fill_rect(scene, tf, flag, col);
             if on_clip.is_none() && !marker.name.is_empty() {
                 text(
                     scene,
@@ -389,7 +389,7 @@ impl VideoEditorApp {
                     // against the head — with ink resolved to read on it.
                     let bg = if hovered { lighten(on_bg, 0.12) } else { on_bg };
                     let (bg, fg) = on_fill(theme, bg);
-                    fill_rrect(scene, tf, bg, pill, pill_radius);
+                    fill_round(scene, tf, pill, pill_radius, bg);
                     let at = text_centre(pill, label, 10.0, TextWeight::Semibold, tr);
                     text_w(
                         scene,
@@ -470,12 +470,12 @@ impl VideoEditorApp {
                 1.5,
             );
             for y in [above.y1, below.y0] {
-                fill_rrect(
+                fill_round(
                     scene,
                     tf,
-                    with_alpha(c.border_focus, 0.9),
                     Rect::new(x - 2.5, y - 1.25, x + 2.5, y + 1.25),
                     1.25,
+                    with_alpha(c.border_focus, 0.9),
                 );
             }
         }
@@ -487,7 +487,7 @@ impl VideoEditorApp {
                 continue;
             }
             let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
-            fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.45), full);
+            fill_rect(scene, tf, full, with_alpha(c.surfaces.base, 0.45));
         }
         // Everything outside the render range greys back, over the clips it
         // covers: the range is what will be written to a file, and a clip
@@ -501,7 +501,7 @@ impl VideoEditorApp {
                 Rect::new(bx, r.lanes.y0, r.lanes.x1, r.timeline.y1),
             ] {
                 if out.width() > 0.5 {
-                    fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.55), out);
+                    fill_rect(scene, tf, out, with_alpha(c.surfaces.base, 0.55));
                 }
             }
         }
@@ -513,7 +513,7 @@ impl VideoEditorApp {
                 continue;
             }
             let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
-            fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.5), full);
+            fill_rect(scene, tf, full, with_alpha(c.surfaces.base, 0.5));
             let h = full.height();
             let mut x = full.x0 - h;
             while x < full.x1 {
@@ -542,8 +542,8 @@ impl VideoEditorApp {
 
         // Live rubber band, over the clips it is sweeping.
         if let Some(band) = self.marquee {
-            fill_rect(scene, tf, with_alpha(c.accent[5], 0.24), band);
-            stroke_rrect(scene, tf, c.border_focus, band, 2.0, 1.5);
+            fill_rect(scene, tf, band, with_alpha(c.accent[5], 0.24));
+            stroke_round(scene, tf, band, 2.0, c.border_focus, 1.5);
         }
         scene.pop_layer();
 
@@ -601,7 +601,7 @@ impl VideoEditorApp {
             tagx + f64::from(tw) + 5.0,
             r.ruler.y0 + 16.0,
         );
-        fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
+        fill_round(scene, tf, tagrect, 3.0, c.accent[5]);
         text_w(
             scene,
             tr,
@@ -703,13 +703,13 @@ impl VideoEditorApp {
             return;
         };
         let radius = SCROLLBAR_THICKNESS / 2.0;
-        fill_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), track, radius);
+        fill_round(scene, tf, track, radius, with_alpha(c.surfaces.base, 0.55));
         let col = if bar.is_active() {
             with_alpha(c.text_dim, 0.85)
         } else {
             with_alpha(c.text_dim, 0.55)
         };
-        fill_rrect(scene, tf, col, thumb, radius);
+        fill_round(scene, tf, thumb, radius, col);
     }
 
     #[allow(
@@ -742,9 +742,11 @@ impl VideoEditorApp {
             darken(base, 0.05)
         };
         let body = if hovered { lighten(body, 0.08) } else { body };
-        fill_rrect(
+        fill_round(
             scene,
             tf,
+            cr,
+            6.0,
             with_alpha(
                 body,
                 if kind == TrackKind::Video {
@@ -753,13 +755,11 @@ impl VideoEditorApp {
                     0.92
                 },
             ),
-            cr,
-            6.0,
         );
         // header strip
         let chrome_scale = self.chrome_scale();
         let strip = self.clip_header_rect(cr);
-        fill_rrect(scene, tf, darken(base, 0.3), strip, 6.0);
+        fill_round(scene, tf, strip, 6.0, darken(base, 0.3));
 
         // content: filmstrip or waveform
         let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
@@ -784,7 +784,7 @@ impl VideoEditorApp {
                     // empty when the source has no picture at all.
                     match self.thumbnails.frame_at(clip.media, t) {
                         Some(th) => blit_thumb(scene, tf, th, cell, 2.0),
-                        None => fill_rrect(scene, tf, lighten(base, 0.16), cell, 2.0),
+                        None => fill_round(scene, tf, cell, 2.0, lighten(base, 0.16)),
                     }
                 }
                 // A source that could not be decoded says so once, over the
@@ -858,7 +858,7 @@ impl VideoEditorApp {
                     inner.center().x + mw as f64 / 2.0 + 6.0,
                     inner.center().y + mh as f64 / 2.0 + 2.0,
                 );
-                fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), pill, 4.0);
+                fill_round(scene, tf, pill, 4.0, with_alpha(Color::BLACK, 0.55));
                 text(
                     scene,
                     tr,
@@ -963,7 +963,7 @@ impl VideoEditorApp {
             );
             if pill.x0 > vx0 + 4.0 {
                 let bg = darken(base, 0.45);
-                fill_rrect(scene, tf, with_alpha(bg, 0.9), pill, 4.0);
+                fill_round(scene, tf, pill, 4.0, with_alpha(bg, 0.9));
                 let baseline = text_baseline(pill, 9.5, tr);
                 text_w(
                     scene,
@@ -1028,13 +1028,13 @@ impl VideoEditorApp {
         // always clear which clip a trim or a grade will land on.
         let primary = self.selection.primary() == Some(clip.id);
         if primary {
-            stroke_rrect(scene, tf, c.border_focus, cr, 6.0, 2.0);
+            stroke_round(scene, tf, cr, 6.0, c.border_focus, 2.0);
             for hx in [cr.x0, cr.x1] {
                 let hrect = Rect::new(hx - 3.0, cr.y0 + 2.0, hx + 3.0, cr.y1 - 2.0);
-                fill_rrect(scene, tf, c.accent[5], hrect, 2.0);
+                fill_round(scene, tf, hrect, 2.0, c.accent[5]);
             }
         } else if selected {
-            stroke_rrect(scene, tf, with_alpha(c.border_focus, 0.6), cr, 6.0, 2.0);
+            stroke_round(scene, tf, cr, 6.0, with_alpha(c.border_focus, 0.6), 2.0);
         } else if links.group_selected(clip) {
             // The other half of a selected shot. Dashed rather than solid, so
             // "this will move too" never reads as "this is selected" — an edit
@@ -1050,12 +1050,12 @@ impl VideoEditorApp {
             // The rest edge, derived against the clip's own body so it shows
             // on a pale label in light as on a deep one in dark; the old
             // half-alpha base wash was a light ring on white.
-            stroke_rrect(
+            stroke_round(
                 scene,
                 tf,
-                ui::surface::edge_on(body),
                 cr.inset(-0.5),
                 5.5,
+                ui::surface::edge_on(body),
                 1.0,
             );
         }

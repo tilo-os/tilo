@@ -615,7 +615,10 @@ pub fn register(registry: &mut ActionRegistry) {
 /// closure must return `EncodedAction` directly (not `Result`), so there is
 /// no error path to propagate to instead.
 fn encode(action: &TubeAction) -> EncodedAction {
-    #[allow(clippy::expect_used)]
+    #[allow(
+        clippy::expect_used,
+        reason = "TubeAction holds only String and usize fields, so it always serializes"
+    )]
     let encoded =
         EncodedAction::encode(TUBE_ACTION_TYPE, action).expect("TubeAction is always serializable");
     encoded
@@ -624,7 +627,10 @@ fn encode(action: &TubeAction) -> EncodedAction {
 /// `ActionSpec::immediate` for a [`TubeAction`]. Every variant holds only
 /// `String`/`usize` fields, so encoding cannot fail — see [`encode`].
 fn immediate_spec(id: &str, label: &str, action: &TubeAction) -> ActionSpec {
-    #[allow(clippy::expect_used)]
+    #[allow(
+        clippy::expect_used,
+        reason = "TubeAction holds only String and usize fields, so it always serializes"
+    )]
     let spec = ActionSpec::immediate(id, label, TUBE_ACTION_TYPE, action)
         .expect("TubeAction always serializes");
     spec
@@ -1536,7 +1542,7 @@ mod tests {
             panic!("queue is a keyed map");
         };
         assert_eq!(
-            doc.get(&queue, "video-1").unwrap().unwrap().0.to_bool(),
+            doc.get(&queue, "video-1").unwrap().unwrap().0.as_bool(),
             Some(false)
         );
     }
@@ -1573,7 +1579,7 @@ mod tests {
             panic!("comment likes is a keyed map");
         };
         assert_eq!(
-            doc.get(&likes, &comment_id).unwrap().unwrap().0.to_bool(),
+            doc.get(&likes, &comment_id).unwrap().unwrap().0.as_bool(),
             Some(false)
         );
         let (Value::Object(ObjType::Map), all_replies) =
@@ -1591,7 +1597,7 @@ mod tests {
             panic!("reply is a keyed record");
         };
         assert_eq!(
-            doc.get(&reply, "active").unwrap().unwrap().0.to_bool(),
+            doc.get(&reply, "active").unwrap().unwrap().0.as_bool(),
             Some(false)
         );
     }
@@ -1645,7 +1651,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("720p")
             );
         }
@@ -1759,7 +1765,7 @@ mod tests {
             return None;
         };
         let (v, _) = doc.get(&sub, key).ok()??;
-        v.to_bool()
+        v.as_bool()
     }
 
     fn read_str(doc: &AutoCommit, map: &str, key: &str) -> Option<String> {
@@ -1772,7 +1778,7 @@ mod tests {
         doc.get(&sub, key)
             .ok()
             .flatten()
-            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
     }
 
     /// Select a palette row by a substring of its label, then activate it (the
@@ -1890,7 +1896,7 @@ mod tests {
             panic!("category map exists");
         };
         assert_eq!(
-            doc.get(&categories, "sponsor").unwrap().unwrap().0.to_str(),
+            doc.get(&categories, "sponsor").unwrap().unwrap().0.as_str(),
             Some("show"),
         );
     }

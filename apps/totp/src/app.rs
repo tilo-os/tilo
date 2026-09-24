@@ -2409,28 +2409,32 @@ mod tests {
 
     /// The primary "Scan a QR image" action must reach the **host** file
     /// chooser (the XDG portal), not an in-app picker or a dead-end toast. A
-    /// sentinel channel is pre-armed so the routing can't launch a real host
-    /// dialog; the in-flight guard must preserve it.
+    /// recording host answers the request so no real dialog opens; the
+    /// in-flight guard keeps a second tap from stacking another dialog.
     #[test]
     fn qr_cta_routes_to_the_host_portal() {
-        use ui::portal::inject_for_test;
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
         app.request_qr_via_portal();
         assert!(
             app.portal_rx.is_some(),
             "the QR action routes through the host portal (not an in-app picker)"
         );
+        app.request_qr_via_portal();
+        let requests = recorder.pick_requests();
+        assert_eq!(requests.len(), 1, "an in-flight request is not stacked");
+        assert_eq!(requests[0].title(), "Choose a QR image");
     }
 
     /// End-to-end proof of the import seam on the real per-frame drain: a QR
-    /// image the host portal returned is decoded and fills the add panel — the
-    /// portal result is injected (no real dialog) and the next `sync` loads it.
+    /// image the host portal returned is decoded and fills the add panel — a
+    /// recording host answers the request (no real dialog) and the next
+    /// `sync` loads it.
     #[test]
     fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        use ui::portal::inject_for_test;
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
         let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2440,9 +2444,11 @@ mod tests {
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
 
-        // Inject the portal outcome and let the per-frame sync drain it — the
-        // exact channel the off-thread portal worker feeds.
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(img)));
+        // The host answers the real QR request and the per-frame sync drains
+        // it — the exact channel the off-thread portal worker feeds.
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(img));
+        ui::host::scoped(&services, || app.request_qr_via_portal());
         app.sync(&mut state.doc, &state.root);
 
         assert!(
@@ -2460,11 +2466,12 @@ mod tests {
     /// left exactly as they were and the channel clears.
     #[test]
     fn portal_cancel_leaves_the_add_panel_untouched() {
-        use ui::portal::inject_for_test;
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
         let before = app.add_panel.field_snapshot();
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.request_qr_via_portal());
         app.sync(&mut state.doc, &state.root);
         assert!(
             app.portal_rx.is_none(),

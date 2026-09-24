@@ -16,11 +16,9 @@
     reason = "raster coordinates and fixed-size color/point buffers are locally bounded"
 )]
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc};
+
+use crate::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
@@ -187,7 +185,7 @@ impl ScreenshotMarkup {
             pan: Vec2::ZERO,
             panning: None,
             pending: Vec::new(),
-            opened_at: Instant::now(),
+            opened_at: crate::time::now(),
             spawn_from: None,
             entrance_progress_override: None,
         }

@@ -117,7 +117,7 @@ pub struct ScreenshotRef {
 }
 
 fn client() -> Result<Client, FlathubError> {
-    Client::builder()
+    tilo_net::http::blocking_client()
         .user_agent("tilo-store/0.1 (Flathub)")
         .timeout(http_timeout())
         .build()

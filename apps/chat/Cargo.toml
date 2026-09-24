@@ -27,8 +27,8 @@ live-media = [
     "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
-    "dep:ashpd",
     "dep:tilo-callstream",
+    "ui/portal",
 ]
 
 [dependencies]
@@ -56,7 +56,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 # XDG data-dir resolution for on-disk persistence of the workspace document.
-dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 # Read image headers for workspace attachments and encode demo thumbnails for
 # the shared `ui::ImageStore`.
 # Attachment bytes hydrate through qdoc's content-addressed blob store; no
@@ -69,13 +69,12 @@ gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
-# Use ashpd's tokio-only workspace configuration; enabling async-std alongside
-# tokio is unsupported.
-ashpd = { workspace = true, optional = true }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

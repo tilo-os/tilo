@@ -76,13 +76,12 @@ mod tests {
 
     #[test]
     fn env_override_forces_metered_state() {
-        // SAFETY: single-threaded test mutating a process env var it owns.
-        unsafe { std::env::set_var("TILO_MUSIC_METERED", "1") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_MUSIC_METERED", "1");
         assert!(is_metered());
         assert!(!connection_is_stable());
-        unsafe { std::env::set_var("TILO_MUSIC_METERED", "0") };
+        env.set("TILO_MUSIC_METERED", "0");
         assert!(!is_metered());
         assert!(connection_is_stable());
-        unsafe { std::env::remove_var("TILO_MUSIC_METERED") };
     }
 }

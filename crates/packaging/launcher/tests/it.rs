@@ -18,3 +18,5 @@ mod netgate_egress;
 mod room_confinement;
 #[path = "sandbox_environment.rs"]
 mod sandbox_environment;
+#[path = "support.rs"]
+mod support;

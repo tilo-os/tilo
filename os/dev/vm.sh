@@ -29,7 +29,10 @@
 #   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
 #   ./os/dev/vm.sh login --passcode-only [PASS] type the installed one-user form
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $TILO_RUN/NAME.png
-#   ./os/dev/vm.sh type STRING                 type a string (sendkey)
+#   ./os/dev/vm.sh type STRING                 type a string (sendkey); `type -` reads it from stdin
+#   ./os/dev/vm.sh console                     print the installer/greeter console socket
+#                                             (tilo-control --socket PATH actions list)
+#   ./os/dev/vm.sh tool PROGRAM [ARGS...]      run a host tool where QEMU lives (distrobox)
 #   ./os/dev/vm.sh keys KEY...                 send named keys (ret tab esc f2..)
 #   ./os/dev/vm.sh pointer X Y                 move the absolute USB tablet in guest pixels
 #   ./os/dev/vm.sh click X Y [left|right|middle]
@@ -168,7 +171,7 @@ cmd_boot_installer() {
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
   local target="$TILO_TARGET_DISK"
   inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$TILO_TARGET_SIZE'" >/dev/null
   display="$(display_qemu_args "$mode")"
@@ -179,6 +182,7 @@ cmd_boot_installer() {
     -drive file=$work_disk,format=qcow2,if=virtio,serial=tilo-installer-medium \
     -drive file=$target,format=qcow2,if=virtio,serial=tilo-install-target \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo-custom-installer"
   swtpm_start
@@ -201,7 +205,7 @@ cmd_boot_target() {
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
   display="$(display_qemu_args "$mode")"
   msg "boot-target ($mode, ${TILO_XRES}x${TILO_YRES}) disk=$disk (installed system)"
   if [ "$mode" = 2d ]; then
@@ -212,6 +216,7 @@ cmd_boot_target() {
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio,serial=tilo-install-target \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo-target"
   swtpm_start
@@ -268,6 +273,9 @@ cmd_shot() {
 
 cmd_type() {
   local s="$*" i c
+  # `type -` reads the text from stdin, so a secret typed at a boot prompt
+  # never appears in a process list or a caller's logged command line.
+  if [ "$s" = "-" ]; then IFS= read -r s || true; fi
   # QEMU holds a sendkey for 100 ms by default. Sending the next character
   # sooner makes adjacent keys overlap and the graphical greeter drops input;
   # use an explicit short hold and leave a small release gap.
@@ -457,12 +465,17 @@ case "$sub" in
   wait-greeter-return) cmd_wait_greeter_return "$@";;
   shutdown) cmd_shutdown "$@";;
   cmd) hmp "$*";;
+  # The host end of the installer/greeter console channel (tilo-control --socket).
+  console) printf '%s\n' "$TILO_CONSOLE";;
+  # Run one host tool (qemu-img, sfdisk, mkfs.*) where the VM tools live,
+  # stdin passed through: in the distrobox when TILO_DISTROBOX is set.
+  tool) [ "$#" -gt 0 ] || die "usage: tool PROGRAM [ARGS...]"; inenv "$(printf '%q ' "$@")";;
   ssh) gssh "$@";;
   serial) cmd_serial "$@";;
   journal) cmd_journal "$@";;
   status) cmd_status;;
   stop) cmd_stop;;
   capture-boot) cmd_capture_boot "$@";;
-  -h|--help|"") sed -n '2,48p' "$0";;
+  -h|--help|"") sed -n '2,51p' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

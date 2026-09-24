@@ -9,7 +9,9 @@ use collab_types::DocumentMutation;
 use std::collections::{HashSet, VecDeque};
 
 const MAX_PENDING_ITEMS: usize = 64;
-const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
+/// A single remote change can be as large as the transport carries, so a
+/// deferred queue must hold at least one of them.
+const MAX_PENDING_BYTES: usize = collab_types::MAX_DOCUMENT_TRANSFER_BYTES;
 
 /// Only invalid mutation data may be quarantined. Owner/capacity failures keep
 /// their admitted queue entry for the existing lifetime/recovery policy.
@@ -165,9 +167,13 @@ impl PendingRemote {
 pub(crate) struct OwnerRoute {
     pub(crate) route: RouteSpec,
     pub(crate) owners: Vec<HistoryOwner>,
+    /// Heads whose changes the transport accepted. Advanced only after a
+    /// successful hand-off, so a refused change is offered again.
     pub(crate) sent_heads: Vec<ChangeHash>,
     pub(crate) needs_snapshot: bool,
     pub(crate) pending: PendingRemote,
+    /// Why local changes on this route are not reaching peers.
+    pub(crate) outbound_failure: Option<String>,
 }
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
@@ -176,9 +182,16 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
+    /// Why local changes on the primary or room-index route are not reaching
+    /// peers. Cleared by the next accepted change.
+    pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
     #[cfg(test)]
     pub(crate) sent: Vec<(RouteSpec, crate::collaboration::CollabRequest)>,
+    /// Transport outcome the recording test transport reports for owned
+    /// routes; `None` accepts every change.
+    #[cfg(test)]
+    pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
     pub(crate) fn retired_route(&self, route: &RouteSpec) -> bool {
@@ -254,6 +267,7 @@ impl OwnerDocumentRoutes {
                     sent_heads: super::sorted_heads(doc.base_heads()),
                     needs_snapshot: true,
                     pending: PendingRemote::default(),
+                    outbound_failure: None,
                 });
             }
         }

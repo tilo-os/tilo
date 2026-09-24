@@ -48,7 +48,7 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
 }
 
 fn experience() -> CollaborationExperience {
-    let now = SystemTime::now();
+    let now = tilo_ui::time::wall();
     let mut x = CollaborationExperience::new();
     x.upsert_person(PersonPresence {
         id: UserId("me".into()),

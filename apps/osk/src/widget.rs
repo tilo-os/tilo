@@ -37,8 +37,9 @@
 //!   [`OskWidget::with_swipe_model`] with no other change.
 
 use std::collections::{HashMap, VecDeque};
+use ui::doc::{read_bool, read_str};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -963,20 +964,6 @@ impl OskWidget {
     }
 }
 
-fn read_config_text(state: &AutoCommit, path: &ObjId, key: &str) -> Option<String> {
-    match state.get(path, key) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_str().map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
-fn read_config_bool(state: &AutoCommit, path: &ObjId, key: &str) -> Option<bool> {
-    match state.get(path, key) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_bool(),
-        _ => None,
-    }
-}
-
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
 /// doesn't take four separate `bool` parameters.
 #[derive(Clone, Copy, Default)]
@@ -1285,9 +1272,9 @@ impl Widget for OskWidget {
             self.configuration_dirty = false;
             return;
         }
-        let layout = read_config_text(state, path, CONFIG_LAYOUT_KEY);
-        let suggestions = read_config_bool(state, path, CONFIG_SUGGESTIONS_KEY);
-        let personalization = read_config_bool(state, path, CONFIG_PERSONALIZATION_KEY);
+        let layout = read_str(state, path, CONFIG_LAYOUT_KEY);
+        let suggestions = read_bool(state, path, CONFIG_SUGGESTIONS_KEY);
+        let personalization = read_bool(state, path, CONFIG_PERSONALIZATION_KEY);
         if let Some(layout) = layout {
             // Remote/persisted config cannot introduce an arbitrary layout: it
             // must still be one registered in this OSK process.
@@ -2690,7 +2677,7 @@ mod tests {
         );
         osk.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            read_config_text(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
+            read_str(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
             Some("azerty")
         );
 

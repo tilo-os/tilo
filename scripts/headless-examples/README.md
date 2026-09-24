@@ -5,15 +5,15 @@ Scripts for controlling the headless compositor through the `TILO_TEST_CONTROL` 
 **All examples assume the compositor is running headlessly.** Start it once with:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh /tmp/tilo.sock
+./scripts/headless-examples/spawn-headless.sh
 ```
 
-The script spawns `shell --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
+The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script spawns `shell --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
 
 For background lifetime management:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh /tmp/tilo.sock &
+./scripts/headless-examples/spawn-headless.sh &
 COMP_PID=$!
 trap "kill $COMP_PID" EXIT
 # ... your commands ...
@@ -21,7 +21,7 @@ trap "kill $COMP_PID" EXIT
 
 ## Examples
 
-Each script takes the socket path as its first argument (default `/tmp/tilo.sock`).
+Each script takes the socket path as its first argument (default `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`).
 
 | Script | What it shows |
 |---|---|
@@ -51,7 +51,7 @@ tilo-control key Enter                     # named key OR single char
 tilo-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
 ```
 
-Default socket: `$TILO_TEST_CONTROL` else `/tmp/tilo.sock`. Errors exit non-zero with `code: message` on stderr.
+Default socket: `$TILO_TEST_CONTROL` else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. Errors exit non-zero with `code: message` on stderr.
 
 ## Wire protocol cheat-sheet
 

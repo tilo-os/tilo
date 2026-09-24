@@ -1589,7 +1589,7 @@ mod paired_local {
             doc: &AutoCommit,
         ) -> Result<ApplicationFocusRestore, ThawError> {
             assert_eq!(
-                doc.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
                 Some("current canonical body")
             );
             let mut state = self.0.borrow_mut();
@@ -1857,7 +1857,7 @@ fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
     let saved = automerge::AutoCommit::load(&std::fs::read(&document_path).unwrap()).unwrap();
     use automerge::ReadDoc;
     assert_eq!(
-        saved.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+        saved.get(ROOT, "body").unwrap().unwrap().0.as_str(),
         Some("edited after refusal")
     );
     assert!(view_path.is_file());

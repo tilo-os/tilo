@@ -114,7 +114,7 @@ fn legacy_restore_preserves_exact_representation_current_selection_unknown_desce
         .unwrap()
         .unwrap()
         .0
-        .to_str()
+        .as_str()
         .unwrap()
         .to_string();
     let mut driver = managed_driver(d, selected);
@@ -129,11 +129,11 @@ fn legacy_restore_preserves_exact_representation_current_selection_unknown_desce
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some(current_selection.as_str())
     );
     assert_eq!(
-        state.doc.get(ROOT, "selected").unwrap().unwrap().0.to_i64(),
+        state.doc.get(ROOT, "selected").unwrap().unwrap().0.as_i64(),
         Some(77)
     );
     assert_eq!(
@@ -143,7 +143,7 @@ fn legacy_restore_preserves_exact_representation_current_selection_unknown_desce
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("current identity")
     );
     let before = state.doc.base_heads();
@@ -437,7 +437,7 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("current identity")
             );
         }

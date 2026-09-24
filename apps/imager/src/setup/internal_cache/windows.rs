@@ -1091,7 +1091,7 @@ mod native {
         stop(cancel)?;
         let mut eof = [0];
         require(
-            file.read(&mut eof).map_err(io)? == 0 && format!("{:x}", hash.finalize()) == c.sha256,
+            file.read(&mut eof).map_err(io)? == 0 && hex::encode(hash.finalize()) == c.sha256,
             "Final component digest/EOF mismatch",
         )?;
         require(

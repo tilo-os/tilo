@@ -939,7 +939,7 @@ fn final_hash_cancellation_checks_first_middle_last_chunks_and_eof() {
     let payload = vec![b'R'; 131584];
     let mut value = super::super::internal_bundle::tests::fixture();
     value["components"][1]["byte_size"] = serde_json::json!(131584);
-    value["components"][1]["sha256"] = serde_json::json!(format!("{:x}", Sha256::digest(&payload)));
+    value["components"][1]["sha256"] = serde_json::json!(hex::encode(Sha256::digest(&payload)));
     value["source_image_bytes"] = serde_json::json!(153088);
     let bytes = serde_json::to_vec(&value).unwrap();
     for (stage, count) in [
@@ -1548,7 +1548,7 @@ fn persistent_success_has_linear_readback_final_verification_and_reopened_candid
     let payload = vec![b'R'; 512 * 1024];
     let mut value = super::super::internal_bundle::tests::fixture();
     value["components"][1]["byte_size"] = serde_json::json!(payload.len());
-    value["components"][1]["sha256"] = serde_json::json!(format!("{:x}", Sha256::digest(&payload)));
+    value["components"][1]["sha256"] = serde_json::json!(hex::encode(Sha256::digest(&payload)));
     value["source_image_bytes"] = serde_json::json!(payload.len() + 21504);
     let bytes = serde_json::to_vec(&value).unwrap();
     let server = Server::new(vec![response(200, "", &payload)]);

@@ -123,9 +123,11 @@ mod uinput {
     use std::fs::{File, OpenOptions};
     use std::io::{self, Write as _};
     use std::mem::size_of;
-    use std::os::fd::AsRawFd as _;
+    use std::os::fd::{AsFd as _, BorrowedFd};
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::slice;
+
+    use rustix::ioctl::{IntegerSetter, NoArg, Opcode, ioctl, opcode};
 
     use super::{
         ForwardedGamepadEvent, GamepadAxis, GamepadButton, LinuxGamepadDevice,
@@ -168,11 +170,11 @@ mod uinput {
         BTN_START, BTN_SELECT, BTN_MODE,
     ];
 
-    nix::ioctl_write_int!(ui_set_evbit, UINPUT_IOCTL_BASE, 100);
-    nix::ioctl_write_int!(ui_set_keybit, UINPUT_IOCTL_BASE, 101);
-    nix::ioctl_write_int!(ui_set_absbit, UINPUT_IOCTL_BASE, 103);
-    nix::ioctl_none!(ui_dev_create, UINPUT_IOCTL_BASE, 1);
-    nix::ioctl_none!(ui_dev_destroy, UINPUT_IOCTL_BASE, 2);
+    const UI_SET_EVBIT: Opcode = opcode::write::<libc::c_int>(UINPUT_IOCTL_BASE, 100);
+    const UI_SET_KEYBIT: Opcode = opcode::write::<libc::c_int>(UINPUT_IOCTL_BASE, 101);
+    const UI_SET_ABSBIT: Opcode = opcode::write::<libc::c_int>(UINPUT_IOCTL_BASE, 103);
+    const UI_DEV_CREATE: Opcode = opcode::none(UINPUT_IOCTL_BASE, 1);
+    const UI_DEV_DESTROY: Opcode = opcode::none(UINPUT_IOCTL_BASE, 2);
 
     pub struct UinputGamepadDevice {
         file: File,
@@ -193,15 +195,15 @@ mod uinput {
                 .write(true)
                 .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
                 .open("/dev/uinput")?;
-            let fd = file.as_raw_fd();
+            let fd = file.as_fd();
 
-            set_capability(fd, ui_set_evbit, EV_KEY)?;
-            set_capability(fd, ui_set_evbit, EV_ABS)?;
+            set_capability::<UI_SET_EVBIT>(fd, EV_KEY)?;
+            set_capability::<UI_SET_EVBIT>(fd, EV_ABS)?;
             for code in BUTTON_CODES {
-                set_capability(fd, ui_set_keybit, code)?;
+                set_capability::<UI_SET_KEYBIT>(fd, code)?;
             }
             for code in AXIS_CODES {
-                set_capability(fd, ui_set_absbit, code)?;
+                set_capability::<UI_SET_ABSBIT>(fd, code)?;
             }
 
             // SAFETY: `uinput_user_dev` is a C POD whose all-zero bit pattern
@@ -229,7 +231,7 @@ mod uinput {
             file.write_all(bytes)?;
             // SAFETY: fd refers to `/dev/uinput`; this no-argument ioctl is
             // issued only after the fixed capability/setup payload above.
-            unsafe { ui_dev_create(fd) }.map_err(io::Error::other)?;
+            unsafe { ioctl(&file, NoArg::<UI_DEV_CREATE>::new()) }?;
 
             Ok(Self {
                 file,
@@ -306,7 +308,7 @@ mod uinput {
             }
             // SAFETY: fd is the same `/dev/uinput` file used to create this
             // device, and the operation carries no user pointer.
-            unsafe { ui_dev_destroy(self.file.as_raw_fd()) }.map_err(io::Error::other)?;
+            unsafe { ioctl(&self.file, NoArg::<UI_DEV_DESTROY>::new()) }?;
             self.destroyed = true;
             Ok(())
         }
@@ -318,20 +320,12 @@ mod uinput {
         }
     }
 
-    fn set_capability(
-        fd: libc::c_int,
-        ioctl: unsafe fn(
-            libc::c_int,
-            nix::sys::ioctl::ioctl_param_type,
-        ) -> nix::Result<libc::c_int>,
-        code: u16,
-    ) -> io::Result<()> {
-        // SAFETY: all callers pass a generated uinput integer-capability ioctl
-        // and a code from the fixed constants above; no arbitrary ioctl or code
+    fn set_capability<const OPCODE: Opcode>(fd: BorrowedFd<'_>, code: u16) -> io::Result<()> {
+        // SAFETY: all callers pass a uinput integer-capability opcode and a
+        // code from the fixed constants above; no arbitrary ioctl or code
         // enters through the public API.
-        unsafe { ioctl(fd, nix::sys::ioctl::ioctl_param_type::from(code)) }
-            .map(|_| ())
-            .map_err(io::Error::other)
+        unsafe { ioctl(fd, IntegerSetter::<OPCODE>::new_usize(usize::from(code))) }?;
+        Ok(())
     }
 
     fn configure_axes(setup: &mut libc::uinput_user_dev) -> io::Result<()> {

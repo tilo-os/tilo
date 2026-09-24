@@ -7,6 +7,7 @@
 //! keeping them out of this projection lets the overview remain a spatial
 //! explanation instead of becoming a second settings screen.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     CapRole, Collaborator, Effect, GroupId, Principal, StripId, Subject, TabId, UserId, Workspace,
     WorkspaceId, WorkspaceTree, local_user_id, now_unix,
@@ -37,6 +38,7 @@ impl OverviewView {
     /// Rebuild the card cache from the authoritative `WorkspaceTree`.
     pub fn sync(&mut self, tree: &WorkspaceTree) {
         self.cards = tree
+            .desktop
             .workspaces
             .iter()
             .map(|w| CardCache {
@@ -45,7 +47,7 @@ impl OverviewView {
                 strip_count: w.strips.len(),
             })
             .collect();
-        self.active = Some(tree.active);
+        self.active = Some(tree.desktop.active);
     }
 
     pub fn card_count(&self) -> usize {
@@ -60,7 +62,7 @@ impl OverviewView {
     pub fn click_card(&mut self, idx: usize, tree: &mut WorkspaceTree) {
         if let Some(card) = self.cards.get(idx) {
             tree.set_active(card.id);
-            self.active = Some(tree.active);
+            self.active = Some(tree.desktop.active);
         }
     }
 
@@ -200,7 +202,7 @@ fn known_collaborator<'a>(
 ) -> Option<&'a Collaborator> {
     ws.collaborators
         .iter()
-        .chain(tree.collaborators.iter())
+        .chain(tree.desktop.collaborators.iter())
         .find(|c| &c.id == id)
 }
 
@@ -223,7 +225,7 @@ fn room_people_with_local_user(ws: &Workspace, tree: &WorkspaceTree, me: &str) -
                 reason = "id == me and ws.id == tree.active are independent identity checks, not a swapped field pair"
             )]
             let present = ws.collaborators.iter().any(|c| c.id == id)
-                || (id == me && ws.id == tree.active);
+                || (id == me && ws.id == tree.desktop.active);
             RoomPerson {
                 name: display_name(&id, ws, tree),
                 present,
@@ -284,12 +286,13 @@ pub fn room_cards(tree: &WorkspaceTree) -> Vec<RoomCard> {
 }
 
 pub(crate) fn room_cards_with_local_user(tree: &WorkspaceTree, local: &str) -> Vec<RoomCard> {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .map(|ws| RoomCard {
             id: ws.id,
             name: ws.name.clone(),
-            is_current: ws.id == tree.active,
+            is_current: ws.id == tree.desktop.active,
             people: room_people_with_local_user(ws, tree, local),
             shares: room_shares(ws, tree),
             strips: overview_strips(ws, tree, local),
@@ -299,21 +302,21 @@ pub(crate) fn room_cards_with_local_user(tree: &WorkspaceTree, local: &str) -> V
 
 fn overview_strips(ws: &Workspace, tree: &WorkspaceTree, local: &str) -> Vec<OverviewStrip> {
     let people = room_people_with_local_user(ws, tree, local);
-    let active_strip = tree.active_strip.get(&ws.id).copied();
+    let active_strip = tree.desktop.active_strip.get(&ws.id).copied();
     ws.strips
         .iter()
         .map(|strip| {
-            let active_group = tree.active_group_for(strip.id);
+            let active_group = tree.desktop.active_group_for(strip.id);
             OverviewStrip {
                 id: strip.id,
-                is_current: ws.id == tree.active && active_strip == Some(strip.id),
+                is_current: ws.id == tree.desktop.active && active_strip == Some(strip.id),
                 groups: strip
                     .window_groups
                     .iter()
                     .map(|group| OverviewGroup {
                         id: group.id,
                         width_permille: group.width.permille(),
-                        is_current: ws.id == tree.active
+                        is_current: ws.id == tree.desktop.active
                             && active_strip == Some(strip.id)
                             && active_group == Some(group.id),
                         tabs: group
@@ -428,6 +431,7 @@ pub fn overview_people_label(card: &RoomCard) -> Option<String> {
 #[cfg(test)]
 mod room_tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, CapOverride, Scope, Strip, Tab, TileContent, Verb, WindowGroup, WindowWidth,
     };
@@ -441,8 +445,11 @@ mod room_tests {
     fn tree_with(workspaces: Vec<Workspace>) -> WorkspaceTree {
         let active = workspaces.first().map(|w| w.id).unwrap_or_default();
         WorkspaceTree {
-            workspaces,
-            active,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces,
+                active,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }
     }
@@ -659,9 +666,9 @@ mod room_tests {
             }],
         }];
         let mut tree = tree_with(vec![w]);
-        let ws_id = tree.active;
-        tree.active_strip.insert(ws_id, strip_id);
-        tree.set_active_group(strip_id, group_id);
+        let ws_id = tree.desktop.active;
+        tree.desktop.active_strip.insert(ws_id, strip_id);
+        tree.desktop.set_active_group(strip_id, group_id);
 
         let card = &room_cards(&tree)[0];
         assert_eq!(card.strips.len(), 1);

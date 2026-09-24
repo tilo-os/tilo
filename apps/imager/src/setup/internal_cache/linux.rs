@@ -39,6 +39,7 @@ mod native {
         Provider, checkpoint::Record, initialize_fresh,
     };
     use super::{effective_mode_allowed, raw_components};
+    use crate::setup::advisory_lock::ExclusiveLock;
     use crate::setup::internal_download::SelectedManifest;
     use sha2::{Digest, Sha256};
     use std::{
@@ -325,6 +326,7 @@ mod native {
     struct LockedRoot {
         ancestry: Vec<Held>,
         lock: Held,
+        _exclusive: ExclusiveLock,
         payload: Held,
         journals: [Held; 2],
     }
@@ -428,15 +430,13 @@ mod native {
                 lock.file.metadata().map_err(io)?.len() == 0,
                 "Unknown lock contents",
             )?;
-            // SAFETY: live lock descriptor, nonblocking cooperative exclusive lease.
-            if unsafe { libc::flock(lock.file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                let e = std::io::Error::last_os_error();
-                return Err(if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                    "Cache Busy".into()
-                } else {
-                    io(e)
-                });
-            }
+            // Nonblocking cooperative exclusive lease, held through a duplicate
+            // of the lock descriptor that releases it explicitly when dropped.
+            let exclusive = match ExclusiveLock::try_new(lock.file.try_clone().map_err(io)?) {
+                Ok(exclusive) => exclusive,
+                Err(std::fs::TryLockError::WouldBlock) => return Err("Cache Busy".into()),
+                Err(std::fs::TryLockError::Error(e)) => return Err(io(e)),
+            };
             lock.check(Some(root))?;
             let payload = directory(root, b"payload", true, true)?;
             let journals = [
@@ -446,6 +446,7 @@ mod native {
             let lease = Arc::new(LockedRoot {
                 ancestry,
                 lock,
+                _exclusive: exclusive,
                 payload,
                 journals,
             });
@@ -616,7 +617,7 @@ mod native {
         stop(cancel)?;
         let mut eof = [0];
         require(
-            file.read(&mut eof).map_err(io)? == 0 && format!("{:x}", hash.finalize()) == c.sha256,
+            file.read(&mut eof).map_err(io)? == 0 && hex::encode(hash.finalize()) == c.sha256,
             "Final component digest/EOF mismatch",
         )?;
         require(

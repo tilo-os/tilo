@@ -2,10 +2,7 @@
 
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::{Category, Channel, Message, User, Workspace};
 
@@ -191,50 +188,20 @@ impl ChatSearchProvider {
     }
 }
 
-impl SearchProvider for ChatSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for ChatSearchProvider {
+    fn provider_name(&self) -> &'static str {
         "Chat"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .query_page(
-                query,
-                None,
-                DEFAULT_SEARCH_CANDIDATE_LIMIT,
-                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive resource-kind dispatcher keeps canonical search addresses and their matching open operations adjacent"
     )]
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         if let Some(id) = address.resource.strip_prefix("chat.workspace:") {
             let workspace = self
                 .workspaces
@@ -350,6 +317,8 @@ impl SearchProvider for ChatSearchProvider {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
+    use ui::search::SearchProvider;
+    use ui::search::testing::assert_late_hit_reachable;
     use ui::widget::Widget;
 
     fn workspace() -> Workspace {
@@ -561,29 +530,31 @@ mod tests {
     }
 
     #[test]
-    fn unicode_late_message_remains_findable_beyond_one_hundred_thousand_rows() {
-        let messages = (0..100_001)
-            .map(|index| {
-                message(
-                    index,
-                    if index == 100_000 {
-                        "late ÄTHER-needle 🧪"
-                    } else {
-                        "ordinary row"
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        let provider =
-            ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
+    fn unicode_late_message_remains_findable_in_a_large_history() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let messages = corpus
+                    .map(|row| {
+                        let text = if row.is_target {
+                            format!("{} late ÄTHER-needle 🧪", row.text)
+                        } else {
+                            row.text
+                        };
+                        message(row.index, text)
+                    })
+                    .collect::<Vec<_>>();
+                ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()])
+            },
+            3_000,
+        );
+        assert_eq!(
+            hit.action_address(),
+            Some(ActionAddress::new("chat.message:m_002999", "open"))
+        );
 
         let page = provider.search_page("äther-needle 🧪", None, 8, 8);
         assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(
-            page.results[0].action_address(),
-            Some(ActionAddress::new("chat.message:m_100000", "open"))
-        );
+        assert_eq!(page.results, vec![hit]);
     }
 
     #[test]

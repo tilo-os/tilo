@@ -125,6 +125,8 @@ struct Harness {
     modifiers: Modifiers,
     focus: Option<NodeId>,
     chrome: shell::shell::chrome_state::Chrome,
+    // Pins the top-bar clock for as long as the harness renders frames.
+    _clock: tilo_test_env::ScopedEnv,
 }
 
 impl Harness {
@@ -135,8 +137,8 @@ impl Harness {
     fn new_at(tree: &WorkspaceTree, width: f32, height: f32) -> Self {
         // Pin the top-bar clock before the first sync — frames here are compared
         // pixel-for-pixel and a live clock would fail once a minute.
-        // SAFETY: single-threaded test setup, under `TEST_LOCK`.
-        unsafe { std::env::set_var("TILO_CLOCK", "09:41") };
+        let mut clock = tilo_test_env::ScopedEnv::new();
+        clock.set("TILO_CLOCK", "09:41");
         let mut owned = tree.clone();
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
@@ -147,7 +149,7 @@ impl Harness {
         // the UI under test untouched, producing a machine- and run-dependent
         // golden. Production still uses the persistent pane.
         *host.room_activity_mut() = RoomActivityPane::new();
-        let active_workspace = owned.active.raw();
+        let active_workspace = owned.desktop.active.raw();
         host.room_activity_mut().refresh(&mut owned);
         host.room_activity_mut().finish_view(active_workspace);
         let root = Box::new(host) as Box<dyn Widget>;
@@ -206,6 +208,7 @@ impl Harness {
             modifiers: Modifiers::default(),
             focus: None,
             chrome,
+            _clock: clock,
         }
     }
 
@@ -1367,29 +1370,12 @@ struct DecodedRgba {
 }
 
 fn decode_rgba(path: &Path) -> DecodedRgba {
-    let file =
-        std::fs::File::open(path).unwrap_or_else(|e| panic!("open PNG {}: {e}", path.display()));
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .unwrap_or_else(|e| panic!("read PNG header {}: {e}", path.display()));
-    let mut bytes = vec![0; reader.output_buffer_size().expect("PNG output size")];
-    let info = reader
-        .next_frame(&mut bytes)
-        .unwrap_or_else(|e| panic!("decode PNG {}: {e}", path.display()));
-    bytes.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => bytes,
-        png::ColorType::Rgb => bytes
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
-            .collect(),
-        other => panic!("unexpected PNG format {other:?} in {}", path.display()),
-    };
+    let decoded =
+        ui::png::read_rgba8(path).unwrap_or_else(|e| panic!("decode PNG {}: {e}", path.display()));
     DecodedRgba {
-        width: info.width,
-        height: info.height,
-        rgba,
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
     }
 }
 
@@ -1556,7 +1542,7 @@ fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
-    let before = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab;
+    let before = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
     let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
@@ -1565,7 +1551,7 @@ fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
         !chrome.borrow().overlays.overview,
         "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
     );
-    let after = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab;
+    let after = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
     assert_ne!(after, before, "Ctrl+Tab must select the next tab");
 
     let backwards = Modifiers::from(
@@ -1577,7 +1563,7 @@ fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
         backwards
     ));
     assert_eq!(
-        chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+        chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
         before,
         "Ctrl+Shift+Tab must return to the previous tab"
     );
@@ -1609,9 +1595,9 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tree = WorkspaceTree::bootstrap_demo();
-    let started_on = tree.active;
+    let started_on = tree.desktop.active;
     assert!(
-        tree.workspaces.len() > 1,
+        tree.desktop.workspaces.len() > 1,
         "precondition: the fixture has somewhere else to go"
     );
     let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
@@ -1646,7 +1632,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
         "committing to a room closes the switcher"
     );
     assert_ne!(
-        chrome.borrow().tree().active,
+        chrome.borrow().tree().desktop.active,
         started_on,
         "Enter must actually go to the room the arrow selected"
     );
@@ -1667,7 +1653,7 @@ fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
         "precondition: panel shut"
     );
 
-    let before = h.chrome.borrow().tree().active;
+    let before = h.chrome.borrow().tree().desktop.active;
     h.key(Key::Named(NamedKey::ArrowDown));
     h.key(Key::Named(NamedKey::Enter));
     assert!(
@@ -1675,7 +1661,7 @@ fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
         "arrows and Enter must not open the switcher"
     );
     assert_eq!(
-        h.chrome.borrow().tree().active,
+        h.chrome.borrow().tree().desktop.active,
         before,
         "with the panel shut, Enter must not switch rooms"
     );

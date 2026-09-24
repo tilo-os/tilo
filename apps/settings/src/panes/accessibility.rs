@@ -20,8 +20,9 @@
 //! loaded prefs and persists the shared store, preserving every other section.
 
 use std::collections::HashMap;
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -457,27 +458,6 @@ impl AccessibilityPane {
         }
     }
 
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-            _ => None,
-        }
-    }
-
-    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// Hydrate the live document from the durable preferences only when a
     /// key is genuinely absent. This is model initialization, not a user
     /// action: it never enters action history and it never overwrites a value
@@ -549,19 +529,19 @@ impl AccessibilityPane {
     // Vision comforts fold into the shared appearance section.
     fn fold_vision(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
         let mut changed = false;
-        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY)
+        if let Some(b) = read_bool(state, root, HIGH_CONTRAST_KEY)
             && b != self.appearance.high_contrast
         {
             self.appearance.high_contrast = b;
             changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY)
+        if let Some(b) = read_bool(state, root, REDUCE_MOTION_KEY)
             && b != self.appearance.reduce_motion
         {
             self.appearance.reduce_motion = b;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY)
+        if let Some(label) = read_str_or_text(state, root, TEXT_SIZE_KEY)
             && let Some(scale) = text_size_scale(&label)
             && (scale - self.appearance.text_scale).abs() > f64::EPSILON
         {
@@ -584,48 +564,48 @@ impl AccessibilityPane {
         };
         adopt(
             &mut self.access.large_cursor,
-            Self::read_bool(state, root, LARGE_CURSOR_KEY),
+            read_bool(state, root, LARGE_CURSOR_KEY),
         );
         adopt(
             &mut self.access.sticky_keys,
-            Self::read_bool(state, root, STICKY_KEYS_KEY),
+            read_bool(state, root, STICKY_KEYS_KEY),
         );
         adopt(
             &mut self.access.slow_keys,
-            Self::read_bool(state, root, SLOW_KEYS_KEY),
+            read_bool(state, root, SLOW_KEYS_KEY),
         );
         adopt(
             &mut self.access.on_screen_keyboard,
-            Self::read_bool(state, root, OSK_KEY),
+            read_bool(state, root, OSK_KEY),
         );
         adopt(
             &mut self.access.visual_alerts,
-            Self::read_bool(state, root, VISUAL_ALERTS_KEY),
+            read_bool(state, root, VISUAL_ALERTS_KEY),
         );
         adopt(
             &mut self.access.screen_reader,
-            Self::read_bool(state, root, SCREEN_READER_KEY),
+            read_bool(state, root, SCREEN_READER_KEY),
         );
         adopt(
             &mut self.access.cursor_crosshair,
-            Self::read_bool(state, root, CURSOR_CROSSHAIR_KEY),
+            read_bool(state, root, CURSOR_CROSSHAIR_KEY),
         );
         adopt(
             &mut self.access.thick_text_caret,
-            Self::read_bool(state, root, THICK_CARET_KEY),
+            read_bool(state, root, THICK_CARET_KEY),
         );
         adopt(
             &mut self.access.switch_control,
-            Self::read_bool(state, root, SWITCH_CONTROL_KEY),
+            read_bool(state, root, SWITCH_CONTROL_KEY),
         );
-        if let Some(label) = Self::read_str(state, root, SWITCH_KEYS_KEY)
+        if let Some(label) = read_str_or_text(state, root, SWITCH_KEYS_KEY)
             && let Some(pair) = SwitchKeyPair::from_label(&label)
             && pair != self.access.switch_key_pair
         {
             self.access.switch_key_pair = pair;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, SWITCH_SCAN_KEY) {
+        if let Some(label) = read_str_or_text(state, root, SWITCH_SCAN_KEY) {
             let ms = match label.as_str() {
                 "1 second" => 1000,
                 "2 seconds" => 2000,
@@ -642,14 +622,14 @@ impl AccessibilityPane {
 
     fn fold_choice_settings(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
         let mut changed = false;
-        if let Some(label) = Self::read_str(state, root, COLOR_FILTER_KEY)
+        if let Some(label) = read_str_or_text(state, root, COLOR_FILTER_KEY)
             && let Some(filter) = ColorFilter::from_label(&label)
             && filter != self.access.color_filter
         {
             self.access.color_filter = filter;
             changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, MAGNIFIER_KEY) {
+        if let Some(label) = read_str_or_text(state, root, MAGNIFIER_KEY) {
             let zoom = match label.as_str() {
                 "2×" => 2,
                 "3×" => 3,
@@ -660,7 +640,7 @@ impl AccessibilityPane {
                 changed = true;
             }
         }
-        if let Some(label) = Self::read_str(state, root, READER_RATE_KEY) {
+        if let Some(label) = read_str_or_text(state, root, READER_RATE_KEY) {
             let rate = match label.as_str() {
                 "Slow" => 65,
                 "Fast" => 140,
@@ -672,7 +652,7 @@ impl AccessibilityPane {
                 changed = true;
             }
         }
-        if let Some(label) = Self::read_str(state, root, READER_VOICE_KEY)
+        if let Some(label) = read_str_or_text(state, root, READER_VOICE_KEY)
             && let Some(voice) = ScreenReaderVoice::from_label(&label)
             && voice != self.access.screen_reader_voice
         {
@@ -680,7 +660,7 @@ impl AccessibilityPane {
             changed = true;
         }
 
-        if let Some(label) = Self::read_str(state, root, CURSOR_SIZE_KEY)
+        if let Some(label) = read_str_or_text(state, root, CURSOR_SIZE_KEY)
             && let Some(px) = AccessibilityPrefs::cursor_size_px(&label)
             && px != self.access.cursor_size
         {
@@ -860,26 +840,17 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
+        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
         assert_eq!(
-            AccessibilityPane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            AccessibilityPane::read_str(&doc, &root, TEXT_SIZE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, TEXT_SIZE_KEY).as_deref(),
             Some("Large")
         );
+        assert_eq!(read_bool(&doc, &root, LARGE_CURSOR_KEY), Some(true));
         assert_eq!(
-            AccessibilityPane::read_bool(&doc, &root, LARGE_CURSOR_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            AccessibilityPane::read_str(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
             Some("Larger")
         );
-        assert_eq!(
-            AccessibilityPane::read_bool(&doc, &root, SCREEN_READER_KEY),
-            Some(true)
-        );
+        assert_eq!(read_bool(&doc, &root, SCREEN_READER_KEY), Some(true));
     }
 
     #[test]
@@ -914,6 +885,8 @@ mod tests {
 
     #[test]
     fn hydration_never_overwrites_a_value_already_received_from_a_peer() {
+        // The pane persists through the per-user settings file.
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         doc.put(
@@ -929,12 +902,9 @@ mod tests {
         );
         pane.sync(&mut doc, &root);
 
+        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
         assert_eq!(
-            AccessibilityPane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            AccessibilityPane::read_str(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
             Some("Largest")
         );
         assert!(pane.appearance().high_contrast);
@@ -943,7 +913,7 @@ mod tests {
 
     #[test]
     fn vision_edit_folds_into_shared_appearance_and_persists() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("a11y_vision");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AccessibilityPane::with_prefs(
             AppearancePrefs::default(),
             AccessibilityPrefs::default(),
@@ -973,7 +943,7 @@ mod tests {
 
     #[test]
     fn pointer_and_typing_edits_persist_to_accessibility_section() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("a11y_pointer");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AccessibilityPane::with_prefs(
             AppearancePrefs::default(),
             AccessibilityPrefs::default(),

@@ -210,7 +210,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some("current receipt")
                 );
             }

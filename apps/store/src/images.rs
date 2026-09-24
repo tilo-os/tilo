@@ -87,7 +87,7 @@ pub fn image_fetcher() -> Fetcher {
         }
         // Pin this request to the validated address. This closes the usual
         // validate-then-resolve DNS-rebinding gap while preserving TLS SNI.
-        let client = reqwest::blocking::Client::builder()
+        let client = tilo_net::http::blocking_client()
             .user_agent("tilo-store-artwork/1")
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())

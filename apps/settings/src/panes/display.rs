@@ -39,6 +39,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use ui::doc::{read_bool, read_str_or_text};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
@@ -1702,7 +1703,7 @@ impl DisplayPane {
             self.last_prefs.night_light = b;
             let _ = Self::persist_display(|d| d.night_light = b);
         }
-        if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
+        if let Some(label) = read_str_or_text(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
             && let Some(kelvin) = temperature_from_label(&label)
             && kelvin != self.last_prefs.night_light_temperature
         {
@@ -1713,7 +1714,7 @@ impl DisplayPane {
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
         if has_pending_operation
-            && let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+            && let Some(label) = read_str_or_text(state, root, DISPLAY_SCALE_KEY)
             && let Some(v) = scale_factor_of(&label)
             && (v - self.last_prefs.scale).abs() > f64::EPSILON
         {
@@ -1777,7 +1778,7 @@ impl DisplayPane {
         cfg: &mut OutputConfig,
     ) -> bool {
         let mut changed = false;
-        if let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "enabled"))
+        if let Some(enabled) = read_bool(state, root, output_key(&output.connector, "enabled"))
             && enabled != cfg.enabled
         {
             cfg.enabled = enabled;
@@ -1786,7 +1787,7 @@ impl DisplayPane {
             }
             changed = true;
         }
-        if let Some(primary) = read_bool(state, root, &output_key(&output.connector, "primary"))
+        if let Some(primary) = read_bool(state, root, output_key(&output.connector, "primary"))
             && primary != cfg.primary
         {
             if primary {
@@ -1797,14 +1798,14 @@ impl DisplayPane {
             cfg.primary = primary;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "scale"))
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "scale"))
             && let Some(scale) = scale_factor_of(&label)
             && (scale - cfg.scale).abs() > f64::EPSILON
         {
             cfg.scale = scale;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mode"))
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mode"))
             && let Some(mode) = output
                 .modes
                 .iter()
@@ -1815,7 +1816,8 @@ impl DisplayPane {
             cfg.mode = Some(mode);
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "transform"))
+        if let Some(label) =
+            read_str_or_text(state, root, output_key(&output.connector, "transform"))
             && let Some(transform) = transform_from_label(&label)
             && transform != cfg.transform
         {
@@ -1823,20 +1825,21 @@ impl DisplayPane {
             changed = true;
         }
         if output.hdr
-            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "hdr"))
+            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "hdr"))
             && enabled != cfg.hdr
         {
             cfg.hdr = enabled;
             changed = true;
         }
         if output.vrr
-            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "vrr"))
+            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "vrr"))
             && enabled != cfg.vrr
         {
             cfg.vrr = enabled;
             changed = true;
         }
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "color_profile"))
+        if let Some(label) =
+            read_str_or_text(state, root, output_key(&output.connector, "color_profile"))
         {
             let selected = if label == "System default" {
                 None
@@ -1867,7 +1870,8 @@ impl DisplayPane {
         cfg: &mut OutputConfig,
     ) -> bool {
         let mut changed = false;
-        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mirror")) {
+        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mirror"))
+        {
             let mirror = if label == "Extend workspace" {
                 None
             } else {
@@ -1881,7 +1885,9 @@ impl DisplayPane {
                 changed = true;
             }
         }
-        if let Some(position) = read_str(state, root, &output_key(&output.connector, "position")) {
+        if let Some(position) =
+            read_str_or_text(state, root, output_key(&output.connector, "position"))
+        {
             let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
                 let label = position.strip_prefix(&format!("{side} of "))?;
                 let target = connected
@@ -1943,7 +1949,7 @@ impl DisplayPane {
         changed: &mut bool,
     ) {
         let newly_selected_primary = connected.iter().find(|output| {
-            read_bool(state, root, &output_key(&output.connector, "primary")) == Some(true)
+            read_bool(state, root, output_key(&output.connector, "primary")) == Some(true)
                 && !self
                     .output_config
                     .outputs
@@ -2130,30 +2136,6 @@ impl DisplayPane {
                 }
             }
         }
-    }
-}
-
-/// Read a `bool` scalar at `key`.
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Read a string at `key` — handles both a scalar `Str` and an Automerge
-/// `Text` object (a `Dropdown` may write either).
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 
@@ -2427,7 +2409,7 @@ mod tests {
 
     #[test]
     fn settings_switches_usb_c_display_between_mirror_and_extend() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-mirror-extend");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let full_hd_60 = OutputMode {
             width: 1920,
             height: 1080,
@@ -2580,7 +2562,7 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         assert_eq!(
-            read_str(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
             Some("100%"),
             "seed should write the default 100% scale label"
         );
@@ -2590,7 +2572,7 @@ mod tests {
     /// and lands a fractional factor in the shared settings store.
     #[test]
     fn changing_scale_persists_fractional_factor_to_disk() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-scale");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
@@ -2608,7 +2590,7 @@ mod tests {
 
     #[test]
     fn display_plan_stages_confirms_and_reseeds_after_revert() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-transaction");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut committed = DisplayConfig::default();
@@ -2655,7 +2637,7 @@ mod tests {
         pane.sync(&mut doc, &root);
         assert!(pane.pending_candidate.is_none());
         assert_eq!(
-            read_str(&doc, &root, &transform_key).as_deref(),
+            read_str_or_text(&doc, &root, &transform_key).as_deref(),
             Some("Landscape"),
             "revert resets controls to last known-good rather than reoffering the failed plan"
         );

@@ -23,26 +23,7 @@
 use ui::ColorCompat;
 use vello::peniko::Color;
 
-/// WCAG 2.x relative luminance of an opaque sRGB colour (alpha ignored).
-pub fn relative_luminance(c: Color) -> f64 {
-    fn chan(srgb: u8) -> f64 {
-        let cs = f64::from(srgb) / 255.0;
-        if cs <= 0.03928 {
-            cs / 12.92
-        } else {
-            ((cs + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * chan(c.r()) + 0.7152 * chan(c.g()) + 0.0722 * chan(c.b())
-}
-
-/// WCAG 2.x contrast ratio between two opaque colours, in `[1.0, 21.0]`.
-pub fn contrast_ratio(a: Color, b: Color) -> f64 {
-    let la = relative_luminance(a);
-    let lb = relative_luminance(b);
-    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    (hi + 0.05) / (lo + 0.05)
-}
+pub use ui::color::{contrast_ratio, relative_luminance};
 
 /// Composite a translucent `fg` over an opaque `bg`, returning the opaque
 /// colour a viewer actually sees. Selected backgrounds are sometimes an
@@ -52,10 +33,12 @@ pub fn composite_over(fg: Color, bg: Color) -> Color {
     let a = f64::from(fg.a()) / 255.0;
     let mix = |f: u8, b: u8| {
         let v = f64::from(f) * a + f64::from(b) * (1.0 - a);
-        // f, b ∈ [0, 255] and a ∈ [0, 1], so the convex combination `v` is
-        // always within [0, 255] — rounding then casting cannot truncate or
-        // lose sign.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "f, b are in [0, 255] and a in [0, 1], so the convex combination is \
+                      within [0, 255]; rounding then casting cannot truncate or lose sign"
+        )]
         let out = v.round() as u8;
         out
     };

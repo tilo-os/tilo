@@ -180,7 +180,10 @@ pub enum ShareGrantStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::struct_excessive_bools)] // Mirrors the versioned, redundant share projection contract.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the versioned, redundant share projection contract"
+)]
 pub struct ShareGrantProjection {
     pub grant_id: String,
     pub subject: ShareSubject,
@@ -467,8 +470,8 @@ pub struct WorkspaceRecordIndexPager {
     root_generations: std::collections::HashMap<PathBuf, String>,
     generation_root_cursor: usize,
     discovery_sources: std::collections::VecDeque<PathBuf>,
-    /// A generated authority source keeps the >100k paging contract covered
-    /// without writing thousands of xattrs during the unit test.
+    /// A generated authority source keeps the multi-page paging contract
+    /// covered without writing thousands of xattrs during the unit test.
     #[cfg(test)]
     test_v2: Option<TestV2Source>,
 }
@@ -714,7 +717,7 @@ fn root_generation(root: &Path) -> String {
         hasher.update(b"opaque-v3\\0");
         hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(&bytes);
-        return format!("{:x}", hasher.finalize());
+        return hex::encode(hasher.finalize());
     }
     match std::fs::metadata(root) {
         Ok(metadata) => {
@@ -737,7 +740,7 @@ fn root_generation(root: &Path) -> String {
             hasher.update(&bytes);
         }
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjection> {
@@ -1948,34 +1951,39 @@ mod sync_state_tests {
         use ui::search::SearchProvider as _;
 
         let root = tempfile::tempdir().unwrap();
-        // An injected FUSE page source models all 100,001 rows without trying
-        // to store hundreds of pages as host xattrs (which many filesystems
-        // reject long before the protocol's per-page limit).
+        // An injected FUSE page source models dozens of pages without trying
+        // to store them as host xattrs (which many filesystems reject long
+        // before the protocol's per-page limit). The late target sits alone
+        // on a final partial page.
+        let records = RECORD_INDEX_PAGE_ENTRIES * 64 + 1;
         let mut pager =
-            WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), 100_001);
+            WorkspaceRecordIndexPager::from_generated_v2(root.path().to_path_buf(), records);
         let first = pager.next_page();
         assert_eq!(
             first.records.len(),
             RECORD_INDEX_PAGE_ENTRIES,
-            "one step cannot materialise 100k rows"
+            "one step cannot materialise the whole index"
         );
         assert!(!first.complete);
         let provider =
             crate::search_provider::CollaborativeRecordSearchProvider::new(&first.records);
         assert!(provider.search("late-target").is_empty());
 
+        let mut indexed = first.records.len();
         while pager.has_more() {
             let page = pager.next_page();
             assert!(
                 page.records.len() <= RECORD_INDEX_PAGE_ENTRIES,
                 "an idle tick must not monopolise the frame"
             );
+            indexed += page.records.len();
             provider.append_page(0, &page.records);
         }
         assert!(
             !pager.has_more(),
             "idle work stops once the current authority is indexed"
         );
+        assert_eq!(indexed, records, "every page is indexed exactly once");
         assert!(
             provider
                 .search("late-target")

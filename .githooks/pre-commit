@@ -9,6 +9,8 @@ note() { printf '  %s\n' "$*" >&2; }
 "$root/scripts/check-workspace-complete.sh"
 python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
+python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
+python3 "$root/tools/policy/check_ui_clock_contract.py"
 
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
 
@@ -39,6 +41,13 @@ while IFS= read -r f; do
   crate_manifest="$(dirname "$crate_tests")/Cargo.toml"
   if [ -f "$crate_manifest" ] \
     && grep -qE "^[[:space:]]*path[[:space:]]*=[[:space:]]*\"tests/${base}\\.rs\"[[:space:]]*$" "$crate_manifest"; then
+    continue
+  fi
+  # A test file the crate's own sources include with `#[path]` is compiled
+  # as part of that target, not orphaned.
+  crate_src="$(dirname "$crate_tests")/src"
+  if [ -d "$crate_src" ] \
+    && grep -rqE "^[[:space:]]*#\[path = \"(\.\./)+tests/${base}\.rs\"\]" "$crate_src"; then
     continue
   fi
   if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then

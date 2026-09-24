@@ -35,24 +35,10 @@ pub fn default_path() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     Some(
-        data_dir()?
+        xdg_paths::xdg::data_home()?
             .join("tilo-contacts")
             .join("addressbook.automerge"),
     )
-}
-
-/// Best-effort XDG data dir without pulling the `dirs` crate.
-fn data_dir() -> Option<PathBuf> {
-    if let Ok(x) = std::env::var("XDG_DATA_HOME")
-        && !x.is_empty()
-    {
-        return Some(PathBuf::from(x));
-    }
-    let home = std::env::var_os("HOME")?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(home).join(".local").join("share"))
 }
 
 /// Load the address book from `path`. Returns an empty vec when the file

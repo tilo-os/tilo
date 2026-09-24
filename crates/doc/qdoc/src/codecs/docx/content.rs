@@ -12,7 +12,7 @@ use crate::format::CodecError;
 use crate::model::DocMut;
 use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesEnd, BytesRef, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
 
@@ -623,18 +623,31 @@ impl BodyState {
     }
 
     fn handle_text(&mut self, t: &BytesText, doc: &mut DocMut) -> Result<(), CodecError> {
-        if self.in_t
-            && let Some(b) = self.cur.as_ref()
-        {
+        if self.in_t && self.cur.is_some() {
             let txt = t
                 .xml10_content()
                 .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-            if !txt.is_empty() {
-                doc.splice_text(b, self.cur_len, 0, &txt);
-                self.cur_len = self.cur_len.saturating_add(txt.chars().count());
-            }
+            self.append_text(&txt, doc);
         }
         Ok(())
+    }
+
+    /// An entity or character reference inside `w:t` is the character it stands for.
+    fn handle_general_ref(&mut self, r: &BytesRef, doc: &mut DocMut) {
+        if self.in_t
+            && let Some(c) = crate::codecs::resolve_general_ref(r)
+        {
+            self.append_text(c.encode_utf8(&mut [0; 4]), doc);
+        }
+    }
+
+    fn append_text(&mut self, txt: &str, doc: &mut DocMut) {
+        if let Some(b) = self.cur.as_ref()
+            && !txt.is_empty()
+        {
+            doc.splice_text(b, self.cur_len, 0, txt);
+            self.cur_len = self.cur_len.saturating_add(txt.chars().count());
+        }
     }
 
     /// Applies every mark gathered during parsing (runs, paragraph styles, notes, comments,
@@ -734,6 +747,7 @@ pub(crate) fn parse_body(
             }
             Event::End(e) => st.handle_end(&e, doc, reg),
             Event::Text(t) => st.handle_text(&t, doc)?,
+            Event::GeneralRef(r) => st.handle_general_ref(&r, doc),
             Event::Eof => break,
             _ => {}
         }

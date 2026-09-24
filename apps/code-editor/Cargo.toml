@@ -36,14 +36,6 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-# Syntax highlighting. We use syntect purely as a tokenizer: its Sublime
-# syntax definitions classify each span into a scope stack, which we map to
-# a small set of OS-theme-derived colors (see `highlight.rs`). The
-# `default-fancy` feature selects the pure-Rust `fancy-regex` backend so no
-# C toolchain / oniguruma is required at build time.
-syntect = { version = "5.3", default-features = false, features = [
-    "default-fancy",
-] }
 # Saving a source file is a write that must not be able to truncate it: a
 # temp-file + fsync + rename leaves either the old bytes or the new ones.
 atomic-file = { path = "../../crates/system/atomic-file" }
@@ -52,6 +44,7 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # exact for paths containing spaces and non-ASCII.
 url.workspace = true
 uuid.workspace = true
+hex.workspace = true
 sha2.workspace = true
 
 [target.'cfg(unix)'.dependencies]

@@ -378,7 +378,7 @@ fn btrfs_fsid(sb: &[u8]) -> Option<String> {
 }
 
 fn sha_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Run one request against `platform`. Sequencing, recording and every
@@ -746,7 +746,7 @@ impl Engine<'_> {
                     "a component file is too long",
                 ));
             }
-            if format!("{:x}", hash.finalize()) != sha {
+            if hex::encode(hash.finalize()) != sha {
                 return Err(Refusal::new(
                     codes::DIGEST_MISMATCH,
                     "a component does not match the manifest digest",
@@ -956,7 +956,7 @@ impl Engine<'_> {
             done += n;
             self.report(step, done, len);
         }
-        Ok(format!("{:x}", hash.finalize()))
+        Ok(hex::encode(hash.finalize()))
     }
 
     fn placeholders_from_disk(&self, disk: &Disk, guid: &str) -> Result<Placeholders, Refusal> {
@@ -1309,7 +1309,7 @@ impl Engine<'_> {
             self.report(step, done, size);
         }
         self.platform.sync_disk(&disk).map_err(io_refusal)?;
-        if format!("{:x}", hash.finalize()) != sha {
+        if hex::encode(hash.finalize()) != sha {
             return Err(Refusal::new(
                 codes::DIGEST_MISMATCH,
                 "a component file changed while it was written",
