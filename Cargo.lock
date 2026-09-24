@@ -3100,6 +3100,7 @@ name = "desktop-policy"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
+ "package-store",
  "serde",
  "serde_json",
  "tempfile",
