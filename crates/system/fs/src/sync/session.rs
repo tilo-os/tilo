@@ -84,6 +84,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a peer that does not speak this protocol is reached through
 /// the per-request protocols before trying again.
 const LEGACY_RETRY: Duration = Duration::from_secs(300);
+/// A session quiet for longer than this is pinged before use.
+const PING_AFTER: Duration = Duration::from_secs(2);
+const PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +122,8 @@ pub enum SessionOperationV1 {
     Authority(AuthorityRequest),
     /// The requester published changes; pull from it now.
     Announce,
+    /// Answered with `Done`: the connection still reaches the peer.
+    Ping,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -330,6 +335,9 @@ impl SessionProtocol {
             }
             SessionOperationV1::Announce => {
                 let _ = self.announcements.send(remote);
+                write_frame(&mut send, &SessionFrameV1::Done).await?;
+            }
+            SessionOperationV1::Ping => {
                 write_frame(&mut send, &SessionFrameV1::Done).await?;
             }
         }
@@ -694,7 +702,14 @@ impl SessionProtocol {
             .as_ref()
             .and_then(|records| records.workspace_authority.as_ref())
         else {
-            return write_frame(send, &SessionFrameV1::Denied).await;
+            // This device holds no signed authority (only its governor's
+            // mount does): there is nothing to give or take.
+            write_frame(
+                send,
+                &SessionFrameV1::Authority(AuthorityResponse { authority: None }),
+            )
+            .await?;
+            return write_frame(send, &SessionFrameV1::Done).await;
         };
         let response =
             super::authority_response(authority, &self.policy, self.workspace_id, peer, request);
@@ -711,6 +726,8 @@ pub(super) struct Session {
     connection: Connection,
     pub peer: AuthenticatedFsPeer,
     pub addr: EndpointAddr,
+    /// When a response last arrived on this session.
+    last_heard: Mutex<Instant>,
 }
 
 /// Sessions to every peer this device reconciles with, opened on first use.
@@ -753,7 +770,13 @@ impl SessionPool {
             anyhow::bail!("transport partition gate is closed");
         }
         if let Some(session) = self.live(addr.id).await {
-            return Ok(Some(session));
+            // A peer that restarted leaves a connection that looks open until
+            // QUIC's idle timeout; a quiet session proves itself first.
+            if session.heard_within(PING_AFTER) || self.ping(&session).await {
+                return Ok(Some(session));
+            }
+            session.connection.close(0u32.into(), b"unresponsive");
+            self.forget(&session).await;
         }
         if self
             .legacy
@@ -789,6 +812,7 @@ impl SessionPool {
                     connection,
                     peer,
                     addr: addr.clone(),
+                    last_heard: Mutex::new(Instant::now()),
                 });
                 // Another caller may have opened one meanwhile; keep one.
                 let mut sessions = self.sessions.lock().await;
@@ -856,6 +880,22 @@ impl SessionPool {
             .collect()
     }
 
+    /// Whether the peer answers on `session` promptly.
+    async fn ping(&self, session: &Session) -> bool {
+        let exchange = async {
+            let (mut send, mut recv) = session
+                .open(&self.request(SessionOperationV1::Ping))
+                .await?;
+            let _ = send.finish();
+            while session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {}
+            Ok::<_, anyhow::Error>(())
+        };
+        matches!(
+            tokio::time::timeout(PING_TIMEOUT, exchange).await,
+            Ok(Ok(()))
+        )
+    }
+
     fn request(&self, operation: SessionOperationV1) -> SessionRequestV1 {
         SessionRequestV1 {
             protocol_version: SESSION_PROTOCOL_VERSION,
@@ -866,6 +906,11 @@ impl SessionPool {
 }
 
 impl Session {
+    /// Whether the connection is gone (the pool then opens a new one).
+    pub(super) fn is_closed(&self) -> bool {
+        self.connection.close_reason().is_some()
+    }
+
     /// Sends `request` on a new stream and returns the stream for its
     /// response frames.
     async fn open(&self, request: &SessionRequestV1) -> Result<(SendStream, RecvStream)> {
@@ -874,9 +919,23 @@ impl Session {
         Ok((send, recv))
     }
 
+    fn heard_within(&self, window: Duration) -> bool {
+        self.last_heard
+            .lock()
+            .is_ok_and(|heard| heard.elapsed() < window)
+    }
+
+    fn heard(&self) {
+        if let Ok(mut heard) = self.last_heard.lock() {
+            *heard = Instant::now();
+        }
+    }
+
     /// Frames up to `Done`. `Denied` and `Error` become errors.
-    async fn frames(recv: &mut RecvStream, limit: usize) -> Result<Option<SessionFrameV1>> {
-        match read_frame(recv, limit).await? {
+    async fn frames(&self, recv: &mut RecvStream, limit: usize) -> Result<Option<SessionFrameV1>> {
+        let frame = read_frame(recv, limit).await?;
+        self.heard();
+        match frame {
             SessionFrameV1::Done => Ok(None),
             SessionFrameV1::Denied => Err(anyhow!("session request denied")),
             SessionFrameV1::Error(code) => Err(anyhow!("session request failed: {code:?}")),
@@ -895,7 +954,7 @@ pub(super) async fn sync_namespace(
     let (mut send, mut recv) = session
         .open(&pool.request(SessionOperationV1::NamespaceSync))
         .await?;
-    if Session::frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
+    if session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
         anyhow::bail!("unexpected namespace sync response");
     }
     let mut state = automerge::sync::State::new();
@@ -914,6 +973,7 @@ pub(super) async fn sync_namespace(
         let SessionFrameV1::Sync(reply) = read_frame(&mut recv, MAX_SYNC_FRAME_BYTES).await? else {
             anyhow::bail!("unexpected namespace sync frame");
         };
+        session.heard();
         if !reply.is_empty() {
             received = true;
             let _ = namespace
@@ -949,7 +1009,7 @@ pub(super) async fn pull_namespace(
         .await?;
     let _ = send.finish();
     let mut delta = Vec::new();
-    while let Some(frame) = Session::frames(&mut recv, MAX_FRAME_BYTES).await? {
+    while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
         let SessionFrameV1::NamespaceChunk(chunk) = frame else {
             anyhow::bail!("unexpected namespace frame");
         };
@@ -991,7 +1051,7 @@ pub(super) async fn exchange_authority(
         .open(&pool.request(SessionOperationV1::Authority(request)))
         .await?;
     let _ = send.finish();
-    while let Some(frame) = Session::frames(&mut recv, MAX_FRAME_BYTES).await? {
+    while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
         if let SessionFrameV1::Authority(response) = frame
             && let Some(envelope) = response.authority
         {
@@ -1007,7 +1067,7 @@ pub(super) async fn announce(pool: &SessionPool, session: &Session) -> Result<()
         .open(&pool.request(SessionOperationV1::Announce))
         .await?;
     let _ = send.finish();
-    while Session::frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {}
+    while session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {}
     Ok(())
 }
 
@@ -1048,7 +1108,7 @@ async fn reconcile_streams(
                 .await?;
             let _ = send.finish();
             let mut answers = Vec::with_capacity(chunk.len());
-            while let Some(frame) = Session::frames(&mut recv, MAX_FRAME_BYTES).await? {
+            while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
                 let SessionFrameV1::Reconciled { answers: part } = frame else {
                     anyhow::bail!("unexpected reconcile frame");
                 };
@@ -1172,7 +1232,7 @@ pub(super) async fn pull_records(
         let _ = send.finish();
         let mut touched = Vec::new();
         let mut inline = Vec::new();
-        while let Some(frame) = Session::frames(&mut recv, MAX_FRAME_BYTES).await? {
+        while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
             match frame {
                 SessionFrameV1::Envelopes { batches } => {
                     for batch in batches {
@@ -1281,7 +1341,7 @@ pub(super) async fn collect_replica_acks(
             .await?;
         let _ = send.finish();
         let mut responses = Vec::new();
-        while let Some(frame) = Session::frames(&mut recv, MAX_FRAME_BYTES).await? {
+        while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
             if let SessionFrameV1::ReplicaAcks { responses: part } = frame {
                 responses.extend(part);
             }
