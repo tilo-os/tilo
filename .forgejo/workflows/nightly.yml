@@ -212,6 +212,38 @@ jobs:
           bash tools/with-test-environment.sh
           cargo test --workspace --examples --locked
 
+      # Ignored tests whose requirement this runner meets: the shell ones
+      # spawn a real headless compositor (llvmpipe), format-host needs the
+      # Markdown codec built as a wasm32-wasip2 component. FUSE-only ignored
+      # tests run in fs-fuse.yml. Newly enabled: a failure is listed in the
+      # job summary but does not fail the run until the lane has passed here.
+      - name: Run ignored tests this runner supports
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          IGNORED_FILTER: >-
+            (package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(session_lock_e2e::))) or
+            (package(format-host) and binary(integration))
+        run: |
+          rustup target add wasm32-wasip2
+          cargo build --locked --release --target wasm32-wasip2 \
+            --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
+          bash tools/ci/measure.sh "nightly ignored tests" -- \
+            bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
+            bash tools/with-test-environment.sh \
+            cargo nextest run --workspace --locked --profile ci --run-ignored only \
+            --test-threads 1 -E "$IGNORED_FILTER"
+
+      - name: Report ignored tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "nightly ignored tests (${{ matrix.arch }})" target/ci/junit/ignored.xml
+
       - name: Save test results
         if: always()
         continue-on-error: true
