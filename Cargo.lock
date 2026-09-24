@@ -13496,6 +13496,7 @@ dependencies = [
  "png 0.18.1",
  "pollster",
  "postcard",
+ "private-fs",
  "qcms",
  "qdoc",
  "rand 0.8.8",
