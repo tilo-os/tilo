@@ -10041,8 +10041,10 @@ dependencies = [
  "automerge",
  "image",
  "kamadak-exif",
+ "libc",
  "qdoc",
  "runtime-dylib",
+ "runtime-fs",
  "serde",
  "serde_json",
  "taffy",
@@ -10053,6 +10055,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-reference",
  "tilo-vision",
+ "tokio",
  "vello",
  "vello_encoding",
  "winit",
@@ -10821,7 +10824,6 @@ checksum = "edecfcd5d755a5e5d98e24cf43113e7cdaec5a070edd0f6b250c03a573da30fa"
 name = "qdoc"
 version = "0.1.0"
 dependencies = [
- "advisory-lock",
  "automerge",
  "base64",
  "blake3",
@@ -14727,6 +14729,7 @@ dependencies = [
  "rand_core 0.10.0",
  "regex",
  "runtime-collab",
+ "runtime-fs",
  "runtime-identity",
  "runtime-portal",
  "rustc-hash 2.1.1",

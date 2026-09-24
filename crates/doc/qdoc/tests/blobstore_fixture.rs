@@ -1,11 +1,11 @@
 //! One lock for every test that touches process-wide blob state.
 //!
-//! A test that needs a store or transport of its own installs it with
+//! A test that needs a store of its own installs it with
 //! `qdoc::blobstore::scope`, which only its own thread sees and which ends with the
 //! test. What stays process-wide is when each hash was last asked for and first
-//! wanted (the transport's rate limit and the pending clock), and all of these test
-//! files are modules of one test binary, so tests that ask for the same content
-//! would otherwise see each other's clocks.
+//! wanted (the ask rate limit and the pending clock), and all of these test files
+//! are modules of one test binary, so tests that ask for the same content would
+//! otherwise see each other's clocks.
 
 #![allow(
     clippy::unwrap_used,

@@ -1968,40 +1968,56 @@ impl ResourceProvider for crate::app::PdfApp {
 mod tests {
     use super::*;
     use crate::app::PdfApp;
-    use qdoc::blobstore::{self, BlobStore, BlobTransport, MemoryBlobStore};
+    use qdoc::blobstore::{
+        self, BlobStore, BlobStoreError, BlobStoreLimits, CachedContentStore, ContentStoreClient,
+        Fetch, MemoryBlobStore,
+    };
     use serial_test::serial;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
-    /// A tiny synchronous two-peer bridge. `offer()` belongs to peer A; a
-    /// later `want()` from peer B verifies and installs those exact bytes into
-    /// B's separate store. It exercises the same qdoc transport boundary used
-    /// by runtime-collab without sharing a process-global store by accident.
+    /// One device's content store. A read it cannot answer from its own
+    /// bytes starts a fetch from the collaborator's device and answers
+    /// `Pending`, as the filesystem daemon does; the bytes are its own once
+    /// the fetch lands. Two of these never share a process-global store.
     #[derive(Default)]
-    struct TestBlobBridge {
-        offered: Mutex<BTreeMap<String, Vec<u8>>>,
-        destination: Mutex<Option<Arc<MemoryBlobStore>>>,
+    struct DeviceStore {
+        own: Mutex<BTreeMap<String, Vec<u8>>>,
+        collaborator: Option<Arc<DeviceStore>>,
     }
 
-    impl BlobTransport for TestBlobBridge {
-        fn offer(&self, hash: &str, bytes: &[u8]) {
-            if let Ok(mut offered) = self.offered.lock() {
-                offered.insert(hash.to_string(), bytes.to_vec());
+    impl ContentStoreClient for DeviceStore {
+        fn put(&self, bytes: &[u8], _mime: &str) -> Result<String, BlobStoreError> {
+            let hash = blobstore::hash_bytes(bytes);
+            if let Ok(mut own) = self.own.lock() {
+                own.insert(hash.clone(), bytes.to_vec());
+            }
+            Ok(hash)
+        }
+
+        fn read(&self, hash: &str) -> Fetch {
+            if let Some(bytes) = self.own.lock().ok().and_then(|own| own.get(hash).cloned()) {
+                return Fetch::Ready(bytes);
+            }
+            let fetched = self
+                .collaborator
+                .as_ref()
+                .and_then(|peer| peer.own.lock().ok().and_then(|own| own.get(hash).cloned()));
+            match fetched {
+                Some(bytes) => {
+                    if let Ok(mut own) = self.own.lock() {
+                        own.insert(hash.to_string(), bytes);
+                    }
+                    Fetch::Pending
+                }
+                None => Fetch::Unavailable,
             }
         }
 
-        fn want(&self, hash: &str) {
-            let bytes = self
-                .offered
-                .lock()
-                .ok()
-                .and_then(|offered| offered.get(hash).cloned());
-            let destination = self.destination.lock().ok().and_then(|slot| slot.clone());
-            if let (Some(bytes), Some(destination)) = (bytes, destination) {
-                let _ = destination.put(hash, &bytes);
-            }
+        fn has(&self, hash: &str) -> bool {
+            self.own.lock().is_ok_and(|own| own.contains_key(hash))
         }
     }
 
@@ -2378,30 +2394,37 @@ mod tests {
 
     #[test]
     #[serial(pdf_blobstore)]
-    fn imported_bytes_cross_a_blob_transport_without_entering_the_action() {
-        let producer = Arc::new(MemoryBlobStore::default());
-        let consumer = Arc::new(MemoryBlobStore::default());
-        let bridge = Arc::new(TestBlobBridge::default());
-        blobstore::set_store(producer.clone());
-        blobstore::set_transport(&(bridge.clone() as Arc<dyn BlobTransport>));
+    fn imported_bytes_reach_a_collaborator_through_the_content_store_not_the_action() {
+        let producer = Arc::new(DeviceStore::default());
+        blobstore::set_store(Arc::new(CachedContentStore::new(
+            producer.clone(),
+            BlobStoreLimits::default(),
+        )));
         let bytes = b"content that is deliberately not in Automerge";
         let hash = blobstore::put(bytes).expect("test fixture fits blob quota");
         assert!(producer.has(&hash));
-        assert!(!consumer.has(&hash));
 
-        let Ok(mut destination) = bridge.destination.lock() else {
-            return;
-        };
-        *destination = Some(consumer.clone());
-        drop(destination);
-        blobstore::set_store(consumer.clone());
-        // First read is intentionally non-blocking; it asks the transport.
+        let consumer = Arc::new(DeviceStore {
+            own: Mutex::default(),
+            collaborator: Some(producer),
+        });
+        let consumer_view = Arc::new(CachedContentStore::new(
+            consumer.clone(),
+            BlobStoreLimits::default(),
+        ));
+        blobstore::set_store(consumer_view.clone());
+        assert!(!consumer.has(&hash));
+        // First read is intentionally non-blocking; the device fetches.
         assert!(blobstore::get(&hash).is_none());
-        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Resolved);
+        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Pending);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         assert_eq!(blobstore::get(&hash).as_deref(), Some(bytes.as_slice()));
-        assert!(!consumer.put(&hash, b"tampered"));
-        assert_eq!(consumer.get(&hash).as_deref(), Some(bytes.as_slice()));
-        blobstore::clear_transport();
+        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Resolved);
+        assert!(consumer.has(&hash));
+        assert_eq!(
+            consumer_view.cached(&hash).as_deref(),
+            Some(bytes.as_slice())
+        );
         blobstore::set_store(Arc::new(MemoryBlobStore::default()));
     }
 
