@@ -32,7 +32,9 @@ use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
 };
-use tilo_app_package::{DiscardBlobs, PackageId, PackageMeta, Verification, verify_with_trust};
+use tilo_app_package::{
+    BlobFetcher, DiscardBlobs, PackageId, PackageMeta, Verification, verify_with_trust,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -674,6 +676,7 @@ fn install_checked(
     checked: &Checked,
     pinned: bool,
     source: String,
+    payload: Option<&dyn BlobFetcher>,
 ) -> Result<package_store::Installed, Error> {
     let expected = checked.meta.id;
     let attested_by = checked.attested_by.clone();
@@ -693,7 +696,7 @@ fn install_checked(
                     source,
                 })
             },
-            None,
+            payload,
         )
         .map_err(store_error)
 }
@@ -854,6 +857,7 @@ fn install(
         &checked,
         pinned,
         tapp.display().to_string(),
+        None,
     )?;
     replace_cli_shims(existing.as_ref(), &checked.manifest, checked.id())?;
 
@@ -1051,14 +1055,17 @@ fn update_one(
 ) -> Result<UpdateOutcome, Error> {
     // 1. Get candidate bytes (local file or configured registries); either
     //    way `check` verifies them before anything is stored.
-    let (candidate, source) = if let Some(path) = request.from {
+    // A registry serves thin packages; their payload comes from the node that
+    // served them, and only the blobs the store lacks are fetched.
+    let (candidate, source, provider) = if let Some(path) = request.from {
         (
             Candidate::File(path.to_path_buf()),
             path.display().to_string(),
+            None,
         )
     } else {
-        let (bytes, source) = fetch_from_registries(&entry.id, request.version_req)?;
-        (Candidate::Fetched(bytes), source)
+        let (bytes, source, provider) = fetch_from_registries(&entry.id, request.version_req)?;
+        (Candidate::Fetched(bytes), source, Some(provider))
     };
     let checked = check(&candidate, request.trust)?;
     if let Some(outcome) = update_allowed(entry, &checked, request)? {
@@ -1097,7 +1104,16 @@ fn update_one(
     //    row replaced atomically: a failure before that point leaves the old
     //    version installed and working, and the old tree goes only after.
     let store = store()?;
-    let installed = install_checked(&store, &candidate, &checked, entry.pinned, source.clone())?;
+    let installed = install_checked(
+        &store,
+        &candidate,
+        &checked,
+        entry.pinned,
+        source.clone(),
+        provider
+            .as_ref()
+            .map(|provider| provider as &dyn BlobFetcher),
+    )?;
     replace_cli_shims(Some(entry), &checked.manifest, &entry.id)?;
 
     println!(
@@ -1501,7 +1517,7 @@ fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Orderi
 fn fetch_from_registries(
     app_id: &str,
     version_req: Option<&str>,
-) -> Result<(Vec<u8>, String), Error> {
+) -> Result<(Vec<u8>, String, app_registry::ProviderBlobs), Error> {
     let host = app_registry::HostProfile::detect();
     let outcome = tilo_rt::block_on(app_registry::resolve::resolve_and_fetch(
         None,
@@ -1518,7 +1534,7 @@ fn fetch_from_registries(
         detail: format!("{e:#}"),
     })?;
     let source = format!("{} (registry {})", outcome.version, outcome.registry);
-    Ok((outcome.bytes, source))
+    Ok((outcome.bytes, source, outcome.payload))
 }
 
 fn runtime_bundle_present(version: &str) -> bool {

@@ -144,6 +144,18 @@ pub trait BlobSink {
     fn accept(&mut self, hash: &BlobHash, len: u64, bytes: &mut dyn Read) -> io::Result<()>;
 }
 
+/// Where the payload blobs a thin package does not carry can be fetched
+/// from: a peer, a registry, a mirror. Whoever receives the bytes verifies
+/// each against its hash; a fetcher need not be trusted.
+pub trait BlobFetcher: Sync {
+    /// Deliver each of `hashes` to `sink`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a blob cannot be fetched or `sink` refuses it.
+    fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> io::Result<()>;
+}
+
 impl BlobSource for BTreeMap<BlobHash, Vec<u8>> {
     fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>> {
         Ok(self.get(hash).map(|bytes| OpenBlob {

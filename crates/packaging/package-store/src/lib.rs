@@ -49,7 +49,8 @@ pub use layout::Layout;
 pub use migrate::Migration;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
 #[cfg(feature = "store")]
-pub use store::{Admission, BlobFetcher, DiskUsage, Installed, PackageStore, Removed};
+pub use store::{Admission, DiskUsage, Installed, PackageStore, Removed};
+pub use tilo_app_package::BlobFetcher;
 
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]
