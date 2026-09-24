@@ -280,4 +280,46 @@ mod tests {
     fn rejects_foreign_payloads() {
         assert_eq!(decode("other", b"{}"), Ok(None));
     }
+
+    /// A clock state with one of every entity, so each resource kind and its
+    /// operations are published.
+    fn populated_state() -> ClockState {
+        let mut state = ClockState::default();
+        state
+            .timers
+            .push(crate::Timer::new("Pasta", Duration::from_secs(600)));
+        state.alarms.push(crate::Alarm {
+            id: Uuid::new_v4(),
+            label: "Wake up".into(),
+            local_time: chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time"),
+            weekdays: std::collections::BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        state.world_clocks.push(crate::WorldClock {
+            id: Uuid::new_v4(),
+            city: "Tokyo".into(),
+            timezone: "Asia/Tokyo".into(),
+        });
+        state
+    }
+
+    // Clocks publishes only effect operations against its local state, never
+    // document actions, so the registry is empty and the sweep checks the
+    // surface and the protocol.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: tilo_actions::ActionRegistry::new(),
+        resources: |_| provide_resources(&populated_state()),
+        palette: [
+            "Start a five-minute timer",
+            "Create a 07:30 alarm",
+            "Add New York",
+            "Remove timer",
+            "Remove alarm",
+            "Remove city",
+            "Record lap",
+        ],
+    }
 }
