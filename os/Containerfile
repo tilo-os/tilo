@@ -574,15 +574,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && ln -s tilo /out/system \
     && mkdir -p /out/completions/bash /out/completions/fish /out/completions/zsh \
     && target/release/tilo completions bash > /out/completions/bash/tilo \
-    && cp /out/completions/bash/tilo /out/completions/bash/system \
     && target/release/app completions bash > /out/completions/bash/app \
-    && cp /out/completions/bash/app /out/completions/bash/store \
     && target/release/tilo completions fish > /out/completions/fish/tilo.fish \
     && target/release/app completions fish > /out/completions/fish/app.fish \
     && target/release/tilo completions zsh > /out/completions/zsh/_tilo \
-    && cp /out/completions/zsh/_tilo /out/completions/zsh/_system \
     && target/release/app completions zsh > /out/completions/zsh/_app \
-    && cp /out/completions/zsh/_app /out/completions/zsh/_store \
     # Files stays a standalone /usr/bin binary for recovery; its package is the
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
@@ -1178,9 +1174,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # keyboard layout, power policy, touchpad — so an image without it is an
 # image where those are unreachable on real hardware.
 COPY --from=desktop-binaries / /
-COPY --from=builder /out/completions/bash/ /usr/share/bash-completion/completions/
-COPY --from=builder /out/completions/fish/ /usr/share/fish/vendor_completions.d/
-COPY --from=builder /out/completions/zsh/ /usr/share/zsh/site-functions/
 COPY \
     os/usr/lib/systemd/user/tilo-models.service \
     os/usr/lib/systemd/user/tilo-models.socket \
