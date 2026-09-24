@@ -129,7 +129,7 @@ pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: 
         return false;
     };
     let mut changed = false;
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -194,7 +194,7 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
 /// an answered card and is not retried on every tick.
 pub fn retry_resolvable_host_app_errors(tree: &mut WorkspaceTree) -> bool {
     let mut changed = false;
-    for workspace in &mut tree.workspaces {
+    for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -730,7 +730,7 @@ mod tests {
             "Not installed on this machine".into()
         ));
         if let TileContent::LocalApp { app_id, .. } =
-            &mut tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile
+            &mut tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
         {
             *app_id = "org.example.ActuallyMissing".into();
         }

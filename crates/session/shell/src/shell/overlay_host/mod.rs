@@ -6504,8 +6504,12 @@ impl ShellOverlayHost {
         let (strip_id, group_id) = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let strip = tree.active_strip.get(&tree.active).copied()?;
-            (strip, tree.active_group_for(strip)?)
+            let strip = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            (strip, tree.desktop.active_group_for(strip)?)
         };
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: same ownership contract as `group_at_for_tests` above.
@@ -33689,7 +33693,7 @@ mod resync_strips_tests {
                     app_id: "dev.tilo.terminal".into(),
                     surface_id: surface,
                 };
-            live.external_revision = live.external_revision.wrapping_add(1);
+            live.desktop.external_revision = live.desktop.external_revision.wrapping_add(1);
         }
         assert!(host.take_structure_dirty());
         assert_eq!(host.active_tile_rect(group_id), Some(Rect::ZERO));
@@ -34055,7 +34059,7 @@ mod resync_strips_tests {
     fn newly_active_group_retries_reveal_after_its_first_layout() {
         let (mut tree, strip_id, first_group) = one_group_seed();
         for id in 201..=206 {
-            tree.workspaces[0].strips[0]
+            tree.desktop.workspaces[0].strips[0]
                 .window_groups
                 .push(make_stub_group(id, &format!("Existing-{id}")));
         }
@@ -34084,10 +34088,10 @@ mod resync_strips_tests {
         {
             let mut st = chrome.borrow_mut();
             let mut live = st.tree_mut();
-            live.workspaces[0].strips[0]
+            live.desktop.workspaces[0].strips[0]
                 .window_groups
                 .push(make_stub_group(LAUNCHED_GROUP, "Launched"));
-            live.active_group.insert(strip_id, LAUNCHED_GROUP);
+            live.desktop.active_group.insert(strip_id, LAUNCHED_GROUP);
             drop(live);
             st.bump();
         }
