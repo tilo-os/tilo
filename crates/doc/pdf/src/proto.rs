@@ -97,6 +97,9 @@ pub enum Request {
     Probe {
         path: String,
     },
+    /// Make a development build of the helper abort while handling this
+    /// request, to exercise crash recovery. Release builds refuse it.
+    Abort,
 }
 
 /// Why a request failed inside the helper.

@@ -60,6 +60,25 @@ pub enum NewAnnotationKind {
         rect: Rect,
         font_size: f32,
     },
+    /// A stamp whose appearance is the given strokes and text lines, drawn
+    /// in `color` — how a signature (drawn ink or a typed name plus its
+    /// date) is written so that every reader shows it.
+    Stamp {
+        rect: Rect,
+        strokes: Vec<Vec<Point>>,
+        stroke_width: f32,
+        text: Vec<StampText>,
+    },
+}
+
+/// One line of text in a [`NewAnnotationKind::Stamp`] appearance, set in
+/// Helvetica.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StampText {
+    /// Start of the baseline, in user space.
+    pub at: Point,
+    pub size: f32,
+    pub text: String,
 }
 
 /// An annotation to add to an output page.
