@@ -104,18 +104,19 @@ has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --he
 has "$workflow" 'git checkout --detach FETCH_HEAD' \
   'snapshot promotion applies its pin on the current branch tip'
 # Protected main refuses direct pushes; the pin lands through a digest-named
-# automation branch and a PR opened by the CI account (whose PRs run checks).
+# automation branch. REGISTRY_TOKEN pushes it but gets 404 from the
+# pull-request API, so RELEASE_TOKEN opens the PR (whose checks then run).
 promotion_step="$(sed -n '/- name: Propose the frozen snapshot pin through protected main/,/^      - name: /p' "$workflow")"
 if grep -Fq 'branch="automation/rpm-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
    && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
    && grep -Fq 'rpms --rpms-ref "$ref"' <<<"$promotion_step" \
-   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' <<<"$promotion_step" \
-   && ! grep -Fq 'github.token' <<<"$promotion_step" \
+   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$promotion_step" \
+   && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' <<<"$promotion_step" \
    && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow"; then
-  ok 'snapshot pin lands through a CI-account PR, never a direct push to main'
+  ok 'snapshot pin lands through a RELEASE_TOKEN PR, never a direct push to main'
 else
-  bad 'snapshot pin promotion pushes to main or bypasses the CI-account PR'
+  bad 'snapshot pin promotion pushes to main or opens its PR without RELEASE_TOKEN'
 fi
 if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_step" \
    && ! grep -Fq 'branch races' "$workflow"; then

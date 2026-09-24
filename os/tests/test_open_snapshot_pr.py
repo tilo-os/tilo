@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import sys
@@ -107,6 +109,66 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
                 run_main(self.argv(**overrides))
+
+
+class TokenFailureReportingTests(unittest.TestCase):
+    rpms_ref = "code.sandbox.example/qos/rpms@sha256:" + "d" * 64
+
+    def argv(self):
+        digest = hashlib.sha256(MODULE.rpms_contents(self.rpms_ref).encode()).hexdigest()
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid", "--repository", "qos/qos",
+            "--branch", "automation/rpm-snapshot-" + digest[:16],
+            "--snapshot-digest", digest, "rpms", "--rpms-ref", self.rpms_ref,
+        ]
+
+    @staticmethod
+    def http_error(code):
+        return MODULE.urllib.error.HTTPError("https://forge.invalid", code, "denied", {}, None)
+
+    def run_with_listing_error(self, code):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                mock.patch.object(MODULE, "request", side_effect=self.http_error(code)), \
+                contextlib.redirect_stderr(stderr):
+            result = MODULE.main()
+        return result, stderr.getvalue()
+
+    def test_unreadable_pull_requests_name_the_token_to_set(self):
+        # Forgejo reports repositories the token cannot see as 404.
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                result, stderr = self.run_with_listing_error(code)
+                self.assertEqual(result, 1)
+                self.assertIn("token cannot read pull requests on qos/qos", stderr)
+                self.assertIn("RELEASE_TOKEN", stderr)
+                self.assertNotIn("Traceback", stderr)
+
+    def test_server_error_is_not_blamed_on_the_token(self):
+        result, stderr = self.run_with_listing_error(502)
+        self.assertEqual(result, 1)
+        self.assertIn("HTTP 502", stderr)
+        self.assertNotIn("RELEASE_TOKEN", stderr)
+
+    def test_refused_creation_names_the_token_to_set(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                mock.patch.object(MODULE, "find_open", return_value=None), \
+                mock.patch.object(MODULE, "request", side_effect=self.http_error(403)), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(MODULE.main(), 1)
+        self.assertIn("refused rpms snapshot pull-request creation (HTTP 403)", stderr.getvalue())
+        self.assertIn("RELEASE_TOKEN", stderr.getvalue())
+
+    def test_missing_token_names_the_secret(self):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": ""}), \
+                mock.patch.object(sys, "argv", self.argv()), \
+                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            MODULE.main()
+        self.assertIn("RELEASE_TOKEN", stderr.getvalue())
 
 
 class RpmSnapshotPullRequestTests(unittest.TestCase):
