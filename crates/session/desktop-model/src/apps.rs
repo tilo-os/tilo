@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-use crate::app::AppId;
+use crate::app::{APP_ID_PREFIX, AppId};
 use crate::ids::{GroupId, StripId, TabId};
 use crate::layout::TileContent;
 use crate::projection::{ROOM_CONTENTS_KEY, contents_key, contents_key_id};
@@ -25,6 +25,19 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
         | TileContent::LocalApp { app_id, .. }
         | TileContent::PeerWindow { app_id, .. } => Some(app_id.clone()),
     }
+}
+
+/// What to call an app on screen, derived from its canonical id alone: a
+/// built-in shows its name without the [`APP_ID_PREFIX`] namespace
+/// (`org.tilo.Files` → `Files`), any other app its full id. Agrees with
+/// [`crate::AppKind::as_str`] for every kind, so one id never gets two
+/// names.
+pub fn app_label(app_id: &str) -> &str {
+    app_id
+        .strip_prefix(APP_ID_PREFIX)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .filter(|name| !name.is_empty() && !name.contains('.'))
+        .unwrap_or(app_id)
 }
 
 /// Every tab in a room document that names the record it shows, as the

@@ -9,7 +9,9 @@
 )]
 
 use automerge::AutoCommit;
-use tilo_desktop_model::apps::{BindRecordError, bind_tab_record, canonical_app_id, record_routes};
+use tilo_desktop_model::apps::{
+    BindRecordError, app_label, bind_tab_record, canonical_app_id, record_routes,
+};
 use tilo_desktop_model::projection::project_owned_contents;
 use tilo_desktop_model::{
     APP_ID_PREFIX, AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, compose_id,
@@ -75,4 +77,20 @@ fn a_bound_record_is_routed_and_cannot_be_rebound() {
         bind_tab_record(&mut doc, StripId(strip_id), group_id, 12345, "rec-1"),
         Err(BindRecordError::MissingTab)
     ));
+}
+
+#[test]
+fn the_label_is_derived_from_the_canonical_id() {
+    for kind in [
+        AppKind::Terminal,
+        AppKind::FileExplorer,
+        AppKind::Browser,
+        AppKind::Settings,
+        AppKind::Other("Notes".into()),
+        AppKind::Other("org.gimp.GIMP".into()),
+    ] {
+        assert_eq!(app_label(&kind.app_id()), kind.as_str(), "{kind:?}");
+    }
+    assert_eq!(app_label("org.tilo."), "org.tilo.");
+    assert_eq!(app_label("org.tilonet.App"), "org.tilonet.App");
 }
