@@ -12,7 +12,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::edits::Edits;
@@ -30,6 +30,81 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(120);
 /// A document that has taken the helper down this many times is refused.
 const MAX_CRASHES_PER_DOCUMENT: u32 = 3;
+/// Idle pixel buffers kept for reuse, by count and by bytes.
+const MAX_IDLE_BUFFERS: usize = 6;
+const MAX_IDLE_BUFFER_BYTES: u64 = 160 * 1024 * 1024;
+/// Buffer capacities are rounded up to this, so nearby sizes share buffers.
+const BUFFER_GRANULE: u64 = 1024 * 1024;
+
+/// A pixel buffer: a memfd the helper renders into, mapped read-only here.
+struct PixelBuffer {
+    id: u64,
+    len: u64,
+    fd: OwnedFd,
+    map: memmap2::Mmap,
+}
+
+/// Idle pixel buffers, plus the ids of retired buffers the helper should
+/// unmap at its next request.
+#[derive(Default)]
+struct Pool {
+    idle: Vec<Arc<PixelBuffer>>,
+    retired: Vec<u64>,
+    next_id: u64,
+}
+
+impl Pool {
+    fn take(&mut self, need: u64) -> Option<Arc<PixelBuffer>> {
+        let best = self
+            .idle
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                b.len >= need && b.len <= need.saturating_mul(2).saturating_add(BUFFER_GRANULE)
+            })
+            .min_by_key(|(_, b)| b.len)
+            .map(|(i, _)| i)?;
+        Some(self.idle.swap_remove(best))
+    }
+
+    fn give_back(&mut self, buffer: Arc<PixelBuffer>) {
+        let idle_bytes: u64 = self.idle.iter().map(|b| b.len).sum();
+        if self.idle.len() >= MAX_IDLE_BUFFERS
+            || idle_bytes.saturating_add(buffer.len) > MAX_IDLE_BUFFER_BYTES
+        {
+            self.retired.push(buffer.id);
+        } else {
+            self.idle.push(buffer);
+        }
+    }
+}
+
+/// A bitmap's claim on a pixel buffer; the buffer returns to the pool when
+/// the last clone of the bitmap is dropped.
+struct Lease {
+    buffer: Option<Arc<PixelBuffer>>,
+    len: usize,
+    pool: Weak<Mutex<Pool>>,
+}
+
+impl AsRef<[u8]> for Lease {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer
+            .as_ref()
+            .and_then(|b| b.map.get(..self.len))
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let (Some(buffer), Some(pool)) = (self.buffer.take(), self.pool.upgrade()) {
+            pool.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .give_back(buffer);
+        }
+    }
+}
 
 struct Connection {
     child: Child,
@@ -58,12 +133,15 @@ struct State {
     docs: HashMap<u64, DocEntry>,
     generation: u64,
     helpers_started: u64,
+    /// Pixel buffer id → the helper generation it is attached to.
+    attached: HashMap<u64, u64>,
 }
 
 /// The sandboxed backend.
 pub struct Sandboxed {
     helper: PathBuf,
     state: Mutex<State>,
+    pool: Arc<Mutex<Pool>>,
 }
 
 enum Payload {
@@ -82,6 +160,7 @@ impl Sandboxed {
         let this = Self {
             helper: helper.to_path_buf(),
             state: Mutex::new(State::default()),
+            pool: Arc::new(Mutex::new(Pool::default())),
         };
         {
             let mut state = this.lock();
@@ -239,9 +318,7 @@ impl Sandboxed {
             }
             let response: Response = connection.channel.recv()?;
             let payload = match &response {
-                Response::Rendered { .. } | Response::Exported { .. } => {
-                    Payload::Fd(connection.channel.recv_fd()?)
-                }
+                Response::Exported { .. } => Payload::Fd(connection.channel.recv_fd()?),
                 _ => Payload::None,
             };
             Ok((response, payload))
@@ -303,25 +380,95 @@ impl Sandboxed {
         drop(state);
     }
 
-    pub fn render(&self, id: u64, page: usize, options: &RenderOptions) -> Result<Bitmap, Error> {
+    fn lock_pool(&self) -> std::sync::MutexGuard<'_, Pool> {
+        self.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A pixel buffer of at least `need` bytes, reused when one is idle.
+    fn pixel_buffer(&self, need: u64) -> Result<Arc<PixelBuffer>, Error> {
+        let mut pool = self.lock_pool();
+        if let Some(buffer) = pool.take(need) {
+            return Ok(buffer);
+        }
+        pool.next_id = pool.next_id.saturating_add(1);
+        let id = pool.next_id;
+        drop(pool);
+        let len = need.div_ceil(BUFFER_GRANULE).saturating_mul(BUFFER_GRANULE);
+        let file = shm::create("tilo-pdf-pixels", len).map_err(Error::Io)?;
+        // SAFETY: the helper writes this memory while it renders a request
+        // this client made and waits for; bytes handed out are never
+        // interpreted beyond copying them as pixels (see the protocol docs).
+        let map = unsafe { memmap2::Mmap::map(&file) }.map_err(Error::Io)?;
+        Ok(Arc::new(PixelBuffer {
+            id,
+            len,
+            fd: file.into(),
+            map,
+        }))
+    }
+
+    /// Render into a pooled pixel buffer. `need` is the output size in
+    /// bytes, computed by the caller from the page geometry.
+    pub fn render(
+        &self,
+        id: u64,
+        page: usize,
+        options: &RenderOptions,
+        need: u64,
+    ) -> Result<Bitmap, Error> {
+        let page = u32::try_from(page).map_err(|_| Error::Invalid("page out of range".into()))?;
+        let buffer = self.pixel_buffer(need.max(4))?;
+        let mut lease = Lease {
+            buffer: Some(Arc::clone(&buffer)),
+            len: 0,
+            pool: Arc::downgrade(&self.pool),
+        };
+        let retired = std::mem::take(&mut self.lock_pool().retired);
+        let mut state = self.lock();
+        self.ensure_open(&mut state, id)?;
+        let generation = state.generation;
+        for old in retired {
+            if state.attached.remove(&old) == Some(generation) {
+                Self::exchange(
+                    &mut state,
+                    &[],
+                    &Request::ReleaseBuffer { buffer: old },
+                    None,
+                    REQUEST_TIMEOUT,
+                )?;
+            }
+        }
+        let attach = state.attached.get(&buffer.id) != Some(&generation);
         let request = Request::Render {
             doc: id,
-            page: u32::try_from(page).map_err(|_| Error::Invalid("page out of range".into()))?,
+            page,
             options: *options,
+            buffer: buffer.id,
+            buffer_len: buffer.len,
+            attach,
         };
-        match self.call(&[id], &request, REQUEST_TIMEOUT)? {
-            (Response::Rendered { width, height }, Payload::Fd(fd)) => {
+        let fd = attach.then_some(&buffer.fd);
+        let response = Self::exchange(&mut state, &[id], &request, fd, REQUEST_TIMEOUT);
+        if attach && response.is_ok() {
+            state.attached.insert(buffer.id, generation);
+        }
+        drop(state);
+        match response? {
+            (Response::Rendered { width, height }, _) => {
                 let len = u64::from(width)
                     .saturating_mul(u64::from(height))
                     .saturating_mul(4);
-                let map = shm::map_sealed(&fd, len).map_err(Error::Io)?;
+                if len > buffer.len {
+                    return Err(Error::Engine("the render overran its buffer".into()));
+                }
                 let len =
                     usize::try_from(len).map_err(|_| Error::Limit("render too large".into()))?;
-                Ok(Bitmap::from_shared(
-                    width,
-                    height,
-                    shm::SharedBytes::new(map, len),
-                ))
+                Ok(Bitmap::from_parts(width, height, {
+                    lease.len = len;
+                    Arc::new(lease)
+                }))
             }
             (other, _) => Err(unexpected(&other)),
         }

@@ -126,14 +126,22 @@ fn confine_syscalls() -> Result<(), String> {
     sandbox_core::seccomp::install(&program).map_err(|e| e.to_string())
 }
 
+/// Pixel buffers the client attached, mapped writable once.
+type Buffers = std::collections::HashMap<u64, memmap2::MmapMut>;
+
+/// Upper bound on attached pixel memory; the client releases buffers it
+/// stops reusing, so this only stops a misbehaving client.
+const MAX_BUFFER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 fn serve(channel: &mut Channel, mut engine: Engine) -> i32 {
+    let mut buffers = Buffers::new();
     loop {
         let request: Request = match channel.recv() {
             Ok(r) => r,
             // The client went away (or spoke garbage): nothing left to do.
             Err(_) => return 0,
         };
-        if handle(channel, &mut engine, request).is_err() {
+        if handle(channel, &mut engine, &mut buffers, request).is_err() {
             return 0;
         }
     }
@@ -146,7 +154,12 @@ fn failed(f: crate::pdfium::Failure) -> Response {
     }
 }
 
-fn handle(channel: &mut Channel, engine: &mut Engine, request: Request) -> io::Result<()> {
+fn handle(
+    channel: &mut Channel,
+    engine: &mut Engine,
+    buffers: &mut Buffers,
+    request: Request,
+) -> io::Result<()> {
     match request {
         Request::Open {
             doc,
@@ -164,15 +177,39 @@ fn handle(channel: &mut Channel, engine: &mut Engine, request: Request) -> io::R
             engine.close(doc);
             channel.send(&Response::Closed)
         }
-        Request::Render { doc, page, options } => {
-            let page = page as usize;
-            match render(engine, doc, page, &options) {
-                Ok((width, height, fd)) => {
-                    channel.send(&Response::Rendered { width, height })?;
-                    channel.send_fd(fd.as_fd())
+        Request::Render {
+            doc,
+            page,
+            options,
+            buffer,
+            buffer_len,
+            attach,
+        } => {
+            if attach {
+                let file = File::from(channel.recv_fd()?);
+                let attached: u64 = buffers.values().map(|m| m.len() as u64).sum();
+                match map_buffer(&file, buffer_len, attached) {
+                    Ok(map) => {
+                        buffers.insert(buffer, map);
+                    }
+                    Err(e) => return channel.send(&failed(e)),
                 }
-                Err(e) => channel.send(&failed(e)),
             }
+            let response = match buffers.get_mut(&buffer) {
+                Some(map) => match render(engine, doc, page as usize, &options, map) {
+                    Ok((width, height)) => Response::Rendered { width, height },
+                    Err(e) => failed(e),
+                },
+                None => Response::Failed {
+                    kind: FailureKind::Invalid,
+                    message: "unknown pixel buffer".into(),
+                },
+            };
+            channel.send(&response)
+        }
+        Request::ReleaseBuffer { buffer } => {
+            buffers.remove(&buffer);
+            channel.send(&Response::Closed)
         }
         Request::Text { doc, page } => {
             let response = engine
@@ -225,23 +262,46 @@ fn handle(channel: &mut Channel, engine: &mut Engine, request: Request) -> io::R
     }
 }
 
+fn map_buffer(
+    file: &File,
+    len: u64,
+    attached: u64,
+) -> Result<memmap2::MmapMut, crate::pdfium::Failure> {
+    let failure = |kind, message: String| crate::pdfium::Failure { kind, message };
+    let actual = file
+        .metadata()
+        .map_err(|e| failure(FailureKind::Invalid, e.to_string()))?
+        .len();
+    if actual < len || len == 0 {
+        return Err(failure(
+            FailureKind::Invalid,
+            "pixel buffer size mismatch".into(),
+        ));
+    }
+    if attached.saturating_add(len) > MAX_BUFFER_BYTES {
+        return Err(failure(
+            FailureKind::Limit,
+            "too much attached pixel memory".into(),
+        ));
+    }
+    crate::shm::map_writable(file).map_err(|e| failure(FailureKind::Engine, e.to_string()))
+}
+
 fn render(
     engine: &Engine,
     doc: u64,
     page: usize,
     options: &crate::model::RenderOptions,
-) -> Result<(u32, u32, OwnedFd), crate::pdfium::Failure> {
-    let engine_err = |e: io::Error| crate::pdfium::Failure {
-        kind: FailureKind::Engine,
-        message: e.to_string(),
-    };
+    buffer: &mut [u8],
+) -> Result<(u32, u32), crate::pdfium::Failure> {
     let (w, h) = engine.render_size(doc, page, options)?;
-    let len = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4);
-    let file = crate::shm::create("tilo-pdf-page", len).map_err(engine_err)?;
-    {
-        let mut map = crate::shm::map_writable(&file).map_err(engine_err)?;
-        engine.render_into(doc, page, options, &mut map)?;
-    }
-    crate::shm::seal(&file).map_err(engine_err)?;
-    Ok((w, h, file.into()))
+    let len = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+    let Some(target) = buffer.get_mut(..len) else {
+        return Err(crate::pdfium::Failure {
+            kind: FailureKind::Invalid,
+            message: "pixel buffer too small".into(),
+        });
+    };
+    engine.render_into(doc, page, options, target)?;
+    Ok((w, h))
 }
