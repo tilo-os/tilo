@@ -190,6 +190,7 @@ members = [
     "crates/system/desktop-policy",
     "crates/system/durable-store",
     "crates/system/fs",
+    "crates/system/fs-native",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",

@@ -4534,6 +4534,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-native"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "fs-set-times"
 version = "0.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
