@@ -55,7 +55,89 @@ pub struct Hydrator {
     fetches: Arc<AsyncMutex<FetchMap>>,
     /// Verified peer source for fetched blobs, used as remote-durability evidence.
     remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
+    /// Decoded, offset-indexed manifests, bounded by total chunk count.
+    manifests: moka::sync::Cache<Hash, Arc<ManifestIndex>>,
     pub runtime_handle: tokio::runtime::Handle,
+}
+
+/// Chunk entries held by the manifest-index cache: about 44 bytes each, so
+/// roughly 23 MiB, enough to index 4 GiB of hot files at ~8 KiB per chunk.
+const MANIFEST_INDEX_CHUNK_BUDGET: u64 = 512 * 1024;
+
+/// A decoded manifest with the end offset of every chunk, so a read locates
+/// its first chunk by binary search instead of decoding and scanning the
+/// whole chunk list on every call. Manifests are content-addressed, so an
+/// index never goes stale.
+#[derive(Debug)]
+pub struct ManifestIndex {
+    chunks: Vec<crate::content::ChunkRef>,
+    ends: Vec<u64>,
+}
+
+impl ManifestIndex {
+    #[must_use]
+    pub fn new(manifest: Manifest) -> Self {
+        let mut end = 0_u64;
+        let ends = manifest
+            .chunks
+            .iter()
+            .map(|chunk| {
+                end = end.saturating_add(u64::from(chunk.len));
+                end
+            })
+            .collect();
+        Self {
+            chunks: manifest.chunks,
+            ends,
+        }
+    }
+
+    #[must_use]
+    pub fn total_len(&self) -> u64 {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn chunks(&self) -> &[crate::content::ChunkRef] {
+        &self.chunks
+    }
+
+    /// The chunks overlapping `[offset, end)`, each with its start offset.
+    pub fn overlapping(
+        &self,
+        offset: u64,
+        end: u64,
+    ) -> impl Iterator<Item = (u64, &crate::content::ChunkRef)> {
+        let first = self.ends.partition_point(|chunk_end| *chunk_end <= offset);
+        self.chunks
+            .iter()
+            .enumerate()
+            .skip(first)
+            .map(|(index, chunk)| {
+                let start = index
+                    .checked_sub(1)
+                    .and_then(|previous| self.ends.get(previous))
+                    .copied()
+                    .unwrap_or(0);
+                (start, chunk)
+            })
+            .take_while(move |(start, _)| *start < end)
+    }
+}
+
+/// Append the part of a chunk starting at file offset `start` that falls in
+/// `[offset, end)`.
+fn copy_chunk_range(out: &mut Vec<u8>, chunk: &[u8], start: u64, offset: u64, end: u64) {
+    // Both bounds are clamped to the chunk length, so the `usize`
+    // conversions never truncate.
+    let chunk_len = chunk.len() as u64;
+    let from = usize::try_from(offset.saturating_sub(start).min(chunk_len)).unwrap_or(chunk.len());
+    let to = usize::try_from(end.saturating_sub(start).min(chunk_len)).unwrap_or(chunk.len());
+    if from < to
+        && let Some(range) = chunk.get(from..to)
+    {
+        out.extend_from_slice(range);
+    }
 }
 
 /// Decrements a hash's in-flight count on drop; hold it for the duration of a
@@ -90,6 +172,12 @@ impl Hydrator {
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             fetches: Arc::new(AsyncMutex::new(HashMap::new())),
             remote_sources: Arc::new(RwLock::new(HashMap::new())),
+            manifests: moka::sync::Cache::builder()
+                .max_capacity(MANIFEST_INDEX_CHUNK_BUDGET)
+                .weigher(|_, index: &Arc<ManifestIndex>| {
+                    u32::try_from(index.chunks.len().max(1)).unwrap_or(u32::MAX)
+                })
+                .build(),
             runtime_handle: tokio::runtime::Handle::current(),
         }
     }
@@ -386,37 +474,93 @@ impl Hydrator {
     ///
     /// Returns an error if the manifest or any overlapping chunk can't be loaded (locally or from a peer).
     pub async fn read(&self, manifest_hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
-        let manifest = self.load_manifest(manifest_hash).await?;
-        let end = offset.saturating_add(size);
-        let mut out = Vec::new();
-        let mut pos: u64 = 0;
-        for c in &manifest.chunks {
-            let cstart = pos;
-            let cend = pos.saturating_add(u64::from(c.len));
-            pos = cend;
-            if cend <= offset {
-                continue; // entirely before the range
-            }
-            if cstart >= end {
-                break; // entirely after the range
-            }
-            let chunk = self
-                .read_blob(Hash::from(c.hash), 0, u64::from(c.len))
-                .await?;
-            // `chunk.len()` widened back to `u64` is always exact; the range end
-            // is then clamped to it, so these `usize` conversions never truncate.
-            let chunk_len = chunk.len() as u64;
-            let from = usize::try_from(offset.saturating_sub(cstart).min(chunk_len))
-                .unwrap_or(chunk.len());
-            let to =
-                usize::try_from(end.saturating_sub(cstart).min(chunk_len)).unwrap_or(chunk.len());
-            if from < to
-                && let Some(range) = chunk.get(from..to)
-            {
-                out.extend_from_slice(range);
-            }
+        let manifest = self.manifest_index(manifest_hash).await?;
+        let end = offset.saturating_add(size).min(manifest.total_len());
+        let mut out =
+            Vec::with_capacity(usize::try_from(end.saturating_sub(offset)).unwrap_or_default());
+        for (start, chunk) in manifest.overlapping(offset, end) {
+            let hash = Hash::from(chunk.hash);
+            let bytes = match self.store.local(hash).await {
+                Some(bytes) => bytes,
+                None => Bytes::from(self.read_blob(hash, 0, u64::from(chunk.len)).await?),
+            };
+            copy_chunk_range(&mut out, &bytes, start, offset, end);
         }
         Ok(out)
+    }
+
+    /// [`read`](Self::read) served only from local content: `None` when the
+    /// manifest or any overlapping chunk would have to be fetched from a
+    /// peer. Never touches the network, so it is safe on a latency-critical
+    /// thread.
+    pub async fn read_local(&self, manifest_hash: Hash, offset: u64, size: u64) -> Option<Vec<u8>> {
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        let end = offset.saturating_add(size).min(manifest.total_len());
+        let mut out =
+            Vec::with_capacity(usize::try_from(end.saturating_sub(offset)).unwrap_or_default());
+        for (start, chunk) in manifest.overlapping(offset, end) {
+            let bytes = self.store.local(Hash::from(chunk.hash)).await?;
+            copy_chunk_range(&mut out, &bytes, start, offset, end);
+        }
+        Some(out)
+    }
+
+    /// The offset-indexed manifest if it is cached or stored locally; never
+    /// fetched.
+    async fn local_manifest_index(&self, manifest_hash: Hash) -> Option<Arc<ManifestIndex>> {
+        if let Some(index) = self.manifests.get(&manifest_hash) {
+            return Some(index);
+        }
+        let bytes = self.store.local(manifest_hash).await?;
+        let index = Arc::new(ManifestIndex::new(Manifest::decode(&bytes).ok()?));
+        self.manifests.insert(manifest_hash, Arc::clone(&index));
+        Some(index)
+    }
+
+    /// Write the complete local content of `manifest_hash` to `dest` as a
+    /// read-only file, chunk by chunk. `Ok(false)` (and nothing written) when
+    /// any part is not local; this never fetches from a peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be written or moved into place.
+    pub async fn export_local(&self, manifest_hash: Hash, dest: &std::path::Path) -> Result<bool> {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let Some(manifest) = self.local_manifest_index(manifest_hash).await else {
+            return Ok(false);
+        };
+        let dir = dest
+            .parent()
+            .ok_or_else(|| anyhow!("export destination has no parent directory"))?;
+        std::fs::create_dir_all(dir)?;
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        for chunk in manifest.chunks() {
+            let Some(bytes) = self.store.local(Hash::from(chunk.hash)).await else {
+                return Ok(false);
+            };
+            file.write_all(&bytes)?;
+        }
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o400))?;
+        file.persist(dest).map_err(|error| error.error)?;
+        Ok(true)
+    }
+
+    /// The decoded, offset-indexed manifest for `manifest_hash`, fetched
+    /// once and then served from a bounded cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest can't be loaded or decoded.
+    pub async fn manifest_index(&self, manifest_hash: Hash) -> Result<Arc<ManifestIndex>> {
+        if let Some(index) = self.manifests.get(&manifest_hash) {
+            return Ok(index);
+        }
+        let index = Arc::new(ManifestIndex::new(self.load_manifest(manifest_hash).await?));
+        self.manifests.insert(manifest_hash, Arc::clone(&index));
+        Ok(index)
     }
 
     /// Total byte length of a file from its manifest (fetches only the manifest).
@@ -425,7 +569,7 @@ impl Hydrator {
     ///
     /// Returns an error if the manifest can't be loaded.
     pub async fn content_len(&self, manifest_hash: Hash) -> Result<u64> {
-        Ok(self.load_manifest(manifest_hash).await?.total_len())
+        Ok(self.manifest_index(manifest_hash).await?.total_len())
     }
 
     /// Hydrate every blob referenced by `manifest_hash` without assembling the
@@ -461,14 +605,14 @@ impl Hydrator {
         max_bytes: u64,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<bool> {
-        let manifest = self.load_manifest(manifest_hash).await?;
+        let manifest = self.manifest_index(manifest_hash).await?;
         let total = manifest.total_len();
         if total > max_bytes {
             return Ok(false);
         }
         let mut completed = 0_u64;
         progress(completed, total);
-        for chunk in manifest.chunks {
+        for chunk in manifest.chunks() {
             let hash = Hash::from(chunk.hash);
             if !self.store.has(hash).await {
                 let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
@@ -564,6 +708,64 @@ mod tests {
 
         let mid = hydrator.read(hash, 6, 5).await.unwrap();
         assert_eq!(&mid, b"local");
+    }
+
+    #[test]
+    fn manifest_index_finds_exactly_the_overlapping_chunks() {
+        let lens = [5_u32, 1, 7, 3, 9];
+        let manifest = Manifest {
+            chunks: lens
+                .iter()
+                .enumerate()
+                .map(|(i, len)| crate::content::ChunkRef {
+                    hash: [u8::try_from(i).unwrap(); 32],
+                    len: *len,
+                })
+                .collect(),
+        };
+        let index = ManifestIndex::new(manifest.clone());
+        assert_eq!(index.total_len(), 25);
+        for offset in 0..=26_u64 {
+            for size in 0..=26_u64 {
+                let end = offset.saturating_add(size);
+                let mut expected = Vec::new();
+                let mut pos = 0_u64;
+                for chunk in &manifest.chunks {
+                    let chunk_end = pos.saturating_add(u64::from(chunk.len));
+                    if chunk_end > offset && pos < end {
+                        expected.push((pos, chunk.hash));
+                    }
+                    pos = chunk_end;
+                }
+                let got: Vec<_> = index
+                    .overlapping(offset, end)
+                    .map(|(start, chunk)| (start, chunk.hash))
+                    .collect();
+                assert_eq!(got, expected, "offset {offset} size {size}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_reads_never_reach_for_peers() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let data: Vec<u8> = (0..200_000_u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let hash = store.write_content(&data).await.unwrap().unwrap();
+        let hydrator = Hydrator::new(endpoint, store);
+        assert_eq!(
+            hydrator.read_local(hash, 70_000, 50_000).await.unwrap(),
+            data[70_000..120_000]
+        );
+        assert!(
+            hydrator
+                .read_local(Hash::from([9; 32]), 0, 10)
+                .await
+                .is_none(),
+            "a manifest that is not local is not read"
+        );
     }
 
     #[tokio::test]
