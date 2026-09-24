@@ -244,8 +244,8 @@ pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tapp::{self, test_fixture::signed_tapp};
-    use tilo_app_package::{BlobStore, MemoryBlobStore, SignedRoot};
+    use crate::tapp::test_fixture::{signed_package, signed_tapp};
+    use tilo_app_package::PackageMeta;
 
     #[test]
     fn build_entry_accepts_a_cryptographically_valid_bundle() {
@@ -259,26 +259,18 @@ mod tests {
     #[test]
     fn build_entry_rejects_a_manifest_that_names_publisher_but_has_bad_signature() {
         let publisher = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&publisher);
-        let meta = tapp::load(&bytes).unwrap();
-        let root_bytes = meta
-            .store
-            .get(&tilo_app_package::BlobHash(*id.as_bytes()))
-            .unwrap()
-            .unwrap();
-        let mut root = SignedRoot::decode(&root_bytes).unwrap();
+        let packed = signed_package(&publisher);
+        let mut root = packed.meta.root.clone();
         let mut signature = root.signature.unwrap();
         signature[0] ^= 1;
         root.signature = Some(signature);
-
-        let mut tampered_store = MemoryBlobStore::new();
-        for (hash, blob) in meta.store.iter() {
-            if hash != &tilo_app_package::BlobHash(*id.as_bytes()) {
-                tampered_store.put(blob).unwrap();
-            }
-        }
-        tampered_store.put(&root.encode()).unwrap();
-        let tampered = tapp::write_bytes(root.package_id(), &tampered_store).unwrap();
+        let tampered_meta = PackageMeta::from_root(
+            root,
+            packed.meta.manifest_bytes.clone(),
+            packed.meta.collection_bytes.clone(),
+        )
+        .unwrap();
+        let tampered = tilo_app_package::tapp::to_bytes(&tampered_meta, Some(&packed)).unwrap();
 
         let error = build_entry(&tampered, &publisher, None, None).unwrap_err();
         let message = error.to_string().to_ascii_lowercase();
@@ -291,35 +283,27 @@ mod tests {
     #[test]
     fn build_entry_rejects_signed_deduplication_amplification() {
         let publisher = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&publisher);
-        let meta = tapp::load(&bytes).unwrap();
-        let root_bytes = meta
-            .store
-            .get(&tilo_app_package::BlobHash(*id.as_bytes()))
-            .unwrap()
-            .unwrap();
-        let mut root = SignedRoot::decode(&root_bytes).unwrap();
+        let packed = signed_package(&publisher);
 
-        let mut malicious_store = MemoryBlobStore::new();
-        for (hash, blob) in meta.store.iter() {
-            if hash != &tilo_app_package::BlobHash(*id.as_bytes()) {
-                malicious_store.put(blob).unwrap();
-            }
-        }
         // 2,049 references expand beyond 5 MiB while remaining under the
         // independent 4,096-entry ceiling, so this specifically exercises
         // the materialized-byte boundary.
-        let repeated = malicious_store.put(&vec![0x5a; 3072]).unwrap();
+        let repeated_bytes = vec![0x5a; 3072];
+        let repeated = tilo_app_package::BlobHash::of(&repeated_bytes);
         let mut collection = tilo_app_package::Collection::default();
         for index in 0..=2048 {
             collection
                 .entries
                 .insert(format!("share/repeated-{index}"), repeated);
         }
-        root.payload_root_hash = malicious_store.put(&collection.encode()).unwrap();
+        let collection_bytes = collection.encode();
+        let mut root = packed.meta.root.clone();
+        root.payload_root_hash = tilo_app_package::BlobHash::of(&collection_bytes);
         root.signature = Some(publisher.sign_signed_root(&root).unwrap());
-        malicious_store.put(&root.encode()).unwrap();
-        let malicious = tapp::write_bytes(root.package_id(), &malicious_store).unwrap();
+        let malicious_meta =
+            PackageMeta::from_root(root, packed.meta.manifest_bytes, collection_bytes).unwrap();
+        let blobs = std::collections::BTreeMap::from([(repeated, repeated_bytes)]);
+        let malicious = tilo_app_package::tapp::to_bytes(&malicious_meta, Some(&blobs)).unwrap();
         assert!(
             u64::try_from(malicious.len()).unwrap_or(u64::MAX)
                 < tilo_app_package::MAX_APP_TAPP_BYTES,
@@ -328,7 +312,7 @@ mod tests {
 
         let error = build_entry(&malicious, &publisher, None, None).unwrap_err();
         assert!(
-            error.to_string().contains("materializes"),
+            format!("{error:#}").contains("materializes"),
             "unexpected rejection: {error:#}"
         );
     }

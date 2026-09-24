@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use thiserror::Error;
 
-use tilo_app_package::blobs::{BlobHash, BlobStore, BlobStoreError, Collection};
+use tilo_app_package::blobs::{BlobHash, Collection};
 use tilo_app_package::id::PackageId;
 use tilo_app_package::signed::SignedRoot;
 
@@ -69,31 +69,40 @@ impl FsBlobStore {
         }
         Ok(total)
     }
-}
 
-impl BlobStore for FsBlobStore {
-    fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, BlobStoreError> {
+    /// Store `bytes` under their hash; a no-op when already present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing the blob fails.
+    pub fn put(&mut self, bytes: &[u8]) -> io::Result<BlobHash> {
         let h = BlobHash::of(bytes);
         let path = self.blob_path(&h);
         if !path.exists() {
             // The visible blob is either absent or complete. If another process
             // raced ahead and wrote the same content-addressed bytes, the
             // destination is correct either way — but a genuine IO failure is still reported.
-            atomic_file::write(&path, bytes).map_err(BlobStoreError::Io)?;
+            atomic_file::write(&path, bytes)?;
         }
         Ok(h)
     }
 
-    fn get(&self, hash: &BlobHash) -> Result<Option<Vec<u8>>, BlobStoreError> {
+    /// The bytes of `hash`, or `None` when absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading an existing blob fails.
+    pub fn get(&self, hash: &BlobHash) -> io::Result<Option<Vec<u8>>> {
         let path = self.blob_path(hash);
         match fs::read(&path) {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(BlobStoreError::Io(e)),
+            Err(e) => Err(e),
         }
     }
 
-    fn has(&self, hash: &BlobHash) -> bool {
+    /// Whether `hash` is present.
+    pub fn has(&self, hash: &BlobHash) -> bool {
         self.blob_path(hash).exists()
     }
 }
@@ -115,8 +124,6 @@ struct Inner {
 pub enum StoreError {
     #[error("registry: {0}")]
     Registry(#[from] RegistryError),
-    #[error("blob-store: {0}")]
-    Blob(#[from] BlobStoreError),
     #[error("I/O: {0}")]
     Io(#[from] io::Error),
     #[error("unknown package id {0}")]
