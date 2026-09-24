@@ -5,12 +5,9 @@
 //! invokes podman on the palette's latency-sensitive query path.
 
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 use ui::tilo_actions::ActionAddress;
 
 use crate::model::Engine;
@@ -173,61 +170,23 @@ pub struct ContainerSearchProvider {
     index: ContainerSearchIndex,
 }
 
-impl SearchProvider for ContainerSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for ContainerSearchProvider {
+    fn provider_name(&self) -> &'static str {
         "Containers"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
+    fn catalog(&self) -> Option<SearchCatalog> {
         self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .map(|catalog| catalog.stats().generation)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(
-            query,
-            None,
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-        .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let catalog = self
-            .index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .catalog
             .clone()
-            .unwrap_or_else(|| SearchCatalog::new("Containers"));
-        catalog.query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
     }
 }
 
@@ -285,6 +244,7 @@ fn engine_revision(engine: &Engine) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
 
     #[test]
     fn searches_objects_and_log_content_with_canonical_addresses() {

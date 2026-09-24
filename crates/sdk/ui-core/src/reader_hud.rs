@@ -14,9 +14,10 @@
 //! and reports hits back.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use crate::paint::{fill_round, stroke_round};
 use crate::text_render::{TextRenderer, TextWeight};
 
 /// The swatch index in [`HudAction::Highlight`] indexes into the `swatches`
@@ -107,7 +108,10 @@ impl SelectionHud {
     /// centres on `anchor.x` and prefers just above `anchor.y`, dropping
     /// below if that would leave `bounds`. Copy is always present;
     /// `show_note`/`show_delete` gate the other two controls.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
+    )]
     pub fn draw(
         scene: &mut Scene,
         transform: Affine,
@@ -152,7 +156,10 @@ impl SelectionHud {
     /// The sizing/positioning half of [`Self::draw`] — every value here is
     /// pixel-comparing-test-sensitive, so this is pure code motion out of
     /// `draw`, not a rewrite.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
+    )]
     fn measure(
         tr: &mut TextRenderer,
         swatches: &[HudSwatch],
@@ -276,7 +283,10 @@ impl SelectionHud {
     }
 
     /// The Copy / Note / Delete pills, the third half of [`Self::draw`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the HUD paints from the scene, transform, renderer, theme and its own geometry inputs, each independently load-bearing"
+    )]
     fn draw_pills(
         scene: &mut Scene,
         transform: Affine,
@@ -444,26 +454,6 @@ impl MarkerDrag {
 }
 
 // Vector helpers below are kept local so the module has no app dependency.
-
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
 
 /// A minimal trash glyph (lid + can) inside `r`.
 fn draw_trash(scene: &mut Scene, t: Affine, r: Rect, color: Color, w: f64) {

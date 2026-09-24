@@ -83,7 +83,6 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
-    let _ = rustls::crypto::ring::default_provider().install_default();
     match parse_cli().cmd {
         Cmd::Completions { shell } => {
             let mut generated = Vec::new();

@@ -12,6 +12,7 @@
 //! invite are acts, and are gated. Anything unclassifiable is treated as an act
 //! requiring [`Verb::Write`] rather than waved through.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{Actor, ResourceRef as CapResource, Verb, Workspace};
 
 use super::ResourceKind;
@@ -132,6 +133,7 @@ impl ActionVisibility for CapabilityVisibility<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{CapOverride, Principal, Scope, Subject, UserId, WorkspaceId};
 
     fn resource(provider: &str, id: &str) -> ResourceRef {

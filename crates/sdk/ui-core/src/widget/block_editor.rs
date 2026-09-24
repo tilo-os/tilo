@@ -7,12 +7,10 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::OnceLock;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -29,6 +27,7 @@ use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{
@@ -46,11 +45,6 @@ pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 pub enum LinkTarget {
     Page(PageId),
     External(String),
-}
-
-fn syntax_set() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
 /// Case-insensitive byte ranges without assuming that Unicode case folding
@@ -100,55 +94,20 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
     ranges
 }
 
-fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
-    let rendered = scopes
-        .as_slice()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ");
-    for scope in rendered.split_whitespace().rev() {
-        let role = if scope.starts_with("comment") {
-            TransientColorRole::Comment
-        } else if scope.starts_with("string") || scope.starts_with("constant.character") {
-            TransientColorRole::String
-        } else if scope.starts_with("constant.numeric") || scope.starts_with("constant.language") {
-            TransientColorRole::Number
-        } else if scope.starts_with("entity.name.function")
-            || scope.starts_with("support.function")
-            || scope.starts_with("meta.function-call")
-            || scope.starts_with("variable.function")
-        {
-            TransientColorRole::Function
-        } else if scope.starts_with("entity.name.type")
-            || scope.starts_with("entity.name.class")
-            || scope.starts_with("entity.name.struct")
-            || scope.starts_with("entity.name.enum")
-            || scope.starts_with("entity.name.trait")
-            || scope.starts_with("support.type")
-            || scope.starts_with("support.class")
-        {
-            TransientColorRole::Type
-        } else if scope.starts_with("keyword")
-            || scope.starts_with("storage.type")
-            || scope.starts_with("storage.modifier")
-        {
-            TransientColorRole::Keyword
-        } else if scope.starts_with("entity.name.macro")
-            || scope.starts_with("support.macro")
-            || scope.starts_with("meta.attribute")
-            || scope.starts_with("meta.annotation")
-        {
-            TransientColorRole::Macro
-        } else if scope.starts_with("keyword.operator") || scope.starts_with("punctuation.accessor")
-        {
-            TransientColorRole::Operator
-        } else {
-            continue;
-        };
-        return Some(role);
-    }
-    None
+/// The block editor's colour role for a grammar token; body text stays in the
+/// block's own colour.
+fn syntax_role(kind: TokenKind) -> Option<TransientColorRole> {
+    Some(match kind {
+        TokenKind::Comment => TransientColorRole::Comment,
+        TokenKind::StringLit | TokenKind::CharLit => TransientColorRole::String,
+        TokenKind::Number | TokenKind::Constant => TransientColorRole::Number,
+        TokenKind::Function => TransientColorRole::Function,
+        TokenKind::Type => TransientColorRole::Type,
+        TokenKind::Keyword => TransientColorRole::Keyword,
+        TokenKind::Attribute | TokenKind::Preprocessor => TransientColorRole::Macro,
+        TokenKind::Operator => TransientColorRole::Operator,
+        _ => return None,
+    })
 }
 
 #[expect(
@@ -156,7 +115,6 @@ fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
     reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
 )]
 fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
-    let set = syntax_set();
     let mut index = 0usize;
     while index < blocks.len() {
         let Some(language) = languages.get(index).and_then(Option::as_deref) else {
@@ -167,12 +125,7 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             index = index.saturating_add(1);
             continue;
         };
-        let syntax = set
-            .find_syntax_by_token(language)
-            .or_else(|| set.find_syntax_by_extension(language))
-            .unwrap_or_else(|| set.find_syntax_plain_text());
-        let mut parse = ParseState::new(syntax);
-        let mut scopes = ScopeStack::new();
+        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
         while index < blocks.len()
             && languages.get(index).and_then(Option::as_deref) == Some(language)
@@ -181,35 +134,16 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             let Some(block) = blocks.get_mut(index) else {
                 break;
             };
-            let source = block.text();
-            let with_newline = format!("{source}\n");
-            let mut colors = Vec::new();
-            let mut last = 0usize;
-            let mut role = syntax_role(&scopes);
-            if let Ok(ops) = parse.parse_line(&with_newline, set) {
-                for (offset, op) in ops {
-                    if offset > last {
-                        if let Some(role) = role {
-                            colors.push(TransientColorSpan {
-                                range: last..offset.min(source.len()),
-                                role,
-                            });
-                        }
-                        last = offset;
-                    }
-                    let _ = scopes.apply(&op);
-                    role = syntax_role(&scopes);
-                }
-                if last < source.len()
-                    && let Some(role) = role
-                {
-                    colors.push(TransientColorSpan {
-                        range: last..source.len(),
+            let colors = state
+                .highlight_line(block.text())
+                .into_iter()
+                .filter_map(|span| {
+                    syntax_role(span.kind).map(|role| TransientColorSpan {
+                        range: span.range,
                         role,
-                    });
-                }
-            }
-            colors.retain(|span| span.range.start < span.range.end);
+                    })
+                })
+                .collect();
             block.line.set_transient_colors(colors);
             index = index.saturating_add(1);
         }
@@ -640,7 +574,7 @@ pub struct BlockEditor {
     /// exact source, including newlines, without touching document state.
     code_copy_hits: Vec<(Rect, usize, usize)>,
     copied_code_start: Option<usize>,
-    copied_code_feedback: Option<(String, std::time::Instant)>,
+    copied_code_feedback: Option<(String, crate::time::Instant)>,
     /// A freshly typed fence edits its language until Enter. The language is
     /// canonical block metadata; this only remembers the local input mode.
     opening_code_fence: Option<(String, Option<String>)>,
@@ -1292,7 +1226,7 @@ impl BlockEditor {
                     .map_err(|e| invalid(&e.to_string()))?;
                 match values.as_slice() {
                     [(Value::Scalar(value), _)] => value
-                        .to_str()
+                        .as_str()
                         .map(str::to_string)
                         .ok_or_else(|| invalid("canonical block field must be a string")),
                     _ => Err(invalid("canonical block field is missing or conflicted")),
@@ -1374,7 +1308,7 @@ impl BlockEditor {
                         .ok()
                         .flatten()
                         .is_some_and(|(value, _)| {
-                            value.to_str() == Some(kind_to_str(&block.kind).as_str())
+                            value.as_str() == Some(kind_to_str(&block.kind).as_str())
                         })
                     && state
                         .get(object, "text")
@@ -3200,7 +3134,7 @@ impl BlockEditor {
             sources.push(source);
             let _ = store.get(source);
         }
-        store.block_until_idle(std::time::Duration::from_secs(2));
+        store.block_until_idle(crate::time::Duration::from_secs(2));
         !sources.is_empty()
             && sources
                 .into_iter()
@@ -3268,7 +3202,7 @@ impl BlockEditor {
         }
         clipboard_copy(&run.iter().map(Block::text).collect::<Vec<_>>().join("\n"));
         self.copied_code_start = Some(start);
-        self.copied_code_feedback = Some((first.id.clone(), std::time::Instant::now()));
+        self.copied_code_feedback = Some((first.id.clone(), crate::time::now()));
         self.dirty = true;
         true
     }
@@ -4069,7 +4003,6 @@ fn markdown_table_layout(
     theme: &Theme,
 ) -> TablePreviewLayout {
     use crate::text_render::TextWeight;
-    use unicode_segmentation::UnicodeSegmentation;
     let mut rows = markdown_table_data_rows(source);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let scale = f64::from(theme.text_scale);
@@ -4086,7 +4019,7 @@ fn markdown_table_layout(
                 .0
                 > text_width
             {
-                for (index, grapheme) in word.graphemes(true).enumerate() {
+                for (index, grapheme) in crate::text_break::graphemes(word).enumerate() {
                     if index > 0 {
                         display.push('\u{200b}');
                     }
@@ -4154,7 +4087,8 @@ fn markdown_table_layout(
                             .0
                             > text_width
                         {
-                            for (index, grapheme) in word.graphemes(true).enumerate() {
+                            for (index, grapheme) in crate::text_break::graphemes(word).enumerate()
+                            {
                                 if index > 0 {
                                     display.push('\u{200b}');
                                 }
@@ -4992,7 +4926,7 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
     {
         [] => Ok(0),
         [(Value::Scalar(value), _)] => value
-            .to_u64()
+            .as_u64()
             .filter(|depth| *depth <= u64::from(MAX_LIST_INDENT))
             .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
@@ -5017,7 +4951,7 @@ fn read_code_group(
     match values.as_slice() {
         [] => Ok(None),
         [(Value::Scalar(value), _)] => {
-            let raw = value.to_str().ok_or_else(invalid)?;
+            let raw = value.as_str().ok_or_else(invalid)?;
             let id = Uuid::parse_str(raw).map_err(|_| invalid())?;
             if id.is_nil() {
                 return Err(invalid());
@@ -8461,7 +8395,7 @@ impl BlockEditor {
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
                 continue;
@@ -10387,17 +10321,7 @@ mod tests {
 
     #[test]
     fn image_attachment_sizes_to_available_width_without_layout_feedback() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 160, 100);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&vec![255; 160 * 100 * 4])
-                .unwrap();
-        }
+        let bytes = crate::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
         let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
         let store = crate::ImageStore::new(&fetch);
         let mut editor = BlockEditor::new();

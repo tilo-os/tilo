@@ -371,7 +371,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, c.surfaces.raised, r.inspector);
+        fill_rect(scene, tf, r.inspector, c.surfaces.raised);
         stroke_line(
             scene,
             tf,
@@ -430,7 +430,7 @@ impl VideoEditorApp {
                 r.inspector.x1,
                 r.inspector.y1,
             );
-            fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
+            fill_rect(scene, tf, veil, with_alpha(c.surfaces.raised, 0.6));
         }
         // The keyboard cursor, drawn over the lock veil rather than under it:
         // where the keyboard *is* stays legible even where the controls are
@@ -461,8 +461,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
                     band,
+                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
                 );
             }
         };
@@ -500,7 +500,7 @@ impl VideoEditorApp {
             r.inspector.x1,
             header_bottom,
         );
-        fill_rect(scene, tf, c.surfaces.raised, header);
+        fill_rect(scene, tf, header, c.surfaces.raised);
         let x0 = r.inspector.x0 + PAD * s;
         let x1 = r.inspector.x1 - PAD * s;
         let top = r.inspector.y0;
@@ -524,7 +524,7 @@ impl VideoEditorApp {
                 x1,
                 top + 24.0 * s,
             );
-            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 10.0 * s);
+            fill_round(scene, tf, pillr, 10.0 * s, with_alpha(c.accent[5], 0.22));
             text_w(
                 scene,
                 tr,
@@ -541,7 +541,7 @@ impl VideoEditorApp {
             return;
         };
         let tag = Rect::new(x0, top + 36.0 * s, x0 + 6.0 * s, top + 68.0 * s);
-        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0 * s);
+        fill_round(scene, tf, tag, 3.0 * s, clip_color(theme, clip.palette));
         let name = self
             .project
             .media(clip.media)
@@ -737,7 +737,7 @@ impl VideoEditorApp {
 
         // Header card with color tag + name (scrolls with the body).
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
-        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
+        fill_round(scene, tf, tag, 3.0, clip_color(theme, clip.palette));
         let name = media
             .as_ref()
             .map(|m| m.name.clone())
@@ -981,13 +981,13 @@ impl VideoEditorApp {
                 let sw = clip_color(theme, *pal);
                 ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if rect.contains(self.last_mouse) && clip.palette != *pal {
-                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.5), *rect, 6.0, 1.5);
+                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.5), 1.5);
                 }
                 if clip.palette == *pal {
                     // The selection ring has to read against whichever colour
                     // it rings, so it comes from the focus token rather than
                     // a hardcoded white that vanishes on the pale swatches.
-                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
+                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
                 }
             }
         }
@@ -1114,7 +1114,7 @@ impl VideoEditorApp {
                     rect.center().x + 11.0,
                     rect.center().y + 7.0,
                 );
-                stroke_rrect(scene, tf, with_alpha(fg, 0.5), g, 2.0, 1.0);
+                stroke_round(scene, tf, g, 2.0, with_alpha(fg, 0.5), 1.0);
                 let iw = g.width() * 0.42;
                 let ih = g.height() * 0.42;
                 let ix = if corner.0 < 0.0 {
@@ -1127,7 +1127,7 @@ impl VideoEditorApp {
                 } else {
                     g.y1 - 2.0 - ih
                 };
-                fill_rrect(scene, tf, fg, Rect::new(ix, iy, ix + iw, iy + ih), 1.5);
+                fill_round(scene, tf, Rect::new(ix, iy, ix + iw, iy + ih), 1.5, fg);
             }
         }
         if l.crop_label_y > 0.0 {
@@ -1351,9 +1351,9 @@ impl VideoEditorApp {
             // The chosen swatch takes a ring rather than a tick, so the
             // colour it names is never covered by the mark that selects it.
             if on {
-                stroke_rrect(scene, tf, c.text_primary, rect.inflate(2.0, 2.0), 7.0, 2.0);
+                stroke_round(scene, tf, rect.inflate(2.0, 2.0), 7.0, c.text_primary, 2.0);
             } else if rect.contains(self.last_mouse) {
-                stroke_rrect(scene, tf, c.border_focus, rect.inflate(1.0, 1.0), 6.0, 1.0);
+                stroke_round(scene, tf, rect.inflate(1.0, 1.0), 6.0, c.border_focus, 1.0);
             }
         }
         if let Some(rect) = l.key_pick {
@@ -1437,7 +1437,7 @@ impl VideoEditorApp {
             // ring over it while the inline editor owns the words.
             well(scene, tf, theme, rect, 6.0);
             if editing == Some(true) {
-                stroke_rrect(scene, tf, c.border_focus, rect, 6.0, FOCUS_RING_W);
+                stroke_round(scene, tf, rect, 6.0, c.border_focus, FOCUS_RING_W);
             }
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
@@ -1581,16 +1581,16 @@ impl VideoEditorApp {
                 // swatch with an edge derived against its own colour — so the
                 // white swatch shows on a light pane and the black one on a
                 // dark pane without a theme-blind ink wash.
-                fill_rrect(scene, tf, c.lift(0.35), *rect, 6.0);
+                fill_round(scene, tf, *rect, 6.0, c.lift(0.35));
                 ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if col
                     .iter()
                     .zip(cur.iter())
                     .all(|(a, b)| (a - b).abs() < 1e-6)
                 {
-                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
+                    stroke_round(scene, tf, rect.inset(1.5), 7.0, c.border_focus, 2.0);
                 } else if rect.contains(self.last_mouse) {
-                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.6), *rect, 6.0, 1.5);
+                    stroke_round(scene, tf, *rect, 6.0, with_alpha(c.text_primary, 0.6), 1.5);
                 }
             }
         }

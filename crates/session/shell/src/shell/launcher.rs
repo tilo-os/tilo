@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 #[cfg(any(test, target_os = "linux"))]
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
@@ -415,7 +416,6 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
 
 const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
 const TRUSTED_IDENTITIES_FILE: &str = "trusted-identities.json";
-static PROJECTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
     Mutex<std::collections::HashMap<RoomId, tilo_user_identity::TrustedIdentityProjectionV2>>,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -897,9 +897,6 @@ pub fn write_trusted_identities_projection(
     room: RoomId,
     projection: &tilo_user_identity::TrustedIdentityProjectionV2,
 ) -> std::io::Result<PathBuf> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-
     if let Err(error) = projection.validate() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -919,39 +916,13 @@ pub fn write_trusted_identities_projection(
         ));
     }
 
-    let directory = trusted_identities_dir().join(room.to_string());
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&directory)?;
-    // Tighten a pre-existing directory as well; create_dir_all's mode applies
-    // only to newly-created components.
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-
-    let final_path = directory.join(TRUSTED_IDENTITIES_FILE);
-    let sequence = PROJECTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp_path = directory.join(format!(
-        ".{TRUSTED_IDENTITIES_FILE}.{}.{}.tmp",
-        std::process::id(),
-        sequence
-    ));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp_path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp_path, &final_path)?;
-        std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::File::open(&directory)?.sync_all()?;
-        Ok(final_path.clone())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
-    }
-    result
+    // Owner-only room directory (tightened when it already exists) and a
+    // 0600 file that is never visible at its final name with wider access.
+    let final_path = trusted_identities_dir()
+        .join(room.to_string())
+        .join(TRUSTED_IDENTITIES_FILE);
+    atomic_file::write_private(&final_path, &bytes)?;
+    Ok(final_path)
 }
 
 /// Publish a complete accepted room-governance projection for later Files
@@ -1302,7 +1273,7 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 fn launcher_bin_candidates() -> Vec<PathBuf> {
     let current_exe = std::env::current_exe().ok();
     launcher_bin_candidates_from(
-        cfg!(debug_assertions),
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os("TILO_LAUNCHER_BIN"),
         current_exe.as_deref(),
     )
@@ -2055,6 +2026,34 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
     spawn_launch(app.package_id, app.display_name, command)
 }
 
+/// Put a [`LaunchCommand`]'s environment on the `tilo-launcher` process.
+///
+/// The launcher otherwise inherits the compositor's whole environment. A
+/// release launcher already ignores its developer-only overrides
+/// ([`launcher::dev_env::DEV_OVERRIDE_VARS`]); a release compositor also
+/// strips them, so a launcher built with different settings still never
+/// sees them.
+pub fn apply_launch_env(command: &mut std::process::Command, env: &[(String, String)]) {
+    apply_launch_env_with(command, env, crate::compositor::dev_env::DEV_ENV_OVERRIDES);
+}
+
+/// [`apply_launch_env`] as a function of the gate, so the release behaviour
+/// is assertable from a debug test run.
+fn apply_launch_env_with(
+    command: &mut std::process::Command,
+    env: &[(String, String)],
+    dev_overrides: bool,
+) {
+    if !dev_overrides {
+        for name in launcher::dev_env::DEV_OVERRIDE_VARS {
+            command.env_remove(name);
+        }
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+}
+
 /// Run `command` on a worker thread under `(package_id, display_name)`,
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.tapp`
 /// via `tilo-launcher run` and a host app via `run-host` — since they
@@ -2097,9 +2096,7 @@ pub fn spawn_launch(
     let spawn_result = builder.spawn(move || {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
-        for (k, v) in &command.env {
-            cmd.env(k, v);
-        }
+        apply_launch_env(&mut cmd, &command.env);
         // Not a terminal job: no stdin, and output is relayed (not
         // inherited) so it can be quoted back in a failure notification.
         cmd.stdin(Stdio::null());
@@ -2953,12 +2950,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.hello", "gui");
         install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let apps = read_installed_apps().expect("registry readable");
         let offered = gui_apps(); // what the palette actually offers
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
 
         assert_eq!(apps.len(), 2, "both packages enumerate: {apps:?}");
@@ -3001,11 +2998,11 @@ mod tests {
         )
         .unwrap();
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         let required = installed_continuity_contract("so.tilo.browser");
         let legacy = installed_continuity_contract("so.tilo.not-installed");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
 
         assert_eq!(
             required,
@@ -3075,12 +3072,9 @@ mod tests {
             "TILO_RUNTIME_BUNDLE_DIR",
             "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
         ];
-        let previous: Vec<_> = names.iter().map(|name| std::env::var_os(name)).collect();
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            for (index, name) in names.iter().enumerate() {
-                std::env::set_var(name, format!("/developer/overlay/{index}"));
-            }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for (index, name) in names.iter().enumerate() {
+            env.set(name, format!("/developer/overlay/{index}"));
         }
         let command = build_launch_command(
             &test_app("so.tilo.settings"),
@@ -3108,14 +3102,73 @@ mod tests {
                     .all(|(name, _)| !names.contains(&name.as_str()))
             );
         }
-        unsafe {
-            for (name, value) in names.iter().zip(previous) {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
+    }
+
+    /// What the spawned launcher's environment will say about a variable.
+    #[derive(Debug, PartialEq, Eq)]
+    enum LauncherEnv {
+        Inherited,
+        Removed,
+        Set(String),
+    }
+
+    fn launcher_env_entry(command: &std::process::Command, name: &str) -> LauncherEnv {
+        match command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+        {
+            None => LauncherEnv::Inherited,
+            Some((_, None)) => LauncherEnv::Removed,
+            Some((_, Some(value))) => LauncherEnv::Set(value.to_string_lossy().into_owned()),
         }
+    }
+
+    #[test]
+    fn a_release_compositor_strips_developer_overrides_from_the_launcher() {
+        let env = vec![("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string())];
+        let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+        apply_launch_env_with(&mut command, &env, false);
+        for name in launcher::dev_env::DEV_OVERRIDE_VARS {
+            assert_eq!(
+                launcher_env_entry(&command, name),
+                LauncherEnv::Removed,
+                "{name} must be removed from the launcher's environment",
+            );
+        }
+        assert_eq!(
+            launcher_env_entry(&command, "XDG_RUNTIME_DIR"),
+            LauncherEnv::Set("/run/user/1000".to_string()),
+        );
+        // The overlay the developer session relies on is covered by the list.
+        for name in [
+            "TILO_APPS_SYSTEM_DIR",
+            "TILO_APPS_SYSTEM_PAYLOAD_DIR",
+            "TILO_RUNTIME_BUNDLE_DIR",
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+        ] {
+            assert!(
+                launcher::dev_env::DEV_OVERRIDE_VARS.contains(&name),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_developer_compositor_leaves_the_launcher_environment_inherited() {
+        let env = vec![(
+            "TILO_RUNTIME_BUNDLE_DIR".to_string(),
+            "/dev/runtime".to_string(),
+        )];
+        let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+        apply_launch_env_with(&mut command, &env, true);
+        assert_eq!(
+            launcher_env_entry(&command, "TILO_RUNTIME_BUNDLE_DIR"),
+            LauncherEnv::Set("/dev/runtime".to_string()),
+        );
+        assert_eq!(
+            launcher_env_entry(&command, "TILO_JIT_ENTITLED_FILE"),
+            LauncherEnv::Inherited
+        );
     }
 
     #[test]
@@ -3218,11 +3271,11 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn launch_refuses_an_unknown_package() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let err = launch("so.tilo.nope", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(
             err,
@@ -3258,11 +3311,11 @@ mod tests {
     fn launch_refuses_a_cli_only_package() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let err = launch("so.tilo.notes-cli", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(
             err,
@@ -3277,12 +3330,12 @@ mod tests {
     fn launch_refuses_when_no_compositor_socket_is_published() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.hello", "gui");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         set_wayland_socket_path(None);
         let err = launch("so.tilo.hello", RoomId::new()).unwrap_err();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
     }
@@ -3291,7 +3344,7 @@ mod tests {
     /// replaced by a recorder that fails and is quoted back as a
     /// `LaunchEvent`.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     #[cfg(target_os = "linux")]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3312,11 +3365,9 @@ mod tests {
         }
         std::fs::set_permissions(&fake, perms).unwrap();
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-            std::env::set_var("TILO_LAUNCHER_BIN", &fake);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        env.set("TILO_LAUNCHER_BIN", &fake);
         invalidate_app_cache();
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
@@ -3342,10 +3393,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-        }
+        env.remove("TILO_APPS_DATA_DIR");
+        env.remove("TILO_LAUNCHER_BIN");
         invalidate_app_cache();
         set_wayland_socket_path(None);
 
@@ -3563,8 +3612,8 @@ mod tests {
     fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         set_workspace_capabilities(vec![
             fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
             fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
@@ -3587,7 +3636,7 @@ mod tests {
         );
 
         clear_workspace_capabilities();
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
 
         assert_eq!(
             plan.ro_paths,
@@ -3611,8 +3660,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn revoking_the_last_capability_removes_the_file() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
 
         let granted = vec![fs_grant(
             "so.tilo.books",
@@ -3626,7 +3675,7 @@ mod tests {
 
         let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
         let still_there = path.exists();
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
 
         assert_eq!(
             after_revoke, None,
@@ -3642,12 +3691,12 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_package_id_that_could_escape_the_directory_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
         let escaped = write_capabilities_file("../../etc/x", &caps);
         let slashed = write_capabilities_file("a/b", &caps);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        env.remove("XDG_RUNTIME_DIR");
         assert!(escaped.is_err(), "`..` in a package id must be refused");
         assert!(slashed.is_err(), "`/` in a package id must be refused");
     }
@@ -3680,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     #[cfg(target_os = "linux")]
     fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
         let _ = drain_events();
@@ -3804,9 +3853,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
 
         let room = RoomId::new();
         let path = write_trusted_identities_projection(
@@ -3865,23 +3913,14 @@ mod tests {
             &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
         );
         assert!(again.exists());
-
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn files_launch_receives_only_the_staged_projection_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", tmp.path());
         let room = RoomId::new();
         let files = test_app(FILES_PACKAGE_ID);
         let mut command = build_launch_command(
@@ -3915,13 +3954,6 @@ mod tests {
                 .any(|arg| arg == "--trusted-identities"),
             "the member directory is scoped to Files"
         );
-
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 }
 

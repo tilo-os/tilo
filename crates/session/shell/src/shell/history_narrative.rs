@@ -253,15 +253,7 @@ fn hex_id(id: &ui::widget::HistoryEntryId) -> String {
 }
 
 fn parse_hex_id(value: &str) -> Option<ui::widget::HistoryEntryId> {
-    if value.len() != 32 {
-        return None;
-    }
-    let mut bytes = [0_u8; 16];
-    for (index, slot) in bytes.iter_mut().enumerate() {
-        let offset = index.saturating_mul(2);
-        *slot = u8::from_str_radix(value.get(offset..offset.saturating_add(2))?, 16).ok()?;
-    }
-    Some(ui::widget::HistoryEntryId::from_bytes(bytes))
+    ui::widget::history_group::from_hex16(value)
 }
 
 #[cfg(test)]

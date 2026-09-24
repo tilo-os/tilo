@@ -1,0 +1,209 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# Tilo dev image: the production image plus what dev VMs need
+# ----------------------------------------------------------------------------
+# NEVER A PRODUCTION IMAGE. It ships an SSH server, binaries built with the
+# `dev-overrides` feature (they honour a fixed lock-screen password and a
+# session-driving socket from the environment), the build toolchain and an
+# unsealed /usr. It is published only as code.sandbox.example/qos/tilo-vm, which
+# production policy rejects (os/etc/containers/policy.json), and built locally
+# as localhost/tilo-vm. tools/policy/check_dev_image_contract.py enforces
+# that, and keeps everything this file adds out of os/Containerfile.
+#
+# Built FROM the production image of the same commit, so a dev VM runs
+# production code everywhere except for the pieces below:
+#
+#   * The components that declare `dev_features` in os/components.toml (the
+#     compositor today) are rebuilt as release builds with those features. The
+#     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
+#     built alongside them. The cargo arguments and the install both come from
+#     os/scripts/install-components.py --dev, so this file names no binary.
+#   * The production builder's toolchain, installed into the image. The binaries
+#     above are compiled with it, and so are in-VM builds. The package list is
+#     generated from os/Containerfile's `builder` stage into
+#     os/scripts/builder-packages.txt (os/Containerfile is not in the build
+#     context), checked against it by the dev image contract, and installed from
+#     the same frozen RPM snapshot, so the compiler and -devel libraries cannot
+#     drift from the production builder's.
+#   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
+#     template, udev seat rules and vkms modprobe option, shipped from
+#     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
+#   * The image is UNSEALED. A layer on the sealed image breaks the composefs
+#     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
+#     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
+#     os/dev/disk-image.sh installs it with ordinary boot entries.
+#
+# Build context: the repository root. Only BASE_IMAGE has to be given:
+#
+#     podman build -f os/Containerfile.dev \
+#         --build-arg BASE_IMAGE=code.sandbox.example/qos/tilo:<tag> \
+#         -t localhost/tilo-vm:latest .
+#
+# os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
+# production image and then writes a disk. The CI lane is
+# .forgejo/workflows/dev-disk.yml.
+# ============================================================================
+
+# The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
+# a CI image (code.sandbox.example/qos/tilo:<tag> or @sha256:...), or the unsealed
+# `rootfs` target of os/Containerfile.
+ARG BASE_IMAGE=localhost/tilo:latest
+# The frozen RPM snapshot the production image was built from. Like
+# os/Containerfile, this has no default: os/dev/build-dev-image.sh and
+# .forgejo/workflows/dev-disk.yml pass RPMS_REF from os/rpms-snapshot.env, so a
+# build of any commit installs what that commit's production builder installed.
+ARG RPMS_REF
+
+FROM ${RPMS_REF} AS rpms
+
+# The build scripts and inputs the stages below run, staged through a scratch
+# stage and bind-mounted from it, so no stage mounts the build context itself
+# (which SELinux hosts would refuse without relabelling the checkout).
+FROM scratch AS dev-inputs
+COPY os/components.toml /tilo/os/
+COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
+     os/scripts/install-components.py os/scripts/finalize-dev-image.py /tilo/os/scripts/
+COPY Cargo.lock /tilo/
+
+# ---- The base, unsealed, with the builder's toolchain -------------------------
+FROM ${BASE_IMAGE} AS dev-toolchain
+
+# A production Tilo image, and not already a dev image.
+RUN test -s /usr/lib/tilo/generation \
+      || { echo "BASE_IMAGE is not a Tilo production image: it has no /usr/lib/tilo/generation" >&2; exit 1; } \
+    && if [ -e /usr/lib/tilo/image-flavour ]; then \
+         echo "BASE_IMAGE is already a $(cat /usr/lib/tilo/image-flavour) image; build from the production image" >&2; exit 1; \
+       fi
+
+# Unseal first: everything below changes the rootfs the UKI's digest describes.
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
+
+# Fail now, not at the first slot, when this kernel cannot give a slot a seat.
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
+
+# sshd for `tilo-vm`, rsync for worktree sync, and the production builder's
+# packages. openssh-server is the one package the production image removes on
+# purpose (the runtime crypto policy forbids an SSH server there).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    grep -v '^#' /run/tilo-dev/os/scripts/builder-packages.txt > /run/tilo-dev-builder-packages \
+    && [ -s /run/tilo-dev-builder-packages ] \
+    && dnf install -y --setopt=reposdir=/repo openssh-server rsync \
+    && xargs -r -a /run/tilo-dev-builder-packages dnf install -y --setopt=reposdir=/repo \
+    && rm -f /run/tilo-dev-builder-packages \
+    && dnf clean all && /usr/libexec/tilo/finalize-rpmdb \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
+    && rustc --version && cargo --version && sccache --version
+
+# ---- Dev binaries -----------------------------------------------------------
+# Compiled in the dev image's own toolchain, the same one in-VM builds use.
+# Cache mounts follow the production builder: cargo home and sccache under
+# /build. The target cache has its own id, since a feature change rebuilds the
+# same crates differently. TILO_CARGO_FRESHNESS=clean (the default, and CI's)
+# cleans it before every compile and empties it after, as the production builder
+# does; `content` (local builds, os/dev/build-dev-image.sh) keeps it and lets
+# os/scripts/cargo-freshness.sh mark exactly the changed sources newer, so an
+# unchanged crate is neither recompiled nor relinked.
+FROM dev-toolchain AS dev-builder
+WORKDIR /build
+ENV CARGO_HOME=/build/.cargo-home \
+    SCCACHE_DIR=/build/.sccache \
+    RUSTC_WRAPPER=sccache \
+    CARGO_INCREMENTAL=0 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+# Only what cargo and the install manifest read, never the whole context: with
+# `COPY . /build`, editing a unit, an /etc file or os/dev-image/ re-ran this
+# stage's compile, although no binary depends on them. The two os/ files are the
+# manifest pair and the one data file a workspace crate includes.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
+COPY .cargo /build/.cargo
+COPY crates /build/crates
+COPY apps /build/apps
+COPY examples /build/examples
+COPY vendor /build/vendor
+COPY dist /build/dist
+COPY os/components.toml /build/os/components.toml
+COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
+COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+ARG TILO_CARGO_BUILD_JOBS=4
+ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
+ARG TILO_CARGO_FRESHNESS=clean
+RUN --mount=type=cache,target=/build/.cargo-home \
+    --mount=type=cache,id=tilo-dev-image-target,target=/build/target \
+    --mount=type=cache,target=/build/.sccache \
+    trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && if ! sccache --start-server; then \
+         export RUSTC_WRAPPER=; \
+         printf '%s\n' 'sccache unavailable; compiling normally' >&2; \
+       fi \
+    && case "$TILO_CARGO_FRESHNESS" in \
+         clean) cargo clean --release ;; \
+         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+                    || cargo clean --release ;; \
+         *) printf 'TILO_CARGO_FRESHNESS must be clean or content\n' >&2; exit 1 ;; \
+       esac \
+    && started=$(date +%s) \
+    && DEV_CARGO_ARGS="$(python3 os/scripts/install-components.py --dev --dry-run --format cargo)" \
+    && DEV_BINS="$(python3 os/scripts/install-components.py --dev --dry-run --format bins)" \
+    && [ -n "$DEV_CARGO_ARGS" ] && [ -n "$DEV_BINS" ] \
+    && printf 'dev image build: cargo build --release %s\n' "$DEV_CARGO_ARGS" \
+    && CARGO_PROFILE_RELEASE_LTO=thin \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       cargo build --release ${DEV_CARGO_ARGS} \
+    && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
+    && mkdir -p /out \
+    && for b in ${DEV_BINS}; do cp "target/release/$b" /out/; done \
+    && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
+         find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
+       fi
+RUN /build/os/scripts/verify-elf-hardening.sh /out \
+    && pinned="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)" \
+    && actual="$(rustc --version | awk '{print $2}')" \
+    && if [ "$pinned" != "$actual" ]; then \
+         printf 'WARNING: the image builder compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$pinned" >&2; \
+       fi
+
+# ---- Dev components, placed by the manifest ---------------------------------
+FROM dev-toolchain AS dev-component-files
+RUN --network=none \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-builder,source=/out,target=/out,ro \
+    python3 /run/tilo-dev/os/scripts/install-components.py \
+      --manifest /run/tilo-dev/os/components.toml \
+      --from /out --dest /image --dev
+
+# ---- The dev image ------------------------------------------------------------
+FROM dev-toolchain AS dev
+COPY --from=dev-component-files /image/ /
+COPY os/components.toml /usr/share/tilo/components.toml
+COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
+COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
+COPY os/dev-image/ /
+
+# base.json for tilo-vmd's layer checks, the dev-only update policy and the
+# flavour marker; then proof that every piece above is really in place.
+ARG BASE_IMAGE
+ARG TILO_BASE_DIGEST=
+ARG TILO_BASE_CREATED=
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    python3 /run/tilo-dev/os/scripts/finalize-dev-image.py \
+      --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
+      --base-created "$TILO_BASE_CREATED" \
+      --cargo-lock /run/tilo-dev/Cargo.lock \
+    && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
+    && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
+    && /usr/bin/tilo-vmd --version \
+    && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
+    && systemd-sysext --version >/dev/null \
+    && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
+    && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \
+    && rm -f /run/tilo-dev-hostkey /run/tilo-dev-hostkey.pub \
+    && bootc container lint
+
+LABEL sh.tilo.image.flavour="dev" \
+      org.opencontainers.image.title="Tilo dev image (not for production)"

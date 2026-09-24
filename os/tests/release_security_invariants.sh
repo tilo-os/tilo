@@ -12,7 +12,11 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-grep -Fq 'group: tilo-os-image-series' "$workflow" \
+# Every publishing trigger (tags, protected manual main publication, nightly
+# main) must resolve to the one series lock; only validation builds may use a
+# per-ref group.
+grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+  && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
@@ -127,6 +131,14 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
 
 if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+   && grep -Fq 'if [[ $GITHUB_REF == refs/tags/v* ]]; then' "$workflow" \
+   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
+   && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+   && grep -Fq "if: needs.plan.outputs.publish == 'true'" "$workflow" \
+   && grep -Fq 'for candidate in /dev/dri/renderD*; do' "$workflow" \
+   && grep -Fq 'installed-desktop gate will use the bounded QEMU TCG fallback' "$workflow" \
+   && grep -Fq 'gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;' "$workflow" \
+   && grep -Fq "*) echo '::error::no installed-desktop display was selected'; exit 1 ;;" "$workflow" \
    && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
    && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'expected exactly two native child descriptors' "$workflow" \
@@ -138,9 +150,25 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="code.sandbox.example/qos/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
-  ok 'OS publication promotes one signed two-architecture index after both native gates'
+  ok 'OS publication promotes one signed two-architecture index after protected native gates'
 else
   bad 'OS publication can omit a native architecture or promote child manifests independently'
+fi
+
+# The display falls back to 2D on hosts without a render node, but the
+# compositor, OOBE and AT-SPI gates must stay unconditional: the display mode
+# may choose how the VM boots, never which gates run.
+if [ "$(grep -Fc 'TILO_VM_DISPLAY' "$workflow")" -eq 3 ] \
+   && grep -Fq 'echo "TILO_VM_DISPLAY=$display" >> "$GITHUB_ENV"' "$workflow" \
+   && ! grep -Fq 'OS publication requires a readable/writable DRI render node' "$workflow" \
+   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions' "$workflow" \
+   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh' "$workflow" \
+   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop' "$workflow" \
+   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock' "$workflow" \
+   && grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |\$)'" "$workflow"; then
+  ok 'installed compositor, OOBE and AT-SPI gates run in both the virgl and 2D display modes'
+else
+  bad 'the display mode can bypass an installed compositor, OOBE or AT-SPI gate'
 fi
 
 durable_promotion_line="$(grep -n 'for tag in "${durable_tags\[@\]}"' "$workflow" | head -1 | cut -d: -f1)"

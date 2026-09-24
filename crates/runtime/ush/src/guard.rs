@@ -18,38 +18,56 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use landlock::{
-    ABI, Access, AccessFs, PathBeneath, PathFd, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
-};
+use landlock::{ABI, Access, AccessFs, BitFlags, CompatLevel};
+pub use sandbox_core::landlock::LandlockOutcome;
+use sandbox_core::landlock::{FsRule, RulesetSpec, outcome_from_status};
 
 /// Where quarantined files go, inside the layer.
 pub const QUARANTINE_DIR: &str = "/usr/lib/ush/quarantine";
 
-/// What Landlock actually did, as opposed to what was asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LandlockOutcome {
-    FullyEnforced,
-    PartiallyEnforced,
-    NotEnforced,
-    Errored,
-}
-
-impl LandlockOutcome {
-    pub fn describe(self) -> &'static str {
-        match self {
-            LandlockOutcome::FullyEnforced => "enforcing (every requested right honoured)",
-            LandlockOutcome::PartiallyEnforced => {
-                "partially enforcing (the running kernel dropped some rights)"
-            }
-            LandlockOutcome::NotEnforced => "NOT enforcing (this kernel has no Landlock)",
-            LandlockOutcome::Errored => "NOT enforcing (the ruleset would not build)",
+/// What Landlock actually did, as opposed to what was asked for — worded for
+/// `guard status`, which reports to the person at the shell rather than to a
+/// launch log.
+pub fn describe(outcome: LandlockOutcome) -> &'static str {
+    match outcome {
+        LandlockOutcome::FullyEnforced => "enforcing (every requested right honoured)",
+        LandlockOutcome::PartiallyEnforced => {
+            "partially enforcing (the running kernel dropped some rights)"
         }
+        LandlockOutcome::NotEnforced => "NOT enforcing (this kernel has no Landlock)",
+        LandlockOutcome::Errored => "NOT enforcing (the ruleset would not build)",
     }
 }
 
 /// Cap at V4, matching the app sandbox's shim: V5 adds rights this runtime
 /// doesn't use, turning a fully-enforced ruleset partial on some kernels.
 pub const TARGET_ABI: ABI = ABI::V4;
+
+/// The ruleset [`restrict_self`] installs: every ABI-4 filesystem right
+/// handled best-effort, `rw` paths granted all of them and `ro` paths the
+/// read set, in that order. The network is not handled — the guest's
+/// network namespace is its own boundary.
+pub fn ruleset_spec(rw: &[PathBuf], ro: &[PathBuf]) -> RulesetSpec {
+    let all = AccessFs::from_all(TARGET_ABI);
+    let read = AccessFs::from_read(TARGET_ABI);
+    let rules = rw
+        .iter()
+        .map(|path| (path, all))
+        .chain(ro.iter().map(|path| (path, read)))
+        .map(|(path, access)| FsRule {
+            path: path.clone(),
+            access,
+        })
+        .collect();
+    RulesetSpec {
+        compat: CompatLevel::BestEffort,
+        handled_fs: all,
+        handled_net: BitFlags::EMPTY,
+        connect_ports: Vec::new(),
+        rules,
+        trim_file_rights: false,
+    }
+}
 
 /// Restrict the calling process, and every descendant, to `rw` and `ro`.
 /// Called by the guest's first process inside the namespace, immediately
@@ -61,50 +79,15 @@ pub const TARGET_ABI: ABI = ABI::V4;
 /// read-only even if something later remounts it, and the enforcement is a
 /// kernel fact `guard status` can report, not a claim about the argv.
 pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
-    let abi = TARGET_ABI;
-    let all = AccessFs::from_all(abi);
-    let read = AccessFs::from_read(abi);
-
-    let ruleset = match landlock::Ruleset::default().handle_access(all) {
-        Ok(r) => r,
+    // A path not in the namespace needs no rule — it's already unreachable;
+    // refusing to start over it would make an absent optional directory fatal.
+    let restricted = sandbox_core::landlock::restrict_self(&ruleset_spec(rw, ro), |path, e| {
+        tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path");
+    });
+    match restricted {
+        Ok(status) => outcome_from_status(&status.ruleset),
         Err(e) => {
-            tracing::warn!(error = %e, "landlock: could not handle the access set");
-            return LandlockOutcome::Errored;
-        }
-    };
-    let mut created = match ruleset.create() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "landlock: could not create the ruleset");
-            return LandlockOutcome::Errored;
-        }
-    };
-    for (paths, access) in [(rw, all), (ro, read)] {
-        for path in paths {
-            match PathFd::new(path) {
-                Ok(fd) => match created.add_rule(PathBeneath::new(fd, access)) {
-                    Ok(next) => created = next,
-                    Err(e) => {
-                        tracing::warn!(path = %path.display(), error = %e, "landlock: rule refused");
-                        return LandlockOutcome::Errored;
-                    }
-                },
-                // A path not in the namespace needs no rule — it's already unreachable;
-                // refusing to start over it would make an absent optional directory fatal.
-                Err(e) => {
-                    tracing::debug!(path = %path.display(), error = %e, "landlock: skipping absent path");
-                }
-            }
-        }
-    }
-    match created.restrict_self() {
-        Ok(status) => match status.ruleset {
-            RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
-            RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
-            RulesetStatus::NotEnforced => LandlockOutcome::NotEnforced,
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "landlock: restrict_self failed");
+            tracing::warn!(error = %e, "landlock: ruleset refused");
             LandlockOutcome::Errored
         }
     }
@@ -493,14 +476,40 @@ mod tests {
         assert!(!canary.exists(), "the canary was left behind at /");
     }
 
+    /// The guest ruleset, pinned as raw bits (see
+    /// `sandbox_core::landlock` tests for the bit names): best-effort, every
+    /// ABI-4 filesystem right handled, TCP not handled, `rw` before `ro`,
+    /// and no file-right trimming.
+    #[test]
+    fn the_guest_ruleset_is_pinned() {
+        let spec = ruleset_spec(
+            &[PathBuf::from("/home/me"), PathBuf::from("/tmp")],
+            &[PathBuf::from("/")],
+        );
+        assert_eq!(spec.compat, CompatLevel::BestEffort);
+        assert_eq!(spec.handled_fs.bits(), 0x7fff);
+        assert!(spec.handled_net.is_empty());
+        assert!(spec.connect_ports.is_empty());
+        assert!(!spec.trim_file_rights);
+        let rules: Vec<(PathBuf, u64)> = spec
+            .rules
+            .iter()
+            .map(|rule| (rule.path.clone(), rule.access.bits()))
+            .collect();
+        assert_eq!(
+            rules,
+            vec![
+                (PathBuf::from("/home/me"), 0x7fff),
+                (PathBuf::from("/tmp"), 0x7fff),
+                (PathBuf::from("/"), 0b1101),
+            ]
+        );
+    }
+
     #[test]
     fn the_landlock_outcomes_describe_themselves_honestly() {
-        assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
-        assert!(LandlockOutcome::Errored.describe().contains("NOT"));
-        assert!(
-            LandlockOutcome::PartiallyEnforced
-                .describe()
-                .contains("partially")
-        );
+        assert!(describe(LandlockOutcome::NotEnforced).contains("NOT"));
+        assert!(describe(LandlockOutcome::Errored).contains("NOT"));
+        assert!(describe(LandlockOutcome::PartiallyEnforced).contains("partially"));
     }
 }

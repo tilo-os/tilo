@@ -29,6 +29,7 @@
     )
 )]
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -758,7 +759,7 @@ fn cmd_keygen(out: &Path) -> Result<()> {
             out.display()
         );
     }
-    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let sk = SigningKey::generate(&mut UnwrapErr(SysRng));
     let file = IdentityFile {
         secret_key_hex: hex::encode(sk.to_bytes()),
     };

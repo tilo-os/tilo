@@ -39,7 +39,7 @@ impl Stream {
             *position = end;
             if end == size {
                 self.hashes
-                    .insert(token.to_owned(), format!("{:x}", hash.clone().finalize()));
+                    .insert(token.to_owned(), hex::encode(hash.clone().finalize()));
                 self.active = None;
             }
         }

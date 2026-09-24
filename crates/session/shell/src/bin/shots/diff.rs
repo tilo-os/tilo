@@ -9,8 +9,6 @@
 //! the current capture: the same image, but every changed pixel painted
 //! solid red so the maintainer can eyeball where the regression lives.
 
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 /// One entry in a [`DiffReport`]. The path is relative to the baseline
@@ -206,73 +204,21 @@ fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<
 
 /// # Errors
 ///
-/// Returns an error if the file cannot be opened, decoded, or has an unsupported color type.
+/// Returns an error if the file cannot be opened or decoded. `shots`'s
+/// offscreen path always writes RGBA, but external baselines may use any
+/// PNG colour type; all of them expand to RGBA8.
 fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
-    let file = File::open(path).map_err(|e| format!("open '{}': {e}", path.display()))?;
-    let decoder = png::Decoder::new(BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|e| format!("read_info '{}': {e}", path.display()))?;
-    let info = reader.info().clone();
-    let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
-    reader
-        .next_frame(&mut buf)
-        .map_err(|e| format!("next_frame '{}': {e}", path.display()))?;
-    // Expand to RGBA8 if needed. `shots`'s offscreen path always writes
-    // RGBA, but external baselines may use RGB or paletted PNGs.
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity(buf.len().saturating_div(3).saturating_mul(4));
-            for chunk in buf.chunks_exact(3) {
-                out.extend_from_slice(chunk);
-                out.push(255);
-            }
-            out
-        }
-        png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity(buf.len().saturating_mul(4));
-            for &g in &buf {
-                out.extend_from_slice(&[g, g, g, 255]);
-            }
-            out
-        }
-        png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity(buf.len().saturating_mul(2));
-            for chunk in buf.chunks_exact(2) {
-                let &[gray, alpha] = chunk else {
-                    continue; // chunks_exact(2) guarantees len == 2
-                };
-                out.extend_from_slice(&[gray, gray, gray, alpha]);
-            }
-            out
-        }
-        other @ png::ColorType::Indexed => {
-            return Err(format!(
-                "unsupported PNG color type {:?} in '{}'",
-                other,
-                path.display()
-            ));
-        }
-    };
-    Ok((rgba, (info.width, info.height)))
+    let decoded =
+        ui::png::read_rgba8(path).map_err(|e| format!("decode '{}': {e}", path.display()))?;
+    Ok((decoded.rgba, (decoded.width, decoded.height)))
 }
 
 fn save_rgba(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let file = File::create(path).map_err(|e| format!("create '{}': {e}", path.display()))?;
-    let w = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(w, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder
-        .write_header()
-        .map_err(|e| format!("png header '{}': {e}", path.display()))?;
-    writer
-        .write_image_data(pixels)
-        .map_err(|e| format!("png write '{}': {e}", path.display()))
+    ui::png::write_rgba8(path, width, height, pixels)
+        .map_err(|e| format!("write '{}': {e}", path.display()))
 }
 
 #[cfg(test)]

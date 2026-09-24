@@ -14,7 +14,7 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, RegistryVersion, sign_change_request,
     sign_entry, verify_change_request, verify_entry_signature,
@@ -56,7 +56,7 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
 
 #[test]
 fn entry_json_roundtrip_preserves_signature() {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     sign_entry(&mut entry, &key);
     assert!(verify_entry_signature(&entry));
@@ -72,7 +72,7 @@ fn entry_json_roundtrip_preserves_signature() {
 
 #[test]
 fn change_request_json_roundtrip_still_verifies() {
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     let req = sign_change_request(EntryAction::Add, entry, &key);
     let allow = [key.verifying_key().to_bytes()];
@@ -86,7 +86,7 @@ fn change_request_json_roundtrip_still_verifies() {
 fn canonical_form_is_deterministic_across_two_processes_worth_of_encoders() {
     // Same value → identical signing bytes. This is what makes
     // a detached signature portable across implementations.
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     let m1 = entry.signing_message();
     let m2 = entry.signing_message();
@@ -103,7 +103,7 @@ fn signature_survives_field_reorder_in_json() {
     // JSON key order is defined by the encoder; the signing form
     // is postcard so a client parsing JSON and re-serialising it
     // with a different key order must still verify.
-    let key = SigningKey::generate(&mut OsRng);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut entry = sample_entry(hex::encode(key.verifying_key().to_bytes()));
     sign_entry(&mut entry, &key);
 

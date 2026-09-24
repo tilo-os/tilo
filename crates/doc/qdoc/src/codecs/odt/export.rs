@@ -226,15 +226,6 @@ fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) 
     }
 }
 
-/// Escape text for XML element content (`svg:title` / `svg:desc`).
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        push_escaped(&mut out, c);
-    }
-    out
-}
-
 /// Codec-authored automatic *text* style for a mark: `(style name, properties)`. Boolean marks map to fixed styles; valued font marks get a per-value style.
 fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
     match m.name.as_str() {
@@ -308,30 +299,6 @@ fn lang_text_props(code: &str) -> String {
             )
         }
         _ => format!(r#"fo:language="{}""#, escape_attr(code)),
-    }
-}
-
-/// Escape a string for use inside a double-quoted XML attribute value.
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
     }
 }
 
@@ -463,7 +430,7 @@ fn render_inline(
             continue;
         }
         for c in run.text.chars() {
-            push_escaped(&mut out, c);
+            push_text(&mut out, c);
         }
     }
     close_inline(&mut out, &mut open, &mut cur_link);
@@ -847,6 +814,7 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     )
 }
 
+use crate::codecs::xml_escape::{escape_attr, escape_text, push_text};
 use crate::snapshot::BlockView;
 
 fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>) -> String {

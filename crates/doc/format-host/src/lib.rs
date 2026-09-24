@@ -43,7 +43,7 @@ use std::path::PathBuf;
 
 /// Default on-disk registry path: `~/.config/tilo/extensions/format-providers.toml`.
 pub fn default_registry_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let base = xdg_paths::config_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     base.join("tilo")
         .join("extensions")
         .join("format-providers.toml")

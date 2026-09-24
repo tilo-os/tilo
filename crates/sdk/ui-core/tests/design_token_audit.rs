@@ -55,7 +55,7 @@ fn repository_root() -> PathBuf {
 /// not inherited debt. peniko colour literals go through `Color::from_rgb8`
 /// / `from_rgba8` and are ratcheted below (`ratcheted_patterns`), not
 /// forbidden here; spacing literals are ratcheted by
-/// `f1_spacing_token_audit.rs`. (An earlier `Padding::all(` pattern named a
+/// `spacing_token_audit.rs`. (An earlier `Padding::all(` pattern named a
 /// type that does not exist and was dropped; the colour pattern once also
 /// spelled a non-existent `Color::rgb8(` and now names only the live call.)
 fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
@@ -116,11 +116,11 @@ fn forbidden_patterns_match_the_shapes_they_name() {
 }
 
 /// The `#[cfg(test)]` span finder and the baseline plumbing live in
-/// `support::ratchet`, shared with `f1_spacing_token_audit.rs`. The finder
+/// `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
 /// covers exactly the item the attribute governs — an earlier copy here
 /// treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
 /// const …;` or `mod tests;` exempted whatever braced production item
-/// followed it (F1 round one, R4).
+/// followed it.
 #[test]
 fn a_file_gated_to_tests_has_no_production_style_lines() {
     let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";

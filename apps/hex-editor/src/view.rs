@@ -45,6 +45,7 @@ use crate::actions::HexOperation;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel, LocalEdit};
 use crate::search::{self, SearchKind};
+use ui::paint::with_alpha;
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
@@ -298,13 +299,6 @@ impl HexView {
     /// The on-disk path currently backing the buffer, if any.
     pub fn path(&self) -> Option<&std::path::Path> {
         self.path.as_deref()
-    }
-
-    /// Test hook: feed a portal open/save outcome through the *real* drain
-    /// path, exactly as the worker thread would deliver it. Lets the e2e suite
-    /// exercise the production open flow without a live host file chooser.
-    pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
-        self.open_rx = Some(ui::portal::inject_for_test(outcome));
     }
 
     /// Place the initial cursor at `offset`. Useful for opening a file
@@ -2733,11 +2727,6 @@ impl GridMetrics {
 }
 
 // --- small drawing utilities ------------------------------------------
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    let rgba = c.to_rgba8();
-    Color::from_rgba8(rgba.r, rgba.g, rgba.b, a)
-}
 
 /// ASCII glyph for the ASCII column: the printable char, or a centred dot
 /// for control / high bytes (the universal hex-editor convention).

@@ -12,3 +12,6 @@ crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
 tools/windows/gstreamer-licenses/*.txt -text
 tools/windows/gstreamer-licenses/*-COPYING -text
 tools/windows/gstreamer-licenses/*-LICENSE -text
+
+# Pinned seccomp-bpf programs are compared byte for byte by tests.
+*.bpf binary

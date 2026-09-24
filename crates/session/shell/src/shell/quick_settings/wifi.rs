@@ -12,7 +12,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Toggle, ToggleFace};
+use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
 use crate::shell::chrome_state::QuickSettingsState;
 #[cfg(test)]
@@ -69,6 +69,370 @@ impl QuickSettingsWifiPane {
         )
     }
 
+    const BACK_FOCUS: usize = 0;
+    const WIFI_FOCUS: usize = 1;
+    const RESCAN_FOCUS: usize = 2;
+    const HOTSPOT_FOCUS: usize = 3;
+    const NETWORK_FOCUS_START: usize = 4;
+
+    fn back_rect(panel: Rect) -> Rect {
+        Rect::new(
+            panel.x0 + 8.0,
+            panel.y0 + 8.0,
+            panel.x0 + 40.0,
+            panel.y0 + 40.0,
+        )
+    }
+
+    fn wifi_toggle_rect(panel: Rect) -> Rect {
+        Rect::new(
+            panel.x1 - 48.0,
+            panel.y0 + 14.0,
+            panel.x1 - 12.0,
+            panel.y0 + 34.0,
+        )
+    }
+
+    fn rescan_rect(panel: Rect) -> Rect {
+        Rect::new(
+            panel.x1 - 88.0,
+            panel.y0 + 8.0,
+            panel.x1 - 52.0,
+            panel.y0 + 40.0,
+        )
+    }
+
+    fn hotspot_rect(panel: Rect) -> Rect {
+        Self::hotspot_rect_for(panel)
+    }
+
+    fn displayed_network_count(state: &QuickSettingsState) -> usize {
+        if state.wifi && !state.wifi_scanning && state.wifi_scan_error.is_none() {
+            state.wifi_networks.len()
+        } else {
+            0
+        }
+    }
+
+    fn status_message(state: &QuickSettingsState) -> Option<&'static str> {
+        if !state.wifi {
+            Some("Wi-Fi is off")
+        } else if state.wifi_scanning {
+            Some("Scanning for networks…")
+        } else if state.wifi_scan_error.is_some() {
+            Some("Couldn’t scan · Refresh to try again")
+        } else if state.wifi_networks.is_empty() {
+            Some("No networks found")
+        } else {
+            None
+        }
+    }
+
+    /// Stable visual ids that are currently actionable. Disabled controls and
+    /// an already-connected network remain visible, but keyboard and
+    /// accessibility traversal must not land on inert targets.
+    fn focusable_indices(state: &QuickSettingsState) -> Vec<usize> {
+        let busy = state.wifi_joining.is_some();
+        let mut indices = vec![Self::BACK_FOCUS];
+        if !busy {
+            indices.push(Self::WIFI_FOCUS);
+        }
+        if state.wifi && !busy && !state.wifi_scanning {
+            indices.push(Self::RESCAN_FOCUS);
+        }
+        if state.wifi && !busy {
+            indices.push(Self::HOTSPOT_FOCUS);
+            indices.extend(
+                state
+                    .wifi_networks
+                    .iter()
+                    .take(Self::displayed_network_count(state))
+                    .enumerate()
+                    .filter_map(|(index, network)| {
+                        (!network.connected)
+                            .then_some(Self::NETWORK_FOCUS_START.saturating_add(index))
+                    }),
+            );
+        }
+        indices
+    }
+
+    /// Consume a request raised by the header refresh button or by enabling
+    /// Wi-Fi in this pane. The overlay host owns the existing off-thread scan,
+    /// so the retained pane only publishes the intent.
+    pub fn take_rescan_request(&mut self) -> bool {
+        std::mem::take(&mut self.rescan_requested)
+    }
+
+    /// Named pane-owned actions for test control and future accessibility
+    /// projection. Network rows remain data-dependent and are owned by the
+    /// list model rather than receiving unstable index-only identities here.
+    #[cfg(test)]
+    pub fn action_rects(panel: Rect) -> [(&'static str, Rect); 3] {
+        [
+            ("quick_settings_wifi_toggle", Self::wifi_toggle_rect(panel)),
+            ("quick_settings_wifi_rescan", Self::rescan_rect(panel)),
+            ("quick_settings_wifi_hotspot", Self::hotspot_rect(panel)),
+        ]
+    }
+
+    /// Every currently visible action in visual and keyboard order.
+    pub fn semantic_rects(&self, panel: Rect, state: &QuickSettingsState) -> Vec<(String, Rect)> {
+        let visible =
+            self.list
+                .visible_rects(panel, Self::displayed_network_count(state), Self::LIST_TOP);
+        Self::focusable_indices(state)
+            .into_iter()
+            .filter_map(|index| {
+                let (name, rect) = match index {
+                    Self::BACK_FOCUS => ("quick_settings_wifi_back".into(), Self::back_rect(panel)),
+                    Self::WIFI_FOCUS => (
+                        "quick_settings_wifi_toggle".into(),
+                        Self::wifi_toggle_rect(panel),
+                    ),
+                    Self::RESCAN_FOCUS => (
+                        "quick_settings_wifi_rescan".into(),
+                        Self::rescan_rect(panel),
+                    ),
+                    Self::HOTSPOT_FOCUS => (
+                        "quick_settings_wifi_hotspot".into(),
+                        Self::hotspot_rect(panel),
+                    ),
+                    network => {
+                        let network = network.checked_sub(Self::NETWORK_FOCUS_START)?;
+                        let rect = visible
+                            .iter()
+                            .find_map(|(index, rect)| (*index == network).then_some(*rect))?;
+                        (format!("quick_settings_wifi_network[{network}]"), rect)
+                    }
+                };
+                Some((name, rect))
+            })
+            .collect()
+    }
+
+    pub fn accessibility_rect_for_path(
+        &self,
+        panel: Rect,
+        path: &[usize],
+        state: &QuickSettingsState,
+    ) -> Option<Rect> {
+        let [0, child] = path else {
+            return None;
+        };
+        let index = *Self::focusable_indices(state).get(*child)?;
+        match index {
+            Self::BACK_FOCUS => Some(Self::back_rect(panel)),
+            Self::WIFI_FOCUS => Some(Self::wifi_toggle_rect(panel)),
+            Self::RESCAN_FOCUS => Some(Self::rescan_rect(panel)),
+            Self::HOTSPOT_FOCUS => Some(Self::hotspot_rect(panel)),
+            network => {
+                let network = network.checked_sub(Self::NETWORK_FOCUS_START)?;
+                self.list
+                    .visible_rects(panel, Self::displayed_network_count(state), Self::LIST_TOP)
+                    .into_iter()
+                    .find_map(|(index, rect)| (index == network).then_some(rect))
+            }
+        }
+    }
+
+    pub fn accessibility_snapshot(&self, state: &QuickSettingsState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let focusable = Self::focusable_indices(state);
+        let children = focusable
+            .iter()
+            .filter_map(|index| match *index {
+                Self::BACK_FOCUS => Some(
+                    AccessNode::new(Role::Button).with_name("Back").with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.keyboard_focus == Some(*index)),
+                    ),
+                ),
+                Self::WIFI_FOCUS => Some(
+                    AccessNode::new(Role::Switch).with_name("Wi-Fi").with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.keyboard_focus == Some(*index))
+                            .checked(state.wifi),
+                    ),
+                ),
+                Self::RESCAN_FOCUS => Some(
+                    AccessNode::new(Role::Button)
+                        .with_name("Scan for Wi-Fi networks")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index)),
+                        ),
+                ),
+                Self::HOTSPOT_FOCUS => Some(
+                    AccessNode::new(Role::Switch)
+                        .with_name("Wi-Fi hotspot")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index))
+                                .checked(state.radios.hotspot_active),
+                        ),
+                ),
+                network => {
+                    let network = network.checked_sub(Self::NETWORK_FOCUS_START)?;
+                    let item = state.wifi_networks.get(network)?;
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(item.ssid.clone())
+                            .with_description(if item.secure { "Secured" } else { "Open" })
+                            .with_position(network.saturating_add(1), state.wifi_networks.len())
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.keyboard_focus == Some(*index)),
+                            ),
+                    )
+                }
+            })
+            .collect();
+        AccessNode::new(Role::Dialog)
+            .with_name("Wi-Fi")
+            .with_description(Self::status_message(state).unwrap_or(
+                "Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot",
+            ))
+            .with_state(AccessState::new().modal(true))
+            .with_children(children)
+    }
+
+    pub fn reset_focus(&mut self) {
+        self.keyboard_focus = None;
+    }
+
+    pub fn focus_accessibility_path(
+        &mut self,
+        path: &[usize],
+        panel: Rect,
+        state: &QuickSettingsState,
+    ) -> bool {
+        let [0, index] = path else {
+            return false;
+        };
+        let Some(focus) = Self::focusable_indices(state).get(*index).copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(focus);
+        if let Some(network) = focus.checked_sub(Self::NETWORK_FOCUS_START) {
+            self.list.ensure_visible(
+                panel,
+                Self::displayed_network_count(state),
+                Self::LIST_TOP,
+                network,
+            );
+        }
+        true
+    }
+
+    pub fn focus_next(&mut self, panel: Rect, state: &QuickSettingsState, backwards: bool) {
+        let order = Self::focusable_indices(state);
+        let current = self
+            .keyboard_focus
+            .and_then(|focus| order.iter().position(|candidate| *candidate == focus));
+        let last = order.len().saturating_sub(1);
+        let position = match (current, backwards) {
+            (Some(position), true) => position.checked_sub(1).unwrap_or(last),
+            (Some(position), false) => position
+                .saturating_add(1)
+                .checked_rem(order.len())
+                .unwrap_or_default(),
+            (None, true) => last,
+            (None, false) => 0,
+        };
+        let Some(focus) = order.get(position).copied() else {
+            return;
+        };
+        self.keyboard_focus = Some(focus);
+        if let Some(network) = focus.checked_sub(Self::NETWORK_FOCUS_START) {
+            self.list.ensure_visible(
+                panel,
+                Self::displayed_network_count(state),
+                Self::LIST_TOP,
+                network,
+            );
+        }
+    }
+
+    pub fn scroll_wheel(&mut self, panel: Rect, state: &QuickSettingsState, rows: f64) -> bool {
+        self.list.scroll_wheel(
+            panel,
+            Self::displayed_network_count(state),
+            Self::LIST_TOP,
+            rows,
+        )
+    }
+
+    pub fn activate_focused(
+        &mut self,
+        panel: Rect,
+        state: &mut QuickSettingsState,
+        actions: &dyn QsActions,
+    ) -> WifiPaneOutcome {
+        let Some(index) = self.keyboard_focus else {
+            return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
+        };
+        let point = match index {
+            Self::BACK_FOCUS => Self::back_rect(panel).center(),
+            Self::WIFI_FOCUS => Self::wifi_toggle_rect(panel).center(),
+            Self::RESCAN_FOCUS => Self::rescan_rect(panel).center(),
+            Self::HOTSPOT_FOCUS => Self::hotspot_rect(panel).center(),
+            network => {
+                self.list
+                    .layout_from(panel, Self::displayed_network_count(state), Self::LIST_TOP);
+                let network = network.saturating_sub(Self::NETWORK_FOCUS_START);
+                self.list.ensure_visible(
+                    panel,
+                    Self::displayed_network_count(state),
+                    Self::LIST_TOP,
+                    network,
+                );
+                let Some(rect) = self.list.row_for(network) else {
+                    return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
+                };
+                rect.center()
+            }
+        };
+        self.handle_click(point, panel, state, actions)
+    }
+
+    /// Keyboard contract for host routing. Returning `Some` means the pane
+    /// consumed the key, including focus-only movement whose outcome is
+    /// `DrillIn(None)`.
+    pub fn handle_key(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+        panel: Rect,
+        state: &mut QuickSettingsState,
+        actions: &dyn QsActions,
+    ) -> Option<WifiPaneOutcome> {
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                self.focus_next(panel, state, backwards);
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
+            }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
+                self.focus_next(panel, state, true);
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
+            }
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
+                self.focus_next(panel, state, false);
+                Some(WifiPaneOutcome::DrillIn(DrillInOutcome::None))
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                Some(self.activate_focused(panel, state, actions))
+            }
+            _ => None,
+        }
+    }
+
     pub fn handle_click(
         &mut self,
         point: Point,
@@ -77,10 +441,9 @@ impl QuickSettingsWifiPane {
         actions: &dyn QsActions,
     ) -> WifiPaneOutcome {
         self.list
-            .layout_from(panel, state.wifi_networks.len(), Self::LIST_TOP);
+            .layout_from(panel, Self::displayed_network_count(state), Self::LIST_TOP);
         // The same geometry paint uses, so a click before the first frame
         // still lands on the row that will be drawn.
-        self.hotspot_rect = Self::hotspot_rect_for(panel);
         if self.list.back_contains(point) {
             return WifiPaneOutcome::DrillIn(DrillInOutcome::Back);
         }
@@ -190,14 +553,16 @@ impl QuickSettingsWifiPane {
         state: &QuickSettingsState,
     ) {
         let networks = &state.wifi_networks;
-        self.list.layout_from(panel, networks.len(), Self::LIST_TOP);
-        self.hotspot_rect = Self::hotspot_rect_for(panel);
+        let busy = state.wifi_joining.is_some();
+        let displayed_networks = Self::displayed_network_count(state);
+        self.list
+            .layout_from(panel, displayed_networks, Self::LIST_TOP);
         let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
         // The Hotspot row is a Control (HIG §9.1/§9.5): glyph, two-line
         // label and switch all on its centre line and the shared inset.
-        let row = self.hotspot_rect;
+        let row = Self::hotspot_rect_for(panel);
         let hovered = cursor.is_some_and(|point| row.contains(point));
         paint_control(scene, transform, theme, row, hovered, false);
         let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
@@ -252,17 +617,17 @@ impl QuickSettingsWifiPane {
             )
             .hovered(hovered),
         );
-        if networks.is_empty() {
+        if let Some(message) = Self::status_message(state) {
             DrillInList::draw_empty_from(
                 scene,
                 transform,
                 text,
                 theme,
                 panel,
-                "Scanning for networks…",
+                message,
                 Self::LIST_TOP,
             );
-            if Self::displayed_network_count(state) == 0 {
+            if displayed_networks == 0 {
                 return;
             }
         }

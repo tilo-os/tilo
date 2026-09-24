@@ -162,12 +162,20 @@ impl Drop for WakeScopeGuard {
 
 /// A weak identity for a queued wake; it never owns an app or its scope.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct WakeEvent {
     route: Weak<Route>,
     requires_sync: bool,
 }
 
 impl WakeEvent {
+    #[cfg(feature = "native")]
     pub(crate) const fn requires_sync(&self) -> bool {
         self.requires_sync
     }

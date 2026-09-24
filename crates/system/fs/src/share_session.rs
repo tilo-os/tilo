@@ -313,7 +313,7 @@ mod tests {
 
     use collab_types::{FileInviteSpec, mint_bearer_file_invite, mint_file_invite};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use super::*;
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn bearer_one_use_allows_same_actor_reconnect_and_keeps_live_checks() {
         let fixture = Fixture::new();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let invite = mint_bearer_file_invite(
             FileInviteSpec {
                 workspace_id: fixture.workspace,

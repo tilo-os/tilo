@@ -28,8 +28,7 @@
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    CatalogSearchProvider, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchProvider, SearchResult,
 };
 
 use crate::backend::{MusicBackend, SearchTop};
@@ -614,44 +613,19 @@ impl LibrarySearchProvider {
     }
 }
 
-impl SearchProvider for LibrarySearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for LibrarySearchProvider {
+    fn provider_name(&self) -> &'static str {
         // Default group label / diagnostic name; individual rows carry their own
         // per-type kind ("Songs", "Albums", …) so the overlay sections them.
         "Music"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .query_page(
-                query,
-                None,
-                SEARCH_CANDIDATE_LIMIT,
-                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn limited_work_budget(&self, _limit: usize) -> usize {
+        SEARCH_CANDIDATE_LIMIT
     }
 }
 

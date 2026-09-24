@@ -1,0 +1,4 @@
+# vkms devices created via configfs under the name "seat-<slot>" become
+# logind seat "seat-<slot>". 71-seat.rules already tags DRM cards "seat" and
+# "master-of-seat"; connector sub-devices inherit ID_SEAT.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNELS=="seat-*", SUBSYSTEMS=="faux", ENV{ID_SEAT}="$id"
