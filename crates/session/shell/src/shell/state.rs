@@ -22,6 +22,7 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role as CapRole;
 pub use collab_types::{PermissionProfile, PermissionProfileError};
+use tilo_desktop_model::projection;
 pub use tilo_desktop_model::{
     APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
     GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
@@ -32,7 +33,7 @@ pub use tilo_desktop_model::{
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
     compose_id, counter_of, now_unix, peer_salt_of, role_label,
 };
-pub use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION};
+pub use tilo_desktop_model::{DesktopTree, DropTarget, STATE_SCHEMA_VERSION, TabMove};
 
 #[cfg(test)]
 mod identity_fs_tests {
@@ -565,6 +566,20 @@ pub fn window_width_from_ui(width: ui::widget::WindowWidth) -> WindowWidth {
     }
 }
 
+/// The model's drop target for the one the toolkit's strip row previewed.
+pub fn drop_target_from_ui(target: ui::widget::TabDropTarget) -> DropTarget {
+    match target {
+        ui::widget::TabDropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        } => DropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        },
+        ui::widget::TabDropTarget::GroupGap { gap_index } => DropTarget::GroupGap { gap_index },
+    }
+}
+
 #[cfg(test)]
 mod window_width_parity_tests {
     use super::*;
@@ -610,71 +625,6 @@ mod window_width_parity_tests {
 pub struct NativeDocumentReference {
     pub provider_id: String,
     pub path: std::path::PathBuf,
-}
-
-/// One tab as a room's replication document carries it. Deliberately not
-/// a [`Tab`]: no field here for anything a person's own session decided.
-#[derive(Clone, Debug)]
-struct ReplicatedTab {
-    id: TabId,
-    order: u64,
-    title: String,
-    /// `None` when unparseable — hydrated as a stub rather than dropped,
-    /// since a window in the room should still show up as one here.
-    tile: Option<TileContent>,
-}
-
-/// One window group as a room's replication document carries it. Geometry,
-/// maximization and active-tab selection are per-device presentation state,
-/// so the shared record carries only its topology and tabs.
-#[derive(Clone, Debug)]
-struct ReplicatedGroup {
-    id: GroupId,
-    order: u64,
-    tabs: Vec<ReplicatedTab>,
-}
-
-/// One strip as a room's replication document carries it.
-#[derive(Clone, Debug)]
-struct ReplicatedStrip {
-    id: u64,
-    order: u64,
-    name: Option<String>,
-    groups: Vec<ReplicatedGroup>,
-}
-
-/// Write `value` at `key` only when the document does not already say
-/// it, so a document accumulates a change per changed value rather than
-/// one per export — otherwise each sync round manufactures ops out of
-/// untouched state and two peers exporting to each other never fall
-/// quiet.
-fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current.as_deref() != Some(value) {
-        let _ = doc.put(obj, key, value.to_string());
-    }
-}
-
-/// [`put_str_if_changed`] for an unsigned integer.
-fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: u64) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current != Some(value) {
-        let _ = doc.put(obj, key, ScalarValue::Uint(value));
-    }
 }
 
 fn unix_now() -> i64 {
@@ -1626,10 +1576,19 @@ impl WorkspaceTree {
 
         // Projected by **every** member, unlike governance below: a room
         // a guest can't bring a record — or a window — into isn't shared.
-        Self::project_room_records(doc, &held);
-        Self::project_owned_contents(doc, &strips, local_salt, share_floor);
-        Self::project_workspace_tasks(doc, &tasks);
-        Self::project_effect_receipts(doc, &effect_receipts);
+        if let Err(err) = projection::project_room_records(doc, &held) {
+            tracing::error!(?err, "room doc: records map");
+        }
+        if let Err(err) = projection::project_owned_contents(doc, &strips, local_salt, share_floor)
+        {
+            tracing::error!(?err, "room doc: contents map");
+        }
+        if let Err(error) = projection::project_workspace_tasks(doc, &tasks) {
+            tracing::error!(?error, "room doc: tasks map");
+        }
+        if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
+            tracing::error!(?error, "room doc: effect receipts map");
+        }
 
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
@@ -1679,123 +1638,6 @@ impl WorkspaceTree {
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
     const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
-    const ROOM_TASKS_KEY: &'static str = "tasks_v1";
-    const ROOM_EFFECT_RECEIPTS_KEY: &'static str = "effect_receipts_v1";
-
-    /// Project durable tasks as independently mergeable values. Task ids are
-    /// stable, so two collaborators creating work concurrently add two map
-    /// keys instead of racing over a positional list.
-    fn project_workspace_tasks(doc: &mut AutoCommit, tasks: &[WorkspaceTask]) {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-        let tasks_id = match doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None if tasks.is_empty() => return,
-            None => match doc.put_object(&ROOT, Self::ROOM_TASKS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(error) => {
-                    tracing::error!(?error, "room doc: tasks map");
-                    return;
-                }
-            },
-        };
-        for task in tasks {
-            let Ok(blob) = serde_json::to_vec(task) else {
-                continue;
-            };
-            let unchanged = matches!(
-                doc.get(&tasks_id, task.id.as_str()).ok().flatten(),
-                Some((Value::Scalar(value), _))
-                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-            );
-            if !unchanged {
-                let _ = doc.put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
-            }
-        }
-    }
-
-    fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let Some((_, tasks_id)) = doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut tasks = Vec::new();
-        for key in doc.keys(&tasks_id) {
-            if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
-                && let ScalarValue::Bytes(blob) = value.as_ref()
-                && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
-            {
-                tasks.push(task);
-            }
-        }
-        tasks.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        tasks
-    }
-
-    fn project_effect_receipts(doc: &mut AutoCommit, receipts: &[WorkspaceEffectReceipt]) {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-        let object = match doc
-            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
-            .ok()
-            .flatten()
-        {
-            Some((_, id)) => id,
-            None if receipts.is_empty() => return,
-            None => match doc.put_object(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(error) => {
-                    tracing::error!(?error, "room doc: effect receipts map");
-                    return;
-                }
-            },
-        };
-        for receipt in receipts {
-            let key = receipt.invocation.0.to_string();
-            let Ok(blob) = serde_json::to_vec(receipt) else {
-                continue;
-            };
-            let unchanged = matches!(
-                doc.get(&object, key.as_str()).ok().flatten(),
-                Some((Value::Scalar(value), _))
-                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-            );
-            if !unchanged {
-                let _ = doc.put(&object, key, ScalarValue::Bytes(blob));
-            }
-        }
-    }
-
-    fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
-            .ok()
-            .flatten()
-        else {
-            return Vec::new();
-        };
-        let mut receipts = doc
-            .keys(&object)
-            .filter_map(|key| {
-                let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
-                    return None;
-                };
-                let ScalarValue::Bytes(blob) = value.as_ref() else {
-                    return None;
-                };
-                serde_json::from_slice(blob).ok()
-            })
-            .collect::<Vec<_>>();
-        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
-        receipts
-    }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
     /// -> display name. Called only from the governing branch of
@@ -1956,766 +1798,19 @@ impl WorkspaceTree {
         out
     }
 
-    /// Key the room document stores the room's window contents under.
-    const ROOM_CONTENTS_KEY: &'static str = "contents";
-
-    /// A strip / group / tab id as a `contents` map key: fixed-width hex,
-    /// so the key parses back into the id it names and two peers spell
-    /// one id the same way.
-    fn contents_key(id: u64) -> String {
-        format!("{id:016x}")
-    }
-
-    /// The id a `contents` key names, or `None` for a key this build did
-    /// not write.
-    fn contents_key_id(key: &str) -> Option<u64> {
-        u64::from_str_radix(key, 16).ok()
-    }
-
-    /// Project the strips, window groups and tabs this machine owns into
-    /// the room document's `contents` map. The `active_*` pointers are
-    /// excluded — projecting them would drag a colleague off the page
-    /// they were on whenever somebody else changed tabs.
-    ///
-    /// Every entry is written only by the peer whose salt its id carries
-    /// ([`peer_salt_of`]) — a single-writer rule
-    /// [`Self::apply_room_changes`] enforces, so last-writer-wins has
-    /// nothing to arbitrate. Entries carry their index; readers sort by
-    /// `(order, id)` so peers appending at once still agree, and the
-    /// sweep at each level deletes only entries this machine owns. Salt
-    /// `0` has no id space, so nothing is projected or merged there.
-    fn project_owned_contents(
-        doc: &mut AutoCommit,
-        strips: &[Strip],
-        local_salt: u16,
-        share_floor: Option<u64>,
-    ) {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-        use std::collections::HashSet;
-
-        if local_salt == 0 {
-            return;
-        }
-        // "Mine to publish": minted by this peer, and since it joined
-        // (not before) if this is a room it joined rather than minted.
-        let mine = |id: u64| -> bool {
-            peer_salt_of(id) == local_salt
-                && share_floor.is_none_or(|floor| counter_of(id) >= floor)
-        };
-
-        let contents_id = match doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(&ROOT, Self::ROOM_CONTENTS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: contents map");
-                    return;
-                }
-            },
-        };
-
-        let mut live_strips: HashSet<String> = HashSet::new();
-        for (si, strip) in strips.iter().enumerate() {
-            // An empty strip holds no state; an empty row arriving on
-            // someone else's desktop is noise, not news.
-            if strip.window_groups.is_empty() {
-                continue;
-            }
-            let owns_strip = mine(strip.id.raw());
-            // A peer's strip is still walked: a window we opened into it
-            // is ours to publish even though the row isn't.
-            let has_owned = strip.window_groups.iter().any(|g| {
-                g.tabs.iter().any(|t| !t.tile.is_device_local())
-                    && (mine(g.id)
-                        || g.tabs
-                            .iter()
-                            .any(|t| !t.tile.is_device_local() && mine(t.id)))
-            });
-            if !owns_strip && !has_owned {
-                continue;
-            }
-
-            let skey = Self::contents_key(strip.id.raw());
-            let strip_entry = match doc.get(&contents_id, skey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&contents_id, skey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: strip entry");
-                        continue;
-                    }
-                },
-            };
-            if owns_strip {
-                live_strips.insert(skey.clone());
-                put_str_if_changed(doc, &strip_entry, "name", &strip.name);
-                put_uint_if_changed(doc, &strip_entry, "order", si as u64);
-            }
-
-            Self::project_owned_groups(doc, &strip_entry, strip, &mine);
-        }
-        let stale: Vec<String> = doc
-            .keys(&contents_id)
-            .filter(|k| {
-                !live_strips.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(&mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&contents_id, key.as_str());
-        }
-    }
-
-    /// [`Self::project_owned_contents`]'s per-strip pass: get-or-create
-    /// `strip_entry`'s `groups` map, project every group this machine owns
-    /// (or owns a tab within), then sweep group keys this machine owns
-    /// that no longer appear among `strip`'s groups.
-    fn project_owned_groups(
-        doc: &mut AutoCommit,
-        strip_entry: &automerge::ObjId,
-        strip: &Strip,
-        mine: &impl Fn(u64) -> bool,
-    ) {
-        use automerge::{ObjType, ReadDoc, transaction::Transactable};
-        use std::collections::HashSet;
-
-        let groups_id = match doc.get(strip_entry, "groups").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(strip_entry, "groups", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: groups map");
-                    return;
-                }
-            },
-        };
-        let mut live_groups: HashSet<String> = HashSet::new();
-        for (gi, group) in strip.window_groups.iter().enumerate() {
-            if group.tabs.iter().all(|tab| tab.tile.is_device_local()) {
-                continue;
-            }
-            let owns_group = mine(group.id);
-            let has_owned_tabs = group
-                .tabs
-                .iter()
-                .any(|t| !t.tile.is_device_local() && mine(t.id));
-            if !owns_group && !has_owned_tabs {
-                continue;
-            }
-            let gkey = Self::contents_key(group.id);
-            let group_entry = match doc.get(&groups_id, gkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&groups_id, gkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: group entry");
-                        continue;
-                    }
-                },
-            };
-            if owns_group {
-                live_groups.insert(gkey.clone());
-                put_uint_if_changed(doc, &group_entry, "order", gi as u64);
-                // Width, maximization and active-tab selection are local
-                // presentation preferences. Old room documents may still
-                // contain the first two fields, but no current peer writes
-                // or reads them.
-            }
-
-            Self::project_owned_tabs(doc, &group_entry, group, mine);
-        }
-        let stale: Vec<String> = doc
-            .keys(&groups_id)
-            .filter(|k| {
-                !live_groups.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&groups_id, key.as_str());
-        }
-    }
-
-    /// [`Self::project_owned_groups`]'s per-group pass: get-or-create
-    /// `group_entry`'s `tabs` map, project every tab this machine owns,
-    /// then sweep tab keys this machine owns that no longer appear among
-    /// `group`'s tabs.
-    fn project_owned_tabs(
-        doc: &mut AutoCommit,
-        group_entry: &automerge::ObjId,
-        group: &WindowGroup,
-        mine: &impl Fn(u64) -> bool,
-    ) {
-        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
-        use std::collections::HashSet;
-
-        let tabs_id = match doc.get(group_entry, "tabs").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(group_entry, "tabs", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: tabs map");
-                    return;
-                }
-            },
-        };
-        let mut live_tabs: HashSet<String> = HashSet::new();
-        for (ti, tab) in group.tabs.iter().enumerate() {
-            if tab.tile.is_device_local() || !mine(tab.id) {
-                continue;
-            }
-            let tkey = Self::contents_key(tab.id);
-            live_tabs.insert(tkey.clone());
-            let tab_entry = match doc.get(&tabs_id, tkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&tabs_id, tkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: tab entry");
-                        continue;
-                    }
-                },
-            };
-            put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
-            put_str_if_changed(doc, &tab_entry, "title", &tab.title);
-            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
-                let unchanged = matches!(
-                    doc.get(&tab_entry, "tile_json").ok().flatten(),
-                    Some((automerge::Value::Scalar(v), _))
-                        if matches!(v.as_ref(), ScalarValue::Bytes(b) if b == &blob)
-                );
-                if !unchanged {
-                    let _ = doc.put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
-                }
-            }
-        }
-        let stale: Vec<String> = doc
-            .keys(&tabs_id)
-            .filter(|k| {
-                !live_tabs.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&tabs_id, key.as_str());
-        }
-    }
-
-    /// Read a room document's `contents` back into plain values. Every
-    /// level sorts by `(order, id)`; an entry with no `order` sorts
-    /// last so it can't displace one whose owner did state a position.
-    fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let uint = |obj: &automerge::ObjId, key: &str| -> Option<u64> {
-            match doc.get(obj, key).ok().flatten() {
-                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                    ScalarValue::Uint(n) => Some(*n),
-                    // A negative `Int` has no sane `order`/id reading, so
-                    // treat it as absent rather than wrapping it into a
-                    // huge `u64` via a bit-reinterpreting cast.
-                    ScalarValue::Int(n) => u64::try_from(*n).ok(),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        let text = |obj: &automerge::ObjId, key: &str| -> Option<String> {
-            match doc.get(obj, key).ok().flatten() {
-                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                    ScalarValue::Str(t) => Some(t.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        let Some((_, contents_id)) = doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut strips: Vec<ReplicatedStrip> = Vec::new();
-        for skey in doc.keys(&contents_id) {
-            let Some(sid) = Self::contents_key_id(&skey) else {
-                continue;
-            };
-            let Some((_, strip_entry)) = doc.get(&contents_id, skey.as_str()).ok().flatten() else {
-                continue;
-            };
-            let mut groups: Vec<ReplicatedGroup> = Vec::new();
-            if let Some((_, groups_id)) = doc.get(&strip_entry, "groups").ok().flatten() {
-                for gkey in doc.keys(&groups_id) {
-                    let Some(gid) = Self::contents_key_id(&gkey) else {
-                        continue;
-                    };
-                    let Some((_, group_entry)) = doc.get(&groups_id, gkey.as_str()).ok().flatten()
-                    else {
-                        continue;
-                    };
-                    let mut tabs: Vec<ReplicatedTab> = Vec::new();
-                    if let Some((_, tabs_id)) = doc.get(&group_entry, "tabs").ok().flatten() {
-                        for tkey in doc.keys(&tabs_id) {
-                            let Some(tid) = Self::contents_key_id(&tkey) else {
-                                continue;
-                            };
-                            let Some((_, tab_entry)) =
-                                doc.get(&tabs_id, tkey.as_str()).ok().flatten()
-                            else {
-                                continue;
-                            };
-                            let tile = match doc.get(&tab_entry, "tile_json").ok().flatten() {
-                                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                                    ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
-                                    _ => None,
-                                },
-                                _ => None,
-                            };
-                            tabs.push(ReplicatedTab {
-                                id: tid,
-                                order: uint(&tab_entry, "order").unwrap_or(u64::MAX),
-                                title: text(&tab_entry, "title").unwrap_or_default(),
-                                tile,
-                            });
-                        }
-                    }
-                    tabs.sort_by_key(|t| (t.order, t.id));
-                    groups.push(ReplicatedGroup {
-                        id: gid,
-                        order: uint(&group_entry, "order").unwrap_or(u64::MAX),
-                        tabs,
-                    });
-                }
-            }
-            groups.sort_by_key(|g| (g.order, g.id));
-            strips.push(ReplicatedStrip {
-                id: sid,
-                order: uint(&strip_entry, "order").unwrap_or(u64::MAX),
-                name: text(&strip_entry, "name"),
-                groups,
-            });
-        }
-        strips.sort_by_key(|s| (s.order, s.id));
-        strips
-    }
-
-    /// Every value in `doc`'s `contents` that this machine owns, as a
-    /// comparable digest. [`Self::apply_room_changes`] diffs this
-    /// before/after a peer's batch and refuses it whole if any owned
-    /// entry changed — enforcing "one writer per entry".
-    fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(u64, String)> {
-        let Some(doc) = doc else {
-            return Vec::new();
-        };
-        if local_salt == 0 {
-            return Vec::new();
-        }
-        let mut out: Vec<(u64, String)> = Vec::new();
-        for strip in Self::contents_of(doc) {
-            if peer_salt_of(strip.id) == local_salt {
-                out.push((
-                    strip.id,
-                    format!(
-                        "s|{}|{}",
-                        strip.order,
-                        strip.name.clone().unwrap_or_default()
-                    ),
-                ));
-            }
-            for group in &strip.groups {
-                if peer_salt_of(group.id) == local_salt {
-                    out.push((group.id, format!("g|{}", group.order)));
-                }
-                for tab in &group.tabs {
-                    if peer_salt_of(tab.id) == local_salt {
-                        out.push((
-                            tab.id,
-                            format!("t|{}|{}|{:?}", tab.order, tab.title, tab.tile),
-                        ));
-                    }
-                }
-            }
-        }
-        out.sort();
-        out
-    }
-
-    /// Fold the room document's `contents` into the cached workspace
-    /// addressing `room`, reporting whether anything changed. Entries
-    /// this machine owns are never overwritten or dropped — the document
-    /// is downstream of the cache, so reading one back could only revert
-    /// an unprojected local change; a peer's entries are taken from the
-    /// document and dropped when absent.
-    ///
-    /// `active_tab` is never read from the document: it stays put unless
-    /// gone, and a group arriving from a peer opens on its
-    /// first tab. Vanishing strips take their `active_strip`/
-    /// `active_group` with them so resolvers fall back rather than point
-    /// at nothing.
+    /// Fold `room`'s replication document into the cached workspace that
+    /// addresses it — see [`projection::merge_room_contents`]. Reports
+    /// whether anything changed.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
         let local_salt = self.local_salt();
         if local_salt == 0 {
             return false;
         }
-        let replicated = {
-            let Some(doc) = self.room_docs.get(&room) else {
-                return false;
-            };
-            Self::contents_of(doc)
-        };
-        let is_local = |id: u64| peer_salt_of(id) == local_salt;
-
-        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
-        let mut changed = false;
-        let prior_strip_order: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
-        let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
-            replicated.into_iter().map(|s| (s.id, s)).collect();
-
-        // `(order, id, strip)` so local-only strips keep a position too.
-        let mut out: Vec<(u64, u64, Strip)> = Vec::new();
-        // Old strip ids that don't make it into `out` below — collected
-        // as the loop drops them rather than diffed afterward against a
-        // snapshot, since `ws.strips` is about to be overwritten with the
-        // merged result.
-        let mut vanished: Vec<StripId> = Vec::new();
-        for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
-            let sid = strip.id.raw();
-            let published = by_strip.remove(&sid);
-            if published.is_none() {
-                if is_local(sid) {
-                    // Ours and simply not published; the document has
-                    // no say over it.
-                    out.push((i as u64, sid, strip));
-                } else {
-                    // A foreign strip no longer being merged in — drop it.
-                    changed = true;
-                    vanished.push(StripId::from(sid));
-                }
-                continue;
-            }
-            let rep = published.unwrap_or_else(|| ReplicatedStrip {
-                id: sid,
-                order: i as u64,
-                name: None,
-                groups: Vec::new(),
-            });
-            // Ours keeps our cache's position — taking it from the
-            // document would undo a local reorder until re-projected.
-            let order = if is_local(sid) { i as u64 } else { rep.order };
-            out.push((
-                order,
-                sid,
-                Self::merge_strip(strip, rep, &is_local, &mut changed),
-            ));
-        }
-        for (sid, rep) in by_strip {
-            out.push((rep.order, sid, Self::hydrate_strip(rep)));
-            changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_strip_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, _, strip)| strip.id))
-        {
-            changed = true;
-        }
-        ws.strips = out.into_iter().map(|(_, _, s)| s).collect();
-
-        let ws_id = ws.id;
-        let live: Vec<StripId> = ws.strips.iter().map(|s| s.id).collect();
-
-        // Removed rather than repointed: resolvers already fall back to
-        // the first strip/group with no explicit selection.
-        if self
-            .desktop
-            .active_strip
-            .get(&ws_id)
-            .is_some_and(|active| !live.contains(active))
-        {
-            self.desktop.active_strip.remove(&ws_id);
-        }
-        for strip in vanished {
-            self.desktop.active_group.remove(&strip);
-        }
-        changed
-    }
-
-    /// Reconcile one strip against what the room document says about it.
-    fn merge_strip(
-        mut local: Strip,
-        rep: ReplicatedStrip,
-        is_local: &dyn Fn(u64) -> bool,
-        changed: &mut bool,
-    ) -> Strip {
-        // A name is only taken from the document for a strip we do not
-        // own; ours is ours to write.
-        if !is_local(local.id.raw())
-            && let Some(name) = rep.name
-            && local.name != name
-        {
-            local.name = name;
-            *changed = true;
-        }
-        let mut by_group: std::collections::BTreeMap<u64, ReplicatedGroup> =
-            rep.groups.into_iter().map(|g| (g.id, g)).collect();
-        let prior_group_order: Vec<u64> =
-            local.window_groups.iter().map(|group| group.id).collect();
-
-        let mut out: Vec<(u64, u64, WindowGroup)> = Vec::new();
-        for (i, group) in std::mem::take(&mut local.window_groups)
-            .into_iter()
-            .enumerate()
-        {
-            let gid = group.id;
-            match by_group.remove(&gid) {
-                Some(rep) => {
-                    let order = if is_local(gid) { i as u64 } else { rep.order };
-                    out.push((order, gid, Self::merge_group(group, rep, is_local, changed)));
-                }
-                None if is_local(gid) => out.push((i as u64, gid, group)),
-                None => *changed = true,
-            }
-        }
-        for (gid, rep) in by_group {
-            out.push((rep.order, gid, Self::hydrate_group(rep)));
-            *changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_group_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, id, _)| *id))
-        {
-            *changed = true;
-        }
-        local.window_groups = out.into_iter().map(|(_, _, g)| g).collect();
-        local
-    }
-
-    /// Reconcile one window group. **This is where view state is kept.**
-    fn merge_group(
-        mut local: WindowGroup,
-        rep: ReplicatedGroup,
-        is_local: &dyn Fn(u64) -> bool,
-        changed: &mut bool,
-    ) -> WindowGroup {
-        // Geometry and maximization remain exactly as this device last set
-        // them. A peer changing its own desktop must never resize, maximize,
-        // or otherwise rearrange ours.
-
-        let mut by_tab: std::collections::BTreeMap<u64, ReplicatedTab> =
-            rep.tabs.into_iter().map(|t| (t.id, t)).collect();
-        let prior_tab_order: Vec<u64> = local.tabs.iter().map(|tab| tab.id).collect();
-        let mut out: Vec<(u64, u64, Tab)> = Vec::new();
-        for (i, tab) in std::mem::take(&mut local.tabs).into_iter().enumerate() {
-            let tid = tab.id;
-            match by_tab.remove(&tid) {
-                Some(rep) => {
-                    let order = if is_local(tid) { i as u64 } else { rep.order };
-                    let mut tab = tab;
-                    if !is_local(tid) {
-                        if tab.title != rep.title {
-                            tab.title.clone_from(&rep.title);
-                            *changed = true;
-                        }
-                        if let Some(tile) = rep.tile.clone() {
-                            let tile = Self::localise_tile(tile, Some(&tab.tile), &rep.title);
-                            if serde_json::to_vec(&tab.tile).ok() != serde_json::to_vec(&tile).ok()
-                            {
-                                tab.tile = tile;
-                                *changed = true;
-                            }
-                        }
-                    }
-                    out.push((order, tid, tab));
-                }
-                None if is_local(tid) => out.push((i as u64, tid, tab)),
-                None => *changed = true,
-            }
-        }
-        for (tid, rep) in by_tab {
-            out.push((rep.order, tid, Self::hydrate_tab(rep)));
-            *changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_tab_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, id, _)| *id))
-        {
-            *changed = true;
-        }
-        local.tabs = out.into_iter().map(|(_, _, t)| t).collect();
-
-        // `active_tab` is not taken from `rep` — the document doesn't
-        // carry one. Moves only when the tab is genuinely gone.
-        if !local.tabs.iter().any(|t| t.id == local.active_tab)
-            && let Some(first) = local.tabs.first()
-        {
-            local.active_tab = first.id;
-        }
-        local
-    }
-
-    /// A strip that arrived from a peer.
-    fn hydrate_strip(rep: ReplicatedStrip) -> Strip {
-        Strip {
-            id: StripId::from(rep.id),
-            name: rep.name.unwrap_or_default(),
-            window_groups: rep.groups.into_iter().map(Self::hydrate_group).collect(),
-        }
-    }
-
-    /// A window group that arrived from a peer. Its `active_tab` is
-    /// chosen **here** — a local decision about a local view, not the
-    /// opening peer's to make.
-    fn hydrate_group(rep: ReplicatedGroup) -> WindowGroup {
-        let tabs: Vec<Tab> = rep.tabs.into_iter().map(Self::hydrate_tab).collect();
-        let active_tab = tabs.first().map(|t| t.id).unwrap_or_default();
-        WindowGroup {
-            id: rep.id,
-            tabs,
-            active_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-        }
-    }
-
-    /// A tab that arrived from a peer.
-    fn hydrate_tab(rep: ReplicatedTab) -> Tab {
-        let title = rep.title;
-        Tab {
-            tile: rep.tile.map_or(
-                TileContent::Stub {
-                    kind: AppKind::Other(String::new()),
-                    label: String::new(),
-                },
-                |tile| Self::localise_tile(tile, None, &title),
-            ),
-            id: rep.id,
-            title,
-        }
-    }
-
-    /// Make a peer's tile mean something on this machine: a
-    /// [`TileContent::Foreign`] `wl_surface` id only resolves on the
-    /// compositor hosting that client, so the surface is dropped and the
-    /// app id survives as [`TileContent::PeerWindow`]. `current` is
-    /// preferred once a local instance is bound, or the peer's
-    /// re-projection would take the window away again every round.
-    fn localise_tile(
-        tile: TileContent,
-        current: Option<&TileContent>,
-        tab_title: &str,
-    ) -> TileContent {
-        match tile {
-            TileContent::Foreign { app_id, .. } => {
-                // Already resolved here, to our own instance or the same
-                // waypoint — the remote tile has nothing to add.
-                match current {
-                    Some(
-                        matched @ (TileContent::Foreign { app_id: local, .. }
-                        | TileContent::PeerWindow { app_id: local, .. }),
-                    ) if local.eq_ignore_ascii_case(&app_id) => {
-                        return matched.clone();
-                    }
-                    _ => {}
-                }
-                let label = if tab_title.trim().is_empty() {
-                    app_id.clone()
-                } else {
-                    tab_title.to_string()
-                };
-                TileContent::PeerWindow {
-                    app_id,
-                    label,
-                    note: String::new(),
-                }
-            }
-            other => other,
-        }
-    }
-
-    /// Key the room document stores a room's record index under, mirroring
-    /// [`ui::record::room`]'s shape (id -> `kind`) in the document that
-    /// crosses the wire.
-    const ROOM_RECORDS_KEY: &'static str = "records";
-
-    /// Project a room's record index into that room's replication
-    /// document. A room holds a *reference* (id and type), never the
-    /// record itself — documents travel per-record over the broker.
-    ///
-    /// Additive only: a key this machine doesn't hold is left alone,
-    /// not swept, since sweeping would race a peer's record that hasn't
-    /// reached our index yet. Cost: an un-reference doesn't propagate
-    /// until removal becomes an explicit tombstone.
-    fn project_room_records(
-        doc: &mut AutoCommit,
-        held: &std::collections::BTreeMap<String, String>,
-    ) {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-
-        if held.is_empty() {
-            return;
-        }
-        let records_id = match doc.get(&ROOT, Self::ROOM_RECORDS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(&ROOT, Self::ROOM_RECORDS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: records map");
-                    return;
-                }
-            },
-        };
-        for (id, kind) in held {
-            let entry = match doc.get(&records_id, id.as_str()).ok().flatten() {
-                Some((_, obj)) => obj,
-                None => match doc.put_object(&records_id, id.as_str(), ObjType::Map) {
-                    Ok(obj) => obj,
-                    Err(err) => {
-                        tracing::error!(?err, record = %id, "room doc: record entry");
-                        continue;
-                    }
-                },
-            };
-            // Compared before writing, like every other value here — a
-            // re-projection of unchanged state must not manufacture one.
-            let current = match doc.get(&entry, "kind").ok().flatten() {
-                Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
-                    automerge::ScalarValue::Str(k) => Some(k.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            if current.as_deref() != Some(kind.as_str()) {
-                let _ = doc.put(&entry, "kind", kind.clone());
-            }
-        }
-    }
-
-    /// Read a room document's record index back as `(record id, kind)`
-    /// pairs, sorted by id so two peers read one document the same way.
-    fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let Some((_, records_id)) = doc.get(&ROOT, Self::ROOM_RECORDS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut out: Vec<(String, String)> = Vec::new();
-        for key in doc.keys(&records_id) {
-            let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
-                continue;
-            };
-            let kind = match doc.get(&entry, "kind").ok().flatten() {
-                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                    ScalarValue::Str(k) => k.to_string(),
-                    _ => String::new(),
-                },
-                _ => String::new(),
-            };
-            out.push((key, kind));
-        }
-        out.sort();
-        out
+        let replicated = projection::contents_of(doc);
+        projection::merge_room_contents(&mut self.desktop, room, replicated, local_salt)
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
@@ -2835,14 +1930,7 @@ impl WorkspaceTree {
     /// True (and logs a warning) if the payload's own `room` field
     /// disagrees with the room it was sent to answer.
     fn declared_room_mismatches(candidate: &AutoCommit, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let declared = match candidate.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let declared = projection::declared_room(candidate);
         if declared.is_some_and(|d| d != room) {
             tracing::warn!(
                 target: "shell::state",
@@ -2933,19 +2021,11 @@ impl WorkspaceTree {
         // machine minted are this machine's to write — same
         // "refuse the whole batch" reasoning as the governance check above.
         let local_salt = self.local_salt();
-        let before = Self::owned_contents_digest(self.room_docs.get(&room), local_salt);
-        let after = Self::owned_contents_digest(Some(candidate), local_salt);
-        // Compared over the **intersection**: an entry of ours the batch
-        // changes is refused; one it merely carries that we don't have
-        // yet is not. Matters after a restart — room documents aren't
-        // persisted, so comparing whole sets would refuse a guest's own
-        // history back forever. Our next projection sweeps any gap.
-        let before_by_id: std::collections::BTreeMap<u64, &String> =
-            before.iter().map(|(id, v)| (*id, v)).collect();
-        let changed_ours = after
-            .iter()
-            .filter(|(id, v)| before_by_id.get(id).is_some_and(|prev| *prev != v))
-            .count();
+        // Compared over the **intersection** of entries both documents
+        // hold — see `projection::changed_owned_entries`. Our next
+        // projection sweeps any gap.
+        let changed_ours =
+            projection::changed_owned_entries(self.room_docs.get(&room), candidate, local_salt);
         if changed_ours == 0 {
             return false;
         }
@@ -3004,7 +2084,7 @@ impl WorkspaceTree {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
-        let arrived = Self::room_records_of(candidate);
+        let arrived = projection::room_records_of(candidate);
         let already = self.desktop.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
@@ -3077,8 +2157,8 @@ impl WorkspaceTree {
         }
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
-        let mut tasks = Self::workspace_tasks_of(&candidate);
-        let mut effect_receipts = Self::workspace_effect_receipts_of(&candidate);
+        let mut tasks = projection::workspace_tasks_of(&candidate);
+        let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
         if let Some(workspace) = self.workspace_in_room(room) {
             for existing in &workspace.effect_receipts {
                 match effect_receipts
@@ -3248,7 +2328,7 @@ impl WorkspaceTree {
             }
             if let Ok(receipts_id) =
                 self.doc
-                    .put_object(&entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
+                    .put_object(&entry, projection::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
             {
                 for receipt in &ws.effect_receipts {
                     if let Ok(blob) = serde_json::to_vec(receipt) {
@@ -4597,16 +3677,17 @@ impl WorkspaceTree {
         };
         let object = match self
             .doc
-            .get(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .get(&ws_entry, projection::ROOM_EFFECT_RECEIPTS_KEY)
             .ok()
             .flatten()
         {
             Some((_, id)) => id,
             None => {
-                match self
-                    .doc
-                    .put_object(&ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)
-                {
+                match self.doc.put_object(
+                    &ws_entry,
+                    projection::ROOM_EFFECT_RECEIPTS_KEY,
+                    ObjType::Map,
+                ) {
                     Ok(id) => id,
                     Err(_) => return,
                 }
@@ -4716,7 +3797,7 @@ impl WorkspaceTree {
         use automerge::{ReadDoc, ScalarValue, Value};
         let Some((_, object)) = self
             .doc
-            .get(ws_entry, Self::ROOM_EFFECT_RECEIPTS_KEY)
+            .get(ws_entry, projection::ROOM_EFFECT_RECEIPTS_KEY)
             .ok()
             .flatten()
         else {
@@ -4851,7 +3932,7 @@ impl WorkspaceTree {
         src_group_id: GroupId,
         remove_src_group: bool,
         new_group: &WindowGroup,
-        target: ui::widget::TabDropTarget,
+        target: DropTarget,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         let Some(tab) = new_group.tabs.first() else {
@@ -4896,7 +3977,7 @@ impl WorkspaceTree {
                 };
                 if strip_raw == dst_strip.raw() {
                     dst_groups = Some(groups_id.clone());
-                    if let ui::widget::TabDropTarget::ExistingGroup { group_id, .. } = target {
+                    if let DropTarget::ExistingGroup { group_id, .. } = target {
                         for group_idx in 0..self.doc.length(&groups_id) {
                             let Some((_, group_entry)) =
                                 self.doc.get(&groups_id, group_idx).ok().flatten()
@@ -4945,9 +4026,7 @@ impl WorkspaceTree {
         let Some(dst_groups) = dst_groups else {
             return false;
         };
-        if matches!(target, ui::widget::TabDropTarget::ExistingGroup { .. })
-            && dst_existing_tabs.is_none()
-        {
+        if matches!(target, DropTarget::ExistingGroup { .. }) && dst_existing_tabs.is_none() {
             return false;
         }
 
@@ -4965,7 +4044,7 @@ impl WorkspaceTree {
         }
         let inserted = (|| {
             let tabs = match target {
-                ui::widget::TabDropTarget::GroupGap { gap_index } => {
+                DropTarget::GroupGap { gap_index } => {
                     let dest = gap_index.min(self.doc.length(&dst_groups));
                     let group_entry = self
                         .doc
@@ -4978,7 +4057,7 @@ impl WorkspaceTree {
                         .put_object(&group_entry, "tabs", ObjType::List)
                         .ok()?
                 }
-                ui::widget::TabDropTarget::ExistingGroup { tab_index, .. } => {
+                DropTarget::ExistingGroup { tab_index, .. } => {
                     let tabs = dst_existing_tabs.clone()?;
                     let index = tab_index.min(self.doc.length(&tabs));
                     let tab_entry = self.doc.insert_object(&tabs, index, ObjType::Map).ok()?;
@@ -5844,260 +4923,84 @@ impl WorkspaceTree {
     /// Mirror a cross-strip tab drag-drop into the persisted tree. The
     /// widget side only mutates the widget tree — without this writeback
     /// the tab would pop back to its source strip on the next restart.
-    /// Removes the `Tab` from the source (pruning any group left empty), then
-    /// applies the exact target the destination row previewed: either an exact
-    /// tab index in an existing group or a fresh group at an exact seam.
+    /// The cache edit is [`DesktopTree::move_tab_across_strips`]; the room
+    /// document follows, and both roll back together if it refuses.
     ///
     /// Forgiving: `false` if `tab_id` or either strip id doesn't resolve.
-    /// Searches every workspace since a drop could land outside the
-    /// active one.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "cross-strip moves validate, mutate, and persist both strip topologies as one rollback-capable transaction"
-    )]
     pub fn move_tab_across_strips(
         &mut self,
         src_strip_id: StripId,
         dest_strip_id: StripId,
         tab_id: TabId,
         new_group_id: GroupId,
-        target: ui::widget::TabDropTarget,
+        target: DropTarget,
     ) -> bool {
-        if src_strip_id == dest_strip_id {
-            // Cross-strip routing never commits back into its source row;
-            // that path restores the detached live payload exactly instead.
-            return false;
-        }
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
-        // Validate the destination and any named group before detaching
-        // anything. A stale preview must not make the source tab disappear.
-        let valid_destination = self
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .find(|strip| strip.id == dest_strip_id)
-            .is_some_and(|strip| match target {
-                ui::widget::TabDropTarget::ExistingGroup { group_id, .. } => {
-                    strip.window_groups.iter().any(|group| group.id == group_id)
-                }
-                ui::widget::TabDropTarget::GroupGap { .. } => true,
-            });
-        if !valid_destination {
+        let Some(moved) = self.desktop.move_tab_across_strips(
+            src_strip_id,
+            dest_strip_id,
+            tab_id,
+            new_group_id,
+            target,
+        ) else {
+            return false;
+        };
+        if !self.doc_move_tab_across_strips(
+            src_strip_id,
+            dest_strip_id,
+            moved.source_group,
+            moved.source_group_removed,
+            &moved.new_group,
+            target,
+        ) {
+            tracing::warn!(
+                tab_id,
+                src_strip_id = src_strip_id.raw(),
+                dest_strip_id = dest_strip_id.raw(),
+                "cross-strip move could not be mirrored into the room document"
+            );
+            self.desktop.workspaces = before_workspaces;
+            self.doc = before_doc;
             return false;
         }
-        // Scan every workspace's strips: StripId is workspace-agnostic.
-        let mut moved_tab: Option<Tab> = None;
-        let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
-        let mut src_group_id = 0;
-        'outer: for (ws_idx, ws) in self.desktop.workspaces.iter_mut().enumerate() {
-            for (strip_idx, strip) in ws.strips.iter_mut().enumerate() {
-                if strip.id != src_strip_id {
-                    continue;
-                }
-                for (group_idx, group) in strip.window_groups.iter_mut().enumerate() {
-                    if let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) {
-                        src_group_id = group.id;
-                        let removed = group.tabs.remove(pos);
-                        // If the moved tab was active, promote the
-                        // first remaining sibling so a future re-render
-                        // doesn't dereference a stale active id.
-                        if group.active_tab == tab_id
-                            && let Some(first) = group.tabs.first()
-                        {
-                            group.active_tab = first.id;
-                        }
-                        if group.tabs.is_empty() {
-                            prune_group_at = Some((ws_idx, strip_idx, group_idx));
-                        }
-                        moved_tab = Some(removed);
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        let Some(moved) = moved_tab else { return false };
-        if let Some((ws_idx, strip_idx, group_idx)) = prune_group_at {
-            // `ws_idx`/`strip_idx` were captured in the scan just above and
-            // nothing has mutated `self.desktop.workspaces` since, but a `.get_mut()`
-            // chain costs nothing and can't panic if that ever changes.
-            if let Some(groups) = self
-                .desktop
-                .workspaces
-                .get_mut(ws_idx)
-                .and_then(|w| w.strips.get_mut(strip_idx))
-                .map(|s| &mut s.window_groups)
-                && group_idx < groups.len()
-            {
-                groups.remove(group_idx);
-            }
-        }
-        let active_tab = moved.id;
-        let new_group = WindowGroup {
-            id: new_group_id,
-            tabs: vec![moved.clone()],
-            active_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        for ws in &mut self.desktop.workspaces {
-            for strip in &mut ws.strips {
-                if strip.id == dest_strip_id {
-                    match target {
-                        ui::widget::TabDropTarget::ExistingGroup {
-                            group_id,
-                            tab_index,
-                        } => {
-                            let Some(group) = strip
-                                .window_groups
-                                .iter_mut()
-                                .find(|group| group.id == group_id)
-                            else {
-                                self.desktop.workspaces = before_workspaces;
-                                self.doc = before_doc;
-                                return false;
-                            };
-                            group
-                                .tabs
-                                .insert(tab_index.min(group.tabs.len()), moved.clone());
-                            group.active_tab = moved.id;
-                        }
-                        ui::widget::TabDropTarget::GroupGap { gap_index } => {
-                            strip.window_groups.insert(
-                                gap_index.min(strip.window_groups.len()),
-                                new_group.clone(),
-                            );
-                        }
-                    }
-                    let doc_changed = self.doc_move_tab_across_strips(
-                        src_strip_id,
-                        dest_strip_id,
-                        src_group_id,
-                        prune_group_at.is_some(),
-                        &new_group,
-                        target,
-                    );
-                    if !doc_changed {
-                        tracing::warn!(
-                            tab_id,
-                            src_strip_id = src_strip_id.raw(),
-                            dest_strip_id = dest_strip_id.raw(),
-                            "cross-strip move could not be mirrored into the room document"
-                        );
-                        self.desktop.workspaces = before_workspaces;
-                        self.doc = before_doc;
-                        return false;
-                    }
-                    self.flush_to_disk();
-                    return true;
-                }
-            }
-        }
-        // Defensive rollback if later refactors make strip membership
-        // mutable between validation and insertion.
-        self.desktop.workspaces = before_workspaces;
-        self.doc = before_doc;
-        false
+        self.flush_to_disk();
+        true
     }
 
     /// Split `tab_id` out of its group into a brand-new single-tab group
     /// at `insert_at` in the same strip — the tree-first form of the
     /// in-strip drag-out and of the tab menu's "Split Right" / "Move to
-    /// New Group". Cache and Automerge document move together (the
-    /// document through [`Self::doc_move_tab_across_strips`] with the strip
-    /// as both source and destination, which is the same-strip case
-    /// [`Self::move_tab_across_strips`] refuses), so a revision from another
-    /// device cannot resurrect the tab in its old group.
+    /// New Group". The cache edit is
+    /// [`DesktopTree::split_tab_into_new_group`]; the document follows
+    /// through [`Self::doc_move_tab_across_strips`] with the strip as both
+    /// source and destination, so a revision from another device cannot
+    /// resurrect the tab in its old group.
     ///
     /// Returns the new group's id. `None`, with nothing changed, when the
-    /// tab is not in `strip_id`, when its group has no other tab (splitting
-    /// a group's only tab would dissolve and re-create it one slot over),
-    /// or when the document refuses the move. The source group's active
-    /// tab follows the tab bar's own rule (the neighbour that slid into the
-    /// slot, else the last).
+    /// tab is not in `strip_id`, when its group has no other tab, or when
+    /// the document refuses the move.
     pub fn split_tab_into_new_group(
         &mut self,
         strip_id: StripId,
         tab_id: TabId,
         insert_at: usize,
     ) -> Option<GroupId> {
-        let (ws_idx, strip_idx, group_idx, tab_idx) = self
-            .desktop
-            .workspaces
-            .iter()
-            .enumerate()
-            .find_map(|(ws_idx, ws)| {
-                let (strip_idx, strip) = ws
-                    .strips
-                    .iter()
-                    .enumerate()
-                    .find(|(_, strip)| strip.id == strip_id)?;
-                strip
-                    .window_groups
-                    .iter()
-                    .enumerate()
-                    .find_map(|(group_idx, group)| {
-                        group
-                            .tabs
-                            .iter()
-                            .position(|tab| tab.id == tab_id)
-                            .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx))
-                    })
-            })?;
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
-        let (src_group_id, moved) = {
-            let group = self
-                .desktop
-                .workspaces
-                .get_mut(ws_idx)?
-                .strips
-                .get_mut(strip_idx)?
-                .window_groups
-                .get_mut(group_idx)?;
-            if group.tabs.len() < 2 {
-                return None;
-            }
-            let moved = group.tabs.remove(tab_idx);
-            if group.active_tab == tab_id {
-                group.active_tab = group
-                    .tabs
-                    .get(tab_idx)
-                    .or_else(|| group.tabs.last())
-                    .map_or(0, |tab| tab.id);
-            }
-            (group.id, moved)
-        };
-        let new_group = WindowGroup {
-            id: next_id(),
-            active_tab: moved.id,
-            tabs: vec![moved],
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let new_id = new_group.id;
-        let groups = &mut self
-            .desktop
-            .workspaces
-            .get_mut(ws_idx)?
-            .strips
-            .get_mut(strip_idx)?
-            .window_groups;
-        let destination = insert_at.min(groups.len());
-        groups.insert(destination, new_group.clone());
+        let moved =
+            self.desktop
+                .split_tab_into_new_group(strip_id, tab_id, insert_at, &mut ProcessIds)?;
         if !self.doc_move_tab_across_strips(
             strip_id,
             strip_id,
-            src_group_id,
+            moved.source_group,
             false,
-            &new_group,
-            ui::widget::TabDropTarget::GroupGap {
-                gap_index: destination,
-            },
+            &moved.new_group,
+            moved.target,
         ) {
             tracing::warn!(
                 tab_id,
@@ -6109,7 +5012,7 @@ impl WorkspaceTree {
             return None;
         }
         self.flush_to_disk();
-        Some(new_id)
+        Some(moved.new_group.id)
     }
 
     /// Replace one strip's group/tab arrangement with the identity-only shape
@@ -6394,33 +5297,6 @@ impl WorkspaceTree {
                         .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
                 }
             }
-        }
-    }
-
-    /// Reconcile the active-group pointer against `closing_ids`: if the
-    /// recorded group is closing, advance to the next non-closing
-    /// sibling. `None` when every group is closing — the entry is
-    /// removed, since an emptying strip has no active group rather than
-    /// one clamped to a corpse. Idempotent.
-    pub fn nudge_active_group_off_closing(
-        &mut self,
-        strip_id: StripId,
-        closing_ids: &[GroupId],
-    ) -> Option<GroupId> {
-        let recorded = self.desktop.active_group.get(&strip_id).copied()?;
-        if !closing_ids.contains(&recorded) {
-            return Some(recorded);
-        }
-        let resolved = self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
-        if let Some(next) = resolved {
-            self.desktop.active_group.insert(strip_id, next);
-            Some(next)
-        } else {
-            // Whole strip is fading; drop the entry rather than
-            // leave a dangling pointer. The shell re-seeds when
-            // fresh groups land.
-            self.desktop.active_group.remove(&strip_id);
-            None
         }
     }
 }
@@ -7205,7 +6081,7 @@ mod automerge_foundation_tests {
 
         for (who, tree) in [("host", &mut host), ("guest", &mut guest)] {
             let doc = tree.room_docs.get(&room).expect("a room document");
-            let ids: Vec<String> = WorkspaceTree::room_records_of(doc)
+            let ids: Vec<String> = projection::room_records_of(doc)
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
@@ -7569,19 +6445,19 @@ mod automerge_foundation_tests {
             let doc = guest.room_docs.get_mut(&room).expect("room doc");
             let (_, contents) = doc.get(&ROOT, "contents").ok().flatten().expect("contents");
             let (_, s_entry) = doc
-                .get(&contents, WorkspaceTree::contents_key(strip.raw()).as_str())
+                .get(&contents, projection::contents_key(strip.raw()).as_str())
                 .ok()
                 .flatten()
                 .expect("strip");
             let (_, groups) = doc.get(&s_entry, "groups").ok().flatten().expect("groups");
             let (_, g_entry) = doc
-                .get(&groups, WorkspaceTree::contents_key(group).as_str())
+                .get(&groups, projection::contents_key(group).as_str())
                 .ok()
                 .flatten()
                 .expect("group");
             let (_, tabs) = doc.get(&g_entry, "tabs").ok().flatten().expect("tabs");
             let (_, t_entry) = doc
-                .get(&tabs, WorkspaceTree::contents_key(tab).as_str())
+                .get(&tabs, projection::contents_key(tab).as_str())
                 .ok()
                 .flatten()
                 .expect("tab");
@@ -7647,16 +6523,13 @@ mod automerge_foundation_tests {
             .flatten()
             .expect("the room's windows must be in its document");
         let (_, strip) = doc
-            .get(
-                &contents,
-                WorkspaceTree::contents_key(strip_id.raw()).as_str(),
-            )
+            .get(&contents, projection::contents_key(strip_id.raw()).as_str())
             .ok()
             .flatten()
             .expect("the strip");
         let (_, groups) = doc.get(&strip, "groups").ok().flatten().expect("groups");
         let (_, group) = doc
-            .get(&groups, WorkspaceTree::contents_key(group_id).as_str())
+            .get(&groups, projection::contents_key(group_id).as_str())
             .ok()
             .flatten()
             .expect("the group");
@@ -8596,7 +7469,7 @@ mod automerge_foundation_tests {
             dst_strip_id,
             target_tab,
             new_group_id,
-            ui::widget::TabDropTarget::GroupGap { gap_index: 1 },
+            DropTarget::GroupGap { gap_index: 1 },
         ));
 
         let changes = tree_a.export_changes_since(&[]);
@@ -8675,7 +7548,7 @@ mod automerge_foundation_tests {
             dst_strip_id,
             target_tab,
             next_id(),
-            ui::widget::TabDropTarget::ExistingGroup {
+            DropTarget::ExistingGroup {
                 group_id: dst_group_id,
                 tab_index: 1,
             },
@@ -8734,7 +7607,7 @@ mod automerge_foundation_tests {
             dst_strip_id,
             target_tab,
             next_id(),
-            ui::widget::TabDropTarget::GroupGap { gap_index: 0 },
+            DropTarget::GroupGap { gap_index: 0 },
         ));
         assert_eq!(
             serde_json::to_value(&tree.workspaces).unwrap(),
@@ -8806,155 +7679,6 @@ mod active_group_tests {
             ..Default::default()
         };
         (tree, strip_id, group_ids)
-    }
-
-    #[test]
-    fn active_group_advances_when_active_group_starts_closing() {
-        // Two groups [A, B] with A active. When A starts closing, the
-        // pointer must immediately advance to B so focus / keyboard /
-        // presence stop targeting the fading-away group.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
-
-        assert_eq!(landed, Some(b));
-        assert_eq!(
-            tree.active_group_for(strip_id),
-            Some(b),
-            "active-group pointer must advance to the next surviving sibling at fade-start, not after the 180 ms fade",
-        );
-    }
-
-    #[test]
-    fn active_group_advances_to_previous_when_last_group_starts_closing() {
-        // B (rightmost) is closing with no survivor to its right, so
-        // the reconciler falls back to A on the left.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, b);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(a));
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-    }
-
-    #[test]
-    fn active_group_doesnt_advance_when_non_active_group_closes() {
-        // B closes while A is active — a stray reconcile pass on a
-        // group not itself closing is a no-op, so the shell can call
-        // it freely from a per-tick loop.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(a));
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-    }
-
-    #[test]
-    fn active_group_clears_when_every_group_is_closing() {
-        // Every group in the strip is closing — the pointer can't land
-        // anywhere, so the entry is dropped rather than clamped to a
-        // closing-group id.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a, b]);
-
-        assert_eq!(landed, None);
-        assert_eq!(tree.active_group_for(strip_id), None);
-    }
-
-    #[test]
-    fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
-        // No call to `set_active_group` first. The reconciler must
-        // return `None` and not insert a phantom entry after the
-        // first close.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, _b) = (ids[0], ids[1]);
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
-        assert_eq!(landed, None);
-        assert_eq!(tree.active_group_for(strip_id), None);
-    }
-
-    #[test]
-    fn resolve_active_group_returns_recorded_when_not_closing() {
-        // Pure read path: with the recorded pointer not in the closing
-        // set, `resolve_active_group` returns it unchanged and, unlike
-        // `nudge_*`, doesn't mutate the map.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        let (a, b, c) = (ids[0], ids[1], ids[2]);
-        tree.set_active_group(strip_id, b);
-        let resolved = tree.resolve_active_group(strip_id, |id| id == a || id == c);
-        assert_eq!(resolved, Some(b));
-        // Map is unchanged.
-        assert_eq!(tree.active_group_for(strip_id), Some(b));
-    }
-
-    #[test]
-    fn resolve_active_group_walks_right_then_left() {
-        // Three groups [A, B, C] with B active and closing. The
-        // reconciler must prefer C (right) over A (left) so focus
-        // moves "forward" rather than ping-ponging back to the start.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        let (_a, b, c) = (ids[0], ids[1], ids[2]);
-        tree.set_active_group(strip_id, b);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(c));
-    }
-
-    #[test]
-    fn legacy_json_without_active_group_field_still_deserializes() {
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "workspaces": [],
-            "active": 0,
-            "active_strip": {},
-            "collaborators": []
-        }"#;
-        let tree: WorkspaceTree = serde_json::from_str(legacy).unwrap();
-        assert!(tree.active_group.is_empty());
-    }
-
-    #[test]
-    fn window_group_maximized_round_trips_through_json() {
-        // Window state must survive restart: a fresh tree starts
-        // un-maximized, and flipping `maximized = true` on one group
-        // must serialize and deserialize cleanly.
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let ws = tree.workspaces.first_mut().expect("seed has workspaces");
-        let strip = ws.strips.first_mut().expect("seed has strips");
-        let group = strip.window_groups.first_mut().expect("seed has groups");
-        assert!(!group.maximized);
-        group.maximized = true;
-
-        let json = serde_json::to_string(&tree).unwrap();
-        let round: WorkspaceTree = serde_json::from_str(&json).unwrap();
-        assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
-    }
-
-    #[test]
-    fn legacy_json_without_maximized_field_defaults_to_false() {
-        // `#[serde(default)]` covers persisted trees written before the
-        // `maximized` field existed. Stripped-down window-group payload
-        // omitting the field must load.
-        let legacy = r#"{
-            "id": 1,
-            "tabs": [],
-            "active_tab": 0,
-            "width": "Normal"
-        }"#;
-        let g: WindowGroup = serde_json::from_str(legacy).unwrap();
-        assert!(!g.maximized);
     }
 
     fn group_order(tree: &WorkspaceTree, strip_id: StripId) -> Vec<u64> {
@@ -9316,7 +8040,7 @@ mod active_group_tests {
             tree.active_strip[&tree.workspaces[0].id],
             first_tab,
             90_001,
-            ui::widget::TabDropTarget::GroupGap { gap_index: 0 },
+            DropTarget::GroupGap { gap_index: 0 },
         ));
         let reloaded = load_tree_from(&state_path).expect("cross-strip move persisted");
         let first_tab_locations = reloaded
@@ -9724,146 +8448,8 @@ mod permission_profile_assignment {
 }
 
 #[cfg(test)]
-mod peer_window_merge_tests {
-    //! What a peer's window becomes here, and what keeps it that way.
-    //!
-    //! Asserted against `WorkspaceTree::merge_group`, the function the
-    //! room-sync path actually runs, rather than against a helper written
-    //! to agree with it.
-
+mod workspace_tree_lifecycle_tests {
     use super::*;
-
-    const APP: &str = "so.tilo.word-processor";
-
-    /// Somebody else's tab, as the room document delivers it.
-    fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
-        ReplicatedTab {
-            id,
-            order: 0,
-            title: "Word Processor".into(),
-            tile: Some(TileContent::Foreign {
-                app_id: APP.into(),
-                surface_id: surface,
-            }),
-        }
-    }
-
-    fn group_with(tab: Tab) -> WindowGroup {
-        let active_tab = tab.id;
-        WindowGroup {
-            id: next_id(),
-            tabs: vec![tab],
-            active_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-        }
-    }
-
-    /// A peer's `Foreign` names a surface on *their* compositor. Kept
-    /// verbatim it would resolve here to nothing, or to an unrelated
-    /// window of ours; what survives instead is the app id, which means
-    /// the same thing on both machines and is what a local instance can be
-    /// started from.
-    #[test]
-    fn a_peers_window_arrives_as_the_app_it_names() {
-        let local = group_with(Tab {
-            id: 7,
-            title: String::new(),
-            tile: TileContent::Stub {
-                kind: AppKind::Other(String::new()),
-                label: String::new(),
-            },
-        });
-        let rep = ReplicatedGroup {
-            id: local.id,
-            order: 0,
-            tabs: vec![remote_tab(7, 4242)],
-        };
-        let mut changed = false;
-        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
-        match &merged.tabs[0].tile {
-            TileContent::PeerWindow {
-                app_id,
-                label,
-                note,
-            } => {
-                assert_eq!(app_id, APP);
-                assert_eq!(label, "Word Processor", "the peer's own name for it");
-                assert!(note.is_empty(), "nobody has answered for it yet");
-            }
-            other => panic!("expected a peer window, got {other:?}"),
-        }
-    }
-
-    /// The binding survives the peer's next projection: once bound, the
-    /// tile names *our* surface while the peer keeps re-projecting
-    /// theirs, so a naive "the document wins" merge would take the
-    /// window away again every sync interval, forever.
-    #[test]
-    fn a_local_instance_is_not_clobbered_by_the_peers_own_surface() {
-        let local = group_with(Tab {
-            id: 7,
-            title: "Word Processor".into(),
-            // What `bind_into_tab` left here after our instance mapped.
-            tile: TileContent::Foreign {
-                app_id: APP.into(),
-                surface_id: 99,
-            },
-        });
-        let rep = ReplicatedGroup {
-            id: local.id,
-            order: 0,
-            // The peer's surface id, which is not ours.
-            tabs: vec![remote_tab(7, 4242)],
-        };
-        let mut changed = false;
-        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
-        match &merged.tabs[0].tile {
-            TileContent::Foreign { app_id, surface_id } => {
-                assert_eq!(app_id, APP);
-                assert_eq!(
-                    *surface_id, 99,
-                    "the tab must keep hosting this machine's own window"
-                );
-            }
-            other => panic!("expected our own surface, got {other:?}"),
-        }
-        assert!(!changed, "a merge that changed nothing must not say it did");
-    }
-
-    /// A different app taking the tab over *is* news, and is taken.
-    /// The rule is "a local binding for the same app wins", not "whatever
-    /// is here wins" — the second would strand the tab on a window whose
-    /// tab now holds something else.
-    #[test]
-    fn a_different_app_in_the_tab_still_replaces_what_is_here() {
-        let local = group_with(Tab {
-            id: 7,
-            title: "Word Processor".into(),
-            tile: TileContent::Foreign {
-                app_id: APP.into(),
-                surface_id: 99,
-            },
-        });
-        let mut rep_tab = remote_tab(7, 4242);
-        rep_tab.title = "Terminal".into();
-        rep_tab.tile = Some(TileContent::Foreign {
-            app_id: "so.tilo.terminal".into(),
-            surface_id: 4242,
-        });
-        let rep = ReplicatedGroup {
-            id: local.id,
-            order: 0,
-            tabs: vec![rep_tab],
-        };
-        let mut changed = false;
-        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
-        match &merged.tabs[0].tile {
-            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "so.tilo.terminal"),
-            other => panic!("expected the new app, got {other:?}"),
-        }
-        assert!(changed);
-    }
 
     #[test]
     fn replacing_owner_removes_the_previous_root_capability() {

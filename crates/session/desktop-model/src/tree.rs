@@ -188,4 +188,31 @@ impl DesktopTree {
             None => scan_right(0),
         }
     }
+
+    /// Reconcile the active-group pointer against `closing_ids`: if the
+    /// recorded group is closing, advance to the next non-closing
+    /// sibling. `None` when every group is closing — the entry is
+    /// removed, since an emptying strip has no active group rather than
+    /// one clamped to a corpse. Idempotent.
+    pub fn nudge_active_group_off_closing(
+        &mut self,
+        strip_id: StripId,
+        closing_ids: &[GroupId],
+    ) -> Option<GroupId> {
+        let recorded = self.active_group.get(&strip_id).copied()?;
+        if !closing_ids.contains(&recorded) {
+            return Some(recorded);
+        }
+        let resolved = self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
+        if let Some(next) = resolved {
+            self.active_group.insert(strip_id, next);
+            Some(next)
+        } else {
+            // Whole strip is fading; drop the entry rather than
+            // leave a dangling pointer. The shell re-seeds when
+            // fresh groups land.
+            self.active_group.remove(&strip_id);
+            None
+        }
+    }
 }

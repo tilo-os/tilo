@@ -255,7 +255,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
             destination_strip,
             tab_id,
             next_id(),
-            target,
+            crate::shell::state::drop_target_from_ui(target),
         );
     }
 
