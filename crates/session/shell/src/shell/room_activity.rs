@@ -13,6 +13,7 @@
 //! ([`OpClass::Govern`]) are non-revertible — an owner counters a
 //! governance act with another one rather than rewinding it.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;

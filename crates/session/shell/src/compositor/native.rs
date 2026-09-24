@@ -7,6 +7,7 @@ use crate::shell::input_policy::{
     is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
+use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
     ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
 };

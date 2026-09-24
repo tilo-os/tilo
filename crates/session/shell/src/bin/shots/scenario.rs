@@ -4195,6 +4195,7 @@ fn workspace_switch() -> Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shell::shell::state::WorkspaceAuthority as _;
 
     /// Counter sink for assertions: records each `(name, query)` pair
     /// without writing any files. Lets the unit test verify the

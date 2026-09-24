@@ -6,6 +6,7 @@
 //! stable detail URI. The Store then shows provenance and offers the current
 //! revalidated install action; palette activation never downloads software.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Ref, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;

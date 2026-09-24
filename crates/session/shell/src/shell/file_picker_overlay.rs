@@ -5,6 +5,7 @@
 //! painting, and exclusive event routing. The shell overlay host only decides
 //! where this modal sits in the global z-order.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;

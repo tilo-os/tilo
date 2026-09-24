@@ -12,6 +12,7 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::crdt_text::CrdtTextBody;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::providers::text_app::tile_hosts_app;
+use crate::shell::state::WorkspaceAuthority as _;
 use ui::record::RecordId;
 
 /// Stable address of this action within the `actions` provider.

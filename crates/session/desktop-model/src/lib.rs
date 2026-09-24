@@ -50,5 +50,5 @@ pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
     PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId,
-    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, now_unix, role_label,
+    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, role_label,
 };

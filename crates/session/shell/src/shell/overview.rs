@@ -7,6 +7,7 @@
 //! keeping them out of this projection lets the overview remain a spatial
 //! explanation instead of becoming a second settings screen.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     CapRole, Collaborator, Effect, GroupId, Principal, StripId, Subject, TabId, UserId, Workspace,
     WorkspaceId, WorkspaceTree, local_user_id, now_unix,

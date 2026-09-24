@@ -29,6 +29,7 @@
 )]
 
 use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
