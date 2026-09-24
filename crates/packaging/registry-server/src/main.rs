@@ -260,8 +260,11 @@ enum ReviewCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    tilo_rt::daemon("tilo-registry").run(serve_cli())?
+}
+
+async fn serve_cli() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
