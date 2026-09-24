@@ -109,7 +109,14 @@ struct PersistedRecordV1 {
 pub struct RecordRepository {
     root: PathBuf,
     records: Mutex<BTreeMap<RecordRepositoryKey, StoredRecord>>,
+    /// Stream cursors per record, with the envelope count they were computed
+    /// at. A record's log only grows, so an unchanged count means unchanged
+    /// cursors; reconciliation then hashes each envelope once, not once per
+    /// exchange.
+    cursors: Mutex<BTreeMap<RecordRepositoryKey, CachedCursors>>,
 }
+
+type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
 
 /// Keeps mutable namespace projection serialized against every repository writer.
 /// Acquire only after namespace (and history, if needed); never call public
@@ -536,6 +543,7 @@ impl RecordRepository {
         Ok(Self {
             root,
             records: Mutex::new(records),
+            cursors: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -743,10 +751,6 @@ impl RecordRepository {
     ///
     /// Returns an error for an invalid page limit, poisoned state, or envelope
     /// encoding failure while computing a prefix digest.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "one read lock provides a consistent paginated inventory across all record streams"
-    )]
     pub fn inventory_page(
         &self,
         workspace_id: Uuid,
@@ -756,25 +760,75 @@ impl RecordRepository {
         if limit == 0 || limit > MAX_RECORD_BATCH_OPERATIONS {
             return Err(RecordRepositoryError::InvalidBatchSize);
         }
+        // Pages start at `after`'s record: earlier records are not visited,
+        // and cached cursors are not recomputed.
+        Ok(self
+            .stream_cursors_in(workspace_id, after, None, None)?
+            .into_iter()
+            .filter(|cursor| after.is_none_or(|after| cursor.key() > after))
+            .take(limit)
+            .collect())
+    }
+
+    /// Every stream cursor of one workspace with a key in `[lower, upper)`
+    /// (unbounded where `None`), optionally only streams whose actor is
+    /// `person`, in stream-key order. This is the item set of range-based
+    /// reconciliation; callers authorise the requester first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for poisoned state or envelope encoding failure
+    /// while computing a prefix digest.
+    pub fn stream_cursors_in(
+        &self,
+        workspace_id: Uuid,
+        lower: Option<RecordStreamKey>,
+        upper: Option<RecordStreamKey>,
+        person: Option<[u8; 32]>,
+    ) -> Result<Vec<RecordStreamCursor>, RecordRepositoryError> {
         let records = self
             .records
             .lock()
             .map_err(|_| RecordRepositoryError::StatePoisoned)?;
-        let mut cursors = Vec::new();
-        for (key, record) in records
-            .iter()
-            .filter(|(key, _)| key.workspace_id == workspace_id)
-        {
-            for cursor in record_stream_cursors(*key, record)? {
-                if after.is_none_or(|after| cursor.key() > after) {
-                    cursors.push(cursor);
-                    if cursors.len() == limit {
-                        return Ok(cursors);
-                    }
-                }
+        let mut cache = self
+            .cursors
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let first = RecordRepositoryKey {
+            workspace_id,
+            record_id: lower.map_or(FileRecordId(Uuid::nil()), |key| key.record_id),
+        };
+        let mut out = Vec::new();
+        for (key, record) in records.range(first..) {
+            if key.workspace_id != workspace_id
+                || upper.is_some_and(|upper| key.record_id > upper.record_id)
+            {
+                break;
             }
+            let cursors = match cache.get(key) {
+                Some((count, cursors)) if *count == record.envelopes.len() => {
+                    std::sync::Arc::clone(cursors)
+                }
+                _ => {
+                    let cursors: std::sync::Arc<[RecordStreamCursor]> =
+                        record_stream_cursors(*key, record)?.into();
+                    cache.insert(
+                        *key,
+                        (record.envelopes.len(), std::sync::Arc::clone(&cursors)),
+                    );
+                    cursors
+                }
+            };
+            out.extend(cursors.iter().copied().filter(|cursor| {
+                let stream = cursor.key();
+                lower.is_none_or(|lower| stream >= lower)
+                    && upper.is_none_or(|upper| stream < upper)
+                    && person.is_none_or(|person| *cursor.actor.person.as_bytes() == person)
+            }));
         }
-        Ok(cursors)
+        drop(cache);
+        drop(records);
+        Ok(out)
     }
 
     /// Return a bounded contiguous suffix for one actor stream.
