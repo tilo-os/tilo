@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
 use iroh_blobs::api::Store;
 #[cfg(feature = "filesystem")]
 use iroh_blobs::api::blobs::BlobStatus;
@@ -1226,7 +1226,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // Multi-phase backend eviction lifecycle scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-phase backend eviction lifecycle scenario"
+    )]
     #[cfg(feature = "filesystem")]
     async fn queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed() {
         use crate::availability::{RecordAvailability, RecordKind, Residency};
@@ -1573,7 +1576,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // Every reverse-lookup source is one matrix.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every reverse-lookup source is one matrix"
+    )]
     #[cfg(feature = "filesystem")]
     async fn blob_reverse_lookup_covers_roots_chunks_thumbnails_and_live_records_only() {
         let store = ContentStore::memory();

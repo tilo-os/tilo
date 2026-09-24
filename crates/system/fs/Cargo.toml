@@ -31,7 +31,6 @@ filesystem = [
     "dep:thiserror",
     "dep:hex",
     "dep:blake3",
-    "dep:futures-util",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
@@ -113,8 +112,7 @@ tokio = { workspace = true, features = ["full"] }
 hex = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
-futures-lite.workspace = true
-futures-util = { workspace = true, optional = true }
+futures-util.workspace = true
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]

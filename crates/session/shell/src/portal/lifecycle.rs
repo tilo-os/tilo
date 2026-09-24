@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
 use zbus::interface;
 use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalEmitter;

@@ -8468,8 +8468,8 @@ pub async fn dial_capnp_for_test(
     };
     let (r, w) = stream.into_split();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(r.compat()),
-        futures::io::BufWriter::new(w.compat_write()),
+        futures_util::io::BufReader::new(r.compat()),
+        futures_util::io::BufWriter::new(w.compat_write()),
         rpc_twoparty_capnp::Side::Client,
         capnp::message::ReaderOptions::default(),
     ));
@@ -8646,8 +8646,8 @@ async fn drive_connection(
     let reader = reader.compat();
     let writer = writer.compat_write();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
+        futures_util::io::BufReader::new(reader),
+        futures_util::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));

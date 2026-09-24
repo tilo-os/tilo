@@ -1332,7 +1332,7 @@ fn spawn_lan_discovery_forwarding(
 ) {
     let discovery_tx = cmd_tx.clone();
     runtime.spawn(async move {
-        use futures_lite::StreamExt;
+        use futures_util::StreamExt;
         let mut events = mdns.subscribe().await;
         while let Some(event) = events.next().await {
             if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. } =
