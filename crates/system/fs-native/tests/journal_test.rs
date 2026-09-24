@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fs_native::capture::{CaptureConfig, ChangeOp, EpochCapture};
-use fs_native::journal::{ChangeJournal, JournalConfig, JournalOp, RescanReason};
+use fs_native::journal::{ChangeJournal, JournalConfig, JournalOp};
 
 use crate::support::fanotify_scratch;
 
@@ -179,7 +179,10 @@ fn queue_overflow_forces_a_rescan_that_finds_every_file() {
     j.pump_until_idle(Duration::from_millis(200), Duration::from_secs(30))
         .unwrap();
     let batch = j.take();
-    assert_eq!(batch.rescan, Some(RescanReason::Overflow));
+    // Other tests on the volume can also make the journal ask for a rescan
+    // (their directories vanish before events are read); either reason
+    // leads to the same comparison.
+    assert!(batch.rescan.is_some());
     let cs = cap.capture(&batch).unwrap();
     assert!(cs.stats.full_rescan);
     let files = cs
@@ -189,15 +192,38 @@ fn queue_overflow_forces_a_rescan_that_finds_every_file() {
         .count();
     assert_eq!(files, 20_000);
     assert_eq!(cap.nodes().count(), 20_020);
-    // After the rescan the journal is trusted again.
+    // After the rescan only the next real change is published.
     fs::write(s.live.join("d0/f0"), b"changed").unwrap();
     j.pump_until_idle(Duration::from_millis(150), Duration::from_secs(5))
         .unwrap();
-    let batch = j.take();
-    assert!(batch.rescan.is_none());
-    let cs = cap.capture(&batch).unwrap();
-    assert!(!cs.stats.full_rescan);
+    let cs = cap.capture(&j.take()).unwrap();
     let paths: Vec<PathBuf> = cs.ops.iter().map(|o| o.path().to_path_buf()).collect();
     assert_eq!(paths, [PathBuf::from("d0/f0")]);
     cap.release().unwrap();
+}
+
+#[test]
+fn an_epoch_split_keeps_the_window_between_barriers_for_the_next_batch() {
+    let Some(s) = fanotify_scratch("journal_barrier") else {
+        return;
+    };
+    let mut j = ChangeJournal::open(&s.store, JournalConfig::new(&s.live)).unwrap();
+    fs::write(s.live.join("before"), b"1").unwrap();
+    let before = j.barrier(&s.epochs).unwrap();
+    fs::write(s.live.join("during"), b"2").unwrap();
+    let after = j.barrier(&s.epochs).unwrap();
+    fs::write(s.live.join("after"), b"3").unwrap();
+    let batch = j.take_epoch(before, after).unwrap();
+    let names = |es: &[fs_native::journal::JournalEntry]| -> Vec<String> {
+        let mut v: Vec<String> = es
+            .iter()
+            .filter_map(|e| e.path.as_ref().map(|p| p.display().to_string()))
+            .collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(names(&batch.entries), ["before", "during"]);
+    j.pump_until_idle(Duration::from_millis(100), Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(names(j.pending()), ["during", "after"]);
 }

@@ -65,6 +65,10 @@ pub enum RescanReason {
     /// The kernel dropped events (`FAN_Q_OVERFLOW`).
     Overflow,
     /// An event named a directory that no longer exists and was never seen.
+    /// Where it was is unknown, so this fires for vanished directories
+    /// anywhere on the volume; the daemon's own staging is pid-filtered and
+    /// snapshot deletion raises no per-file events, so on a store volume
+    /// this is rare.
     Unresolved,
 }
 
@@ -120,7 +124,15 @@ pub struct ChangeJournal {
     buf: Vec<u8>,
     entries: Vec<JournalEntry>,
     next_seq: u64,
-    rescan: Option<RescanReason>,
+    /// Why the journal cannot vouch for completeness, and the journal
+    /// position (the next sequence number) at which that was noticed.
+    rescan: Option<(RescanReason, u64)>,
+    /// Barrier files not yet seen, by path, with their id.
+    pending_barriers: HashMap<PathBuf, u64>,
+    /// Journal position of every barrier seen: the last sequence number
+    /// queued before it.
+    barriers: HashMap<u64, u64>,
+    next_barrier: u64,
     /// Last known path of every directory handle seen, for events whose
     /// directory is gone by the time they are read.
     dirs: HashMap<FileHandle, PathBuf>,
@@ -159,6 +171,9 @@ impl ChangeJournal {
             entries: Vec::new(),
             next_seq: 1,
             rescan: None,
+            pending_barriers: HashMap::new(),
+            barriers: HashMap::new(),
+            next_barrier: 0,
             dirs: HashMap::new(),
             muted: HashMap::new(),
             events_read: 0,
@@ -224,6 +239,20 @@ impl ChangeJournal {
     /// Takes the entries journaled so far and re-arms modify tracking, so
     /// every batch sees at least the first write to each file.
     pub fn take(&mut self) -> JournalBatch {
+        self.rearm_modify();
+        JournalBatch {
+            entries: std::mem::take(&mut self.entries),
+            rescan: self.rescan.take().map(|(r, _)| r),
+            through: self.next_seq.saturating_sub(1),
+        }
+    }
+
+    /// Entries journaled but not yet taken.
+    pub fn pending(&self) -> &[JournalEntry] {
+        &self.entries
+    }
+
+    fn rearm_modify(&mut self) {
         for fd in self.muted.drain().filter_map(|(_, fd)| fd) {
             // Best effort: an evicted mark is already gone.
             let _ = self.group.mark_fd(
@@ -232,10 +261,82 @@ impl ChangeJournal {
                 fd.as_fd(),
             );
         }
-        JournalBatch {
-            entries: std::mem::take(&mut self.entries),
-            rescan: self.rescan.take(),
-            through: self.next_seq.saturating_sub(1),
+    }
+
+    /// Places a barrier in the event stream: creates and removes a uniquely
+    /// named file in `dir`, which must be on the marked filesystem (outside
+    /// the watched tree, e.g. the epoch directory). fanotify queues events
+    /// in the syscall that causes them, so every change that completed
+    /// before this call is queued before the barrier's event.
+    pub fn barrier(&mut self, dir: &Path) -> io::Result<u64> {
+        let id = self.next_barrier;
+        self.next_barrier = self.next_barrier.saturating_add(1);
+        let path = std::fs::canonicalize(dir)?
+            .join(format!(".tilo-journal-barrier-{}-{id}", std::process::id()));
+        self.pending_barriers.insert(path.clone(), id);
+        std::fs::File::create(&path)?;
+        std::fs::remove_file(&path)?;
+        Ok(id)
+    }
+
+    fn barrier_position(&mut self, id: u64, timeout: Duration) -> io::Result<u64> {
+        let start = Instant::now();
+        loop {
+            if let Some(pos) = self.barriers.get(&id) {
+                return Ok(*pos);
+            }
+            if start.elapsed() > timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "journal barrier was never observed",
+                ));
+            }
+            self.pump(Some(Duration::from_millis(10)))?;
+        }
+    }
+
+    /// Takes the batch for a snapshot taken between barriers `before` and
+    /// `after`.
+    ///
+    /// Everything queued before `after` is returned. Entries queued between
+    /// the two barriers may or may not be in the snapshot, so they are also
+    /// kept for the next batch: examining a path twice is cheap, missing one
+    /// loses a change. A rescan request noticed after `before` is likewise
+    /// kept for the next batch too.
+    pub fn take_epoch(&mut self, before: u64, after: u64) -> io::Result<JournalBatch> {
+        let a = self.barrier_position(before, Duration::from_secs(10))?;
+        let b = self.barrier_position(after, Duration::from_secs(10))?;
+        self.barriers.remove(&before);
+        self.barriers.remove(&after);
+        self.rearm_modify();
+        let all = std::mem::take(&mut self.entries);
+        let (taken, later): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.seq <= b);
+        self.entries = taken
+            .iter()
+            .filter(|e| e.seq > a)
+            .cloned()
+            .chain(later)
+            .collect();
+        let rescan = match self.rescan {
+            Some((reason, pos)) if pos <= b.saturating_add(1) => {
+                if pos <= a.saturating_add(1) {
+                    self.rescan = None;
+                }
+                Some(reason)
+            }
+            _ => None,
+        };
+        Ok(JournalBatch {
+            entries: taken,
+            rescan,
+            through: b,
+        })
+    }
+
+    fn note_rescan(&mut self, reason: RescanReason) {
+        // Keep the earliest position: everything after it is suspect.
+        if self.rescan.is_none() {
+            self.rescan = Some((reason, self.next_seq));
         }
     }
 
@@ -253,7 +354,16 @@ impl ChangeJournal {
 
     fn ingest(&mut self, ev: &fan::Event) {
         if ev.is_overflow() {
-            self.rescan = Some(RescanReason::Overflow);
+            self.note_rescan(RescanReason::Overflow);
+            return;
+        }
+        if !self.pending_barriers.is_empty()
+            && ev.mask & fan::FAN_CREATE != 0
+            && let Some((dir, name)) = ev.fid(FidKind::Parent)
+            && let Some(abs) = self.resolve_dir(dir, name.map(OsStr::new))
+            && let Some(id) = self.pending_barriers.remove(&abs)
+        {
+            self.barriers.insert(id, self.next_seq.saturating_sub(1));
             return;
         }
         if self.cfg.ignore_pids.contains(&ev.pid) {
@@ -267,7 +377,7 @@ impl ChangeJournal {
             return;
         };
         let Some(abs) = self.resolve_dir(dir, name.map(OsStr::new)) else {
-            self.rescan.get_or_insert(RescanReason::Unresolved);
+            self.note_rescan(RescanReason::Unresolved);
             return;
         };
         let Some(rel) = self.relative(&abs) else {
@@ -316,7 +426,7 @@ impl ChangeJournal {
             side(self, FidKind::RenameFrom),
             side(self, FidKind::RenameTo),
         ) else {
-            self.rescan.get_or_insert(RescanReason::Unresolved);
+            self.note_rescan(RescanReason::Unresolved);
             return;
         };
         if is_dir {
