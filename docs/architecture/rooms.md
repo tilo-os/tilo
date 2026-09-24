@@ -9,24 +9,27 @@ music app's playlists.
 That asymmetry is not cosmetic. It is why the collaboration story stops at the
 edge of the filesystem.
 
-## What is wrong today
+## Where this started, and what remains
 
-An app's entire state is one flat CRDT addressed by `(package_id,
-workspace_uuid)` — see `auto_hello_env` in `crates/sdk/ui-core/src/collaboration.rs`. The
-consequences are concrete, and all three are current behaviour:
+Originally an app's entire state was one flat CRDT addressed by `(package_id,
+workspace_uuid)`. Two people editing two different `.odt` files in one
+workspace merged each other's whole document, opening a second PDF replaced the
+first one's page-keyed annotations, and "share this document" could not be
+expressed.
 
-- Two people editing two **different** `.odt` files in one workspace announce
-  the identical `(so.tilo.word-processor, room)` pair and merge each other's
-  whole document state.
-- Opening a second PDF **deletes your annotations on the first**
-  (`apps/pdf-viewer/src/doc.rs`, commented there as a known cost — annotations
-  are keyed by page number, which only means something for one file).
-- "Share this document" is not expressible. Only "share this app in this
-  workspace" is.
+Records are now the routing key for apps that adopt them: a connection names
+its record in `Hello`, the broker delivers payloads only to connections on the
+same `(app, room, record)` route, and signed envelopes are bound to that route.
+The pdf-viewer keeps each document's markup in a record derived from the file
+(`markup_record_for` in `apps/pdf-viewer/src/app.rs`), so a second PDF no longer
+touches the first one's annotations. Notes uses the canonical record owner.
 
-The tree already names the missing concept, exactly once, in the ebook reader:
-`apps/ebook/src/model.rs` — *"`doc_id` — which document (book id here; file
-path / doc uuid elsewhere)."* It is a `String` with nowhere to live.
+What remains is the default. An app that does not adopt records still has one
+document per `(package_id, room)` — the package document opened through
+`auto_hello_env` in `crates/sdk/ui-core/src/collaboration.rs` — and in a shared
+workspace that document is the app's collaboration route. Most apps are still
+on that path, so for them "share this app in this workspace" is the only
+sharing unit.
 
 ## The model
 
@@ -96,12 +99,12 @@ question that otherwise gets answered inconsistently once per app.
 
 ## What it costs
 
-**Per-record CRDT routing is a protocol change, not a refactor.** Today the
-broker routes opaque bytes keyed on `(app_id, cluster_id)` and never
-materialises them — `crates/session/shell/src/shell/collab_broker.rs` holds no `AutoCommit` at
-all. Making the record the routing key means either the broker understands
-record boundaries, or apps announce a channel per record. Both are real work
-and one of them has to be chosen.
+**Per-record CRDT routing is a protocol change, not a refactor.** The broker
+routes opaque signed bytes and never materialises them —
+`crates/session/shell/src/shell/collab_broker.rs` holds no `AutoCommit` at all.
+Of the two ways to make the record the routing key (the broker understands
+record boundaries, or apps announce a channel per record) the second was
+chosen: the record is the third component of the route key.
 
 Related, and already learned the hard way in `crates/session/shell/src/network/replica.rs`: an
 automerge change graph **cannot be served in part**. Changes carry their
