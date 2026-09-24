@@ -172,6 +172,7 @@ members = [
     "crates/runtime/ush",
 
     # Session
+    "crates/session/console-control",
     "crates/session/desktop-model",
     "crates/session/greeter",
     "crates/session/installer",

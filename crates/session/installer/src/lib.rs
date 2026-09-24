@@ -18,6 +18,18 @@
 //! The backend is **not** implemented here — the installer only invokes
 //! it (see [`install`] for the exact contract).
 //!
+//! Every step is also a set of published actions (resources
+//! `installer`, `installer.keyboard`, `installer.network`,
+//! `installer.storage` with one `installer.disk:<dev>` per disk,
+//! `installer.account`, `installer.options`, `installer.review`,
+//! `installer.recovery`, `installer.power`), and the wizard's own controls
+//! run those actions — there is one implementation behind a click, a screen
+//! reader, the Ctrl+K palette, a headless scenario and the console. The
+//! destructive `begin` carries a typed-phrase confirmation contract naming
+//! the exact object it formats. On the live medium the console answers the
+//! `tilo-control` action protocol (see `console-control`); nothing about it
+//! can reveal a passphrase or the recovery key.
+//!
 //! Modules:
 //! * [`disks`] — `lsblk` discovery + the output parser.
 //! * [`install`] — backend (`/usr/libexec/tilo-install`, `/usr/libexec/tilo-power`)
@@ -31,7 +43,10 @@
 //! * [`layouts`] — curated keyboard-layout dataset (apply + visual data).
 //! * [`keyboard_view`] — live visual keyboard reflecting the selection.
 //! * [`installer_app`] — the root [`InstallerApp`] `Widget` + wizard
-//!   state machine.
+//!   state machine, its published surface and its console.
+//! * [`operation`] — the one payload type every door produces.
+//! * [`backend`] — the side-effecting seam (disks, install, power) that
+//!   host tests replace with a recording fake.
 
 #![cfg_attr(
     test,
@@ -47,6 +62,7 @@
 )]
 
 pub mod action_button;
+pub mod backend;
 pub mod disk_row;
 pub mod disks;
 pub mod install;
@@ -56,6 +72,7 @@ pub mod keyboard_view;
 pub mod layouts;
 pub mod locales;
 pub mod media_profile;
+pub mod operation;
 pub mod power_readiness;
 pub mod seg_choice;
 pub mod status_log;

@@ -28,6 +28,7 @@ thiserror.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 toml.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

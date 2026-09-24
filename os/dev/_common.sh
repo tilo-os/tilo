@@ -463,6 +463,18 @@ display_qemu_args() {
   esac
 }
 
+# Console channel. The installer and the greeter answer the tilo-control action
+# protocol (actions list / actions invoke / state-dump; see
+# crates/session/console-control) on a virtio-serial port named
+# org.tilo.console.0. This command line is what creates that port; its host end
+# is the Unix socket $TILO_CONSOLE, reachable only by the user running QEMU.
+# Physical machines have no virtio-serial bus, so the channel cannot exist there.
+TILO_CONSOLE="$TILO_RUN/console.sock"
+console_qemu_args() {
+  printf -- '-device virtio-serial-pci -chardev socket,id=tiloconsole,path=%s,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0' \
+    "$TILO_CONSOLE"
+}
+
 input_qemu_args() {
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.

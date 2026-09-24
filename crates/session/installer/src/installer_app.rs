@@ -26,6 +26,11 @@
 //!   * `installer.disk.<i>` — `bool` disk-row selection rising edge
 //!   * `installer.fs.<i>`   — `bool` filesystem-segment selection rising edge
 //!
+//! A drained rising edge does not act by itself: it invokes the action the
+//! installer publishes for that control (see the `surface` module), through the same
+//! door the console and the host use, so a control can never do something
+//! its published action would refuse.
+//!
 //! The install runs on a **worker thread**: on the `begin` rising edge the
 //! app spawns [`crate::install::run_install`] and streams each output line
 //! back through the winit `EventLoopProxy` as a `ui::UserEvent::External`,
@@ -61,18 +66,27 @@ use ui::tokens::typography::TextRole;
 use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
+use crate::backend::{InstallBackend, SystemBackend};
 use crate::disk_row::DiskRow;
 use crate::disks::{
-    Disk, DiskPartition, EFI_SYSTEM_GUID, GuidedAlongsidePlan, LINUX_FILESYSTEM_GUID, read_disks,
+    Disk, DiskPartition, EFI_SYSTEM_GUID, GuidedAlongsidePlan, LINUX_FILESYSTEM_GUID,
 };
 use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
 use crate::layouts;
+use crate::operation as op;
 use crate::power_readiness::current_insufficient_battery_percent;
 use crate::seg_choice::SegChoice;
 use crate::status_log::StatusLog;
 use crate::step_indicator::StepIndicator;
+
+mod console;
+mod surface;
+#[cfg(test)]
+mod surface_tests;
+
+pub use console::{CONSOLE_WAKE, redact_recovery_material};
 
 const USERNAME_PATH: &str = "installer.username";
 const FULL_NAME_PATH: &str = "installer.full_name";
@@ -1122,6 +1136,12 @@ pub struct InstallerApp {
     /// Scroll position survives incidental composition rebuilds (network
     /// status, validation, progress). Deliberate step changes reset it.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+    /// Disk discovery, install, preflight and power. The live medium runs
+    /// the real helpers; host tests substitute a recording fake.
+    backend: Arc<dyn InstallBackend>,
+    /// Queued `tilo-control` requests from the console endpoints, answered
+    /// on the UI thread (see [`console`]).
+    console: Option<console_control::ConsoleServer>,
 }
 
 impl Default for InstallerApp {
@@ -1134,7 +1154,7 @@ impl InstallerApp {
     /// Construct an installer reading the live disk list from `lsblk` and
     /// the live time-zone list from the system.
     pub fn new() -> Self {
-        let mut s = Self::with_disks(read_disks());
+        let mut s = Self::with_disks(SystemBackend.read_disks());
         s.power_probe = current_insufficient_battery_percent;
         s.timezones = crate::timezones::list_timezones();
         match crate::media_profile::load() {
@@ -1201,7 +1221,28 @@ impl InstallerApp {
             proxy_slot: None,
             power_probe: || None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
+            backend: Arc::new(SystemBackend),
+            console: None,
         }
+    }
+
+    /// Replace the disk, install and power helpers. The disk list is read
+    /// from the new backend immediately.
+    #[must_use]
+    pub fn with_backend(mut self, backend: Arc<dyn InstallBackend>) -> Self {
+        self.disks = backend.read_disks();
+        self.backend = backend;
+        self
+    }
+
+    /// The current step.
+    pub fn step(&self) -> Step {
+        self.step
+    }
+
+    /// The install backend's lifecycle.
+    pub fn install_state(&self) -> InstallState {
+        self.install_state
     }
 
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
@@ -1823,9 +1864,10 @@ impl InstallerApp {
         let request = uuid::Uuid::new_v4().to_string();
         self.storage_preflight_request = Some(request.clone());
         self.set_status("Checking FAT health and free space on the prepared EFI partition…");
+        let backend = Arc::clone(&self.backend);
         std::thread::spawn(move || {
             let mut detail = String::new();
-            let result = crate::install::run_alongside_preflight(&disk, &opts, |line| {
+            let result = backend.run_alongside_preflight(&disk, &opts, &mut |line| {
                 if !line.trim().is_empty() {
                     detail = line;
                 }
@@ -1956,10 +1998,11 @@ impl InstallerApp {
             .as_ref()
             .and_then(|s| s.lock().ok().and_then(|g| g.clone()));
 
+        let backend = Arc::clone(&self.backend);
         if let Some(proxy) = proxy {
             // Worker thread: stream each line back as an External event.
             std::thread::spawn(move || {
-                let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
+                let result = backend.run_install(&disk, &user, &password, &opts, &mut |line| {
                     let _ = proxy.send_event(UserEvent::External(line));
                 });
                 let terminal = match result {
@@ -1975,12 +2018,16 @@ impl InstallerApp {
                 let _ = proxy.send_event(UserEvent::External(terminal));
             });
         } else {
-            // Synchronous fallback (blocks the caller).
-            let mut lines = std::mem::take(&mut self.status_lines);
-            let result = crate::install::run_install(&disk, &user, &password, &opts, |line| {
+            // Synchronous fallback (blocks the caller). Lines take the same
+            // route as streamed ones, so the recovery-key marker becomes the
+            // recovery card here too and never a log line.
+            let mut lines = Vec::new();
+            let result = backend.run_install(&disk, &user, &password, &opts, &mut |line| {
                 lines.push(line);
             });
-            self.status_lines = lines;
+            for line in lines {
+                self.ingest_backend_line(&line);
+            }
             match result {
                 Ok(true) => self.mark_install_done(),
                 Ok(false) => self.mark_install_failed(None),
@@ -2018,7 +2065,7 @@ impl InstallerApp {
 
     /// Run a terminal power action (Reboot / Power off). On success the
     /// machine goes down before this returns; a failure surfaces a status.
-    fn run_power(&mut self, action: PowerAction) {
+    fn run_power(&mut self, action: PowerAction) -> bool {
         // Do not deliberately leave a disk-unlock factor in the live
         // session's clipboard after handing off to the installed system. If
         // the person copied something else since, preserve their newer value.
@@ -2027,10 +2074,11 @@ impl InstallerApp {
         {
             ui::clipboard_copy("");
         }
-        match crate::install::run_power(action) {
-            Ok(true) => {}
-            _ => self
-                .set_status("Could not run power action — remove the medium and reboot manually."),
+        if matches!(self.backend.run_power(action), Ok(true)) {
+            true
+        } else {
+            self.set_status("Could not run power action — remove the medium and reboot manually.");
+            false
         }
     }
 
@@ -3233,66 +3281,66 @@ impl InstallerApp {
         self.focus_reset = true;
     }
 
+    /// Drain one rising-edge control flag.
+    fn take_flag(state: &mut AutoCommit, root: &ObjId, path: &str) -> bool {
+        if read_bool(state, root, path).unwrap_or(false) {
+            let _ = state.put(root, path, false);
+            true
+        } else {
+            false
+        }
+    }
+
     fn sync_network_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let proxy = self.event_proxy();
-        if self.network.ensure_initial_scan(proxy.clone()) {
+        if self.network.ensure_initial_scan(proxy) {
             self.dirty_structure = true;
         }
         self.ensure_network_paths(state, root);
 
         for i in 0..self.network.snapshot.networks.len() {
-            let path = network_path(i);
-            if read_bool(state, root, path.as_str()).unwrap_or(false) {
-                let _ = state.put(root, path.as_str(), false);
-                let Some(ssid) = self
+            if Self::take_flag(state, root, network_path(i).as_str())
+                && let Some(ssid) = self
                     .network
                     .snapshot
                     .networks
                     .get(i)
                     .map(|network| network.ssid.clone())
-                else {
-                    continue;
-                };
-                if self.network.selected_ssid.as_deref() != Some(ssid.as_str()) {
-                    self.network.selected_ssid = Some(ssid);
-                    clear_secret_buffer(&self.wifi_password);
-                }
-                self.network.notice = self.network.snapshot.guidance().to_string();
-                self.dirty_structure = true;
+            {
+                self.invoke_control(
+                    state,
+                    root,
+                    op::NETWORK,
+                    "select",
+                    args(serde_json::json!({ "ssid": ssid })),
+                    None,
+                );
             }
         }
 
-        if read_bool(state, root, NETWORK_REFRESH_PATH).unwrap_or(false) {
-            let _ = state.put(root, NETWORK_REFRESH_PATH, false);
-            if let Some(proxy) = proxy.clone() {
-                self.network.start_scan(proxy);
-            } else {
-                self.network.notice = "Network controls are still starting; try again.".to_string();
-            }
-            self.dirty_structure = true;
+        if Self::take_flag(state, root, NETWORK_REFRESH_PATH) {
+            self.invoke_control(state, root, op::NETWORK, "refresh", args_none(), None);
         }
 
-        if read_bool(state, root, NETWORK_CONNECT_PATH).unwrap_or(false) {
-            let _ = state.put(root, NETWORK_CONNECT_PATH, false);
+        if Self::take_flag(state, root, NETWORK_CONNECT_PATH) {
             let password = take_secret(&self.wifi_password);
-            if let Some(proxy) = proxy {
-                if let Err(message) = self.network.start_connect(password, proxy) {
-                    self.network.notice = message.to_string();
-                }
-            } else {
-                self.network.notice = "Network controls are still starting; try again.".to_string();
+            let mut connect = serde_json::Map::new();
+            if !password.is_empty() {
+                connect.insert(
+                    "password".into(),
+                    serde_json::Value::String(password.to_string()),
+                );
             }
-            self.dirty_structure = true;
+            self.invoke_control(state, root, op::NETWORK, "connect", connect, None);
         }
     }
 
-    /// Disk / filesystem / FIDO2 segmented-selector rising
-    /// edges — each selector raises a per-option boolean flag on pick,
-    /// which this drains and resolves into the corresponding index/state.
+    /// Disk / method / region / filesystem / FIDO2 selector rising edges.
+    /// Each control raises a per-option flag; draining it invokes the same
+    /// published action an external caller would.
     fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.ensure_disk_paths(state, root);
-        if read_bool(state, root, DISK_REFRESH_PATH).unwrap_or(false) {
-            let _ = state.put(root, DISK_REFRESH_PATH, false);
+        if Self::take_flag(state, root, DISK_REFRESH_PATH) {
             for i in 0..self.disks.len() {
                 let _ = state.put(root, disk_path(i).as_str(), false);
             }
@@ -3305,169 +3353,165 @@ impl InstallerApp {
             {
                 let _ = state.put(root, guided_extent_path(i).as_str(), false);
             }
-            Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-            self.refresh_disks_with(read_disks());
-            self.ensure_disk_paths(state, root);
+            self.invoke_control(state, root, op::STORAGE, "refresh", args_none(), None);
             return;
         }
 
-        // Disk-selection rising edges (only meaningful on the Disk step).
         for i in 0..self.disks.len() {
-            let p = disk_path(i);
-            if read_bool(state, root, p.as_str()).unwrap_or(false) {
-                let _ = state.put(root, p.as_str(), false);
-                if self
-                    .disks
-                    .get(i)
-                    .is_some_and(|disk| !disk.is_system && !disk.read_only)
-                {
-                    if self.selected_disk != Some(i) {
-                        Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                        self.erase_confirmation.clear();
-                        self.selected_guided_extent = None;
-                        self.storage_preflight_request = None;
-                        self.storage_preflight_passed = false;
-                    }
-                    self.selected_disk = Some(i);
-                    self.status.clear();
-                    self.dirty_structure = true;
-                }
+            if Self::take_flag(state, root, disk_path(i).as_str())
+                && let Some(device) = self.disks.get(i).map(|disk| disk.name.clone())
+            {
+                self.invoke_control(
+                    state,
+                    root,
+                    &op::disk_resource(&device),
+                    "select",
+                    args_none(),
+                    None,
+                );
             }
         }
 
         for i in 0..INSTALL_METHOD_LABELS.len() {
-            let p = install_method_path(i);
-            if read_bool(state, root, p.as_str()).unwrap_or(false) {
-                let _ = state.put(root, p.as_str(), false);
-                let method = if i == 1 {
-                    InstallMethod::Alongside
-                } else {
-                    InstallMethod::Erase
-                };
-                if self.install_method != method {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
-                    self.selected_guided_extent = None;
-                    self.storage_preflight_request = None;
-                    self.storage_preflight_passed = false;
-                }
-                self.install_method = method;
-                self.status.clear();
-                self.dirty_structure = true;
+            if Self::take_flag(state, root, install_method_path(i).as_str()) {
+                let method = if i == 1 { "alongside" } else { "erase" };
+                self.invoke_control(
+                    state,
+                    root,
+                    op::STORAGE,
+                    "set-method",
+                    args(serde_json::json!({ "method": method })),
+                    None,
+                );
             }
         }
 
-        let guided_plan_count = self.guided_alongside_plans().len();
-        for i in 0..guided_plan_count {
-            let p = guided_extent_path(i);
-            if read_bool(state, root, p.as_str()).unwrap_or(false) {
-                let _ = state.put(root, p.as_str(), false);
-                if guided_plan_count > 1 && self.selected_guided_extent != Some(i) {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
-                    self.selected_guided_extent = Some(i);
-                    self.status.clear();
-                    self.dirty_structure = true;
-                }
+        for i in 0..self.guided_alongside_plans().len() {
+            if Self::take_flag(state, root, guided_extent_path(i).as_str()) {
+                self.invoke_control(
+                    state,
+                    root,
+                    &op::region_resource(i),
+                    "select",
+                    args_none(),
+                    None,
+                );
             }
         }
 
-        // Filesystem-selection rising edges (Options step).
-        for i in 0..FILESYSTEMS.len() {
-            let p = fs_path(i);
-            if read_bool(state, root, p.as_str()).unwrap_or(false) {
-                let _ = state.put(root, p.as_str(), false);
-                self.selected_fs = i;
-                self.dirty_structure = true;
+        for (i, filesystem) in FILESYSTEMS.iter().enumerate() {
+            if Self::take_flag(state, root, fs_path(i).as_str()) {
+                self.invoke_control(
+                    state,
+                    root,
+                    op::OPTIONS,
+                    "set-filesystem",
+                    args(serde_json::json!({ "filesystem": filesystem })),
+                    None,
+                );
             }
         }
 
-        // FIDO2-choice rising edges (Options step).
         for i in 0..FIDO2_LABELS.len() {
-            let p = fido2_path(i);
-            if read_bool(state, root, p.as_str()).unwrap_or(false) {
-                let _ = state.put(root, p.as_str(), false);
-                self.fido2 = i == 1;
-                self.dirty_structure = true;
+            if Self::take_flag(state, root, fido2_path(i).as_str()) {
+                self.invoke_control(
+                    state,
+                    root,
+                    op::OPTIONS,
+                    "set-security-key",
+                    args(serde_json::json!({ "enabled": i == 1 })),
+                    None,
+                );
             }
         }
     }
 
-    /// Recovery-key acknowledgement + wizard-navigation (Back/Next/Begin)
-    /// and Finish-screen (Reboot/Power-off) rising edges.
+    /// Recovery-key, wizard-navigation (Back/Next/Begin) and Finish-screen
+    /// (Reboot/Power-off) rising edges, each through its published action.
     fn sync_navigation_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Recovery-key acknowledgement toggle (Review step, when encrypting).
-        if read_bool(state, root, RECOVERY_ACK_PATH).unwrap_or(false) {
-            let _ = state.put(root, RECOVERY_ACK_PATH, false);
-            self.recovery_ack = !self.recovery_ack;
-            self.status.clear();
+        if Self::take_flag(state, root, RECOVERY_ACK_PATH) {
+            let acknowledged = !self.recovery_ack;
+            self.invoke_control(
+                state,
+                root,
+                op::REVIEW,
+                "set-recovery-promise",
+                args(serde_json::json!({ "acknowledged": acknowledged })),
+                None,
+            );
+        }
+
+        if Self::take_flag(state, root, RECOVERY_COPY_PATH) && self.recovery_key.is_some() {
+            self.invoke_control(state, root, op::RECOVERY, "copy", args_none(), None);
+        }
+
+        if Self::take_flag(state, root, RECOVERY_SAVED_PATH) && self.recovery_key.is_some() {
+            let saved = !self.recovery_key_saved;
+            self.invoke_control(
+                state,
+                root,
+                op::RECOVERY,
+                "confirm-saved",
+                args(serde_json::json!({ "saved": saved })),
+                None,
+            );
+        }
+
+        if Self::take_flag(state, root, BACK_PATH) {
+            self.invoke_control(state, root, op::SESSION, "back", args_none(), None);
+        }
+
+        if Self::take_flag(state, root, NEXT_PATH) {
+            self.invoke_control(state, root, op::SESSION, "next", args_none(), None);
+        }
+
+        // Begin is only a control on the Review step; elsewhere the flag is
+        // consumed without effect, exactly as before.
+        if Self::take_flag(state, root, BEGIN_PATH) && self.step == Step::Review {
+            let typed = self.erase_confirmation.clone();
+            self.invoke_control(state, root, op::REVIEW, "begin", args_none(), Some(&typed));
+        }
+
+        let finished = self.step == Step::Install && self.install_state == InstallState::Done;
+        if Self::take_flag(state, root, REBOOT_PATH) && finished {
+            self.invoke_control(state, root, op::POWER, "reboot", args_none(), None);
+        }
+        if Self::take_flag(state, root, POWEROFF_PATH) && finished {
+            self.invoke_control(state, root, op::POWER, "power-off", args_none(), None);
+        }
+    }
+
+    /// One backend output line: a terminal sentinel, the recovery-key
+    /// marker (which becomes the recovery card and never a log line), or a
+    /// line of the install log.
+    fn ingest_backend_line(&mut self, payload: &str) {
+        if payload == CTRL_DONE {
+            self.mark_install_done();
+        } else if payload == CTRL_FAIL {
+            self.mark_install_failed(None);
+        } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
+            if !key.trim().is_empty() {
+                self.recovery_key = Some(key.trim().to_string());
+                self.recovery_key_copied = false;
+                self.recovery_key_saved = false;
+                self.dirty_structure = true;
+            }
+        } else {
+            self.status_lines.push(payload.to_string());
             self.dirty_structure = true;
         }
-
-        if read_bool(state, root, RECOVERY_COPY_PATH).unwrap_or(false) {
-            let _ = state.put(root, RECOVERY_COPY_PATH, false);
-            if let Some(key) = &self.recovery_key {
-                ui::clipboard_copy(key);
-                self.recovery_key_copied = true;
-                self.dirty_structure = true;
-            }
-        }
-
-        if read_bool(state, root, RECOVERY_SAVED_PATH).unwrap_or(false) {
-            let _ = state.put(root, RECOVERY_SAVED_PATH, false);
-            if self.recovery_key.is_some() {
-                self.recovery_key_saved = !self.recovery_key_saved;
-                self.status.clear();
-                self.dirty_structure = true;
-            }
-        }
-
-        // Back rising edge.
-        if read_bool(state, root, BACK_PATH).unwrap_or(false) {
-            let _ = state.put(root, BACK_PATH, false);
-            self.go_back();
-        }
-
-        // Next rising edge.
-        if read_bool(state, root, NEXT_PATH).unwrap_or(false) {
-            let _ = state.put(root, NEXT_PATH, false);
-            self.go_next();
-        }
-
-        // Begin rising edge — only valid on the Review step.
-        if read_bool(state, root, BEGIN_PATH).unwrap_or(false) {
-            let _ = state.put(root, BEGIN_PATH, false);
-            if self.step == Step::Review {
-                self.begin_install(state, root);
-            }
-        }
-
-        // Reboot / Power-off rising edges — only on the Finish screen.
-        if read_bool(state, root, REBOOT_PATH).unwrap_or(false) {
-            let _ = state.put(root, REBOOT_PATH, false);
-            if self.step == Step::Install && self.install_state == InstallState::Done {
-                if self.recovery_key_saved {
-                    self.run_power(PowerAction::Reboot);
-                } else {
-                    self.set_status(
-                        "Save the recovery key off this computer and confirm it before rebooting",
-                    );
-                }
-            }
-        }
-        if read_bool(state, root, POWEROFF_PATH).unwrap_or(false) {
-            let _ = state.put(root, POWEROFF_PATH, false);
-            if self.step == Step::Install && self.install_state == InstallState::Done {
-                if self.recovery_key_saved {
-                    self.run_power(PowerAction::PowerOff);
-                } else {
-                    self.set_status(
-                        "Save the recovery key off this computer and confirm it before powering off",
-                    );
-                }
-            }
-        }
     }
+}
+
+fn args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+fn args_none() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::Map::new()
 }
 
 impl Widget for InstallerApp {
@@ -3641,15 +3685,13 @@ impl Widget for InstallerApp {
     }
 
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
-        if payload == NETWORK_WAKE_EVENT {
+        if payload == CONSOLE_WAKE {
+            self.serve_console(state, root);
+        } else if payload == NETWORK_WAKE_EVENT {
             if self.network.drain_results() {
                 self.ensure_network_paths(state, root);
                 self.dirty_structure = true;
             }
-        } else if payload == CTRL_DONE {
-            self.mark_install_done();
-        } else if payload == CTRL_FAIL {
-            self.mark_install_failed(None);
         } else if let Some(result) = payload.strip_prefix(PREFLIGHT_OK_PREFIX) {
             if let Some((request, message)) = result.split_once(':')
                 && self.storage_preflight_request.as_deref() == Some(request)
@@ -3675,17 +3717,39 @@ impl Widget for InstallerApp {
                     message.trim()
                 });
             }
-        } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
-            if !key.trim().is_empty() {
-                self.recovery_key = Some(key.trim().to_string());
-                self.recovery_key_copied = false;
-                self.recovery_key_saved = false;
-                self.dirty_structure = true;
-            }
         } else {
-            self.status_lines.push(payload.to_string());
-            self.dirty_structure = true;
+            self.ingest_backend_line(payload);
         }
+    }
+
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.publish()
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        op::HANDLERS
+    }
+
+    /// The host door (Ctrl+K palette, broker) admits an installer operation
+    /// here, after its own resolution, permission and confirmation checks.
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != op::OPERATION_TYPE {
+            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        }
+        let encoded = tilo_actions::EncodedAction {
+            type_id: type_id.to_owned(),
+            payload: payload.to_vec(),
+        };
+        self.apply_encoded(&encoded, doc, path)
+            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
     }
 
     fn take_focus_reset(&mut self) -> bool {
