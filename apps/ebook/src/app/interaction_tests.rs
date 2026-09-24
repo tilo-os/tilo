@@ -996,8 +996,9 @@ fn scheme_manager_new_via_picker_creates_selects_and_edits() {
     // Commit the picker -> a scheme is derived from the chosen background,
     // selected, and opened in the editor.
     frame(&mut app, &mut doc, 1200.0, 860.0);
-    let done = app.color_picker.done_center().expect("a Done button");
+    let done = picker_rect(&app, "color_picker.done").center();
     assert!(click(&mut app, &mut doc, done), "picker done handled");
+    assert!(!app.color_picker.is_open(), "Done closes the picker");
     let schemes = BooksDoc::read_schemes(&doc);
     assert_eq!(
         schemes.len(),
@@ -1047,9 +1048,10 @@ fn color_picker_returns_a_colour_applied_to_a_scheme() {
         "picker opened on the page slot"
     );
     assert!(app.color_picker.is_open());
-    // Drag on the SV square: a press + move within it applies a new colour.
+    // Drag on the SV square: a press + move within it picks a new colour,
+    // which stays pending until Done.
     frame(&mut app, &mut doc, 1200.0, 900.0);
-    let sv = app.color_picker.sv_rect();
+    let sv = picker_rect(&app, "color_picker.sv");
     ptr_move(
         &mut app,
         &mut doc,
@@ -1062,6 +1064,14 @@ fn color_picker_returns_a_colour_applied_to_a_scheme() {
         Point::new(sv.x0 + sv.width() * 0.75, sv.y0 + sv.height() * 0.25),
     );
     ptr_up(&mut app, &mut doc);
+    assert_eq!(
+        page_of(&doc, "scheme_x"),
+        before,
+        "nothing is written while the pick is pending"
+    );
+    frame(&mut app, &mut doc, 1200.0, 900.0);
+    let done = picker_rect(&app, "color_picker.done").center();
+    assert!(click(&mut app, &mut doc, done), "picker done handled");
     let after = BooksDoc::read_schemes(&doc)
         .into_iter()
         .find(|s| s.id == "scheme_x")
@@ -1071,6 +1081,88 @@ fn color_picker_returns_a_colour_applied_to_a_scheme() {
         after, before,
         "the picker applied a new page colour to the scheme"
     );
+}
+
+/// A named part of the open colour picker, in its test-target names.
+fn picker_rect(app: &BooksApp, part: &str) -> Rect {
+    app.color_picker
+        .picker()
+        .expect("the colour picker is open")
+        .test_rects()
+        .into_iter()
+        .find(|(name, _)| name == part)
+        .map_or_else(|| panic!("the picker lays out {part}"), |(_, rect)| rect)
+}
+
+fn page_of(doc: &AutoCommit, id: &str) -> [u8; 3] {
+    BooksDoc::read_schemes(doc)
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .page
+}
+
+/// Open the picker on a custom scheme's page slot; returns the page colour
+/// before any pick.
+fn open_page_picker(app: &mut BooksApp, doc: &mut AutoCommit) -> [u8; 3] {
+    let mut schemes = default_schemes();
+    schemes.push(ColorScheme::from_bg("scheme_x", "Test", [0x30, 0x30, 0x30]));
+    BooksDoc::write_schemes(doc, &schemes);
+    app.view = View::Settings;
+    app.settings_tab = SettingsTab::Colours;
+    frame(app, doc, 1200.0, 900.0);
+    let swatch = find_hit(
+        app,
+        |a| matches!(a, Action::PickSchemeColor(id, slot) if id == "scheme_x" && *slot == 0),
+    )
+    .expect("the page swatch opens the picker");
+    assert!(click(app, doc, swatch), "picker opened on the page slot");
+    frame(app, doc, 1200.0, 900.0);
+    page_of(doc, "scheme_x")
+}
+
+#[test]
+fn cancelling_the_picker_leaves_the_scheme_untouched() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    let before = open_page_picker(&mut app, &mut doc);
+    let swatch = picker_rect(&app, "color_picker.swatch[0]").center();
+    assert!(click(&mut app, &mut doc, swatch), "swatch handled");
+    let cancel = picker_rect(&app, "color_picker.cancel").center();
+    assert!(click(&mut app, &mut doc, cancel), "cancel handled");
+    assert!(!app.color_picker.is_open(), "Cancel closes the picker");
+    assert_eq!(page_of(&doc, "scheme_x"), before, "Cancel writes nothing");
+}
+
+#[test]
+fn a_swatch_action_and_done_apply_through_semantics() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    let before = open_page_picker(&mut app, &mut doc);
+    let nodes = app.color_picker.accessibility_nodes();
+    let dialog = nodes.first().expect("the sheet is a dialog");
+    assert!(dialog.state.modal);
+    let group = dialog.children.first().expect("the picker's semantics");
+    let red = group
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Red"))
+        .and_then(|node| node.action_target.clone())
+        .expect("each swatch carries its own action");
+    let root = automerge::ROOT;
+    assert!(app.perform_semantic_action(&red, &A11yAction::Activate, &mut doc, &root));
+    assert_eq!(
+        page_of(&doc, "scheme_x"),
+        before,
+        "a swatch pick is pending"
+    );
+    assert!(app.perform_semantic_action(
+        "color_picker.done",
+        &A11yAction::Activate,
+        &mut doc,
+        &root
+    ));
+    assert_eq!(page_of(&doc, "scheme_x"), [0xEF, 0x44, 0x44]);
 }
 
 #[test]
