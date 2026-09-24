@@ -3666,8 +3666,6 @@ fn spawn_session_collab_broker(
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
-    use crate::shell::state::TileContent;
-
     let workspace = tree.active_workspace()?;
     let strip_id = tree
         .active_strip
@@ -3689,13 +3687,7 @@ fn active_physical_gamepad_binding(
         .iter()
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
-    let app_id = match &tab.tile {
-        TileContent::WorkspaceActivity => return None,
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
-    };
+    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
     let workspace_id = workspace.room.to_string();
     Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
         app_id,
