@@ -297,7 +297,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
             id: group.id,
             tab_ids: group.tabs.iter().map(|tab| tab.id).collect(),
             active_tab: group.active_tab,
-            width: group.width.to_ui(),
+            width: crate::shell::state::window_width_to_ui(group.width),
         })
         .collect();
     let Some(source_group_index) = topology.iter().position(|group| group.id == source_group)

@@ -2016,7 +2016,7 @@ fn apply_permission_profile_operation(
                 .then_some(expires_unix)
                 .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
             let ids = tree.workspaces[workspace_index]
-                .assign_permission_profile_as_actor(caller, &profile, subject, expiry)
+                .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
                 .map_err(|error| error.to_string())?;
             let capabilities = tree.workspaces[workspace_index]
                 .capabilities
@@ -8435,6 +8435,7 @@ async fn drive_connection(
 )]
 pub(crate) mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::SystemTime;
@@ -9110,7 +9111,7 @@ pub(crate) mod tests {
 
     #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
@@ -9137,7 +9138,7 @@ pub(crate) mod tests {
             .join(format!("{hash}.bin"));
         std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
         std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
@@ -9410,7 +9411,7 @@ pub(crate) mod tests {
 
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(71),
             "Directory test room",
         );
@@ -10101,10 +10102,8 @@ pub(crate) mod tests {
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(1),
-            "Member room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Member room");
         let route = CrdtRoute::cluster(workspace.room.to_string());
         workspace.grant_capability(crate::shell::state::CapOverride::membership(
             crate::shell::state::Subject::person(&principal),
@@ -10148,10 +10147,8 @@ pub(crate) mod tests {
     fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
         let root = SigningKey::from_bytes(&[44; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(44),
-            "Agent room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(44), "Agent room");
         workspace.owner = Some(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let agent_membership = workspace.grant_capability(CapOverride::membership(
@@ -10196,7 +10193,7 @@ pub(crate) mod tests {
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(45),
             "Delegation room",
         );
@@ -10223,7 +10220,7 @@ pub(crate) mod tests {
         let member = SigningKey::from_bytes(&[21; 32]);
         let stranger = SigningKey::from_bytes(&[22; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(2),
             "Revocation room",
         );
@@ -10259,15 +10256,11 @@ pub(crate) mod tests {
     fn certified_join_admission_rejects_cross_workspace_replay() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut member_workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(3),
-            "Member room",
-        );
+        let mut member_workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(3), "Member room");
         member_workspace.set_owner(&principal);
-        let other_workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(4),
-            "Other room",
-        );
+        let other_workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(4), "Other room");
         let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(member_workspace);
@@ -10358,7 +10351,7 @@ pub(crate) mod tests {
         let root = SigningKey::from_bytes(&[24; 32]);
         let device = SigningKey::from_bytes(&[25; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(5),
             "Typed document room",
         );
@@ -10562,7 +10555,7 @@ pub(crate) mod tests {
     )]
     #[test]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(31),
             "Action room",
         );
@@ -10874,7 +10867,7 @@ pub(crate) mod tests {
 
     /// A workspace whose `agent` may save and assign permission profiles.
     fn profile_governed_workspace(agent: &str) -> crate::shell::state::Workspace {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(32),
             "Governance room",
         );
@@ -10994,7 +10987,7 @@ pub(crate) mod tests {
     )]
     #[test]
     fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(32),
             "Agent effect room",
         );

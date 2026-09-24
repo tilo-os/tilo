@@ -2265,7 +2265,7 @@ impl ShellDriver {
             && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
         {
             for g in &mut row.groups {
-                g.set_width(half.to_ui());
+                g.set_width(shell::shell::state::window_width_to_ui(half));
             }
         }
         // The pushed group latches its 420 ms arrival fade off the

@@ -303,7 +303,7 @@ mod tests {
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "fc")
+        Workspace::new(WorkspaceId(id), "fc")
     }
 
     #[test]

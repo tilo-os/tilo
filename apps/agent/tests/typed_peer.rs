@@ -407,7 +407,7 @@ pub fn spawn_with_agent_actions(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::test_default(
+    let mut workspace = shell::shell::state::Workspace::new(
         shell::shell::state::WorkspaceId(1),
         "Agent integration room",
     );

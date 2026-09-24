@@ -90,6 +90,7 @@ impl SearchProvider for EditorProvider {
 mod tests {
     use super::*;
     use crate::shell::editor_app::EditorApp;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,

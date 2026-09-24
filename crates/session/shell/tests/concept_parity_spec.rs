@@ -28,6 +28,7 @@
               are terse by design and the pattern is consistent throughout"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};

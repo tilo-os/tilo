@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -72,7 +73,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
         strips: vec![strip0, strip1],
         // Everything else — including the workspace's durable collaboration room
         // — comes from the builder, so a new `Workspace` field won't break this.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();

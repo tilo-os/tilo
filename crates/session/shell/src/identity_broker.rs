@@ -464,10 +464,8 @@ mod tests {
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(1),
-            "Room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
         workspace.room = room;
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -569,10 +567,8 @@ mod tests {
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(1),
-            "Room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
         workspace.room = room;
         workspace.set_owner(profile.principal_id());
         let mut tree = crate::shell::state::WorkspaceTree::default();
@@ -777,10 +773,8 @@ mod tests {
         let profile = crate::identity_registry::selected_identity_profile(&workspace_id)
             .expect("registry")
             .expect("profile");
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(1),
-            "Room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
         workspace.room = room;
         workspace.set_owner(profile.principal_id());
         workspace.capabilities.push(CapOverride::grant(

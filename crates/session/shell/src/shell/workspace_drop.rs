@@ -189,6 +189,7 @@ fn tab_label_for(item: &DraggedItem, kind: &AppKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     #[test]
     fn folder_drop_opens_files() {

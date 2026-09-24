@@ -1038,6 +1038,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::state::FreshId as _;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1161,7 +1162,7 @@ mod tests {
             fail_after_journal_once: AtomicBool::new(true),
         });
 
-        let mut workspace = Workspace::test_default(WorkspaceId::new(), "MLS test");
+        let mut workspace = Workspace::new(WorkspaceId::new(), "MLS test");
         workspace.set_owner(hex::encode(signer_pk.as_bytes()));
         let workspace_id = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();

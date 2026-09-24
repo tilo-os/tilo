@@ -405,7 +405,7 @@ fn apply_permission_profile_action(
             let ids = tree
                 .active_workspace_mut()
                 .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
-                .assign_permission_profile_as(&actor, profile, subject, expiry)
+                .assign_permission_profile_as(&actor, profile, &subject, expiry)
                 .map_err(|error| ActionError::Refused(error.to_string()))?;
             let written = tree
                 .active_workspace()
@@ -2397,6 +2397,7 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use parking_lot::RwLock;
@@ -2412,7 +2413,7 @@ mod tests {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut ws = Workspace::test_default(id, "Demo");
+        let mut ws = Workspace::new(id, "Demo");
         ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
         tree.workspaces.push(ws);
         tree.active = id;
@@ -2804,7 +2805,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::test_default(id, "Someone else's workspace");
+        let mut workspace = Workspace::new(id, "Someone else's workspace");
         workspace.set_owner("a-different-person");
         tree.workspaces.push(workspace);
         tree.active = id;

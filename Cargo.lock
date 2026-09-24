@@ -13149,6 +13149,7 @@ dependencies = [
  "tilo-bluez",
  "tilo-callstream",
  "tilo-desktop-entry",
+ "tilo-desktop-model",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
@@ -14558,6 +14559,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "xdg-paths",
+]
+
+[[package]]
+name = "tilo-desktop-model"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "desktop-policy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "uuid",
 ]
 
 [[package]]
