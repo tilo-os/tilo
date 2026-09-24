@@ -48,7 +48,7 @@ mod token;
 
 use hunspell::{results as hunspell_results, suggestions as hunspell_suggestions};
 
-pub use dictionary::Dictionary;
+pub use dictionary::{Dictionary, user_dict_path};
 pub use distance::damerau_levenshtein_within;
 pub use suggest::suggest;
 pub use token::{Token, tokenize};
