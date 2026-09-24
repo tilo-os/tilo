@@ -10,6 +10,9 @@ Run by os/Containerfile.dev as its last content step:
   against (the protocol crate's BaseInfo): the production base image's digest,
   plus the in-image toolchain (`rustc --version`), its target triple and the
   Cargo.lock hash, in the same form `tilo-vm` records in a layer's provenance.
+  `base_created` is the base image's creation time, which production builds
+  clamp to their commit's time; `tilo-vm vm upgrade` refuses to move a VM onto
+  a dev image whose base is older than the one it runs.
 * /etc/containers/policy.json lets the dev VM `bootc switch`/`upgrade` onto
   code.sandbox.example/qos/tilo-vm, which is deliberately unsigned. Production
   policy rejects that repository outright (os/etc/containers/policy.json), so
@@ -41,13 +44,17 @@ def first_line(*command: str) -> str:
     return subprocess.run(command, check=True, capture_output=True, text=True).stdout.splitlines()[0].strip()
 
 
-def base_info(base_image: str, base_digest: str | None, cargo_lock: Path) -> dict:
+def base_info(base_image: str, base_digest: str | None, cargo_lock: Path,
+              base_created: str | None = None) -> dict:
     digest = base_digest or None
     if digest is None:
         match = re.search(r"@(sha256:[0-9a-f]{64})$", base_image)
         digest = match.group(1) if match else None
     if digest is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         fail(f"base image digest {digest!r} is not sha256:<64 hex>")
+    created = base_created or None
+    if created is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})", created):
+        fail(f"base image creation time {created!r} is not an RFC 3339 timestamp")
     verbose = subprocess.run(["rustc", "-vV"], check=True, capture_output=True, text=True).stdout
     target = next((line.removeprefix("host: ").strip() for line in verbose.splitlines()
                    if line.startswith("host: ")), None)
@@ -62,6 +69,7 @@ def base_info(base_image: str, base_digest: str | None, cargo_lock: Path) -> dic
         "target": target,
         "cargo_lock_hash": hashlib.sha256(cargo_lock.read_bytes()).hexdigest(),
         "base_image": base_image,
+        "base_created": created,
     }
 
 
@@ -83,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("/"))
     parser.add_argument("--base-image", required=True)
     parser.add_argument("--base-digest", default="")
+    parser.add_argument("--base-created", default="",
+                        help="the base image's creation time, RFC 3339 (podman image inspect .Created)")
     parser.add_argument("--cargo-lock", type=Path, required=True)
     args = parser.parse_args(argv)
     root = args.root
@@ -92,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         fail(f"the base already carries {flavour} ({flavour.read_text().strip()}); build from the "
              "production image")
 
-    info = base_info(args.base_image, args.base_digest, args.cargo_lock)
+    info = base_info(args.base_image, args.base_digest, args.cargo_lock, args.base_created)
     target = root / "usr/share/tilo-vm/base.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(info, indent=2) + "\n")
