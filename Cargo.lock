@@ -611,6 +611,7 @@ dependencies = [
  "automerge",
  "cli",
  "dirs 6.0.0",
+ "durable-store",
  "libc",
  "same-file",
  "serial_test",
