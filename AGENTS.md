@@ -164,7 +164,8 @@ click handler is invisible to every one of them.
 **There is one story. Do not build a second one.**
 
 `tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
-default `/tmp/tilo.sock`. It is a `shell` binary and is **not on PATH**; run it with
+default `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (never `/tmp`: anyone could bind a
+shared name first). It is a `shell` binary and is **not on PATH**; run it with
 `cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
 if you use it often. It has two halves; reach for the first.
 

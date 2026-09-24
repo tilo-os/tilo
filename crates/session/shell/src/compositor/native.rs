@@ -1019,7 +1019,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1102,9 +1102,8 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )?;
-    // Best-effort cleanup of a stale socket — otherwise `bind` fails EADDRINUSE.
-    let _ = std::fs::remove_file(&path);
-    match UnixListener::bind(&path) {
+    // Replaces a stale socket; only this user can ever connect.
+    match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
                 eprintln!("tilo compositor: test_control set_nonblocking: {e}");
@@ -1152,8 +1151,13 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 /// the unlink guard so the file disappears with the process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    // 0700 when created: the test-control socket may share this directory.
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir)
+        && let Err(e) = std::os::unix::fs::DirBuilderExt::mode(
+            std::fs::DirBuilder::new().recursive(true),
+            0o700,
+        )
+        .create(dir)
     {
         eprintln!("tilo compositor: publishing {}: {e}", path.display());
         return None;
