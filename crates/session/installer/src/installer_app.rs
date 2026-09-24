@@ -39,7 +39,7 @@
 //! no event loop) it falls back to a synchronous run.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_text};
@@ -154,28 +154,32 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
-const OMITTED_FILESYSTEM_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
+const OMITTED_INITRAMFS_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
 
 fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS.len()], String> {
     let mut supported = [true; FILESYSTEMS.len()];
+    let mut seen = HashSet::new();
     for line in manifest.lines() {
-        let Some(index) = FILESYSTEMS
-            .iter()
-            .position(|filesystem| *filesystem == line)
-        else {
-            return Err("The image has an invalid initramfs driver manifest".into());
-        };
-        if !supported[index] {
+        if !seen.insert(line) {
             return Err("The image has a duplicate initramfs driver entry".into());
         }
-        supported[index] = false;
+        if let Some(index) = FILESYSTEMS.iter().position(|filesystem| *filesystem == line) {
+            supported[index] = false;
+        } else {
+            // The Lenovo image also omits unrelated GPU drivers to keep its UKI
+            // within the verified-boot size limit. Those entries do not change
+            // which filesystem the installer can offer.
+            if !matches!(line, "amdgpu" | "nouveau" | "xe") {
+                return Err("The image has an invalid initramfs driver manifest".into());
+            }
+        }
     }
     Ok(supported)
 }
 
 fn load_filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
     use std::os::unix::fs::MetadataExt as _;
-    let path = std::path::Path::new(OMITTED_FILESYSTEM_DRIVERS);
+    let path = std::path::Path::new(OMITTED_INITRAMFS_DRIVERS);
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| "The image's initramfs driver manifest is unavailable".to_string())?;
     if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
@@ -4513,7 +4517,13 @@ mod tests {
             filesystem_support_from_manifest("xfs\n").unwrap(),
             [true, true, false]
         );
+        assert_eq!(
+            filesystem_support_from_manifest("amdgpu\nnouveau\nxe\nxfs\n").unwrap(),
+            [true, true, false],
+            "board GPU omissions must not hide supported filesystems"
+        );
         assert!(filesystem_support_from_manifest("unknown\n").is_err());
+        assert!(filesystem_support_from_manifest("amdgpu\namdgpu\n").is_err());
 
         let mut app = InstallerApp::with_disks(sample());
         app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
