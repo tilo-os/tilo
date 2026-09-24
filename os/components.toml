@@ -338,7 +338,7 @@ scope = "vm"
 packages = ["fs"]
 bins = ["fs"]
 units = ["fs.service", "tilo-fs-replica.service"]
-user_units = ["tilo-fs-recipient.service"]
+user_units = ["tilo-fs-recipient.service", "tilo-fs-cloud.service"]
 layer = "desktop-binaries"
 files = [
   { from = "fs", to = "/usr/bin/fs", mode = "0755" },

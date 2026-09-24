@@ -673,6 +673,82 @@ bounds.
 - A rename cycle within one epoch (`a`↔`b` swapped) is published as content
   changes of both paths, not as moves.
 
+### 6.10 Cloud accounts
+
+An external file account set up in Settings (WebDAV and Nextcloud today;
+Google Drive, OneDrive, Dropbox and iCloud Drive through the same interface)
+is an ordinary folder at `~/Remote/<account label>`. Every app and POSIX tool
+uses it the way it uses any other folder. Rooms replicate signed records
+between peers. A cloud account mirrors a server, and the server is the
+authority for its own tree. That is why this is a separate backing, not a
+room.
+
+**Processes and credentials.** `fs cloud-service` (user unit
+`tilo-fs-cloud.service`) follows Settings' account store. It keeps one
+`fs mount-cloud` child per enabled file account. Disabling an account
+unmounts it. Removing an account also drops its cached content and queued
+state. The service is the only process that opens the account vault. It
+reads the secret of one account and sends the child only the credential
+that account's provider needs, on stdin: HTTP Basic, an OAuth2 access token,
+or a web session. When the server rejects a credential, the child says so
+and the service re-reads the vault, because Settings may have refreshed a
+token or the person may have signed in again. Closing the child's stdin
+unmounts it. Mount health goes to the shared account status store, which
+Settings and Files read. Files has no transport of its own. It opens the
+folder and shows the account's health as a badge.
+
+**Provider interface.** `crates/system/cloud-source` defines `CloudSource`:
+
+- id-based items with a POSIX projection (duplicate names, several parents,
+  provider-native documents as read-only `<name>.<link-extension>` entries);
+- a cursor change feed with long-poll or push, or polling of listings that
+  skips folders whose recursive revision did not change;
+- provider hashes, revision preconditions and revision history;
+- ranged streaming reads and resumable chunked upload sessions;
+- per-provider capability flags, including a best-effort marker for
+  unofficial APIs.
+
+`crates/system/cloud-source-dav` implements it for WebDAV and Nextcloud. Its
+Nextcloud support covers recursive ETags, checksums, chunked uploads,
+versions and trash, and it uses a `sync-collection` feed where the server
+offers one.
+
+**Data path.** Each mount is a `CloudVolume`
+(`crates/system/fs/src/cloud/`) behind FUSE:
+
+- Metadata is persisted, so the folder lists instantly and offline after a
+  restart.
+- A read fetches only the missing, 1 MiB-aligned ranges of the requested
+  window. The window widens for sequential readers. Every fetch is a ranged
+  read pinned to the listed revision, so a read never mixes versions.
+- Fetched ranges land in a sparse file per revision, tracked with the Tier 1
+  placeholder `RangeSet`. A complete revision is promoted to a blob named by
+  its BLAKE3 hash. The cache has a byte budget and evicts the least recently
+  used entries.
+- Local writes go to a staged copy. When the last writer closes the file,
+  an upload is queued in a persisted outbox and sent in the background, with
+  the revision the edit started from as an `If-Match` precondition.
+  Creates, folders, renames and deletes queue the same way. An editor's save
+  by rename replaces the target, which keeps its identity.
+- On a conflict, the remote version keeps the name and the local edit is
+  uploaded next to it under the daemon's conflict-copy name
+  (`<name>.sync-conflict-<hash>`, §11).
+- Offline, cached bytes stay readable, uncached reads fail with `EIO`, and
+  writes wait in the outbox across restarts.
+
+**Tests.** The provider conformance suite (`cloud_source::conformance`) runs
+unchanged in three layers:
+
+- in-process fakes on every build (`FakeDav` on the shared `test-http`
+  responder, with injected 429/5xx responses, truncated bodies, expired
+  credentials and cursor resets);
+- real servers in containers: Nextcloud and Apache mod_dav, started by
+  `crates/system/cloud-source-dav/tests/servers.sh`;
+- live accounts on a schedule, when CI secrets are present.
+
+`crates/system/fs/tests/cloud_mount.rs` covers the mount end to end against
+the fake, including a kernel mount where `/dev/fuse` exists.
+
 ---
 
 ## 7. Content format

@@ -1,0 +1,46 @@
+[Unit]
+Description=Tilo cloud account folders
+Documentation=https://github.com/qos/qos
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# One mount per enabled WebDAV/Nextcloud account under ~/Remote. The service
+# reads the account store and opens the account vault; each `fs mount-cloud`
+# child receives only its own account's credential on stdin. Per-account
+# metadata, queued uploads and the content cache live under the state dir:
+# queued edits are not a cache and must survive cache cleaning.
+# The sandbox below makes the home read-only; create the mounts root first.
+ExecStartPre=+/usr/bin/mkdir -p %h/Remote
+ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+
+# Mounts need `fusermount3`'s privilege transition in the children, so
+# NoNewPrivileges must remain off. Settings' account store is read through
+# the read-only home; the vault key comes from the session's Secret Service.
+# Mount health is written to the shared account status store, the one
+# writable path under the config directory.
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Remote %S/tilo -%E/tilo/accounts
+StateDirectory=tilo/cloud
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=graphical-session.target
