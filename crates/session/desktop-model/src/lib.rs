@@ -22,8 +22,10 @@ pub mod capability;
 pub mod collaborator;
 pub mod ids;
 pub mod layout;
+pub mod serde_ids;
 pub mod shared_surfaces;
 pub mod task;
+pub mod tree;
 pub mod width;
 pub mod workspace;
 
@@ -40,6 +42,7 @@ pub use task::{
     WorkspaceEffectReceipt, WorkspaceTask, WorkspaceTaskAuditEvent, WorkspaceTaskResource,
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
+pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
     PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId,

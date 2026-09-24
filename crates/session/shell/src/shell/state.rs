@@ -32,6 +32,7 @@ pub use tilo_desktop_model::{
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
     compose_id, counter_of, now_unix, peer_salt_of, role_label,
 };
+pub use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION};
 
 #[cfg(test)]
 mod identity_fs_tests {
@@ -324,8 +325,11 @@ mod identity_fs_tests {
             Verb::Read,
         ));
         let mut tree = WorkspaceTree {
+            desktop: DesktopTree {
+                workspaces: vec![room_a, room_b],
+                ..Default::default()
+            },
             fs_acl_path: Some(output.clone()),
-            workspaces: vec![room_a, room_b],
             ..WorkspaceTree::default()
         };
         tree.export_fs_capabilities();
@@ -789,52 +793,12 @@ pub enum OwnershipTransferStateError {
 const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
 const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
-/// The shape of `state.json` this build writes and understands. Bump
-/// only when a change makes a file unreadable to an older build in a way
-/// that loses meaning (field removed/repurposed, id space renumbered) —
-/// a new `#[serde(default)]` field does not qualify. Guards the one
-/// direction with no safe default: older reading newer.
-pub const STATE_SCHEMA_VERSION: u32 = 1;
-
-/// A file with no `schema_version` key is version 1 — the key was added
-/// alongside the check, not a format change, and defaulting to "unknown"
-/// would strand every existing session on upgrade.
-fn state_schema_version_of_a_file_without_one() -> u32 {
-    1
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
-    /// Which version of this struct's on-disk shape the file describes.
-    /// Read back to decide whether this build may touch the file at all.
-    #[serde(default = "state_schema_version_of_a_file_without_one")]
-    pub schema_version: u32,
-    /// Counts rounds in which a peer's changes landed. `#[serde(skip)]`
-    /// — a restored value could match a live reader's cache and
-    /// suppress the first resync.
-    #[serde(skip)]
-    pub room_epoch: u64,
-    /// Mutations performed outside retained chrome (for example the local
-    /// action broker or a Wayland lifecycle callback) increment this so chrome
-    /// can invalidate retained panes.
-    /// It is process-local: restoring a persisted value could suppress the
-    /// first refresh after launch.
-    #[serde(skip)]
-    pub external_revision: u64,
-    pub workspaces: Vec<Workspace>,
-    #[serde(default)]
-    pub active: WorkspaceId,
-    pub active_strip: HashMap<WorkspaceId, StripId>,
-    /// Per-strip "active group" pointer, one level deeper than
-    /// [`Self::active_strip`]. Missing means "fall back to the first
-    /// non-closing group" (see [`Self::resolve_active_group`]).
-    #[serde(default)]
-    pub active_group: HashMap<StripId, GroupId>,
-    /// Legacy session-wide presence cache. Ordinary chrome must read the
-    /// active workspace's roster instead: a person present elsewhere is not
-    /// present here. `#[serde(skip)]` prevents stale presence after reload.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
+    /// The host-independent desktop: workspaces, focus pointers and the
+    /// schema version. Flattened, so `state.json` keeps its shape.
+    #[serde(flatten)]
+    pub desktop: DesktopTree,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
     /// the source of truth for reads; this doc for peer change export.
     /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
@@ -864,17 +828,6 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub room_peer_identities:
         HashMap<RoomId, std::collections::BTreeMap<String, GovernedPeerIdentity>>,
-    /// Mirror of each room's record index (record id → kind), pushed by
-    /// [`Self::set_room_records`] — a plain-data copy since the
-    /// index lives behind an `Rc<RefCell<_>>` peer-sync's
-    /// `Arc<RwLock<_>>` can't reach. Not persisted.
-    #[serde(skip, default)]
-    pub room_records_held: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
-    /// References that arrived from a peer and have not been folded into
-    /// the local index yet. Drained by the shell — see
-    /// [`Self::take_inbound_room_records`].
-    #[serde(skip, default)]
-    pub room_records_inbound: Vec<(RoomId, String, String)>,
     /// For a joined room, the [`NEXT_ID`] value at the moment of
     /// joining — windows minted before that aren't projected in, or
     /// accepting an invite would publish every window already open. A
@@ -909,12 +862,6 @@ pub struct WorkspaceTree {
     /// room projection deliberately has no corresponding field.
     #[serde(default)]
     pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
-    /// This tree's own peer salt, overriding the process-wide one — the
-    /// static is wrong when one process holds **two** trees (e.g. two
-    /// simulated peers). [`Self::local_salt`] prefers this field;
-    /// production never sets it.
-    #[serde(skip, default)]
-    pub peer_salt_override: Option<u16>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -930,21 +877,12 @@ pub struct WorkspaceTree {
 impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
-            schema_version: STATE_SCHEMA_VERSION,
-            room_epoch: 0,
-            external_revision: 0,
-            workspaces: Vec::new(),
-            active: WorkspaceId::default(),
-            active_strip: HashMap::new(),
-            active_group: HashMap::new(),
-            collaborators: Vec::new(),
+            desktop: DesktopTree::default(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
             room_peer_names: HashMap::new(),
             room_peer_identities: HashMap::new(),
-            room_records_held: HashMap::new(),
-            room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
             continuation_rooms: BTreeSet::new(),
@@ -952,10 +890,26 @@ impl Default for WorkspaceTree {
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
             native_document_tabs: HashMap::new(),
-            peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
         }
+    }
+}
+
+/// The portable desktop is read through the tree while callers migrate to
+/// [`WorkspaceTree::desktop`]; the tree's own methods name `self.desktop`
+/// explicitly.
+impl std::ops::Deref for WorkspaceTree {
+    type Target = DesktopTree;
+
+    fn deref(&self) -> &DesktopTree {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for WorkspaceTree {
+    fn deref_mut(&mut self) -> &mut DesktopTree {
+        &mut self.desktop
     }
 }
 
@@ -1066,7 +1020,8 @@ impl WorkspaceTree {
     /// this tree may write and sweep. [`Self::peer_salt_override`]
     /// first, the process-wide salt otherwise.
     pub fn local_salt(&self) -> u16 {
-        self.peer_salt_override
+        self.desktop
+            .peer_salt_override
             .unwrap_or_else(|| NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
     }
 
@@ -1074,7 +1029,7 @@ impl WorkspaceTree {
     /// holding two trees at once. The caller must mint matching ids
     /// itself; [`next_id`] reads the static.
     pub fn set_salt_override(&mut self, salt: u16) {
-        self.peer_salt_override = Some(salt);
+        self.desktop.peer_salt_override = Some(salt);
     }
 
     /// Walk every id and advance [`NEXT_ID`] past the highest counter
@@ -1090,7 +1045,7 @@ impl WorkspaceTree {
                 max_counter = max_counter.max(counter_of(id));
             }
         };
-        for ws in &self.workspaces {
+        for ws in &self.desktop.workspaces {
             consider(ws.id.raw());
             for strip in &ws.strips {
                 consider(strip.id.raw());
@@ -1176,7 +1131,8 @@ impl WorkspaceTree {
     /// A workspace whose room is still the unminted sentinel is skipped.
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut seen = std::collections::HashSet::new();
-        self.workspaces
+        self.desktop
+            .workspaces
             .iter()
             .map(|w| w.room)
             .filter(|r| !r.is_nil() && seen.insert(*r))
@@ -1453,7 +1409,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return false;
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         Self::admit_into(&mut ws.collaborators, who)
@@ -1462,7 +1418,12 @@ impl WorkspaceTree {
     /// [`Self::admit_collaborator_in_room`] addressed by this machine's
     /// local workspace handle instead of the room's durable identity.
     pub fn admit_collaborator(&mut self, workspace_id: WorkspaceId, who: Collaborator) -> bool {
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         Self::admit_into(&mut ws.collaborators, who)
@@ -1475,7 +1436,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return false;
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let before = ws.collaborators.len();
@@ -1494,7 +1455,7 @@ impl WorkspaceTree {
         }
         let handle = session_handle(peer);
         let named = !user.is_empty() && user != handle;
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let mut changed = false;
@@ -1526,7 +1487,7 @@ impl WorkspaceTree {
     /// several rooms at once, and it left all of them.
     pub fn retire_session(&mut self, peer: u64) -> bool {
         let mut changed = false;
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             let before = ws.collaborators.len();
             ws.collaborators.retain(|c| c.session != Some(peer));
             changed |= before != ws.collaborators.len();
@@ -1570,7 +1531,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return None;
         }
-        self.workspaces.iter().find(|w| w.room == room)
+        self.desktop.workspaces.iter().find(|w| w.room == room)
     }
 
     /// Project the cached state of `room`'s workspace into that room's
@@ -1606,6 +1567,7 @@ impl WorkspaceTree {
             .cloned()
             .unwrap_or_default();
         let held: std::collections::BTreeMap<String, String> = self
+            .desktop
             .room_records_held
             .get(&room)
             .cloned()
@@ -2398,7 +2360,7 @@ impl WorkspaceTree {
         };
         let is_local = |id: u64| peer_salt_of(id) == local_salt;
 
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let mut changed = false;
@@ -2463,14 +2425,15 @@ impl WorkspaceTree {
         // Removed rather than repointed: resolvers already fall back to
         // the first strip/group with no explicit selection.
         if self
+            .desktop
             .active_strip
             .get(&ws_id)
             .is_some_and(|active| !live.contains(active))
         {
-            self.active_strip.remove(&ws_id);
+            self.desktop.active_strip.remove(&ws_id);
         }
         for strip in vanished {
-            self.active_group.remove(&strip);
+            self.desktop.active_group.remove(&strip);
         }
         changed
     }
@@ -2762,10 +2725,10 @@ impl WorkspaceTree {
         room: RoomId,
         held: std::collections::BTreeMap<String, String>,
     ) -> bool {
-        match self.room_records_held.get(&room) {
+        match self.desktop.room_records_held.get(&room) {
             Some(existing) if *existing == held => false,
             _ => {
-                self.room_records_held.insert(room, held);
+                self.desktop.room_records_held.insert(room, held);
                 true
             }
         }
@@ -2774,7 +2737,7 @@ impl WorkspaceTree {
     /// Take the references peers have added since this was last called.
     /// Drained rather than read so a queue that only grows isn't a leak.
     pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
-        std::mem::take(&mut self.room_records_inbound)
+        std::mem::take(&mut self.desktop.room_records_inbound)
     }
 
     /// The governance a room document records: owner and capability
@@ -3042,7 +3005,7 @@ impl WorkspaceTree {
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
         let arrived = Self::room_records_of(candidate);
-        let already = self.room_records_held.get(&room);
+        let already = self.desktop.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
@@ -3051,7 +3014,7 @@ impl WorkspaceTree {
             }
         }
         let records_changed = !inbound.is_empty();
-        self.room_records_inbound.extend(inbound);
+        self.desktop.room_records_inbound.extend(inbound);
         records_changed
     }
 
@@ -3143,7 +3106,7 @@ impl WorkspaceTree {
         // view state; see `merge_room_contents`.
         let contents_changed = self.merge_room_contents(room);
 
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return Ok(records_changed || contents_changed);
         };
         let mut fields_changed = false;
@@ -3196,16 +3159,9 @@ impl WorkspaceTree {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
             // thread splices the widget tree, on chrome revision bumps.
-            self.room_epoch = self.room_epoch.wrapping_add(1);
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         }
         Ok(landed)
-    }
-
-    /// How many times a peer's changes have landed in this tree.
-    /// Monotonic per session, not persisted — read by the frame loop,
-    /// which bumps the chrome revision when it moves.
-    pub fn room_epoch(&self) -> u64 {
-        self.room_epoch
     }
 
     /// Seed the automerge doc from the cache. Idempotent (truncates
@@ -3225,9 +3181,11 @@ impl WorkspaceTree {
     )]
     pub fn seed_doc_from_cache(&mut self) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        let _ = self.doc.put(
+            &ROOT,
+            "active",
+            ScalarValue::Uint(self.desktop.active.raw()),
+        );
         // Truncate + re-fill from the cache; not diff-aware, so
         // concurrent appends can clobber.
         let workspaces_id = if let Some((_, id)) = self.doc.get(&ROOT, "workspaces").ok().flatten()
@@ -3245,7 +3203,7 @@ impl WorkspaceTree {
         for i in (0..current_len).rev() {
             let _ = self.doc.delete(&workspaces_id, i);
         }
-        for (i, ws) in self.workspaces.iter().enumerate() {
+        for (i, ws) in self.desktop.workspaces.iter().enumerate() {
             let Ok(entry) = self.doc.insert_object(&workspaces_id, i, ObjType::Map) else {
                 continue;
             };
@@ -3428,7 +3386,7 @@ impl WorkspaceTree {
     fn rebuild_cache_from_doc(&mut self) {
         use automerge::{ROOT, ReadDoc};
         if let Some(raw) = Self::doc_uint(&self.doc, &ROOT, "active") {
-            self.active = WorkspaceId::from(raw);
+            self.desktop.active = WorkspaceId::from(raw);
         }
         // Rebuild while preserving any existing nested state by id-match.
         if let Some(workspaces_id) = Self::doc_obj(&self.doc, &ROOT, "workspaces") {
@@ -3453,9 +3411,9 @@ impl WorkspaceTree {
                 // *revocation* take effect.
                 let replicated = self.doc_read_capabilities(&entry_id);
                 let mut ws = if let Some(existing_idx) =
-                    self.workspaces.iter().position(|w| w.id == ws_id)
+                    self.desktop.workspaces.iter().position(|w| w.id == ws_id)
                 {
-                    let mut existing = self.workspaces.remove(existing_idx);
+                    let mut existing = self.desktop.workspaces.remove(existing_idx);
                     existing.name = name;
                     existing
                 } else {
@@ -3477,7 +3435,7 @@ impl WorkspaceTree {
                 ws.effect_receipts = self.doc_read_workspace_effect_receipts(&entry_id);
                 new_workspaces.push(ws);
             }
-            self.workspaces = new_workspaces;
+            self.desktop.workspaces = new_workspaces;
         }
 
         // Reconstruct shared topology and tabs, matching each strip/group by
@@ -3528,7 +3486,8 @@ impl WorkspaceTree {
                     let Some(group_id) = Self::doc_uint(&self.doc, &group_entry, "id") else {
                         continue;
                     };
-                    let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+                    let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.id == ws_id)
+                    else {
                         continue;
                     };
                     let strip = if let Some(pos) = ws.strips.iter().position(|s| s.id == strip_id) {
@@ -3544,7 +3503,7 @@ impl WorkspaceTree {
                     // cache; new ids get synthesized entries.
                     // Explicit `&self.doc` (not a `&self` method): `strip`
                     // above already holds a mutable borrow into
-                    // `self.workspaces`, so this can only borrow the `doc`
+                    // `self.desktop.workspaces`, so this can only borrow the `doc`
                     // field, not all of `self`.
                     let doc_tabs = Self::collect_doc_tabs(&self.doc, &group_entry);
                     Self::apply_group_from_doc(strip, group_id, &doc_tabs);
@@ -3781,7 +3740,7 @@ impl WorkspaceTree {
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
-        for workspace in &self.workspaces {
+        for workspace in &self.desktop.workspaces {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
                     .ok()
@@ -3872,7 +3831,7 @@ impl WorkspaceTree {
             .map(|(room, _)| *room)
             .collect();
         let mut adopted = Vec::new();
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             if ws.owner.is_none() && !governed_elsewhere.contains(&ws.room) {
                 let user = identity_for_room(&ws.room);
                 ws.set_owner(user.clone());
@@ -3882,6 +3841,7 @@ impl WorkspaceTree {
         for (id, user) in &adopted {
             self.doc_set_owner(*id, user);
             let caps: Vec<CapOverride> = self
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == *id)
@@ -3904,7 +3864,7 @@ impl WorkspaceTree {
     /// the ids minted for.
     pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             if ws.room.is_nil() {
                 ws.room = RoomId::new();
                 adopted.push(ws.id);
@@ -3912,6 +3872,7 @@ impl WorkspaceTree {
         }
         for id in &adopted {
             let room = self
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == *id)
@@ -3928,7 +3889,8 @@ impl WorkspaceTree {
     /// The durable room identity of `workspace_id`. What the launch path
     /// needs to turn a local handle into the value the wire speaks.
     pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
-        self.workspaces
+        self.desktop
+            .workspaces
             .iter()
             .find(|w| w.id == workspace_id)
             .map(|w| w.room)
@@ -3947,8 +3909,13 @@ impl WorkspaceTree {
         // Joining a room some other local workspace is already in is not a
         // join: this machine is already in the room and already knows who
         // governs it.
-        let joining = !self.workspaces.iter().any(|w| w.room == room);
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let joining = !self.desktop.workspaces.iter().any(|w| w.room == room);
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         if ws.room == room {
@@ -4022,7 +3989,11 @@ impl WorkspaceTree {
             );
             return None;
         }
-        let ws = self.workspaces.iter_mut().find(|w| w.id == workspace_id)?;
+        let ws = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?;
         let id = ws.grant_as(grantor, cap)?;
         let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
         self.doc_insert_capability(workspace_id, &stored);
@@ -4040,7 +4011,12 @@ impl WorkspaceTree {
         revoker: &UserId,
         cap_id: &str,
     ) -> bool {
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         if !ws.revoke_as(revoker, cap_id) {
@@ -4077,6 +4053,7 @@ impl WorkspaceTree {
         let expected_owner = public_key_user_id(proposal.current_owner);
         let recipient = public_key_user_id(proposal.recipient);
         let ws = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
@@ -4115,6 +4092,7 @@ impl WorkspaceTree {
             && let Err(error) = crate::shell::persist::save_tree_to(self, path)
         {
             let ws = self
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == workspace_id)
@@ -4144,6 +4122,7 @@ impl WorkspaceTree {
             return Err(OwnershipTransferStateError::NotGoverned);
         }
         let ws = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
@@ -4167,6 +4146,7 @@ impl WorkspaceTree {
             && let Err(error) = crate::shell::persist::save_tree_to(self, path)
         {
             let ws = self
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == workspace_id)
@@ -4203,16 +4183,19 @@ impl WorkspaceTree {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
         let index = self
+            .desktop
             .workspaces
             .iter()
             .position(|workspace| workspace.id == workspace_id)
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
         let previous = self
+            .desktop
             .workspaces
             .get(index)
             .cloned()
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
         let ws = self
+            .desktop
             .workspaces
             .get_mut(index)
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
@@ -4263,6 +4246,7 @@ impl WorkspaceTree {
             && let Err(error) = crate::shell::persist::save_tree_to(self, path)
         {
             let workspace = self
+                .desktop
                 .workspaces
                 .get_mut(index)
                 .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
@@ -4391,7 +4375,8 @@ impl WorkspaceTree {
                 summary: format!("Created task · {title}"),
             }],
         };
-        self.workspaces
+        self.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)?
             .tasks
@@ -4414,6 +4399,7 @@ impl WorkspaceTree {
             .and_then(|duration| i64::try_from(duration.as_secs()).ok())
             .unwrap_or_default();
         let Some(task) = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
@@ -4453,6 +4439,7 @@ impl WorkspaceTree {
             .and_then(|duration| i64::try_from(duration.as_secs()).ok())
             .unwrap_or_default();
         let Some(task) = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
@@ -4502,6 +4489,7 @@ impl WorkspaceTree {
         completed_at: i64,
     ) -> bool {
         let Some(workspace) = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
@@ -4554,6 +4542,7 @@ impl WorkspaceTree {
         status: tilo_actions::EffectReceiptStatus,
     ) -> bool {
         let completed_at = self
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.id == workspace_id)
@@ -5101,7 +5090,7 @@ impl WorkspaceTree {
             return false;
         };
         let ws_len = self.doc.length(&workspaces_id);
-        let active_raw = self.active.raw();
+        let active_raw = self.desktop.active.raw();
         for ws_idx in 0..ws_len {
             let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
                 continue;
@@ -5169,7 +5158,7 @@ impl WorkspaceTree {
             return false;
         };
         let ws_len = self.doc.length(&workspaces_id);
-        let active_raw = self.active.raw();
+        let active_raw = self.desktop.active.raw();
         for ws_idx in 0..ws_len {
             let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
                 continue;
@@ -5269,11 +5258,13 @@ impl WorkspaceTree {
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         let mut tree = Self {
-            workspaces: vec![home],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: DesktopTree {
+                workspaces: vec![home],
+                active: ws_id,
+                active_strip,
+                active_group: HashMap::new(),
+                ..DesktopTree::default()
+            },
             ..Default::default()
         };
         tree.seed_doc_from_cache();
@@ -5368,11 +5359,13 @@ impl WorkspaceTree {
         let mut active_group = HashMap::new();
         active_group.insert(strip_id, group_id);
         let mut tree = Self {
-            workspaces: vec![home],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: DesktopTree {
+                workspaces: vec![home],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..DesktopTree::default()
+            },
             ..Default::default()
         };
 
@@ -5429,8 +5422,8 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
-        self.active_strip.insert(ws_id, strip_id);
-        self.workspaces.push(ws);
+        self.desktop.active_strip.insert(ws_id, strip_id);
+        self.desktop.workspaces.push(ws);
 
         // Mirror the append into the doc so peer-sync sees a discrete
         // change. Creates the list lazily, for trees not yet seeded.
@@ -5474,6 +5467,7 @@ impl WorkspaceTree {
     pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
         if room.is_nil()
             || self
+                .desktop
                 .workspaces
                 .iter()
                 .any(|workspace| workspace.room == room)
@@ -5483,7 +5477,7 @@ impl WorkspaceTree {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
-        self.workspaces.push(workspace);
+        self.desktop.workspaces.push(workspace);
         self.continuation_rooms.insert(room);
         self.room_authority.insert(room, RoomAuthority::Unpinned);
         self.room_share_floor
@@ -5501,7 +5495,7 @@ impl WorkspaceTree {
             return false;
         }
         self.continuation_file_references.remove(&tab);
-        if let Some(room) = self.workspaces.iter().find_map(|workspace| {
+        if let Some(room) = self.desktop.workspaces.iter().find_map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -5535,6 +5529,7 @@ impl WorkspaceTree {
             return false;
         }
         let stale_tabs: BTreeSet<_> = self
+            .desktop
             .workspaces
             .iter()
             .filter(|workspace| stale.contains(&workspace.room))
@@ -5544,7 +5539,8 @@ impl WorkspaceTree {
             .map(|tab| tab.id)
             .filter(|tab| self.continuation_tabs.contains(tab))
             .collect();
-        self.workspaces
+        self.desktop
+            .workspaces
             .retain(|workspace| !stale.contains(&workspace.room));
         self.continuation_rooms.retain(|room| !stale.contains(room));
         self.continuation_tabs
@@ -5562,11 +5558,13 @@ impl WorkspaceTree {
         self.room_share_floor
             .retain(|room, _| !stale.contains(room));
         if !self
+            .desktop
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == self.active)
+            .any(|workspace| workspace.id == self.desktop.active)
         {
-            self.active = self
+            self.desktop.active = self
+                .desktop
                 .workspaces
                 .first()
                 .map_or_else(WorkspaceId::default, |workspace| workspace.id);
@@ -5595,6 +5593,7 @@ impl WorkspaceTree {
             let mut file_reference_removals = Vec::new();
             let mut inserted_continuation_tabs = Vec::new();
             let Some(workspace) = self
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.room == continuation.room)
@@ -5748,7 +5747,7 @@ impl WorkspaceTree {
         if stale.is_empty() {
             return false;
         }
-        for workspace in &mut self.workspaces {
+        for workspace in &mut self.desktop.workspaces {
             for strip in &mut workspace.strips {
                 for group in &mut strip.window_groups {
                     group.tabs.retain(|tab| !stale.contains(&tab.id));
@@ -5775,11 +5774,13 @@ impl WorkspaceTree {
 
     pub fn set_active(&mut self, id: WorkspaceId) {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        if self.workspaces.iter().any(|w| w.id == id) {
-            self.active = id;
-            let _ = self
-                .doc
-                .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        if self.desktop.workspaces.iter().any(|w| w.id == id) {
+            self.desktop.active = id;
+            let _ = self.doc.put(
+                &ROOT,
+                "active",
+                ScalarValue::Uint(self.desktop.active.raw()),
+            );
             // Workspace selection is user-visible session state, not merely
             // a render hint. Persist it immediately so a compositor restart
             // opens the workspace the user selected rather than the one that
@@ -5788,31 +5789,26 @@ impl WorkspaceTree {
         }
     }
 
-    pub fn active_workspace(&self) -> Option<&Workspace> {
-        self.workspaces.iter().find(|w| w.id == self.active)
-    }
-
-    pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|w| w.id == self.active)
-    }
-
     pub fn switch_up(&mut self) -> bool {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
         let idx = self
+            .desktop
             .workspaces
             .iter()
-            .position(|w| w.id == self.active)
+            .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
         let Some(prev_idx) = idx.checked_sub(1) else {
             return false;
         };
-        let Some(prev) = self.workspaces.get(prev_idx) else {
+        let Some(prev) = self.desktop.workspaces.get(prev_idx) else {
             return false;
         };
-        self.active = prev.id;
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        self.desktop.active = prev.id;
+        let _ = self.doc.put(
+            &ROOT,
+            "active",
+            ScalarValue::Uint(self.desktop.active.raw()),
+        );
         self.flush_to_disk();
         true
     }
@@ -5820,17 +5816,20 @@ impl WorkspaceTree {
     pub fn switch_down(&mut self) -> bool {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
         let idx = self
+            .desktop
             .workspaces
             .iter()
-            .position(|w| w.id == self.active)
+            .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
-        let Some(next) = self.workspaces.get(idx.saturating_add(1)) else {
+        let Some(next) = self.desktop.workspaces.get(idx.saturating_add(1)) else {
             return false;
         };
-        self.active = next.id;
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        self.desktop.active = next.id;
+        let _ = self.doc.put(
+            &ROOT,
+            "active",
+            ScalarValue::Uint(self.desktop.active.raw()),
+        );
         self.flush_to_disk();
         true
     }
@@ -5841,75 +5840,6 @@ impl WorkspaceTree {
     // [`Self::nudge_active_group_off_closing`] advances the pointer to
     // the next surviving sibling at fade-start rather than letting it
     // resolve to the fading group for that whole window.
-
-    /// The currently-active [`GroupId`] for `strip_id`, or `None` if
-    /// unseeded — callers compose this with their own fallback.
-    pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
-        self.active_group.get(&strip_id).copied()
-    }
-
-    /// Mark `group_id` as the active group of `strip_id`. Not validated
-    /// against the strip's actual membership — the shell's reconciler is
-    /// expected to be the sole writer.
-    pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
-        self.active_group.insert(strip_id, group_id);
-    }
-
-    /// Resolve the active group on `strip_id` under `is_closing`: if
-    /// closing, returns the next non-closing sibling right, falling
-    /// back left. Pure read; `None` if no group survives, or the strip
-    /// doesn't exist.
-    pub fn resolve_active_group(
-        &self,
-        strip_id: StripId,
-        is_closing: impl Fn(GroupId) -> bool,
-    ) -> Option<GroupId> {
-        let strip = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.strips.iter())
-            .find(|s| s.id == strip_id)?;
-        let recorded = self.active_group.get(&strip_id).copied();
-        // First non-closing group in the strip scanning right
-        // (increasing index) from — and including — `from`.
-        let scan_right = |from: usize| -> Option<GroupId> {
-            strip
-                .window_groups
-                .get(from..)
-                .unwrap_or(&[])
-                .iter()
-                .find(|g| !is_closing(g.id))
-                .map(|g| g.id)
-        };
-        // Same, scanning left (decreasing index) from — and including —
-        // `from`.
-        let scan_left = |from: usize| -> Option<GroupId> {
-            strip
-                .window_groups
-                .get(..=from)
-                .unwrap_or(&[])
-                .iter()
-                .rev()
-                .find(|g| !is_closing(g.id))
-                .map(|g| g.id)
-        };
-        match recorded {
-            Some(id) => {
-                if !is_closing(id) {
-                    return Some(id);
-                }
-                // Recorded group is closing — find its index, then
-                // scan right for a survivor; if none, scan left.
-                let Some(idx) = strip.window_groups.iter().position(|g| g.id == id) else {
-                    // Recorded group no longer in the strip; fall
-                    // through to "first non-closing" as a default.
-                    return scan_right(0);
-                };
-                scan_right(idx.saturating_add(1)).or_else(|| idx.checked_sub(1).and_then(scan_left))
-            }
-            None => scan_right(0),
-        }
-    }
 
     /// Mirror a cross-strip tab drag-drop into the persisted tree. The
     /// widget side only mutates the widget tree — without this writeback
@@ -5941,11 +5871,12 @@ impl WorkspaceTree {
         // Cache and Automerge document form one transaction. Keep snapshots
         // so a stale/malformed document cannot leave the live cache moved
         // while replication still describes the old layout.
-        let before_workspaces = self.workspaces.clone();
+        let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
         // Validate the destination and any named group before detaching
         // anything. A stale preview must not make the source tab disappear.
         let valid_destination = self
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -5963,7 +5894,7 @@ impl WorkspaceTree {
         let mut moved_tab: Option<Tab> = None;
         let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
         let mut src_group_id = 0;
-        'outer: for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
+        'outer: for (ws_idx, ws) in self.desktop.workspaces.iter_mut().enumerate() {
             for (strip_idx, strip) in ws.strips.iter_mut().enumerate() {
                 if strip.id != src_strip_id {
                     continue;
@@ -5992,9 +5923,10 @@ impl WorkspaceTree {
         let Some(moved) = moved_tab else { return false };
         if let Some((ws_idx, strip_idx, group_idx)) = prune_group_at {
             // `ws_idx`/`strip_idx` were captured in the scan just above and
-            // nothing has mutated `self.workspaces` since, but a `.get_mut()`
+            // nothing has mutated `self.desktop.workspaces` since, but a `.get_mut()`
             // chain costs nothing and can't panic if that ever changes.
             if let Some(groups) = self
+                .desktop
                 .workspaces
                 .get_mut(ws_idx)
                 .and_then(|w| w.strips.get_mut(strip_idx))
@@ -6012,7 +5944,7 @@ impl WorkspaceTree {
             width: WindowWidth::Normal,
             maximized: false,
         };
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             for strip in &mut ws.strips {
                 if strip.id == dest_strip_id {
                     match target {
@@ -6025,7 +5957,7 @@ impl WorkspaceTree {
                                 .iter_mut()
                                 .find(|group| group.id == group_id)
                             else {
-                                self.workspaces = before_workspaces;
+                                self.desktop.workspaces = before_workspaces;
                                 self.doc = before_doc;
                                 return false;
                             };
@@ -6056,7 +5988,7 @@ impl WorkspaceTree {
                             dest_strip_id = dest_strip_id.raw(),
                             "cross-strip move could not be mirrored into the room document"
                         );
-                        self.workspaces = before_workspaces;
+                        self.desktop.workspaces = before_workspaces;
                         self.doc = before_doc;
                         return false;
                     }
@@ -6067,7 +5999,7 @@ impl WorkspaceTree {
         }
         // Defensive rollback if later refactors make strip membership
         // mutable between validation and insertion.
-        self.workspaces = before_workspaces;
+        self.desktop.workspaces = before_workspaces;
         self.doc = before_doc;
         false
     }
@@ -6093,32 +6025,34 @@ impl WorkspaceTree {
         tab_id: TabId,
         insert_at: usize,
     ) -> Option<GroupId> {
-        let (ws_idx, strip_idx, group_idx, tab_idx) =
-            self.workspaces
-                .iter()
-                .enumerate()
-                .find_map(|(ws_idx, ws)| {
-                    let (strip_idx, strip) = ws
-                        .strips
-                        .iter()
-                        .enumerate()
-                        .find(|(_, strip)| strip.id == strip_id)?;
-                    strip
-                        .window_groups
-                        .iter()
-                        .enumerate()
-                        .find_map(|(group_idx, group)| {
-                            group
-                                .tabs
-                                .iter()
-                                .position(|tab| tab.id == tab_id)
-                                .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx))
-                        })
-                })?;
-        let before_workspaces = self.workspaces.clone();
+        let (ws_idx, strip_idx, group_idx, tab_idx) = self
+            .desktop
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                let (strip_idx, strip) = ws
+                    .strips
+                    .iter()
+                    .enumerate()
+                    .find(|(_, strip)| strip.id == strip_id)?;
+                strip
+                    .window_groups
+                    .iter()
+                    .enumerate()
+                    .find_map(|(group_idx, group)| {
+                        group
+                            .tabs
+                            .iter()
+                            .position(|tab| tab.id == tab_id)
+                            .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx))
+                    })
+            })?;
+        let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
         let (src_group_id, moved) = {
             let group = self
+                .desktop
                 .workspaces
                 .get_mut(ws_idx)?
                 .strips
@@ -6147,6 +6081,7 @@ impl WorkspaceTree {
         };
         let new_id = new_group.id;
         let groups = &mut self
+            .desktop
             .workspaces
             .get_mut(ws_idx)?
             .strips
@@ -6169,7 +6104,7 @@ impl WorkspaceTree {
                 strip_id = strip_id.raw(),
                 "in-strip split could not be mirrored into the room document"
             );
-            self.workspaces = before_workspaces;
+            self.desktop.workspaces = before_workspaces;
             self.doc = before_doc;
             return None;
         }
@@ -6186,15 +6121,22 @@ impl WorkspaceTree {
         strip_id: StripId,
         topology: &[ui::widget::GroupTopology],
     ) -> bool {
-        let Some((ws_idx, strip_idx)) = self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
-            ws.strips
+        let Some((ws_idx, strip_idx)) =
+            self.desktop
+                .workspaces
                 .iter()
-                .position(|strip| strip.id == strip_id)
-                .map(|si| (wi, si))
-        }) else {
+                .enumerate()
+                .find_map(|(wi, ws)| {
+                    ws.strips
+                        .iter()
+                        .position(|strip| strip.id == strip_id)
+                        .map(|si| (wi, si))
+                })
+        else {
             return false;
         };
         let Some(strip) = self
+            .desktop
             .workspaces
             .get(ws_idx)
             .and_then(|ws| ws.strips.get(strip_idx))
@@ -6270,6 +6212,7 @@ impl WorkspaceTree {
             return false;
         }
         let Some(target) = self
+            .desktop
             .workspaces
             .get_mut(ws_idx)
             .and_then(|ws| ws.strips.get_mut(strip_idx))
@@ -6279,12 +6222,13 @@ impl WorkspaceTree {
         target.window_groups = rebuilt;
         let persisted = target.window_groups.clone();
         if self
+            .desktop
             .active_group
             .get(&strip_id)
             .is_none_or(|active| !group_ids.contains(active))
             && let Some(first) = persisted.first()
         {
-            self.active_group.insert(strip_id, first.id);
+            self.desktop.active_group.insert(strip_id, first.id);
         }
         self.doc_rewrite_strip_groups(strip_id, &persisted);
         // Same-strip drag/split changes are user-visible layout state. Keep
@@ -6350,7 +6294,7 @@ impl WorkspaceTree {
     ) -> bool {
         // Locate the strip (StripId is workspace-agnostic, so scan all).
         let mut located: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, cur_idx)
-        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+        'scan: for (ws_idx, ws) in self.desktop.workspaces.iter().enumerate() {
             for (strip_idx, strip) in ws.strips.iter().enumerate() {
                 if strip.id != strip_id {
                     continue;
@@ -6365,9 +6309,10 @@ impl WorkspaceTree {
             return false;
         };
         // `ws_idx`/`strip_idx` were captured in the scan just above and
-        // nothing has mutated `self.workspaces` since, but `.get_mut()`
+        // nothing has mutated `self.desktop.workspaces` since, but `.get_mut()`
         // costs nothing and can't panic if that ever changes.
         let Some(groups) = self
+            .desktop
             .workspaces
             .get_mut(ws_idx)
             .and_then(|w| w.strips.get_mut(strip_idx))
@@ -6398,7 +6343,7 @@ impl WorkspaceTree {
     pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
         // Locate the group in the cache (ids are workspace-agnostic).
         let mut located: Option<(usize, usize, usize)> = None;
-        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+        'scan: for (ws_idx, ws) in self.desktop.workspaces.iter().enumerate() {
             for (strip_idx, strip) in ws.strips.iter().enumerate() {
                 if let Some(g_idx) = strip.window_groups.iter().position(|g| g.id == group_id) {
                     located = Some((ws_idx, strip_idx, g_idx));
@@ -6410,9 +6355,10 @@ impl WorkspaceTree {
             return false;
         };
         // `ws_idx`/`strip_idx`/`g_idx` were captured in the scan just
-        // above and nothing has mutated `self.workspaces` since, but
+        // above and nothing has mutated `self.desktop.workspaces` since, but
         // `.get_mut()` costs nothing and can't panic if that ever changes.
         let Some(group) = self
+            .desktop
             .workspaces
             .get_mut(ws_idx)
             .and_then(|w| w.strips.get_mut(strip_idx))
@@ -6472,19 +6418,19 @@ impl WorkspaceTree {
         strip_id: StripId,
         closing_ids: &[GroupId],
     ) -> Option<GroupId> {
-        let recorded = self.active_group.get(&strip_id).copied()?;
+        let recorded = self.desktop.active_group.get(&strip_id).copied()?;
         if !closing_ids.contains(&recorded) {
             return Some(recorded);
         }
         let resolved = self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
         if let Some(next) = resolved {
-            self.active_group.insert(strip_id, next);
+            self.desktop.active_group.insert(strip_id, next);
             Some(next)
         } else {
             // Whole strip is fading; drop the entry rather than
             // leave a dangling pointer. The shell re-seeds when
             // fresh groups land.
-            self.active_group.remove(&strip_id);
+            self.desktop.active_group.remove(&strip_id);
             None
         }
     }
@@ -8860,11 +8806,14 @@ mod active_group_tests {
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group: HashMap::new(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_ids)
@@ -9467,11 +9416,14 @@ mod active_workspace_peer_count_tests {
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group: HashMap::new(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -9768,8 +9720,11 @@ mod permission_profile_assignment {
             .save_permission_profile_as(&"owner".into(), profile())
             .unwrap();
         let mut tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: id,
+            desktop: DesktopTree {
+                workspaces: vec![workspace],
+                active: id,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
         tree.seed_doc_from_cache();

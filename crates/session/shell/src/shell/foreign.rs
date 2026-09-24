@@ -3457,7 +3457,9 @@ mod tests {
             g.tabs.truncate(1);
             g.active_tab = g.tabs[0].id;
             let gid = g.id;
-            tree.active_strip.insert(tree.active, strip_id);
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
             tree.set_active_group(strip_id, gid);
         }
         let first = adopt_toplevel(&mut tree, 11, None);

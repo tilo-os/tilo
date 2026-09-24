@@ -371,8 +371,11 @@ mod tests {
         let ws_id = ws.id;
         (
             WorkspaceTree {
-                workspaces: vec![ws],
-                active: ws_id,
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![ws],
+                    active: ws_id,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             tab_id,
@@ -422,8 +425,11 @@ mod tests {
         ws.strips = vec![strip];
         let ws_id = ws.id;
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, tab_id)

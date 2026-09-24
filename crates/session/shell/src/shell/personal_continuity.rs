@@ -1373,10 +1373,13 @@ mod tests {
         let mut active_group = HashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: workspace_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![workspace],
+                active: workspace_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
 
@@ -1438,8 +1441,11 @@ mod tests {
             LaunchIntent::file_reference("record:remote-file", Some([7; 32]), None).unwrap(),
         );
         let tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: workspace_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![workspace],
+                active: workspace_id,
+                ..Default::default()
+            },
             continuation_tabs,
             continuation_file_references,
             ..WorkspaceTree::default()

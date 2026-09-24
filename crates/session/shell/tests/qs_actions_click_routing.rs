@@ -148,11 +148,14 @@ fn minimal_tree() -> WorkspaceTree {
     let mut active_group = HashMap::new();
     active_group.insert(strip_id, group_id);
     WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

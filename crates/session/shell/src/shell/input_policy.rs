@@ -1047,8 +1047,11 @@ mod tests {
         let mut ws = Workspace::new(ws_id, "Home");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active_strip.insert(ws_id, strip_id);
@@ -1158,8 +1161,11 @@ mod tests {
         let mut ws = Workspace::new(ws_id, "Home");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.active_strip.insert(ws_id, strip_id);

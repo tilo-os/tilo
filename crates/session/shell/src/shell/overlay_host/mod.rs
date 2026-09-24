@@ -23848,11 +23848,14 @@ mod tab_context_menu_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, GROUP);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id)
@@ -32940,11 +32943,14 @@ mod maximize_harvest_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -33190,11 +33196,14 @@ mod resync_strips_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -34271,8 +34280,11 @@ mod peer_cursor_tests {
         let mut ws = Workspace::new(ws_id, "Work");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         // Both are per-parent maps, not single pointers: one active strip
