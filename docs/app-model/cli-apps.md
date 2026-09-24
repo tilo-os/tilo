@@ -180,7 +180,7 @@ tilo-install: WARN — package self-signed by ed25519:… (no trusted-attestor s
   shims    : wrote 1 shim(s) into /tmp/tilo-install-demo-data/tilo-apps/bin
   PATH     : prepend /tmp/tilo-install-demo-data/tilo-apps/bin to your shell's PATH to pick them up (see `tilo-install path`).
 installed: so.tilo.notes-cli 0.1.0
-  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.notes-cli
+  payload  : /tmp/tilo-install-demo-data/tilo-apps/pkgs/<package-id>
   pinned   : false
 run with:  tilo-install run so.tilo.notes-cli
 
