@@ -428,6 +428,7 @@ pub fn run() -> std::process::ExitCode {
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
     log_gpu_pin(gpu_pin.as_ref());
+    compositor::dev_env::report_build_mode();
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();

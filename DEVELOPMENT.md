@@ -3,6 +3,38 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Dev VMs (tilo-vm)
+
+`tilo-vm` is how to run your changes in the Tilo OS image, and the dev story going
+forward: one host CLI for Linux, macOS and Windows that gives each person or agent
+a **slot** in a shared dev VM, meaning its own user, session and stack of layers over
+the VM's `/usr`. Swapping a component is one command and never needs a new VM or a
+reboot; every swap is a generation you can roll back. The VM runs under the host's
+native hypervisor, so you watch it in its UI: on Linux, libvirt's `qemu:///session`
+in virt-manager (File > Add Connection > QEMU/KVM user session) or GNOME Boxes; UTM
+on macOS; Hyper-V Manager on Windows.
+
+```sh
+cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+target/debug/tilo-vm doctor          # hypervisor, KVM, tokens, published disk, each with its fix
+target/debug/tilo-vm vm create dev   # checks everything, then downloads the published dev disk
+target/debug/tilo-vm vm start
+target/debug/tilo-vm slot create --headful
+target/debug/tilo-vm swap shell      # sync this worktree, build in the VM, restart the session
+target/debug/tilo-vm shot -o target/shot.png
+```
+
+Swaps build release binaries with the manifest's features plus `dev-overrides`
+(realistic speed, and the harness variables below still work); `--profile dev`
+compiles faster. Driving is the same `tilo-control` story as on the host, through
+`tilo-vm control`. The built-in guide (`tilo-vm guide`) covers concepts, swapping,
+driving, storage, platforms and troubleshooting; its source is
+`crates/dev/tilo-vm/guide/`.
+
+The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
+(`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
+does; `tilo-vm guide fedora-loop` maps its commands.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
@@ -123,9 +155,9 @@ the command and are recorded in its receipt.
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
-`os/dev/test-installer-cycle.sh`; for the disposable Fedora desktop development
-session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
-artifact-backed VM orchestration remain planned work.
+`os/dev/test-installer-cycle.sh`. To run a change in the Tilo OS image, use
+`tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
+development session use `dist/dev/fedora44-vm-iterate.sh`.
 
 For CI timing, use the repository run number from the Forgejo URL or `fgj actions
 run list`, not the Forgejo API's internal database ID:
@@ -845,10 +877,15 @@ reaches the host's server and every compilation misses.
 Not needed if the libraries are present natively — a nix/devenv shell removes both
 the routing and the sccache-namespace problem, and the shim with them.
 
-### Fedora 44 disposable-VM loop
+### Fedora 44 disposable-VM loop (legacy)
 
-For desktop development, build the selected debug executable in a Fedora 44
-toolbox and copy it to a disposable VM:
+For Tilo OS work, use `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); `tilo-vm guide
+fedora-loop` maps each command below to it. This loop remains the path for
+testing Tilo as a developer session on a stock Fedora 44 desktop, which dev VM
+slots do not cover yet.
+
+Build the selected debug executable in a Fedora 44 toolbox and copy it to a
+disposable VM:
 
 ```bash
 # One time.  This builds a dependency image and creates a persistent distrobox.
@@ -1115,7 +1152,8 @@ Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 file keeps pointing at the same path.
 
 `--features dev-session` adds the marker required by `/usr/libexec/tilo-session-dev`.
-Release builds omit this marker even with the feature enabled. The config file,
+Release builds omit this marker even with the feature enabled, unless they also
+enable `dev-overrides`. The config file,
 target binary and their parent directories must be owned by you or root and
 writable by nobody else. Failed checks abort startup without falling back to
 the installed compositor. `dist/session/tests/dev-session-refusals.sh` tests
@@ -1165,10 +1203,20 @@ $ printf 'not-the-password\n' | /usr/libexec/tilo-unlock-helper "$USER"; echo $?
 
 Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LOCK_TEST_PASSWORD`, `TILO_TEST_CONTROL`, `TILO_TEST_STATE_DUMP` and
-`TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
-`~/.config/environment.d/`, so an installed binary that honoured those would let
-anything able to write a file in your home decide what unlocks your screen. See
+`TILO_LAUNCHER_BIN`, and say so on stderr at startup when one is set. On a
+systemd desktop the session environment comes from `~/.config/environment.d/`,
+so an installed binary that honoured those would let anything able to write a
+file in your home decide what unlocks your screen. See
 `crates/session/shell/src/compositor/dev_env.rs`.
+
+Dev images need release-speed binaries that harnesses can still drive; build
+those with `cargo build --release -p shell --features dev-overrides` (what
+`tilo-vm swap` builds by default; `tilo-vm swap --profile dev` trades that
+speed for faster compiles). Such a
+binary honours the variables above and announces itself as a dev-overrides
+build at startup. It must never ship: `tools/policy/check_dev_overrides_contract.py`
+fails if a production `os/Containerfile*` enables `dev-overrides` or
+`dev-session`.
 
 
 ## Headless testing

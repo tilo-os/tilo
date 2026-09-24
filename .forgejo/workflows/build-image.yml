@@ -1377,3 +1377,41 @@ jobs:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
           if-no-files-found: error
+
+  # Dev VM disks are derived from the release just promoted, never rebuilt from
+  # source here. The request pins the exact source revision and index digest, so
+  # a later main commit cannot change what the dev image is built on.
+  dispatch-dev-disk:
+    needs: [plan, promote-multiarch]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: runner
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: tilo-os-release-index
+          path: release-index
+      - name: Request dev VM disks for this release
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="$(jq -er .image release-index/tilo-os-release-index.json)"
+          [[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::unexpected release index image: $image"
+            exit 1
+          }
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="main-${GITHUB_SHA:0:7}"
+          fi
+          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
+            --arg base "$image" --arg tag "$tag" \
+            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag}}')"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/dev-disk.yml/dispatches" \
+            --data "$payload"
+          echo "::notice::requested tilo-vm:$tag disks from $image"
