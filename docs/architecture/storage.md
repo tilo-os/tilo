@@ -257,12 +257,14 @@ stage of the migration.
 | Change capture | fanotify filesystem mark → durable journal; Btrfs epoch snapshots | FUSE `create/rename/unlink/setattr/flush/fsync/release` → the same journal; epoch snapshots when the backing store is Btrfs | same as Tier 2 |
 | Label | normal | normal ("metadata over FUSE") | shown as degraded in Settings |
 
-**Decision:** Tier 1 on Tilo OS. The migration builds the Tier 2 path first,
-because it reuses the existing FUSE daemon and fixes most of the damage
-quickly ([§19](#19-migration-stages)). Tier 1 is adopted **only if** the spike
-in stage 0 passes the three kernel checks in [§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1).
-If it fails, Tilo OS stays on Tier 2. Tier 2 meets R2 for data but not for
-metadata storms, and the document says so rather than pretending otherwise.
+**Decision:** Tier 1 is the design on Tilo OS, which ships kernel ≥ 6.14 and
+a dedicated Btrfs store volume. Tiers 2 and 3 exist only for Tilo Desktop on
+foreign distributions. The kernel checks in
+[§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1) were run on 7.2
+and hold (results there). The core of the Tier 1 data plane — probes, journal,
+capture epochs, content format and placeholder hydration — is implemented in
+`crates/system/fs-native`; `tilo-fs-native probe <store>` selects the tier on a
+given machine.
 
 FUSE remains for Tier 2/3 only. Exact-share recipients use the same native
 materialisation as everyone else, because a device only materialises records
@@ -314,6 +316,13 @@ it may read ([§14](#14-permissions)). The separate FUSE recipient mount
 - A **placeholder** is a real inode. `stat`, `readdir`, permissions, `mtime`
   and size are exact, so `ls -l`, `find` and `git status` never hydrate
   anything. [R1, R9]
+- A placeholder carries a `FAN_PRE_ACCESS` inode mark; a resident file
+  carries none, so its I/O raises no event at all. The kernel drops the
+  marks with the daemon's fanotify group, and an unserved placeholder then
+  reads as its holes (zeros), not as an error (pinned by a test). The store
+  must therefore only be exposed at `/var/workspace` while the daemon holds
+  its groups: the daemon re-adopts placeholders from their residency xattr
+  before it binds the tree, and the bind's lifetime is tied to the service.
 - Residency is published in a `trusted.tilo.residency` xattr, readable without
   triggering hydration. Tilo's own search, thumbnail and Files code read the
   daemon's metadata and never content. The existing thumbnail and metadata
@@ -333,12 +342,27 @@ intercepts. [R1, R2]
 1. **Journal.** fanotify (Tier 1) or FUSE callbacks (Tier 2/3) feed a durable
    journal in `meta.redb`. It records create, delete, rename, attribute changes,
    close-after-write and modify, keyed by record id. `FAN_MODIFY` is
-   rate-limited per inode with an evictable ignore mark, which is cleared on
-   close. Only `FAN_PRE_ACCESS` is synchronous, and it is delivered only for
-   placeholder ranges ([§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1)).
+   journaled once per file per epoch until the file is closed. Measured on
+   7.2: Btrfs refuses the inode ignore mark that would suppress the repeats
+   in the kernel (`EXDEV`) for any subvolume other than the top level, because
+   its fsid differs from the filesystem mark's; room trees are subvolumes, so
+   repeats are dropped in userspace and the kernel only merges queued
+   events. Only `FAN_PRE_ACCESS` is synchronous, and it is delivered only for
+   placeholders, which carry an inode mark until they are fully resident
+   ([§6.8](#68-kernel-facts-to-verify-before-committing-to-tier-1)).
+   Paths are resolved from the directory handles when events are read, so a
+   directory renamed before its earlier events are read reports them under
+   the new name; capture reads the snapshot, so the published state is
+   unaffected.
 2. **Epochs.** When the journal is dirty, the daemon cuts a capture epoch. It
    drains the queue, takes a read-only Btrfs snapshot of the room subvolume
-   (atomic across all files) and records the journal position. Epochs are cut:
+   (atomic across all files) and records the journal position. The position
+   is fixed by barrier events (a marker file created outside the tree just
+   before and just after the snapshot): entries between the two barriers are
+   examined in this epoch and again in the next. Without that split a path
+   journaled earlier can be read from a snapshot that already holds a newer
+   version whose dependencies are journaled later — the git test showed a ref
+   published before its commit object in 2 of 9 runs. Epochs are cut:
    - at quiescence (no new events for 500 ms);
    - at the latest every 2 s while dirty;
    - later, up to 5 s, while a file in the dirty set was created less than 1 s
@@ -445,6 +469,29 @@ Each has a fallback.
 | K4 | Can `FAN_DENY_ERRNO` return `EIO`/`EROFS`/`EBUSY` from permission events? | offline reads, read-only shares, leases | `EPERM` only (honest but less precise) |
 | K5 | Cost of one epoch snapshot with 100k files and 1 GiB dirty, p50/p99 | R1, R2 | Per-file reflink epochs (weaker cross-file consistency, [§10](#10-visibility-across-files)) |
 | K6 | Can mount marks report directory-entry events on 7.2? If they can, a dedicated superblock may not be needed. | Q1 | Dedicated filesystem (the baseline) |
+
+**Results on 7.2.1 with a loop-mounted Btrfs store** (`tilo-fs-native probe`,
+`crates/system/fs-native`; the host was heavily loaded, so latencies are
+upper bounds):
+
+| # | Answer | Consequence |
+|---|---|---|
+| K1 | **Yes.** An evictable ignore mark on an inode suppresses `FAN_PRE_ACCESS` from a filesystem-wide mark (10 reads, 0 events). | Not needed on the hot path: placeholders carry an inode pre-content mark and resident files carry none, so resident I/O raises no event either way. |
+| K2 | **No fault hook**, but `mmap()` itself raises one `FAN_PRE_ACCESS` for the whole mapped range; 1,024 page faults afterwards raise none. | The daemon hydrates the mapped range before `mmap` returns. Correct for git packs and SQLite; mapping a large cold file hydrates the whole mapping. |
+| K3 | **Yes** for `read`, `splice`, `sendfile`, `copy_file_range` and `FICLONE` from a placeholder. | No whole-file fallback needed. |
+| K4 | **Partly.** `FAN_DENY_ERRNO` accepts `EIO` and `EBUSY`; `EROFS` is rejected (`EINVAL`). | Offline reads get `EIO`, lease conflicts `EBUSY`; read-only shares use `EPERM` or write bits. |
+| K5 | 100k files: snapshot p50 2.7 ms / p99 8.9 ms clean, 49 / 87 ms with 64 MiB dirty, 1.08 / 1.33 s with 1 GiB dirty. The snapshot first flushes the room's dirty data (~1 GB/s here), so the p99 < 50 ms gate holds only for small dirty sets. | Writers are not paused, but time-to-publish includes writeback. Cutting epochs often keeps the dirty set small; streaming writers stay out of epochs until quiescent. |
+| K6 | **No.** A mount mark with create/delete/rename is refused (`EINVAL`). | The dedicated store superblock stays required. |
+
+Found on the way: an inode ignore mark under a filesystem mark is refused
+with `EXDEV` in any subvolume below the top level (its fsid differs), so
+`FAN_MODIFY` repeats are dropped in userspace (§6.4). Pre-content inode marks
+work across subvolumes in one group. Filesystem marks must be placed at the
+top-level subvolume. Rootless: a user namespace can put a filesystem mark on
+a tmpfs it mounted, never on the Btrfs store, and cannot create a
+pre-content group at all, so the journal and hydration need `CAP_SYS_ADMIN`
+(and `CAP_DAC_READ_SEARCH` for `open_by_handle_at`); unprivileged code gets
+directory inode marks and snapshots of subvolumes it owns.
 
 ---
 
