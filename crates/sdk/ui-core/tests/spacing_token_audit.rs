@@ -4,7 +4,7 @@
 //! same for spacing, so `const PAD: f64 = 12.0;` and `length(16.0)` kept
 //! entering widget, chrome, shell and app code with no record. This file
 //! counts them per file and pins the count: a file may never carry more than
-//! `f1_spacing_token_baseline.txt` says, and one that sheds some has to lower
+//! `spacing_token_baseline.txt` says, and one that sheds some has to lower
 //! its line in the same commit. The number only moves down.
 //!
 //! Two shapes are counted, both outside comments and `#[cfg(test)]` modules:
@@ -45,10 +45,10 @@ use crate::support::ratchet::{
 };
 
 /// Recorded counts, relative to the `ui` crate root.
-const BASELINE: &str = "tests/f1_spacing_token_baseline.txt";
+const BASELINE: &str = "tests/spacing_token_baseline.txt";
 
 const BASELINE_HEADER: &[&str] = &[
-    "Spacing and geometry literals in production code (see f1_spacing_token_audit.rs).",
+    "Spacing and geometry literals in production code (see spacing_token_audit.rs).",
     "Format: <path relative to repository root> <pattern> <count>",
     "This is a ratchet, not approval: counts may only move down.",
 ];
