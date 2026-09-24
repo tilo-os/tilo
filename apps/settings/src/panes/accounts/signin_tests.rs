@@ -171,7 +171,11 @@ fn a_provider_without_a_client_id_explains_instead_of_starting() {
     }
     let (_dir, root) = scratch_root();
     let browser = FakeBrowser::new(false);
-    let (mut pane, commands) = pane(&root, root.custodian(), Arc::clone(&browser));
+    // A build whose registration table has no Dropbox app key.
+    let custodian = root
+        .custodian()
+        .with_client_table(account_custody::ClientTable::default());
+    let (mut pane, commands) = pane(&root, custodian, Arc::clone(&browser));
     let mut doc = AutoCommit::new();
     command(
         &mut pane,
@@ -389,7 +393,14 @@ fn advanced_data_protection_is_explained() {
 #[test]
 fn icloud_without_a_provider_is_not_available_rather_than_broken() {
     let (_dir, root) = scratch_root();
-    let (mut pane, commands) = pane(&root, root.custodian(), FakeBrowser::new(false));
+    assert!(
+        root.custodian().icloud().is_available(),
+        "Settings signs in to iCloud through the iCloud provider"
+    );
+    // A custodian that was given no iCloud sign-in.
+    let custodian =
+        account_custody::Custodian::for_root(root.explicit().map(std::path::Path::to_path_buf));
+    let (mut pane, commands) = pane(&root, custodian, FakeBrowser::new(false));
     let mut doc = AutoCommit::new();
     command(
         &mut pane,

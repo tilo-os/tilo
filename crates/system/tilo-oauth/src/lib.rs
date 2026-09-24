@@ -96,6 +96,77 @@ impl Provider {
     }
 }
 
+/// Which loopback ports the redirect listener may take.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RedirectPorts {
+    /// Any free port. For providers that match a loopback redirect without
+    /// its port (RFC 8252 §7.3): Google desktop clients and Microsoft public
+    /// clients.
+    #[default]
+    Any,
+    /// The first free port of this list. For providers that match redirect
+    /// URIs exactly, port included (Dropbox): each port is registered with
+    /// the app as `http://127.0.0.1:<port>/oauth`.
+    Registered(Vec<u16>),
+}
+
+/// What a provider's developer console issued for this app.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Registration {
+    pub client_id: String,
+    /// Sent on token requests when set. Google issues one to installed-app
+    /// ("Desktop") clients and requires it on the code exchange and refresh.
+    /// An installed app cannot keep a secret (RFC 8252 §8.5), so this is
+    /// not a credential; PKCE protects the code.
+    pub client_secret: Option<String>,
+    pub redirect_ports: RedirectPorts,
+    /// When no registered port is free, let the person paste the code the
+    /// provider displays instead (providers whose `redirect_uri` is
+    /// optional: Dropbox).
+    pub paste_code_fallback: bool,
+}
+
+impl Registration {
+    /// A public client on any loopback port, without a secret.
+    pub fn public(client_id: impl Into<String>) -> Self {
+        Self {
+            client_id: client_id.into(),
+            ..Self::default()
+        }
+    }
+
+    /// The client secret, when one is set and not blank.
+    pub fn secret(&self) -> Option<&str> {
+        self.client_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|secret| !secret.is_empty())
+    }
+}
+
+impl From<&str> for Registration {
+    fn from(client_id: &str) -> Self {
+        Self::public(client_id)
+    }
+}
+
+impl From<String> for Registration {
+    fn from(client_id: String) -> Self {
+        Self::public(client_id)
+    }
+}
+
+impl fmt::Debug for Registration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Registration")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.secret().map(|_| "<set>"))
+            .field("redirect_ports", &self.redirect_ports)
+            .field("paste_code_fallback", &self.paste_code_fallback)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Where a registered `OAuth` client id comes from: the environment variable
 /// `key` at runtime, else the value of the same variable at build time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +261,7 @@ pub fn base64url_nopad(input: &[u8]) -> String {
 pub struct AuthorizationRequest<'a> {
     pub provider: &'a Provider,
     pub client_id: &'a str,
+    /// Empty for a sign-in whose code the provider displays for pasting.
     pub redirect_uri: &'a str,
     pub code_challenge: &'a str,
     pub state: &'a str,
@@ -204,8 +276,11 @@ impl AuthorizationRequest<'_> {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         query
             .append_pair("client_id", self.client_id)
-            .append_pair("response_type", "code")
-            .append_pair("redirect_uri", self.redirect_uri)
+            .append_pair("response_type", "code");
+        if !self.redirect_uri.is_empty() {
+            query.append_pair("redirect_uri", self.redirect_uri);
+        }
+        query
             .append_pair("scope", &self.provider.scope())
             .append_pair("code_challenge", self.code_challenge)
             .append_pair("code_challenge_method", "S256")
@@ -294,6 +369,10 @@ pub enum OAuthError {
     Randomness,
     /// The loopback redirect listener could not be bound.
     Loopback(String),
+    /// Every registered redirect port is taken by another program.
+    RedirectPortsBusy,
+    /// The sign-in needs the code the provider displayed, pasted in.
+    NeedsPastedCode,
     /// The system browser could not be opened.
     Browser(String),
     /// The redirect carried a `state` other than the one we sent (CSRF).
@@ -326,6 +405,12 @@ impl fmt::Display for OAuthError {
             Self::Randomness => f.write_str("the system random number generator is unavailable"),
             Self::Loopback(error) => {
                 write!(f, "could not listen for the sign-in redirect: {error}")
+            }
+            Self::RedirectPortsBusy => f.write_str(
+                "every port registered for the sign-in redirect is in use by another program",
+            ),
+            Self::NeedsPastedCode => {
+                f.write_str("paste the code the provider showed after you allowed access")
             }
             Self::Browser(error) => write!(f, "could not open the sign-in page: {error}"),
             Self::StateMismatch => f.write_str("the sign-in response did not match this request"),

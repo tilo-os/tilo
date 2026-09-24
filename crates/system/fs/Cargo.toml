@@ -41,6 +41,10 @@ filesystem = [
     "dep:accounts",
     "dep:cloud-source",
     "dep:cloud-source-dav",
+    "dep:cloud-source-gdrive",
+    "dep:cloud-source-onedrive",
+    "dep:cloud-source-dropbox",
+    "dep:cloud-source-icloud",
     "dep:notify",
     "dep:zeroize",
 ]
@@ -149,11 +153,15 @@ postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
 redb.workspace = true
-# Cloud accounts as mounted folders: the account store and vault handoff,
-# the provider interface and the WebDAV/Nextcloud provider.
+# Cloud accounts as mounted folders: the account store and credential
+# handoff, the provider interface and the providers.
 accounts = { path = "../accounts", optional = true }
 cloud-source = { path = "../cloud-source", optional = true }
 cloud-source-dav = { path = "../cloud-source-dav", optional = true }
+cloud-source-gdrive = { path = "../cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { path = "../cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { path = "../cloud-source-dropbox", optional = true }
+cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
 notify = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true

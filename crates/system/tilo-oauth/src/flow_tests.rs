@@ -6,13 +6,17 @@ use std::time::Duration;
 
 use crate::client::{Authorization, OAuthClient};
 use crate::fake::{FakeAuthorizationServer, browse};
-use crate::{OAuthError, TokenSet};
+use crate::{OAuthError, RedirectPorts, Registration, TokenSet};
 
 const WAIT: Duration = Duration::from_secs(20);
 
+fn registration() -> Registration {
+    Registration::public("client-1")
+}
+
 fn sign_in(server: &FakeAuthorizationServer) -> Result<TokenSet, OAuthError> {
     let provider = server.provider();
-    let authorization = Authorization::begin(&provider, "client-1", Some("ada@example.test"))?;
+    let authorization = Authorization::begin(&provider, &registration(), Some("ada@example.test"))?;
     let url = authorization.url().to_string();
     let browser = std::thread::spawn(move || browse(&url));
     let result = authorization.complete(&OAuthClient::new()?, WAIT);
@@ -57,7 +61,7 @@ fn code_flow_with_pkce_yields_tokens() {
 fn a_code_redeemed_with_the_wrong_verifier_is_rejected() {
     let server = FakeAuthorizationServer::start();
     let provider = server.provider();
-    let authorization = Authorization::begin(&provider, "client-1", None).unwrap();
+    let authorization = Authorization::begin(&provider, &registration(), None).unwrap();
     // Intercept the code the way a malicious app on the same machine would,
     // by asking the server for it with our challenge, then try to redeem it
     // without knowing the verifier.
@@ -89,8 +93,8 @@ fn a_code_redeemed_with_the_wrong_verifier_is_rejected() {
     assert_eq!(
         client.exchange_code(
             &provider,
-            "client-1",
-            &format!("{}/nowhere", server.url()),
+            &registration(),
+            Some(&format!("{}/nowhere", server.url())),
             &stolen,
             "not-the-verifier-for-this-challenge-0000000000",
         ),
@@ -117,7 +121,7 @@ fn refresh_renews_the_access_token_and_keeps_the_refresh_token() {
     assert!(tokens.needs_refresh(), "a one second token is due");
     let client = OAuthClient::new().unwrap();
     let renewed = client
-        .refresh(&server.provider(), "client-1", &tokens.refresh_token)
+        .refresh(&server.provider(), &registration(), &tokens.refresh_token)
         .unwrap();
     assert_ne!(renewed.access_token, tokens.access_token);
     assert_eq!(
@@ -134,7 +138,7 @@ fn a_revoked_refresh_token_is_invalid_grant() {
     server.revoke_all_refresh_tokens();
     let error = OAuthClient::new()
         .unwrap()
-        .refresh(&server.provider(), "client-1", &tokens.refresh_token)
+        .refresh(&server.provider(), &registration(), &tokens.refresh_token)
         .unwrap_err();
     assert_eq!(error, OAuthError::InvalidGrant);
     assert!(error.needs_authentication());
@@ -146,22 +150,97 @@ fn revocation_sends_the_refresh_token_to_the_revocation_endpoint() {
     let tokens = sign_in(&server).unwrap();
     let client = OAuthClient::new().unwrap();
     assert_eq!(
-        client.revoke(&server.provider(), "client-1", &tokens),
+        client.revoke(&server.provider(), &registration(), &tokens),
         Ok(true)
     );
     assert_eq!(server.revoked(), vec![tokens.refresh_token.clone()]);
     let mut provider = server.provider();
     provider.revocation = crate::Revocation::Unsupported;
-    assert_eq!(client.revoke(&provider, "client-1", &tokens), Ok(false));
+    assert_eq!(
+        client.revoke(&provider, &registration(), &tokens),
+        Ok(false)
+    );
 }
 
 #[test]
 fn cancelling_ends_a_pending_sign_in() {
     let server = FakeAuthorizationServer::start();
-    let authorization = Authorization::begin(&server.provider(), "client-1", None).unwrap();
-    authorization.canceller().cancel();
+    let authorization = Authorization::begin(&server.provider(), &registration(), None).unwrap();
+    authorization.canceller().expect("a loopback wait").cancel();
     assert_eq!(
         authorization.complete(&OAuthClient::new().unwrap(), WAIT),
         Err(OAuthError::Cancelled)
     );
+}
+
+#[test]
+fn the_client_secret_goes_to_the_token_endpoint() {
+    let server = FakeAuthorizationServer::start();
+    server.require_client_secret("installed-app-secret");
+    assert!(matches!(sign_in(&server), Err(OAuthError::Protocol(_))));
+    let registration = Registration {
+        client_secret: Some("installed-app-secret".into()),
+        ..registration()
+    };
+    let authorization = Authorization::begin(&server.provider(), &registration, None).unwrap();
+    let url = authorization.url().to_string();
+    let browser = std::thread::spawn(move || browse(&url));
+    let tokens = authorization
+        .complete(&OAuthClient::new().unwrap(), WAIT)
+        .expect("sign-in with the secret");
+    browser.join().unwrap().unwrap();
+    OAuthClient::new()
+        .unwrap()
+        .refresh(&server.provider(), &registration, &tokens.refresh_token)
+        .expect("refresh with the secret");
+}
+
+#[test]
+fn registered_ports_are_taken_in_order_and_the_code_can_be_pasted_when_all_are_busy() {
+    // Two ports the OS just handed out; hold the first so the listener has
+    // to take the second.
+    let first = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let second_port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let first_port = first.local_addr().unwrap().port();
+    let server = FakeAuthorizationServer::start();
+    let registration = Registration {
+        redirect_ports: RedirectPorts::Registered(vec![first_port, second_port]),
+        paste_code_fallback: true,
+        ..registration()
+    };
+    let authorization = Authorization::begin(&server.provider(), &registration, None).unwrap();
+    assert_eq!(
+        authorization.redirect_uri(),
+        Some(format!("http://127.0.0.1:{second_port}/oauth"))
+    );
+    drop(authorization);
+
+    // Every registered port busy: the provider displays the code instead.
+    let busy = Registration {
+        redirect_ports: RedirectPorts::Registered(vec![first_port]),
+        ..registration
+    };
+    let authorization = Authorization::begin(&server.provider(), &busy, None).unwrap();
+    assert!(authorization.needs_pasted_code());
+    assert!(!authorization.url().contains("redirect_uri"));
+    let code = browse(authorization.url()).expect("the provider shows the code");
+    let tokens = authorization
+        .complete_with_code(&OAuthClient::new().unwrap(), &code)
+        .expect("a pasted code is redeemed");
+    assert!(!tokens.refresh_token.is_empty());
+
+    // Without the fallback, busy ports are an error.
+    let strict = Registration {
+        paste_code_fallback: false,
+        ..busy
+    };
+    assert!(matches!(
+        Authorization::begin(&server.provider(), &strict, None),
+        Err(OAuthError::RedirectPortsBusy)
+    ));
+    drop(first);
 }

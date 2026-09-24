@@ -1,19 +1,19 @@
 //! The `OAuth` cloud storage providers, as data.
 
-use tilo_oauth::{ClientId, Provider, Revocation};
+use tilo_oauth::{Provider, Revocation};
 
 /// Account type id of a Google Drive account.
-pub const GOOGLE_DRIVE_TYPE: &str = "google-drive";
+pub const GOOGLE_DRIVE_TYPE: &str = accounts::cloud_types::GOOGLE_DRIVE;
 /// Account type id of a `OneDrive` account (personal or work/school).
-pub const ONEDRIVE_TYPE: &str = "onedrive";
+pub const ONEDRIVE_TYPE: &str = accounts::cloud_types::ONEDRIVE;
 /// Account type id of a Dropbox account.
-pub const DROPBOX_TYPE: &str = "dropbox";
+pub const DROPBOX_TYPE: &str = accounts::cloud_types::DROPBOX;
 /// Account type id of an `iCloud` Drive account.
-pub const ICLOUD_DRIVE_TYPE: &str = "icloud-drive";
+pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
 /// Account type id of a Nextcloud account.
-pub const NEXTCLOUD_TYPE: &str = "nextcloud";
+pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
 /// Account type id of a plain `WebDAV` account.
-pub const WEBDAV_TYPE: &str = "webdav";
+pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
 
 /// A cloud storage provider that signs in with `OAuth`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,25 +54,6 @@ impl OAuthCloud {
             Self::GoogleDrive => "Google",
             Self::OneDrive => "Microsoft",
             Self::Dropbox => "Dropbox",
-        }
-    }
-
-    /// Where the registered client id comes from. The key is read from the
-    /// environment at runtime, then from the build environment.
-    pub fn client_id(self) -> ClientId {
-        match self {
-            Self::GoogleDrive => ClientId::new(
-                "TILO_OAUTH_GOOGLE_CLIENT_ID",
-                option_env!("TILO_OAUTH_GOOGLE_CLIENT_ID"),
-            ),
-            Self::OneDrive => ClientId::new(
-                "TILO_OAUTH_MICROSOFT_CLIENT_ID",
-                option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID"),
-            ),
-            Self::Dropbox => ClientId::new(
-                "TILO_OAUTH_DROPBOX_CLIENT_ID",
-                option_env!("TILO_OAUTH_DROPBOX_CLIENT_ID"),
-            ),
         }
     }
 

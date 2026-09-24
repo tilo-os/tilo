@@ -6,16 +6,22 @@
 //! recipient-service` keeps received shares at `~/Shared/…`:
 //!
 //! - an account appears or is enabled → a mount process starts with the
-//!   account's one credential on its stdin;
+//!   account's one short-lived credential on its stdin;
 //! - an account is disabled, its configuration changes or it is removed →
 //!   the mount stops and its directory goes; removal also drops the
 //!   account's cache and queued state;
 //! - a mount reports health → the service records it in the account
 //!   status store Settings and Files read.
 //!
-//! Only this service opens the vault; mount processes see one credential.
+//! Neither this service nor its mounts open Settings' account vault. The
+//! service reads each account's short-lived credential from the handoff
+//! store ([`accounts::HandoffCredentialSource`]); when it is missing, expired
+//! or rejected, the handoff runs Settings' credential helper
+//! (`tilo-account-credential refresh <id>`, through bounded-command), which
+//! alone holds the vault for that one call. Mount processes see one
+//! credential.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -24,11 +30,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use accounts::{AccountId, AccountStore, AccountSyncReporter, SecretVault};
-use cloud_source::Credential;
+use accounts::{
+    AccountId, AccountStore, AccountSyncReporter, CredentialRefresher, HandoffCredentialSource,
+    HandoffStore,
+};
+use cloud_source::{Credential, CredentialSource as _};
 
 use super::credential::{
-    HEALTH_PREFIX, PipeCredential, READY_LINE, REJECTED_LINE, ToMount, WireCredential, line,
+    EXPIRED_LINE, HEALTH_PREFIX, PipeCredential, READY_LINE, REJECTED_LINE, ToMount,
+    WireCredential, line,
 };
 use super::providers::{self, MountSpec};
 use super::volume::{CloudVolume, Health, VolumeConfig};
@@ -38,6 +48,7 @@ use super::volume::{CloudVolume, Health, VolumeConfig};
 pub enum MountEvent {
     Health(Health),
     CredentialRejected,
+    CredentialExpired,
     Exited,
 }
 
@@ -69,6 +80,23 @@ pub struct ServiceConfig {
     pub mounts_root: PathBuf,
     /// Per-account private state: metadata, queue, cache.
     pub state_root: PathBuf,
+    /// Publishes a fresh handoff credential when one is missing, expired or
+    /// rejected: [`accounts::CommandRefresher`] (Settings' credential
+    /// helper) in production.
+    pub refresher: Arc<dyn CredentialRefresher>,
+}
+
+/// How often accounts that could not start (offline, no credential yet)
+/// are tried again while nothing else happens.
+const RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Why the service needs an account's credential.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    /// To start a mount, or because the mount's one expired.
+    Current,
+    /// The server rejected the one the mount holds.
+    Replacement,
 }
 
 struct Mounted {
@@ -86,6 +114,9 @@ pub struct CloudService {
     config: ServiceConfig,
     launcher: Box<dyn Launcher>,
     mounts: HashMap<String, Mounted>,
+    credentials: HashMap<String, Arc<HandoffCredentialSource>>,
+    /// Accounts to start again after [`RETRY_INTERVAL`].
+    retry: HashSet<String>,
     signals: Sender<Signal>,
     inbox: Receiver<Signal>,
 }
@@ -101,6 +132,8 @@ impl CloudService {
             config,
             launcher,
             mounts: HashMap::new(),
+            credentials: HashMap::new(),
+            retry: HashSet::new(),
             signals,
             inbox,
         }
@@ -113,10 +146,10 @@ impl CloudService {
         }
     }
 
-    fn vault(&self) -> SecretVault {
+    fn handoff(&self) -> Option<HandoffStore> {
         match &self.config.config_root {
-            Some(root) => SecretVault::open_in(root),
-            None => SecretVault::open(),
+            Some(root) => Some(HandoffStore::open_in(root)),
+            None => HandoffStore::open(),
         }
     }
 
@@ -127,11 +160,43 @@ impl CloudService {
         }
     }
 
-    fn credential(&self, account_id: &str) -> Option<Credential> {
-        let store = self.store();
-        let account = store.get(&AccountId::from(account_id))?;
-        let secret = self.vault().get(&account.id)?;
-        providers::credential_for(account, &secret)
+    /// The account's credential from the handoff store, refreshed through
+    /// the credential helper when needed. Failures are reported to the
+    /// account status store.
+    fn credential(&mut self, account_id: &str, need: Need) -> Option<Credential> {
+        let source = if let Some(source) = self.credentials.get(account_id) {
+            Arc::clone(source)
+        } else {
+            let Some(handoff) = self.handoff() else {
+                tracing::warn!("no config directory for the credential handoff");
+                let _ = self.reporter(account_id).failed();
+                return None;
+            };
+            let source = Arc::new(HandoffCredentialSource::new(
+                AccountId::from(account_id),
+                handoff,
+                Arc::clone(&self.config.refresher),
+            ));
+            self.credentials
+                .insert(account_id.to_owned(), Arc::clone(&source));
+            source
+        };
+        if need == Need::Replacement {
+            source.rejected();
+        }
+        match source.credential() {
+            Ok(credential) => Some(credential),
+            Err(cloud_source::Error::Offline) => {
+                let _ = self.reporter(account_id).offline();
+                self.retry.insert(account_id.to_owned());
+                None
+            }
+            Err(error) => {
+                tracing::info!(%error, "no credential for a cloud account");
+                let _ = self.reporter(account_id).needs_authentication();
+                None
+            }
+        }
     }
 
     /// The account folders currently mounted: `(account id, directory)`.
@@ -147,6 +212,7 @@ impl CloudService {
 
     /// Bring the mounts in line with the account store.
     pub fn reconcile(&mut self) {
+        self.retry.clear();
         let store = self.store();
         let wanted: Vec<MountSpec> = store.all().iter().filter_map(providers::spec_for).collect();
         let labels: Vec<(&str, &str)> = store
@@ -183,8 +249,7 @@ impl CloudService {
             let Some(dir_name) = names.get(&spec.account_id).cloned() else {
                 continue;
             };
-            let Some(credential) = self.credential(&spec.account_id) else {
-                let _ = self.reporter(&spec.account_id).needs_authentication();
+            let Some(credential) = self.credential(&spec.account_id, Need::Current) else {
                 continue;
             };
             let mount_point = self.config.mounts_root.join(&dir_name);
@@ -221,6 +286,7 @@ impl CloudService {
                     tracing::warn!(%error, "cloud mount failed to start");
                     let _ = self.reporter(&spec.account_id).failed();
                     let _ = fs::remove_dir(&mount_point);
+                    self.retry.insert(spec.account_id.clone());
                 }
             }
         }
@@ -232,6 +298,7 @@ impl CloudService {
         };
         mounted.running.stop();
         let _ = fs::remove_dir(self.config.mounts_root.join(&mounted.dir_name));
+        self.credentials.remove(id);
         if removed {
             let _ = fs::remove_dir_all(self.config.state_root.join(state_dir_name(id)));
             let _ = self.reporter(id).remove();
@@ -251,15 +318,19 @@ impl CloudService {
                     Health::Error => reporter.failed(),
                 };
             }
-            MountEvent::CredentialRejected => {
-                let fresh = self.credential(id);
-                match (fresh, self.mounts.get_mut(id)) {
-                    (Some(credential), Some(mounted)) => {
-                        let _ = mounted.running.send_credential(&credential);
-                    }
-                    _ => {
-                        let _ = self.reporter(id).needs_authentication();
-                    }
+            MountEvent::CredentialRejected | MountEvent::CredentialExpired => {
+                if !self.mounts.contains_key(id) {
+                    return;
+                }
+                let need = if event == MountEvent::CredentialRejected {
+                    Need::Replacement
+                } else {
+                    Need::Current
+                };
+                if let (Some(credential), Some(mounted)) =
+                    (self.credential(id, need), self.mounts.get_mut(id))
+                {
+                    let _ = mounted.running.send_credential(&credential);
                 }
             }
             MountEvent::Exited => {
@@ -333,7 +404,17 @@ impl CloudService {
             .watch(&accounts_dir, notify::RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
         self.reconcile();
-        while let Ok(signal) = self.inbox.recv() {
+        loop {
+            let signal = if self.retry.is_empty() {
+                self.inbox.recv().ok()
+            } else {
+                match self.inbox.recv_timeout(RETRY_INTERVAL) {
+                    Ok(signal) => Some(signal),
+                    Err(mpsc::RecvTimeoutError::Timeout) => Some(Signal::Accounts),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                }
+            };
+            let Some(signal) = signal else { break };
             self.handle(signal);
             self.pump();
         }
@@ -420,6 +501,8 @@ impl Launcher for ProcessLauncher {
                     }
                 } else if line == REJECTED_LINE {
                     events(MountEvent::CredentialRejected);
+                } else if line == EXPIRED_LINE {
+                    events(MountEvent::CredentialExpired);
                 } else if let Some(state) = line.strip_prefix(HEALTH_PREFIX)
                     && let Some(health) = Health::parse(state)
                 {
@@ -516,12 +599,10 @@ impl Launcher for InProcessLauncher {
         events: Box<dyn Fn(MountEvent) + Send + Sync>,
     ) -> io::Result<Box<dyn RunningMount>> {
         let events = Arc::new(events);
-        let rejected = Arc::clone(&events);
+        let asked = Arc::clone(&events);
         let credentials = Arc::new(PipeCredential::new(
             Some(credential.clone()),
-            Box::new(EventWriter(Box::new(move || {
-                rejected(MountEvent::CredentialRejected);
-            }))),
+            Box::new(EventWriter(Box::new(move |event| asked(event)))),
         ));
         let source = providers::open(spec, Arc::clone(&credentials) as _)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -548,13 +629,16 @@ impl Launcher for InProcessLauncher {
     }
 }
 
-/// Turns the credential source's "rejected" line into an event.
-struct EventWriter(Box<dyn Fn() + Send>);
+/// Turns the credential source's "rejected" and "expired" lines into
+/// events.
+struct EventWriter(Box<dyn Fn(MountEvent) + Send>);
 
 impl Write for EventWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.starts_with(REJECTED_LINE.as_bytes()) {
-            (self.0)();
+            (self.0)(MountEvent::CredentialRejected);
+        } else if buf.starts_with(EXPIRED_LINE.as_bytes()) {
+            (self.0)(MountEvent::CredentialExpired);
         }
         Ok(buf.len())
     }

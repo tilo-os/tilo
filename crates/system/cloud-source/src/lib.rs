@@ -485,6 +485,23 @@ pub trait CredentialSource: Send + Sync {
     fn rejected(&self);
 }
 
+/// Whether credentials may be sent to `endpoint`: HTTPS, or plain HTTP to a
+/// loopback host, which never leaves the machine (a local server, or a
+/// test's fake). Mount configurations name their endpoints; this is the one
+/// check every provider's configuration passes before a mount uses it.
+pub fn is_secure_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    url.host().is_some() && (url.scheme() == "https" || (url.scheme() == "http" && loopback))
+}
+
 /// A fixed credential, for tests and servers without refresh.
 pub struct StaticCredential(pub Credential);
 

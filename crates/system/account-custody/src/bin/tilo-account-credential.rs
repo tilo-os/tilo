@@ -42,7 +42,7 @@ fn main() -> ExitCode {
             _ => return usage(),
         }
     }
-    let custodian = Custodian::for_root(config_root);
+    let custodian = Custodian::for_root(config_root).with_apple_icloud();
     match custodian.publish(&accounts::AccountId::from(id), force) {
         Ok(()) => code(exit::PUBLISHED),
         Err(CustodyError::NeedsAuthentication) => code(exit::NEEDS_AUTHENTICATION),

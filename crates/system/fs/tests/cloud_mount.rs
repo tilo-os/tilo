@@ -326,6 +326,46 @@ fn offline_reads_come_from_cache_and_writes_queue_across_restarts() {
     assert_eq!(server.get("offline-note.txt").unwrap(), b"written offline");
 }
 
+/// Settings publishing the account's handoff credential, the way custody
+/// does after a sign-in or a password change.
+fn publish(root: &Path, id: &str, password: &str) {
+    accounts::HandoffStore::open_in(root)
+        .publish(
+            &accounts::AccountId::from(id),
+            &accounts::HandoffCredential::Basic {
+                username: USER.into(),
+                password: zeroize::Zeroizing::new(password.into()),
+            },
+        )
+        .unwrap();
+}
+
+/// Stands in for Settings' credential helper: whatever Settings published
+/// is current; without an entry the account needs sign-in.
+struct Published(accounts::HandoffStore);
+
+impl accounts::CredentialRefresher for Published {
+    fn refresh(
+        &self,
+        id: &accounts::AccountId,
+        _force: bool,
+    ) -> Result<(), accounts::RefreshError> {
+        match self.0.read(id) {
+            Ok(Some(_)) => Ok(()),
+            _ => Err(accounts::RefreshError::NeedsAuthentication),
+        }
+    }
+}
+
+fn service_config(root: &Path, home: &Path) -> ServiceConfig {
+    ServiceConfig {
+        config_root: Some(root.to_path_buf()),
+        mounts_root: home.join("Remote"),
+        state_root: home.join("state"),
+        refresher: std::sync::Arc::new(Published(accounts::HandoffStore::open_in(root))),
+    }
+}
+
 fn account_store(root: &Path, url: &str, enabled: bool) {
     let mut store = accounts::AccountStore::load_in(root);
     let mut account = accounts::Account::new("files-1", "webdav");
@@ -344,20 +384,11 @@ fn accounts_mount_and_unmount_with_the_account_store() {
     let home = tempfile::tempdir().unwrap();
     let root = config_root.path();
     account_store(root, server.root_url().as_str(), true);
-    let mut vault = accounts::SecretVault::open_in(root);
-    vault.put(
-        &accounts::AccountId::from("files-1"),
-        &accounts::Secret::password(PASSWORD),
-    );
-    vault.try_save().unwrap();
+    publish(root, "files-1", PASSWORD);
 
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
-        ServiceConfig {
-            config_root: Some(root.to_path_buf()),
-            mounts_root: home.path().join("Remote"),
-            state_root: home.path().join("state"),
-        },
+        service_config(root, home.path()),
         Box::new(launcher.clone()),
     );
     service.reconcile();
@@ -421,27 +452,18 @@ fn a_rejected_password_asks_the_service_for_a_fresh_one() {
     let home = tempfile::tempdir().unwrap();
     let root = config_root.path();
     account_store(root, server.root_url().as_str(), true);
-    let id = accounts::AccountId::from("files-1");
-    let mut vault = accounts::SecretVault::open_in(root);
-    vault.put(&id, &accounts::Secret::password("stale password"));
-    vault.try_save().unwrap();
+    publish(root, "files-1", "stale password");
 
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
-        ServiceConfig {
-            config_root: Some(root.to_path_buf()),
-            mounts_root: home.path().join("Remote"),
-            state_root: home.path().join("state"),
-        },
+        service_config(root, home.path()),
         Box::new(launcher.clone()),
     );
     service.reconcile();
     let volume = launcher.volume("files-1").unwrap();
     assert!(volume.sync_once().is_err());
-    // Settings stores the new password; the service hands it over.
-    let mut vault = accounts::SecretVault::open_in(root);
-    vault.put(&id, &accounts::Secret::password(PASSWORD));
-    vault.try_save().unwrap();
+    // Settings publishes the new password; the service hands it over.
+    publish(root, "files-1", PASSWORD);
     service.pump();
     volume.sync_once().unwrap();
     assert_eq!(read_all(&volume, "a.txt"), b"a");
@@ -470,19 +492,10 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         serde_json::json!({"server_url": server.server_url().as_str(), "username": USER});
     store.upsert(account);
     store.save_in(root).unwrap();
-    let mut vault = accounts::SecretVault::open_in(root);
-    vault.put(
-        &accounts::AccountId::from("cloud-1"),
-        &accounts::Secret::password(PASSWORD),
-    );
-    vault.try_save().unwrap();
+    publish(root, "cloud-1", PASSWORD);
 
     let mut service = CloudService::new(
-        ServiceConfig {
-            config_root: Some(root.to_path_buf()),
-            mounts_root: home.path().join("Remote"),
-            state_root: home.path().join("state"),
-        },
+        service_config(root, home.path()),
         Box::new(fs::cloud::ProcessLauncher {
             executable: env!("CARGO_BIN_EXE_fs").into(),
             ready_timeout: Duration::from_secs(30),

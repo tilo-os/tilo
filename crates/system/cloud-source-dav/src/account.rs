@@ -43,7 +43,7 @@ pub fn config_for_account(
     }
     let url = Url::parse(text("server_url").ok_or(AccountError::InvalidConfiguration)?)
         .map_err(|_| AccountError::InvalidConfiguration)?;
-    let secure = url.scheme() == "https" || (url.scheme() == "http" && is_loopback(&url));
+    let secure = cloud_source::is_secure_endpoint(url.as_str());
     if !secure
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -63,15 +63,6 @@ pub fn config_for_account(
         DavConfig::generic(url)
     };
     Ok((config, username))
-}
-
-fn is_loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
-        None => false,
-    }
 }
 
 #[cfg(test)]

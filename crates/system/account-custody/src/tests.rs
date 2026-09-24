@@ -399,3 +399,107 @@ fn icloud_session_headers_are_handed_off_and_reauthentication_is_reported() {
         Some(AccountSyncHealth::NeedsAuthentication)
     );
 }
+
+#[test]
+fn apple_sign_in_through_the_icloud_provider_hands_off_web_cookies() {
+    use cloud_source_icloud::fake::{APPLE_ID, DEVICE_CODE, FakeICloud, PASSWORD};
+    let fake = FakeICloud::start();
+    let auth = crate::icloud::WebICloud::new(fake.endpoints()).unwrap();
+    assert!(auth.is_available());
+    let challenge = match auth.sign_in(APPLE_ID, PASSWORD).unwrap() {
+        ICloudSignIn::NeedsCode(challenge) => challenge,
+        ICloudSignIn::Complete(_) => panic!("the fake asks for a code"),
+    };
+    assert_eq!(
+        auth.verify_code(&challenge, "000000").unwrap_err(),
+        ICloudAuthError::InvalidCode
+    );
+    let session = auth.verify_code(&challenge, DEVICE_CODE).unwrap();
+    assert_eq!(
+        auth.storage_config(),
+        serde_json::to_value(fake.config()).unwrap(),
+        "accounts mount the drive this sign-in reached"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let id = AccountId::from("icloud-1");
+    save(
+        &root,
+        &id,
+        ICLOUD_DRIVE_TYPE,
+        &icloud_secret(APPLE_ID, &session),
+        serde_json::json!({ "identity": APPLE_ID }),
+    );
+    let custodian = Custodian::for_root(Some(root.clone())).with_icloud(Arc::new(auth));
+    custodian.signed_in(&id).unwrap();
+    let Some(HandoffCredential::Session { headers, .. }) =
+        HandoffStore::open_in(&root).read(&id).unwrap()
+    else {
+        panic!("session headers");
+    };
+    assert!(
+        headers
+            .iter()
+            .any(|(name, value)| name == "Cookie" && !value.is_empty())
+    );
+
+    // Apple wants the second factor again: the account needs sign-in.
+    fake.expire_web_sessions();
+    fake.expire_trust();
+    assert_eq!(
+        custodian.publish(&id, true),
+        Err(CustodyError::NeedsAuthentication)
+    );
+}
+
+#[test]
+fn a_new_account_resolves_its_storage_once() {
+    let graph = cloud_source_onedrive::fake::FakeGraph::personal();
+    let custodian = Custodian::for_root(None).with_storage_config(
+        OAuthCloud::OneDrive,
+        serde_json::to_value(graph.config(cloud_source_onedrive::RootSelector::DriveRoot)).unwrap(),
+    );
+    let tokens = tilo_oauth::TokenSet {
+        access_token: cloud_source_onedrive::fake::TOKEN.into(),
+        ..tilo_oauth::TokenSet::default()
+    };
+    let mount: cloud_source_onedrive::Mount = serde_json::from_value(
+        custodian
+            .resolve_storage(OAuthCloud::OneDrive, &tokens)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mount.drive_id, graph.drive_id());
+    assert_eq!(mount.root, graph.drive_root());
+
+    let dropbox = cloud_source_dropbox::fake::FakeDropbox::team();
+    let mut config = cloud_source_dropbox::DropboxConfig::new("");
+    config.endpoints = dropbox.endpoints();
+    let custodian = Custodian::for_root(None)
+        .with_storage_config(OAuthCloud::Dropbox, serde_json::to_value(config).unwrap());
+    let tokens = tilo_oauth::TokenSet {
+        access_token: cloud_source_dropbox::fake::TOKEN.into(),
+        ..tilo_oauth::TokenSet::default()
+    };
+    let resolved: cloud_source_dropbox::DropboxConfig = serde_json::from_value(
+        custodian
+            .resolve_storage(OAuthCloud::Dropbox, &tokens)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.path_root.as_deref(),
+        Some(cloud_source_dropbox::fake::TEAM_NAMESPACE),
+        "a team member's calls are rooted in the team space"
+    );
+
+    let wrong = tilo_oauth::TokenSet {
+        access_token: "not-accepted".into(),
+        ..tilo_oauth::TokenSet::default()
+    };
+    assert_eq!(
+        custodian.resolve_storage(OAuthCloud::Dropbox, &wrong),
+        Err(CustodyError::NeedsAuthentication)
+    );
+}
