@@ -3,13 +3,14 @@
 //!
 //! For each frame: synthesise a source RGBA frame (moving text stamp,
 //! bouncing shapes, rotating gradient); feed it through the production
-//! [`shell::network::encoder::H264Encoder`]; push the NALU payload
-//! through a [`frame_link::FrameLink`] shim configured with
+//! [`shell::network::encoder::VideoEncoder`] in the codec a share would
+//! negotiate on this machine; push the access unit through a
+//! [`frame_link::FrameLink`] shim configured with
 //! `--latency-ms`/`--throughput-kbps`; drain the shim and feed anything
-//! ready into the production [`shell::network::decoder::H264Decoder`];
+//! ready into the production [`shell::network::decoder::VideoDecoder`];
 //! composite source-on-left + decoded-on-right into a 2W×H canvas;
-//! encode the composite via a second `H264Encoder` and write the Annex-B
-//! stream through `ffmpeg -f h264 -i - -c copy out.mp4`.
+//! encode the composite via a second encoder and mux it into an MP4 with
+//! the compositor's recording muxer.
 //!
 //! The encoder and decoder are the same code paths used by the compositor;
 //! the shim supplies the synthetic network conditions. A `tracing` subscriber
@@ -39,14 +40,14 @@ use std::env;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
-use shell::network::decoder::H264Decoder;
-use shell::network::encoder::H264Encoder;
+use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
+use shell::network::decoder::VideoDecoder;
+use shell::network::encoder::VideoEncoder;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
@@ -185,10 +186,10 @@ fn parse_args() -> Result<Option<Args>, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    // openh264 requires even dimensions.
+    // 4:2:0 encoders require even dimensions.
     if args.width % 2 != 0 || args.height % 2 != 0 {
         return Err(format!(
-            "openh264 requires even dimensions; got {}x{}",
+            "video encoders require even dimensions; got {}x{}",
             args.width, args.height
         ));
     }
@@ -656,8 +657,8 @@ struct CompositeRenderer {
 
 impl CompositeRenderer {
     fn new(src_w: u32, src_h: u32, latency_ms: u32, throughput_kbps: u64) -> Self {
-        // Round to even so the composite encoder is happy (openh264
-        // rejects odd dimensions).
+        // Round to even so the composite encoder is happy (4:2:0
+        // encoders reject odd dimensions).
         let header_h = 48u32;
         let footer_h = 44u32;
         let canvas_w = round_even(src_w.saturating_mul(2));
@@ -800,53 +801,6 @@ fn round_even(v: u32) -> u32 {
     } else {
         v.saturating_add(1)
     }
-}
-
-/// Spawn `ffmpeg` to mux the raw H.264 Annex-B stream we're writing to
-/// its stdin into a playable MP4, which the user's default video player
-/// then opens.
-fn spawn_muxer(
-    out: &Path,
-    fps: u32,
-    _width: u32,
-    _height: u32,
-) -> Result<std::process::Child, String> {
-    // Ensure the destination directory exists.
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
-    let child = Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-loglevel")
-        .arg("error")
-        // Input: raw H.264 Annex-B on stdin at the caller's framerate; the
-        // demuxer picks width/height straight out of the SPS.
-        .arg("-f")
-        .arg("h264")
-        .arg("-framerate")
-        .arg(format!("{fps}"))
-        .arg("-i")
-        .arg("-")
-        // Re-encode at the caller's fps: `-c:v copy` would preserve
-        // openh264's embedded 60 fps SPS timing hint and make the mp4 play
-        // at 2× speed regardless of `-r`. libopenh264 is always available on
-        // the ffmpeg build we ship against; libx264 is not, so we don't
-        // reach for it.
-        .arg("-c:v")
-        .arg("libopenh264")
-        .arg("-b:v")
-        .arg("8000k")
-        .arg("-r")
-        .arg(format!("{fps}"))
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg(out)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("spawn ffmpeg: {e}"))?;
-    Ok(child)
 }
 
 /// Lossy `u128 -> f64`, used for the profiler's nanosecond-scale
@@ -1057,12 +1011,12 @@ fn build_shim(args: &Args) -> FrameLink<Vec<u8>> {
 /// the whole encode → shim → decode → compose → mux chain.
 struct Pipeline {
     source_renderer: SourceRenderer,
-    send_encoder: H264Encoder,
+    send_encoder: VideoEncoder,
     shim: FrameLink<Vec<u8>>,
-    recv_decoder: H264Decoder,
+    recv_decoder: VideoDecoder,
     composite: CompositeRenderer,
-    composite_encoder: H264Encoder,
-    mux_stdin: std::process::ChildStdin,
+    composite_encoder: VideoEncoder,
+    muxer: Mp4Recording,
     started: Instant,
     sent_frames: u64,
     decoded_frames: u64,
@@ -1074,23 +1028,34 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    /// Builds every encoder/decoder/shim/renderer, spawns the `ffmpeg`
-    /// muxer, and returns the pipeline plus the muxer `Child` (so `main`
-    /// can `wait()` on it after the source loop finishes).
+    /// Builds every encoder/decoder/shim/renderer and the MP4 muxer.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if a font can't be found, an encoder fails to
-    /// initialise, or `ffmpeg` can't be spawned.
-    fn new(args: &Args) -> Result<(Self, std::process::Child), String> {
+    /// Returns `Err` if a font can't be found or an encoder fails to
+    /// initialise.
+    fn new(args: &Args) -> Result<Self, String> {
+        // The codec a share negotiates on this machine with no viewers yet.
+        let codec = media::realtime::negotiate(&media::realtime::local_capabilities(), &[])
+            .map(|n| n.codec)
+            .ok_or_else(|| "this machine can encode no real-time codec".to_string())?;
         // Production encoder — same crate the compositor uses to publish.
         // Sized to 4 Mbps so 720p content has budget for detail; `FrameLink`
         // then throttles down to `--throughput-kbps`.
-        let send_encoder =
-            H264Encoder::new_with_bitrate_bps(args.width, args.height, args.fps, 4_000_000)
-                .map_err(|e| format!("H264Encoder(send): {e:?}"))?;
+        let send_encoder = VideoEncoder::with_options(
+            codec,
+            args.width,
+            args.height,
+            args.fps,
+            4_000_000,
+            args.fps,
+            true,
+        )
+        .map_err(|e| format!("send encoder ({}): {e:?}", codec.wire_label()))?;
         // Production decoder — same crate PeerView constructs.
-        let recv_decoder = H264Decoder::new();
+        let mut recv_decoder = VideoDecoder::new(codec, false);
+        recv_decoder.set_display_size(Some((args.width, args.height)));
+        eprintln!("flatpak-share-demo: streaming {}", codec.wire_label());
         let shim = build_shim(args);
 
         let source_renderer = SourceRenderer::new(args.width, args.height);
@@ -1105,17 +1070,21 @@ impl Pipeline {
         // Encoder for the side-by-side canvas: bigger canvas → bigger
         // bitrate (composite is 2×W×H, so 2× the send-side budget).
         let composite_encoder =
-            H264Encoder::new_with_bitrate_bps(canvas_w, canvas_h, args.fps, 8_000_000)
-                .map_err(|e| format!("H264Encoder(composite): {e:?}"))?;
+            recording_encoder(canvas_w, canvas_h, args.fps, 8_000_000, args.fps, false)?;
+        let out_codec = composite_encoder.codec();
+        if let Some(parent) = args.out.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        }
+        let muxer = Mp4Recording::new(
+            args.out.clone(),
+            out_codec,
+            canvas_w,
+            canvas_h,
+            args.fps,
+            Vec::new(),
+        );
 
-        // Spawn ffmpeg for muxing.
-        let mut muxer = spawn_muxer(&args.out, args.fps, canvas_w, canvas_h)?;
-        let mux_stdin = muxer
-            .stdin
-            .take()
-            .ok_or_else(|| "ffmpeg stdin missing".to_string())?;
-
-        // Source video path (--source-video) — decode via ffmpeg piping raw
+        // Source video path (--source-video) — decode to raw
         // RGBA into a channel. `--source pattern` is the default; video-in
         // is a future extension, warned and falls back if requested.
         if let Source::Video(path) = &args.source {
@@ -1133,14 +1102,14 @@ impl Pipeline {
             recv_decoder,
             composite,
             composite_encoder,
-            mux_stdin,
+            muxer,
             started: Instant::now(),
             sent_frames: 0,
             decoded_frames: 0,
             dropped_frames: 0,
             last_decoded: None,
         };
-        Ok((pipeline, muxer))
+        Ok(pipeline)
     }
 
     /// Encode, shim, (maybe) decode, compose and mux one source frame at
@@ -1149,7 +1118,7 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if either encoder or the muxer's stdin write fails.
+    /// Returns `Err` if either encoder or the muxer fails.
     fn process_frame(&mut self, t_ms: u64, frame_index: u32) -> Result<Duration, String> {
         let src = self.source_renderer.render(t_ms, frame_index);
 
@@ -1171,10 +1140,9 @@ impl Pipeline {
         self.shim.push(now, size, nalus);
 
         // Drain everything the shim has decided is ready, feeding each
-        // frame's NAL blob into the decoder in emitted order. openh264's
-        // decoder may return `None` for the first few frames while
-        // buffering SPS/PPS metadata — expected; the counter only advances
-        // on Some(frame).
+        // frame's access unit into the decoder in emitted order. Units
+        // before a keyframe decode to `None` — expected; the counter only
+        // advances on Some(frame).
         for nal_blob in self.shim.drain_ready(now) {
             let span = span!(
                 Level::TRACE,
@@ -1208,16 +1176,12 @@ impl Pipeline {
             .composite
             .compose(src, self.last_decoded.as_deref(), &footer);
 
-        // Encode the composite via the second encoder + stream into
-        // ffmpeg's stdin. `write_all` blocks until the write completes;
-        // ffmpeg keeps up trivially at 1280x720 @ 30 fps.
+        // Encode the composite via the second encoder and mux it.
         let composite_nalus = self
             .composite_encoder
             .encode(composite_rgba)
             .map_err(|e| format!("composite_encoder.encode: {e:?}"))?;
-        self.mux_stdin
-            .write_all(&composite_nalus)
-            .map_err(|e| format!("ffmpeg stdin write: {e}"))?;
+        self.muxer.write_access_unit(&composite_nalus)?;
 
         Ok(now.elapsed())
     }
@@ -1275,7 +1239,7 @@ fn main() -> Result<(), String> {
     let frame_interval =
         Duration::from_micros(1_000_000u64.checked_div(u64::from(args.fps)).unwrap_or(1));
 
-    let (mut pipeline, mut muxer) = Pipeline::new(&args)?;
+    let mut pipeline = Pipeline::new(&args)?;
 
     for i in 0..total_frames {
         // Same "validated in `parse_args` but not visible to clippy here" case
@@ -1307,14 +1271,8 @@ fn main() -> Result<(), String> {
     let shim_stats = pipeline.shim.stats();
     let started = pipeline.started;
 
-    // Close ffmpeg stdin (dropping the whole pipeline closes it, along
-    // with every other resource we no longer need) so it flushes +
-    // finalises the MP4.
-    drop(pipeline);
-    let status = muxer.wait().map_err(|e| format!("wait ffmpeg: {e}"))?;
-    if !status.success() {
-        return Err(format!("ffmpeg exited non-zero: {status}"));
-    }
+    // Finish the MP4 (writes its trailer).
+    pipeline.muxer.finish()?;
 
     let total_wall = started.elapsed();
     let bps = shim_stats.effective_bps(total_wall);
