@@ -579,6 +579,18 @@ fn rotate_reorder_and_delete_export_as_page_operations() {
     // On screen the page is rotated and the highlight still covers the word.
     let map = app.page_map(1);
     assert_eq!(map.effective.rotation, tilo_pdf::Rotation::Cw90);
+    let bitmap = app
+        .raster
+        .as_mut()
+        .unwrap()
+        .render(0, 400)
+        .expect("rotated page renders");
+    assert!(
+        bitmap.height > bitmap.width,
+        "the landscape page renders portrait once rotated ({}x{})",
+        bitmap.width,
+        bitmap.height
+    );
 
     let out = dir.path().join("edited.pdf");
     assert!(app.save_annotated_to(&out), "{:?}", app.status_note);

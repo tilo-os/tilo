@@ -1147,6 +1147,62 @@ pub fn sample_document() -> Document {
 mod tests {
     use super::*;
 
+    fn close(a: (f64, f64), b: (f64, f64)) -> bool {
+        (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
+    }
+
+    #[test]
+    fn a_rotated_page_fits_its_card_and_maps_every_space_consistently() {
+        let own = tilo_pdf::PageGeometry {
+            user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 600.0, 800.0),
+            rotation: tilo_pdf::Rotation::None,
+        };
+        let map = PageMap::new(own, 90, 600.0, 800.0);
+        assert!(!map.is_identity());
+        // 800x600 once rotated, fitted by width into the 600x800 card.
+        assert!((map.scale - 0.75).abs() < 1e-9);
+        assert!(close(map.offset, (0.0, 175.0)));
+        // The page's user-space top-left corner lands top-right when rotated.
+        assert!(close(map.user_to_card((0.0, 800.0)), (600.0, 175.0)));
+        let p = (123.0, 456.0);
+        assert!(close(map.card_to_user(map.user_to_card(p)), p));
+        assert!(close(map.card_to_layer(map.layer_to_card(p)), p));
+        // Layer (display) space and user space agree through the map.
+        let layer = map.own.to_display(tilo_pdf::Point::new(123.0, 456.0));
+        let via_layer = map.layer_to_card((f64::from(layer.x), f64::from(layer.y)));
+        assert!(close(via_layer, map.user_to_card(p)));
+        // An unrotated page the size of its card maps exactly.
+        assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
+    }
+
+    #[test]
+    fn annotations_round_trip_between_card_and_user_space() {
+        let own = tilo_pdf::PageGeometry {
+            user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 612.0, 792.0),
+            rotation: tilo_pdf::Rotation::Cw90,
+        };
+        let map = PageMap::new(own, 270, 612.0, 792.0);
+        let a = Annotation::new(
+            1,
+            AnnoKind::Markup {
+                style: MarkupStyle::Underline,
+                quads: vec![PtRect::new(100.0, 200.0, 50.0, 12.0)],
+            },
+            Swatch::Blue,
+            "Ada",
+        );
+        let user = map.annotation_to_user(&a);
+        assert_eq!(user.space, GeomSpace::User);
+        let back = map.annotation_to_card(&user);
+        let (AnnoKind::Markup { quads: q0, .. }, AnnoKind::Markup { quads: q1, .. }) =
+            (&a.kind, &back.kind)
+        else {
+            panic!("markup");
+        };
+        assert!(close((q0[0].x, q0[0].y), (q1[0].x, q1[0].y)));
+        assert!(close((q0[0].w, q0[0].h), (q1[0].w, q1[0].h)));
+    }
+
     #[test]
     fn sample_has_pages_and_outline() {
         let d = sample_document();
