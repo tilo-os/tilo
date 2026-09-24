@@ -240,6 +240,12 @@ grep -Fq 'cron: "0 2 * * *"' "$os" \
   && ok 'nightly main runs publish through the protected main path and skip an already published revision' \
   || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
+grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
+  && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
+  && grep -Fq "no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot" "$os" \
+  && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
+  || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
+
 if ! grep -q '^  pull_request:' "$os" \
   && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
   && grep -Fq '  schedule:' "$os" \
