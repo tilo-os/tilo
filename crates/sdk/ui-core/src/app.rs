@@ -2449,6 +2449,10 @@ mod focus_selection_tests;
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
+#[cfg(test)]
+#[path = "app/large_document_tests.rs"]
+mod large_document_tests;
+
 /// Finish the current writer and every retained outgoing-owner failure before
 /// reporting widget-owned durability. Reports remain owned by the runner.
 ///
@@ -2707,7 +2711,7 @@ mod legacy_owner_routing_tests {
                             .unwrap()
                             .unwrap()
                             .0
-                            .to_str()
+                            .as_str()
                             .unwrap()
                             .to_owned()
                     })
@@ -2737,7 +2741,7 @@ mod legacy_owner_routing_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str()
+                        .as_str()
                         .unwrap()
                         .to_owned()
                 })

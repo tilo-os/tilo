@@ -416,42 +416,15 @@ mod tests {
     /// leaving it alone would let a developer's real
     /// `~/.config/tilo/identity/primary.json` decide the result.
     struct IdentityEnvGuard {
-        saved: Vec<(&'static str, Option<String>)>,
+        _env: tilo_test_env::ScopedEnv,
     }
 
     impl IdentityEnvGuard {
         fn pointing_at(identity_path: &std::path::Path, config_home: &std::path::Path) -> Self {
-            let vars = [
-                ("TILO_USER_IDENTITY", identity_path),
-                ("XDG_CONFIG_HOME", config_home),
-            ];
-            let saved = vars
-                .iter()
-                .map(|(name, value)| {
-                    let previous = std::env::var(name).ok();
-                    // SAFETY: every test that touches these variables is
-                    // serialised on the `tilo_user_identity` key, so no other
-                    // thread reads them between here and the restore in
-                    // `drop`.
-                    unsafe { std::env::set_var(name, value) };
-                    (*name, previous)
-                })
-                .collect();
-            Self { saved }
-        }
-    }
-
-    impl Drop for IdentityEnvGuard {
-        fn drop(&mut self) {
-            for (name, previous) in self.saved.drain(..) {
-                // SAFETY: as above — the serial key bounds the window.
-                unsafe {
-                    match previous {
-                        Some(v) => std::env::set_var(name, v),
-                        None => std::env::remove_var(name),
-                    }
-                }
-            }
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_USER_IDENTITY", identity_path)
+                .set("XDG_CONFIG_HOME", config_home);
+            Self { _env: env }
         }
     }
 
@@ -463,7 +436,6 @@ mod tests {
     /// `runtime_identity` re-declares it rather than depending on `ui`), so
     /// so the fixture checks that the reader accepts the writer's output.
     #[test]
-    #[serial_test::serial(tilo_user_identity)]
     #[cfg(unix)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
         let (bytes, public_key) = firstboot_identity_bytes("Quinten", [0, 255, 0]);
@@ -501,7 +473,6 @@ mod tests {
     /// must render as the unknown-participant label rather than as a
     /// blank row.
     #[test]
-    #[serial_test::serial(tilo_user_identity)]
     #[cfg(unix)]
     fn a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank() {
         let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
@@ -522,7 +493,6 @@ mod tests {
     /// the handle/unknown ladder — an app run outside a Tilo session is not an
     /// error.
     #[test]
-    #[serial_test::serial(tilo_user_identity)]
     fn a_missing_identity_file_is_not_an_author() {
         let dir = tempfile::tempdir().expect("temp dir");
         let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());

@@ -3766,7 +3766,7 @@ impl StoreApp {
                     .ok()
                     .flatten()?
                     .0
-                    .to_str()?
+                    .as_str()?
                     .chars()
                     .take(MAX_REPORT_STATUS_CHARS)
                     .collect();
@@ -3775,7 +3775,7 @@ impl StoreApp {
                         .get(path, format!("{REPORT_CASE_KEY_PREFIX}{app_id}"))
                         .ok()
                         .flatten()
-                        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned))
                         .filter(|value| valid_case_id(value))
                         .unwrap_or_else(|| format!("report:{app_id}")),
                     app_id,
@@ -6005,7 +6005,7 @@ mod tests {
         assert_eq!(
             doc.get(&automerge::ROOT, "store.report_case.id.notes")
                 .unwrap()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some("case-authoritative".into())
         );
     }

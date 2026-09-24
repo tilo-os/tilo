@@ -51,5 +51,8 @@ url.workspace = true
 name = "it"
 path = "tests/it.rs"
 
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
 [lints]
 workspace = true

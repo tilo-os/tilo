@@ -215,6 +215,10 @@ pub struct NotificationsPane {
     prefs: NotificationPrefs,
     apps: Vec<InstalledNotificationApp>,
     mute_labels: HashMap<String, String>,
+    /// The per-app override toggles as last seeded into or read from the
+    /// document. A toggle seeded from the inherited global value is not an
+    /// override; only a value that differs from what the pane last saw is.
+    app_toggles: HashMap<String, bool>,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -253,6 +257,7 @@ impl NotificationsPane {
             prefs,
             apps,
             mute_labels,
+            app_toggles: HashMap::new(),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -707,26 +712,19 @@ impl NotificationsPane {
         let now = unix_now();
         for app in &self.apps {
             let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
-            seed(
-                state,
-                &app_key(&app.id, "banners"),
-                rule.banners.unwrap_or(self.prefs.show_banners),
-            );
-            seed(
-                state,
-                &app_key(&app.id, "previews"),
-                rule.previews.unwrap_or(self.prefs.show_previews),
-            );
-            seed(
-                state,
-                &app_key(&app.id, "sounds"),
-                rule.sounds.unwrap_or(self.prefs.play_sounds),
-            );
-            seed(
-                state,
-                &app_key(&app.id, "badges"),
-                rule.badges.unwrap_or(self.prefs.show_badges),
-            );
+            for (field, value) in [
+                ("banners", rule.banners.unwrap_or(self.prefs.show_banners)),
+                (
+                    "previews",
+                    rule.previews.unwrap_or(self.prefs.show_previews),
+                ),
+                ("sounds", rule.sounds.unwrap_or(self.prefs.play_sounds)),
+                ("badges", rule.badges.unwrap_or(self.prefs.show_badges)),
+            ] {
+                let key = app_key(&app.id, field);
+                seed(state, &key, value);
+                self.app_toggles.insert(key, value);
+            }
             seed(state, &app_key(&app.id, "priority"), rule.priority);
             seed(
                 state,
@@ -763,30 +761,39 @@ impl NotificationsPane {
         let mut changed = false;
         let now = unix_now();
         for app in &self.apps {
+            // An override is a toggle whose value moved since the pane last
+            // saw it — a user flip, an undo or a peer's edit. The value seeded
+            // from the global preference is not one, or merely opening the pane
+            // would pin every app to today's global defaults.
+            let mut overrides = [None; 4];
+            for (slot, field) in overrides
+                .iter_mut()
+                .zip(["banners", "previews", "sounds", "badges"])
+            {
+                let key = app_key(&app.id, field);
+                if let Some(value) = read_bool(state, root, &key)
+                    && self.app_toggles.get(&key) != Some(&value)
+                {
+                    self.app_toggles.insert(key, value);
+                    *slot = Some(value);
+                }
+            }
             let rule = self.prefs.per_app.entry(app.id.clone()).or_default();
-            if let Some(value) = read_bool(state, root, app_key(&app.id, "banners"))
-                && rule.banners != Some(value)
+            for (target, value) in [
+                &mut rule.banners,
+                &mut rule.previews,
+                &mut rule.sounds,
+                &mut rule.badges,
+            ]
+            .into_iter()
+            .zip(overrides)
             {
-                rule.banners = Some(value);
-                changed = true;
-            }
-            if let Some(value) = read_bool(state, root, app_key(&app.id, "previews"))
-                && rule.previews != Some(value)
-            {
-                rule.previews = Some(value);
-                changed = true;
-            }
-            if let Some(value) = read_bool(state, root, app_key(&app.id, "sounds"))
-                && rule.sounds != Some(value)
-            {
-                rule.sounds = Some(value);
-                changed = true;
-            }
-            if let Some(value) = read_bool(state, root, app_key(&app.id, "badges"))
-                && rule.badges != Some(value)
-            {
-                rule.badges = Some(value);
-                changed = true;
+                if let Some(value) = value
+                    && *target != Some(value)
+                {
+                    *target = Some(value);
+                    changed = true;
+                }
             }
             if let Some(value) = read_bool(state, root, app_key(&app.id, "priority"))
                 && rule.priority != value
@@ -1030,6 +1037,54 @@ mod tests {
     }
 
     #[test]
+    fn opening_the_pane_keeps_per_app_rules_inherited_and_writes_nothing() {
+        let config = crate::prefs::test_env::ConfigGuard::new();
+        let id = "org.example.Inherits";
+        let mut per_app = BTreeMap::new();
+        per_app.insert(
+            id.to_string(),
+            settings_store::notification_policy::AppNotificationRule::default(),
+        );
+        let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
+            show_banners: false,
+            per_app,
+            ..NotificationPrefs::default()
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            read_bool(&doc, &root, app_key(id, "banners")),
+            Some(false),
+            "the toggle shows the inherited global value"
+        );
+        assert_eq!(
+            pane.prefs().per_app[id].banners,
+            None,
+            "showing the inherited value is not an override"
+        );
+        assert!(
+            !config.config_root().join("settings.json").exists(),
+            "opening the pane persists nothing"
+        );
+
+        let _ = doc.put(
+            &root,
+            app_key(id, "banners").as_str(),
+            automerge::ScalarValue::Boolean(true),
+        );
+        pane.sync(&mut doc, &root);
+        let rule = pane.prefs().per_app[id];
+        assert_eq!(rule.banners, Some(true), "a flip is an override");
+        assert_eq!(rule.sounds, None, "and only for the flipped field");
+        assert_eq!(
+            SystemPrefs::load().notifications.per_app[id].banners,
+            Some(true)
+        );
+    }
+
+    #[test]
     fn seed_writes_current_prefs_into_crdt() {
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
             do_not_disturb: true,
@@ -1049,7 +1104,7 @@ mod tests {
 
     #[test]
     fn toggling_dnd_updates_and_persists_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_dnd");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1071,7 +1126,7 @@ mod tests {
     /// the same pre-flip document state so both target the same value.
     #[test]
     fn on_screen_toggle_dispatches_same_action_as_palette() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_affordance");
+        let config = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1082,7 +1137,7 @@ mod tests {
         );
 
         // The palette's DND flip spec, read at the pre-flip state (DND off).
-        let app = crate::SettingsApp::new();
+        let app = config.app();
         let res = Widget::resources(&app, &doc);
         let notif = res[0]
             .children
@@ -1131,7 +1186,7 @@ mod tests {
     /// back into the toggle.
     #[test]
     fn on_screen_toggle_records_one_undo_boundary_and_reverts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_undo");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
         let mut state = ui::State::new();
         pane.sync(&mut state.doc, &state.root); // seed

@@ -101,7 +101,7 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
                             validate_fields(doc, &item, allowed)?;
                             if let Some((v, _)) = doc.get(&item, "id").map_err(|e| e.to_string())? {
                                 let id = v
-                                    .to_str()
+                                    .as_str()
                                     .ok_or("Invalid repeated-field identity")?
                                     .parse::<uuid::Uuid>()
                                     .map_err(|_| "Invalid repeated-field identity")?;

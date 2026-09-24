@@ -189,8 +189,12 @@ pub enum NeighbourMsg {
         app_id: String,
         /// Cluster id — second half of the routing key.
         cluster_id: String,
-        /// Record id of the originating document — third routing-key component;
-        /// empty means the sender announced no record.
+        /// Wire name of the originating document's record — third routing-key
+        /// component; empty means the sender announced no record. A local
+        /// record id that embeds a filesystem path is never sent: it is
+        /// replaced by its sealed, room-scoped name (the compositor's
+        /// `network::wire_record`), which receivers map back to their own
+        /// local id.
         record_id: String,
         /// The signed-op envelope; the receiving shell's validator decides whether
         /// to fan it to local apps or drop it with an audit-log entry.

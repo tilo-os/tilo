@@ -55,6 +55,7 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

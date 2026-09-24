@@ -25946,9 +25946,8 @@ mod palette_dispatch_tests {
     #[serial_test::serial(process_env)]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
-        let old_config = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: the process_env serial group excludes concurrent env users.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", settings.path());
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -25986,13 +25985,6 @@ mod palette_dispatch_tests {
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
-        // SAFETY: restore the serialised process environment.
-        unsafe {
-            match old_config {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -26103,9 +26095,8 @@ mod palette_dispatch_tests {
     #[serial_test::serial(process_env)]
     fn semantic_status_requests_use_the_live_presence_publisher_and_privacy_state() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
-        let old_config = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: the process_env serial group excludes concurrent env users.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", settings.path());
         let (mut host, chrome) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -26136,13 +26127,6 @@ mod palette_dispatch_tests {
             "the same publisher first receives the manual status and then its privacy revocation"
         );
         assert!(chrome.borrow_mut().take_presence_requests().is_empty());
-        // SAFETY: restore the serialised process environment.
-        unsafe {
-            match old_config {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -27074,10 +27058,8 @@ mod palette_dispatch_tests {
         // An empty registry makes the personal Settings package genuinely
         // unavailable; the ordinary launcher owns wording and notification
         // lifetime for that error.
-        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
@@ -27104,10 +27086,7 @@ mod palette_dispatch_tests {
         );
         drop(state);
 
-        // SAFETY: restore the process-wide override before releasing the serial lock.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-        }
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
     }
@@ -32405,8 +32384,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         install_gui_fixture(tmp.path(), "so.tilo.zzyzx", "Zzyzx");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
@@ -32463,8 +32442,7 @@ mod tests {
         assert_eq!(hit.id, "so.tilo.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 

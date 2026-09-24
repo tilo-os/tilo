@@ -39,6 +39,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// the app's 900px breakpoint the drive list collapses to an overlay.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the --shots handler runs on the main thread before the offscreen harness \
+              or any app thread exists; the app reads DISKS_LIVE on this thread while \
+              it is constructed"
+)]
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args
         .shots
@@ -82,6 +88,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the launch spec calls the root factory on the main thread before the \
+              window, event loop or any app worker thread exists; the app reads \
+              DISKS_LIVE on this thread while it is constructed"
+)]
 fn live_root() -> Box<dyn Widget> {
     // Live mode: probe the real system (lsblk + smartctl). The `--shots`
     // path above never sets this, so the screenshot stays on the curated

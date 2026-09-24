@@ -150,8 +150,8 @@ mod tests {
 
     /// Points the entitlement lookup at a fixture for the duration of a test.
     struct JitPolicy {
+        _env: tilo_test_env::ScopedEnv,
         _dir: tempfile::TempDir,
-        previous: Option<std::ffi::OsString>,
     }
 
     impl JitPolicy {
@@ -159,39 +159,22 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("jit-entitled.conf");
             std::fs::write(&file, entries).unwrap();
-            let previous = std::env::var_os(JIT_POLICY_PATH_ENV);
-            // SAFETY: every caller is in the `process_env` serial group, and
-            // `Drop` restores what was there.
-            unsafe { std::env::set_var(JIT_POLICY_PATH_ENV, &file) };
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(JIT_POLICY_PATH_ENV, &file);
             Self {
+                _env: env,
                 _dir: dir,
-                previous,
             }
         }
 
         /// A path that does not exist, so the compiled-in fallback decides.
         fn missing() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let previous = std::env::var_os(JIT_POLICY_PATH_ENV);
-            // SAFETY: as above.
-            unsafe {
-                std::env::set_var(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"));
-            };
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"));
             Self {
+                _env: env,
                 _dir: dir,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for JitPolicy {
-        fn drop(&mut self) {
-            // SAFETY: as above.
-            unsafe {
-                match self.previous.take() {
-                    Some(v) => std::env::set_var(JIT_POLICY_PATH_ENV, v),
-                    None => std::env::remove_var(JIT_POLICY_PATH_ENV),
-                }
             }
         }
     }
@@ -200,7 +183,6 @@ mod tests {
     /// `.tapp` carries its own manifest, so naming `tilo-jit` is the applicant
     /// filling in their own permit.
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_package_the_image_does_not_entitle_gets_the_strict_profile() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
 
@@ -224,7 +206,6 @@ mod tests {
     /// two enum values would pass on a launcher that resolved strictly and
     /// compiled the other one.
     #[test]
-    #[serial_test::serial(process_env)]
     #[cfg(target_os = "linux")]
     fn an_unentitled_request_is_refused_by_the_running_filter() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
@@ -246,7 +227,6 @@ mod tests {
     /// Entitlement is a gate, not a ban: a rule that broke the browser's
     /// JavaScript tier would take it off the system rather than harden it.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_package_the_image_entitles_still_gets_what_it_asked_for() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
 
@@ -258,7 +238,6 @@ mod tests {
 
     /// The list is a ceiling, not a setting: both sides have to agree.
     #[test]
-    #[serial_test::serial(process_env)]
     fn entitlement_without_a_request_changes_nothing() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
 
@@ -274,7 +253,6 @@ mod tests {
 
     /// An entitled package must not reach a weaker profile by misspelling one.
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_misspelt_profile_resolves_strict_for_everyone() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
 
@@ -297,7 +275,6 @@ mod tests {
 
     /// A present file replaces the fallback rather than adding to it.
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_policy_file_replaces_the_builtin_list() {
         let _policy = JitPolicy::listing("# nobody\n");
 
@@ -311,7 +288,6 @@ mod tests {
     /// A missing file must degrade to "the browser renders pages" rather than
     /// to "nothing may generate code".
     #[test]
-    #[serial_test::serial(process_env)]
     fn with_no_policy_file_the_builtin_entitlement_still_applies() {
         let _policy = JitPolicy::missing();
 
@@ -329,7 +305,6 @@ mod tests {
 
     /// `Sandbox::seccomp_profile` must not be a way around [`resolve_profile`].
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_manifest_accessor_consults_the_entitlement_policy() {
         let _policy = JitPolicy::listing("so.tilo.browser\n");
         let sandbox = crate::manifest::Sandbox {

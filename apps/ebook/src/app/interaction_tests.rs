@@ -10,29 +10,12 @@ use ui::presence::PresenceCtx;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, KeyEvent};
 
-struct WorkspaceEnvGuard(Option<std::ffi::OsString>);
-
-impl WorkspaceEnvGuard {
-    fn set(path: &std::path::Path) -> Self {
-        let previous = std::env::var_os("TILO_WORKSPACE_DIR");
-        // SAFETY: callers use the shared `serial_test` lock while this
-        // process-global compatibility override is installed.
-        unsafe { std::env::set_var("TILO_WORKSPACE_DIR", path) };
-        Self(previous)
-    }
-}
-
-impl Drop for WorkspaceEnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: see `set`; restoration also runs during unwinding.
-        unsafe {
-            if let Some(previous) = self.0.take() {
-                std::env::set_var("TILO_WORKSPACE_DIR", previous);
-            } else {
-                std::env::remove_var("TILO_WORKSPACE_DIR");
-            }
-        }
-    }
+/// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
+/// returned scope is dropped, including during unwinding.
+fn workspace_env(path: &std::path::Path) -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_WORKSPACE_DIR", path);
+    env
 }
 
 fn app_with_sample() -> BooksApp {
@@ -1543,13 +1526,17 @@ fn page_bubble_surfaces_on_a_page_change() {
         find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
         "the hidden bubble exposes no page-nav hit"
     );
-    // A page turn pokes the bubble; the next frame draws it and makes its
-    // chevrons hit-testable.
+    // A page turn pokes the bubble; the next frame draws it (its chevrons are
+    // hit-testable) and it keeps requesting frames so it can fade on its own.
     app.dispatch(Action::NextPage, &mut doc);
     frame(&mut app, &mut doc, 1000.0, 700.0);
     assert!(
         find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
         "a page change surfaces the bubble's next chevron"
+    );
+    assert!(
+        app.reader_bubble.needs_frame(Instant::now()),
+        "the visible bubble schedules its own fade-out frames"
     );
 }
 
@@ -2276,7 +2263,7 @@ fn import_worker_never_blocks_and_rejects_a_stale_result() {
     // fallback. A file root cannot host `Books`, so workspace
     // materialisation is unavailable regardless of runner privileges.
     let workspace = tempfile::NamedTempFile::new().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     let pa = a.path().join("slow-a.epub");
@@ -2399,7 +2386,7 @@ fn the_same_book_from_two_paths_shares_one_identity() {
 #[serial]
 fn a_workspace_book_is_surfaced_as_shared() {
     let ws = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(ws.path());
+    let _workspace = workspace_env(ws.path());
     let books = crate::content::workspace_books_dir();
     std::fs::create_dir_all(&books).unwrap();
     let shared_path = books.join("shared.epub");
@@ -2433,7 +2420,7 @@ fn a_workspace_book_is_surfaced_as_shared() {
 #[serial]
 fn sharing_a_local_book_moves_it_onto_the_workspace() {
     let ws = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(ws.path());
+    let _workspace = workspace_env(ws.path());
     let home = tempfile::tempdir().unwrap();
     let src = home.path().join("mine.epub");
     std::fs::write(&src, crate::content::SAMPLE_EPUB).unwrap();
@@ -2456,7 +2443,7 @@ fn sharing_a_local_book_moves_it_onto_the_workspace() {
 #[serial]
 fn canonical_share_operation_materialises_before_reporting_success() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("local.epub");
     std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -2519,7 +2506,7 @@ fn canonical_share_operation_refuses_a_missing_local_capability() {
 #[serial]
 fn remote_open_operation_hydrates_verified_workspace_bytes_before_revealing() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let seed = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(seed.path(), crate::content::SAMPLE_EPUB).unwrap();
     let remote = crate::content::parse_path_detailed(seed.path()).unwrap();
@@ -2564,7 +2551,7 @@ fn remote_open_operation_hydrates_verified_workspace_bytes_before_revealing() {
 #[serial]
 fn remote_open_refuses_workspace_bytes_with_the_wrong_content_id() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let mut app = BooksApp::with_library(Vec::new());
     let mut doc = AutoCommit::new();
     let id = "book:claimed-but-wrong".to_string();
@@ -2608,7 +2595,7 @@ fn remote_open_refuses_workspace_bytes_with_the_wrong_content_id() {
 #[serial]
 fn cancellable_share_operation_reports_its_own_lifecycle_status() {
     let workspace = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(workspace.path());
+    let _workspace = workspace_env(workspace.path());
     let source_dir = tempfile::tempdir().unwrap();
     let source = source_dir.path().join("cancel.epub");
     std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -4238,7 +4225,7 @@ fn font_rename_escape_cancels_without_writing() {
 #[serial]
 fn completed_import_wakes_its_idle_host() {
     let tmp = tempfile::tempdir().unwrap();
-    let _workspace = WorkspaceEnvGuard::set(tmp.path());
+    let _workspace = workspace_env(tmp.path());
     let path = tmp.path().join("wake.epub");
     std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
     let mut scope = ui::wake::WakeScope::new();
@@ -4264,4 +4251,223 @@ fn completed_import_wakes_its_idle_host() {
         .expect("completion wakes the host without an input event or polling frames");
     assert!(scope.accepts(&event));
     assert!(matches!(worker.try_recv(), Ok(result) if result.result.is_ok()));
+}
+
+/// At 200 % a chapter title wraps inside the 244px rail; each row must be
+/// as tall as its wrapped title, so rows stay ordered, non-overlapping and
+/// taller than the one-line pill where a title wrapped — instead of every
+/// row being the fixed 44px that let titles run into the next chapter.
+#[test]
+fn toc_rows_grow_with_wrapped_titles_at_2x_and_never_overlap() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    let rows_at = |app: &mut BooksApp, doc: &mut AutoCommit, scale: f32| -> Vec<Rect> {
+        frame_at_text_scale(app, doc, 1280.0, 800.0, scale);
+        let theme = Theme::dark().with_text_scale(scale);
+        let floor = toc_row_floor(&theme);
+        for h in app
+            .hits
+            .iter()
+            .filter(|h| matches!(h.action, Action::GotoChapter(_)))
+        {
+            assert!(
+                h.rect.height() >= floor - 1e-6,
+                "row {:?} is below the pill floor {floor} at {scale}×",
+                h.rect
+            );
+        }
+        let mut rows: Vec<(usize, Rect)> = app
+            .hits
+            .iter()
+            .filter_map(|h| match h.action {
+                Action::GotoChapter(c) => Some((c, h.rect)),
+                _ => None,
+            })
+            .collect();
+        rows.sort_by_key(|(c, _)| *c);
+        rows.into_iter().map(|(_, r)| r).collect()
+    };
+    let one_x = rows_at(&mut app, &mut doc, 1.0);
+    let two_x = rows_at(&mut app, &mut doc, 2.0);
+    assert!(
+        one_x.len() >= 2 && one_x.len() == two_x.len(),
+        "same chapters at both scales"
+    );
+    for rows in [&one_x, &two_x] {
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0].y1 <= pair[1].y0 + 1e-6,
+                "contents rows overlap: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+    let tallest_1x = one_x.iter().map(Rect::height).fold(0.0, f64::max);
+    let tallest_2x = two_x.iter().map(Rect::height).fold(0.0, f64::max);
+    assert!(
+        tallest_2x > tallest_1x,
+        "a wrapped 2× title gets a taller row ({tallest_2x} vs {tallest_1x})"
+    );
+}
+
+/// The framed page's running header lives in a slot whose height follows
+/// the chrome text scale; the measured 2× header must fit above the rule
+/// and the content box must start below it.
+#[test]
+fn running_header_fits_its_slot_above_the_rule_at_2x() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    // A real 2× frame measures the header box the geometry reserves.
+    frame_at_text_scale(&mut app, &mut doc, 1280.0, 800.0, 2.0);
+    let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+    assert!(geom.framed, "1280 wide is the framed page");
+    let one_x = {
+        let fresh = app_with_sample();
+        fresh.reader_page_geometry(Rect::new(0.0, 0.0, 1280.0, 800.0), ReadMode::Paged)
+    };
+    assert!(
+        geom.rule_y > one_x.rule_y,
+        "the 2× slot ({}) is taller than the 1× slot ({})",
+        geom.rule_y - geom.header_y,
+        one_x.rule_y - one_x.header_y
+    );
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    let title = app
+        .library
+        .get(app.book_idx)
+        .and_then(|b| b.chapters.get(app.chapter))
+        .map(|ch| ch.title.to_uppercase())
+        .expect("the sample book has a current chapter");
+    let (_, head_h) = tr.measure_weighted(&title, running_header_px(), None, TextWeight::Semibold);
+    assert!(
+        geom.header_y + f64::from(head_h) <= geom.rule_y,
+        "header box ends at {} but the rule is at {}",
+        geom.header_y + f64::from(head_h),
+        geom.rule_y
+    );
+    assert!(
+        geom.content_y >= geom.rule_y + 1.0,
+        "content ({}) starts under the rule ({})",
+        geom.content_y,
+        geom.rule_y
+    );
+}
+
+/// Like `frame`, at an accessibility text scale: the theme and the
+/// renderer both carry `scale`, exactly as the live host applies it.
+fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64, scale: f32) {
+    let root = automerge::ROOT;
+    app.sync(doc, &root);
+    app.rect = Rect::new(0.0, 0.0, w, h);
+    app.reconcile_flaps();
+    let theme = Theme::dark().with_text_scale(scale);
+    let presence = PresenceCtx::empty();
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(scale);
+    let mut scene = Scene::new();
+    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+}
+
+fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
+    app.hits
+        .iter()
+        .rev()
+        .find(|h| pred(&h.action))
+        .map(|h| h.rect)
+}
+
+/// The inline font-rename editor ends an `s3` before the row's control
+/// cluster (a fixed 210px reservation used to run it under the toggle),
+/// and its left edge backs off by the shared field's text inset so the
+/// edited name starts exactly where the static name is painted.
+#[test]
+#[serial]
+fn font_rename_editor_stops_before_the_controls_and_starts_on_the_name() {
+    let mut app = BooksApp::with_library(Vec::new());
+    let mut doc = AutoCommit::new();
+    app.view = View::Settings;
+    app.settings_tab = SettingsTab::Fonts;
+    frame(&mut app, &mut doc, 1000.0, 800.0);
+    let static_name_x = hit_rect(
+        &app,
+        |a| matches!(a, Action::BeginRenameFont(id) if id == "mono"),
+    )
+    .expect("the static name is a rename target")
+    .x0;
+
+    app.dispatch(Action::BeginRenameFont("mono".into()), &mut doc);
+    frame(&mut app, &mut doc, 1000.0, 800.0);
+    let field = app
+        .renaming
+        .as_ref()
+        .expect("rename in progress")
+        .field
+        .get_rect();
+    let toggle = hit_rect(
+        &app,
+        |a| matches!(a, Action::ToggleFontShown(id) if id == "mono"),
+    )
+    .expect("the row's toggle is a hit target");
+    let theme = Theme::dark();
+    assert!(
+        field.x1 + f64::from(theme.tokens.spacing.s3) <= toggle.x0 + 0.01,
+        "editor ends at {} but the toggle starts at {}",
+        field.x1,
+        toggle.x0
+    );
+    assert!(
+        (field.x0 + f64::from(theme.padding_standard) - static_name_x).abs() < 0.01,
+        "editor text origin {} != static name x {static_name_x}",
+        field.x0 + f64::from(theme.padding_standard)
+    );
+}
+
+/// The reader's "Aa" pill is sized from its measured label: at 2× text
+/// the label's line box still fits inside the pill, and the pill inside
+/// the top bar, instead of the fixed 32px pill clipping the label.
+#[test]
+fn reader_aa_pill_contains_its_label_at_2x_text() {
+    for scale in [1.0_f32, 2.0] {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame_at_text_scale(&mut app, &mut doc, 800.0, 900.0, scale);
+        let pill = hit_rect(&app, |a| matches!(a, Action::ToggleTypePopover))
+            .expect("the type-settings pill is a hit target");
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let (_, label_h) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+        assert!(
+            pill.height() >= f64::from(label_h) - 0.01,
+            "at {scale}× the pill ({}) is shorter than its label ({label_h})",
+            pill.height()
+        );
+        assert!(
+            pill.y0 >= app.rect.y0 && pill.y1 <= app.rect.y0 + TOP_BAR + 0.01,
+            "at {scale}× the pill {pill:?} leaves the {TOP_BAR}px top bar"
+        );
+    }
+}
+
+/// The size stepper's value slot is measured from the widest value the
+/// field can show plus the shared field's insets, so "0.96 ×" is never
+/// clipped the way the old fixed 52px slot clipped it.
+#[test]
+fn size_stepper_slot_fits_the_widest_value() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let field = NumberField::FontMult("mono".into());
+    let slot = BooksApp::size_stepper_slot_w(&mut tr, &theme, &field);
+    for sample in field.widest_displays() {
+        let (w, _) = tr.measure(sample, theme.tokens.typography.scale.lg, None);
+        assert!(
+            slot >= f64::from(w) + 2.0 * f64::from(theme.padding_standard) - 0.01,
+            "slot {slot} cannot hold {sample:?} ({w}px) plus the field insets"
+        );
+    }
+    assert!(
+        BooksApp::size_stepper_width(&mut tr, &theme, &field) >= SIZE_STEPPER_BTN * 2.0 + slot,
+        "the stepper reserves both buttons and the measured slot"
+    );
 }

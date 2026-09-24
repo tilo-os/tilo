@@ -1224,6 +1224,24 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.bg_app);
     }
 
+    /// Rasterise the most recently laid-out frame over a transparent
+    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
+    pub fn render_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+    }
+
+    /// [`FrameHarness::render_rgba`] over the theme background, as the
+    /// native window composites it.
+    pub fn render_window_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(self.theme.bg_app)
+    }
+
+    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
+        self.drain_component_wakes();
+        let (w, h) = self.viewport;
+        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
@@ -4756,7 +4774,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("body")
         );
         assert_eq!(
@@ -4766,7 +4784,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("index")
         );
     }
@@ -5531,7 +5549,7 @@ mod tests {
             .get(&automerge::ROOT, "remember")
             .unwrap()
             .unwrap();
-        assert_eq!(value.to_bool(), Some(true));
+        assert_eq!(value.as_bool(), Some(true));
     }
 
     #[test]
@@ -6089,7 +6107,7 @@ mod tests {
                 let edits = doc
                     .get(automerge::ROOT, "edit_count")
                     .unwrap()
-                    .and_then(|(value, _)| value.to_u64())
+                    .and_then(|(value, _)| value.as_u64())
                     .unwrap_or(0);
                 doc.put(automerge::ROOT, "edit_count", edits + 1).unwrap();
                 true
@@ -6166,7 +6184,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("late record content")
             );
             return;
@@ -6252,7 +6270,7 @@ mod tests {
             ("bootstrap_only", "loaded body"),
         ] {
             assert_eq!(
-                reopened.get(ROOT, key).unwrap().unwrap().0.to_str(),
+                reopened.get(ROOT, key).unwrap().unwrap().0.as_str(),
                 Some(value)
             );
         }
@@ -6307,7 +6325,7 @@ mod tests {
                 AutoCommit::load(&stored_bytes)
                     .expect("all saved record bytes must be loadable, not a fallback");
                 assert_eq!(
-                    record.get(ROOT, "edit_count").unwrap().unwrap().0.to_u64(),
+                    record.get(ROOT, "edit_count").unwrap().unwrap().0.as_u64(),
                     Some(expected)
                 );
                 assert!(index.get(ROOT, "edit_count").unwrap().is_none());
@@ -6357,7 +6375,7 @@ mod tests {
                 let mut state = State::from_doc(incoming);
                 assert!(records.checkout(&mut state, None, &want));
                 assert_eq!(
-                    state.doc.get(ROOT, "branch").unwrap().unwrap().0.to_str(),
+                    state.doc.get(ROOT, "branch").unwrap().unwrap().0.as_str(),
                     Some("unsaved live edit")
                 );
                 let error = records.try_flush(&mut state.doc).unwrap_err();
@@ -7517,7 +7535,7 @@ mod prepared_driver_tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned();
                 doc.put(ROOT, "body", format!("{before}{text}")).unwrap();

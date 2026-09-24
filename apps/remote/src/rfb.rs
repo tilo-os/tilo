@@ -569,7 +569,7 @@ pub fn choose_security(types: &[u8]) -> Option<u8> {
 /// mirrors the bit order of each key byte — a historical quirk of the
 /// original implementation that every server expects.
 pub fn vnc_auth_response(challenge: &[u8; 16], password: &str) -> [u8; 16] {
-    use des::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+    use des::cipher::{BlockCipherEncrypt, KeyInit};
 
     let mut key = [0u8; 8];
     for (i, b) in password.bytes().take(8).enumerate() {
@@ -577,12 +577,11 @@ pub fn vnc_auth_response(challenge: &[u8; 16], password: &str) -> [u8; 16] {
             *slot = mirror_bits(b);
         }
     }
-    let cipher = des::Des::new(GenericArray::from_slice(&key));
+    let cipher = des::Des::new(&key.into());
     let mut out = *challenge;
-    for block in out.chunks_mut(8) {
-        let mut ga = GenericArray::clone_from_slice(block);
-        cipher.encrypt_block(&mut ga);
-        block.copy_from_slice(&ga);
+    let (blocks, _) = out.as_chunks_mut::<8>();
+    for block in blocks {
+        cipher.encrypt_block(block.into());
     }
     out
 }

@@ -4261,8 +4261,8 @@ mod tests {
 
     #[test]
     fn recovery_mode_starts_on_restore_and_never_offers_creation() {
-        let mut recovery =
-            OnboardingView::new_for_recovery(std::env::temp_dir().join("tilo-recovery-ui-test"));
+        let identity = tempfile::tempdir().expect("identity directory");
+        let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
         assert!(recovery.recovery_only);
         assert_eq!(recovery.flow.screen(), Screen::Connect);
         let mut document = AutoCommit::new();

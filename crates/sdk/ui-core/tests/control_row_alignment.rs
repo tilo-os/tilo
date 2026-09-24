@@ -5,10 +5,9 @@
 //! uses, so the rects here are the rects a screen reader or `qos-control`
 //! would be handed.
 //!
-//! This is the F2 (core controls) alignment covenant from the 2026-09-16 UI
-//! alignment review: a control whose centre drifts from its row-mates by more
-//! than half a pixel, or that shrinks below the 32 px target, fails here
-//! before it reaches an app.
+//! A control whose centre drifts from its row-mates by more than half a
+//! pixel, or that shrinks below the 32 px target, fails here before it
+//! reaches an app.
 //!
 //! Linked into the `it` umbrella test binary (see `tests/it.rs`), which also
 //! carries the test-wide lint allowances.
@@ -33,7 +32,7 @@ const CENTRE_TOLERANCE: f64 = 0.5;
 /// Slot given to each fluid (percent-width) control so the row measures
 /// vertical alignment rather than flex negotiation: `Dropdown` asks for
 /// `percent(100%)` and refuses to shrink, which alone would push every later
-/// item out of the row (recorded as an open F4 finding in the F2 report).
+/// item out of the row.
 const FLUID_SLOT_WIDTH: f32 = 220.0;
 
 /// `test_id` of every control in the fixture row, in row order.
@@ -291,8 +290,8 @@ fn every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x() {
 /// The default `Button::new` face is exactly 120×40 at 1× and grows — not
 /// clips — at 2× text: the 28 px label's 35 px line no longer fits a 40 px
 /// face, so the face follows the line, and both default buttons in the row
-/// agree on the new height. This is the settings "Add account" defect
-/// (round-one F2-15) measured on the production layout path.
+/// agree on the new height. This is the settings "Add account" defect,
+/// measured on the production layout path.
 #[test]
 fn default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x() {
     let at = |scale: f32| {

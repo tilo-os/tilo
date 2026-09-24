@@ -63,11 +63,11 @@ fn browsing_history_preserves_pending_action_and_committed_entry_ids() {
     );
     let snapshot = AutoCommit::load(&comparison.after_document).unwrap();
     assert_eq!(
-        snapshot.get(ROOT, "title").unwrap().unwrap().0.to_str(),
+        snapshot.get(ROOT, "title").unwrap().unwrap().0.as_str(),
         Some("saved")
     );
     assert_eq!(
-        doc.get(ROOT, "title").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "title").unwrap().unwrap().0.as_str(),
         Some("still typing")
     );
 
@@ -76,10 +76,7 @@ fn browsing_history_preserves_pending_action_and_committed_entry_ids() {
     doc.commit_with(CommitOptions::default().with_message("Rename document"));
     let changes = doc.get_changes(&[]);
     assert_eq!(changes.len(), 2);
-    assert_eq!(
-        changes[1].message().map(String::as_str),
-        Some("Rename document")
-    );
+    assert_eq!(changes[1].message(), Some("Rename document"));
 }
 
 #[test]

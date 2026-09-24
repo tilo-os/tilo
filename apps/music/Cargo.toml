@@ -78,6 +78,7 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 [dev-dependencies]
 serial_test.workspace = true
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -1185,14 +1185,20 @@ pub const PRIVILEGED_SOCKET_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 /// compositor's pid so concurrent sessions can't collide. The pid is only a
 /// collision-free socket name; authorization comes from which acceptor made
 /// the immutable per-connection `ClientState`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "publishes the socket to privileged children, which inherit the compositor's \
+              environment; no thread started earlier reads this variable"
+)]
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
     let name = format!("tilo-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
     let socket_name = socket.socket_name().to_os_string();
     // Published for privileged children only; sandboxed apps get an explicit
     // environment from `tilo-launcher` and never inherit this.
-    // SAFETY: single-threaded compositor startup, before any thread that
-    // reads the environment has been spawned.
+    // SAFETY: helper threads already run at this point (settings, portal,
+    // sync), but none of them reads this variable, and the value is written
+    // once before any privileged child is spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
     Ok((socket, socket_name))
 }
@@ -8101,15 +8107,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // SAFETY: `serial(process_env)` keeps this off any other
-        // test's env. The group name is load-bearing: serial_test only
-        // excludes tests that name the *same* group, and every other
-        // test in this crate that writes `XDG_RUNTIME_DIR` names
-        // `process_env`. Under the unnamed group this ran alongside
-        // them, read the variable after one of them had pointed it at
-        // an already-dropped tempdir, and failed to bind a socket in a
-        // directory that no longer existed.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
         let broker = spawn_session_collab_broker(&chrome, None)
@@ -8151,7 +8150,6 @@ mod tests {
         );
 
         drop(broker);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     /// A live socket is not taken away from the session that owns it. Two
@@ -8162,7 +8160,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
@@ -8192,7 +8191,6 @@ mod tests {
 
         drop(second);
         drop(first);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     // developer surfaces are absent from a shipped build

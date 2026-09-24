@@ -4194,12 +4194,12 @@ mod tests {
     fn source_for_path_splits_local_vs_workspace() {
         // Point the mount at a scratch root so the classification is testable.
         let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOT", &root);
         let ws = source_for_path(&root.join("media/a.mp4"));
         assert!(matches!(ws, media::Source::Workspace(_)));
         let local = source_for_path(Path::new("/home/u/b.mp4"));
         assert!(matches!(local, media::Source::LocalFile(_)));
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]

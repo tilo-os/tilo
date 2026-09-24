@@ -84,6 +84,7 @@ taffy.workspace = true
 tempfile.workspace = true
 # The catalog tests parse each bundled locale exactly as Fluent will.
 fluent.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(unix)'.dependencies]
 xattr = "1.6.1"

@@ -12,6 +12,7 @@ pub mod streaming;
 pub mod surface_stream;
 #[cfg(target_os = "linux")]
 pub mod wayland;
+pub mod wire_record;
 pub mod workspace_control;
 
 pub use actor::{Actor, HostIdentity, NetCmd, NetEvent, WorkspaceControlRoute};

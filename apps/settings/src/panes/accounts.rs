@@ -32,7 +32,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::accounts::{
-    AccountConfig, AccountDirectory, AccountKind, AccountView, NEXTCLOUD_TYPE, WEBDAV_TYPE,
+    AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView, NEXTCLOUD_TYPE,
+    WEBDAV_TYPE,
 };
 use crate::widgets::{
     El, caption, card, card_with_action, rows, setting_row, status_pill, value_row,
@@ -157,6 +158,7 @@ impl ProbeJob {
     reason = "the flags are independent form and asynchronous-operation latches, not a single state machine"
 )]
 pub struct AccountsPane {
+    account_root: AccountRoot,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
@@ -200,15 +202,21 @@ impl Default for AccountsPane {
 
 impl AccountsPane {
     pub fn new() -> Self {
+        Self::in_root(AccountRoot::live())
+    }
+
+    /// The live pane over the account stores under `account_root`.
+    pub fn in_root(account_root: AccountRoot) -> Self {
         // The live pane shows the *real* stores — empty until the user adds an
         // account. It never substitutes illustrative sample accounts: showing
         // fabricated `ada@example.com` rows would present made-up data on an
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir: AccountDirectory::load(),
-            sync_statuses: accounts::AccountSyncStatusStore::load(),
-            vault: accounts::SecretVault::open(),
+            dir: AccountDirectory::load_in(&account_root),
+            sync_statuses: account_root.statuses(),
+            vault: account_root.vault(),
+            account_root,
             is_sample: false,
             form_kind: None,
             form_error: None,
@@ -243,10 +251,16 @@ impl AccountsPane {
     /// controls whether Remove buttons render (real accounts) or not
     /// (illustration).
     pub fn from_dir(dir: AccountDirectory, is_sample: bool) -> Self {
+        Self::from_dir_in(AccountRoot::live(), dir, is_sample)
+    }
+
+    /// [`Self::from_dir`] whose edits persist under `account_root`.
+    pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
         Self {
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
-            vault: accounts::SecretVault::open(),
+            vault: account_root.vault(),
+            account_root,
             is_sample,
             form_kind: None,
             form_error: None,
@@ -379,7 +393,7 @@ impl AccountsPane {
         };
         let kind = view.kind;
         self.clear_form_fields();
-        let shared = accounts::AccountStore::load();
+        let shared = self.account_root.store();
         if let Some(stored) = shared.get(&accounts::AccountId::from(view.id.clone())) {
             self.form_name.set(stored.display_name.clone());
             if kind == AccountKind::Mail {
@@ -914,9 +928,9 @@ impl AccountsPane {
     /// substitutes the sample, so `is_sample` stays as constructed (always
     /// `false` for the live pane).
     fn reload(&mut self) {
-        self.dir = AccountDirectory::load();
-        self.sync_statuses = accounts::AccountSyncStatusStore::load();
-        self.vault = accounts::SecretVault::open();
+        self.dir = AccountDirectory::load_in(&self.account_root);
+        self.sync_statuses = self.account_root.statuses();
+        self.vault = self.account_root.vault();
     }
 
     fn account_type(kind: AccountKind) -> &'static str {
@@ -941,6 +955,7 @@ impl AccountsPane {
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
     )]
     fn prepare_account(
+        account_root: &AccountRoot,
         kind: AccountKind,
         existing_id: Option<&str>,
         assigned_id: Option<&accounts::AccountId>,
@@ -987,7 +1002,7 @@ impl AccountsPane {
             return Err("enter a password or app password".into());
         }
 
-        let shared = accounts::AccountStore::load();
+        let shared = account_root.store();
         let id = existing_id.map_or_else(
             || {
                 assigned_id.cloned().unwrap_or_else(|| {
@@ -1045,7 +1060,7 @@ impl AccountsPane {
                 serde_json::json!({"id": id.to_string(), "label": name.trim(), "server_url": server, "username": identity}),
             ),
         }
-        let mut secret = accounts::SecretVault::open().get(&id).unwrap_or_default();
+        let mut secret = account_root.vault().get(&id).unwrap_or_default();
         if password.trim().is_empty() {
             if secret.is_empty() {
                 return Err("this account has no saved credential; enter one".into());
@@ -1065,6 +1080,7 @@ impl AccountsPane {
         reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
     )]
     fn save_account_with_id(
+        account_root: &AccountRoot,
         kind: AccountKind,
         existing_id: Option<&str>,
         assigned_id: Option<&accounts::AccountId>,
@@ -1075,6 +1091,7 @@ impl AccountsPane {
         password: &str,
     ) -> Result<(), String> {
         let (stored, prepared_secret) = Self::prepare_account(
+            account_root,
             kind,
             existing_id,
             assigned_id,
@@ -1085,27 +1102,27 @@ impl AccountsPane {
             password,
         )?;
         let id = stored.id.clone();
-        let mut shared = accounts::AccountStore::load();
+        let mut shared = account_root.store();
         let original_store = shared.clone();
-        let original_statuses = accounts::AccountSyncStatusStore::load();
-        crate::accounts::begin_account_mutation(&original_store, &original_statuses)?;
+        let original_statuses = account_root.statuses();
+        account_root.begin_mutation(&original_store, &original_statuses)?;
         // Persist credential custody first. If metadata then fails, the only
         // residue is an unreachable encrypted vault entry, never an account
         // that applications try to use without its credential.
         let mut previous_secret = None;
         if !password.trim().is_empty() {
-            let mut vault = accounts::SecretVault::open();
+            let mut vault = account_root.vault();
             previous_secret = Some(vault.get(&id));
             vault.put(&id, &prepared_secret);
             if let Err(error) = vault.try_save() {
-                let _ = crate::accounts::finish_account_mutation();
+                let _ = account_root.finish_mutation();
                 return Err(format!("could not save credential: {error}"));
             }
         }
         shared.upsert(stored);
-        if let Err(e) = shared.save() {
+        if let Err(e) = account_root.save_store(&shared) {
             if let Some(previous) = previous_secret {
-                let mut vault = accounts::SecretVault::open();
+                let mut vault = account_root.vault();
                 match previous {
                     Some(secret) => vault.put(&id, &secret),
                     None => {
@@ -1118,15 +1135,20 @@ impl AccountsPane {
                     ));
                 }
             }
-            let _ = crate::accounts::finish_account_mutation();
+            let _ = account_root.finish_mutation();
             warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
             return Err(format!("could not persist account: {e}"));
         }
-        finish_or_recover("account save")
+        finish_or_recover(account_root, "account save")
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the validated draft fields of save_account_with_id"
+    )]
     fn save_account(
+        account_root: &AccountRoot,
         kind: AccountKind,
         existing_id: Option<&str>,
         name: &str,
@@ -1136,6 +1158,7 @@ impl AccountsPane {
         password: &str,
     ) -> Result<(), String> {
         Self::save_account_with_id(
+            account_root,
             kind,
             existing_id,
             None,
@@ -1148,7 +1171,11 @@ impl AccountsPane {
     }
 
     /// Remove an account of `kind` by id from its owning store, persisting.
-    pub(crate) fn remove_account(kind: AccountKind, id: &str) -> Result<(), String> {
+    pub(crate) fn remove_account(
+        account_root: &AccountRoot,
+        kind: AccountKind,
+        id: &str,
+    ) -> Result<(), String> {
         let expected_type = match kind {
             AccountKind::Mail => "email",
             AccountKind::CalDav => "caldav",
@@ -1156,7 +1183,7 @@ impl AccountsPane {
             AccountKind::Nextcloud => NEXTCLOUD_TYPE,
         };
         let account_id = accounts::AccountId::from(id.to_string());
-        let original_store = accounts::AccountStore::load();
+        let original_store = account_root.store();
         if let Some(account) = original_store.get(&account_id)
             && account.type_id.as_str() != expected_type
         {
@@ -1164,9 +1191,9 @@ impl AccountsPane {
                 "account type changed before removal; refresh Settings and try again".into(),
             );
         }
-        let original_statuses = accounts::AccountSyncStatusStore::load();
-        crate::accounts::begin_account_mutation(&original_store, &original_statuses)?;
-        let mut vault = accounts::SecretVault::open();
+        let original_statuses = account_root.statuses();
+        account_root.begin_mutation(&original_store, &original_statuses)?;
+        let mut vault = account_root.vault();
         let original_secret = vault.get(&account_id);
 
         // Credential first prevents a metadata-only account from becoming
@@ -1174,15 +1201,15 @@ impl AccountsPane {
         // earlier writes; compensation failures are appended to the result.
         let credential_changed = vault.remove(&account_id);
         if credential_changed && let Err(error) = vault.try_save() {
-            let _ = crate::accounts::finish_account_mutation();
+            let _ = account_root.finish_mutation();
             return Err(format!("could not remove saved credential: {error}"));
         }
 
         let mut updated_store = original_store.clone();
         updated_store.remove(&account_id);
-        if let Err(error) = updated_store.save() {
+        if let Err(error) = account_root.save_store(&updated_store) {
             let rollback = if credential_changed {
-                restore_secret(&account_id, original_secret.as_ref())
+                restore_secret(account_root, &account_id, original_secret.as_ref())
             } else {
                 Ok(())
             };
@@ -1192,17 +1219,19 @@ impl AccountsPane {
                 rollback,
             );
             if rollback_succeeded {
-                let _ = crate::accounts::finish_account_mutation();
+                let _ = account_root.finish_mutation();
             }
             return Err(result);
         }
 
         let mut updated_statuses = original_statuses;
         updated_statuses.remove(&account_id);
-        if let Err(error) = updated_statuses.save() {
-            let metadata_rollback = original_store.save().map_err(|e| e.to_string());
+        if let Err(error) = account_root.save_statuses(&updated_statuses) {
+            let metadata_rollback = account_root
+                .save_store(&original_store)
+                .map_err(|e| e.to_string());
             let secret_rollback = if credential_changed {
-                restore_secret(&account_id, original_secret.as_ref())
+                restore_secret(account_root, &account_id, original_secret.as_ref())
             } else {
                 Ok(())
             };
@@ -1213,11 +1242,11 @@ impl AccountsPane {
                 rollback,
             );
             if rollback_succeeded {
-                let _ = crate::accounts::finish_account_mutation();
+                let _ = account_root.finish_mutation();
             }
             return Err(result);
         }
-        finish_or_recover("account removal")
+        finish_or_recover(account_root, "account removal")
     }
 
     /// Open the add-email form (and seed its bound `Text` objects).
@@ -1310,6 +1339,7 @@ impl AccountsPane {
                 &user
             };
             let prepared = Self::prepare_account(
+                &self.account_root,
                 kind,
                 self.form_account_id.as_deref(),
                 None,
@@ -1368,6 +1398,7 @@ impl AccountsPane {
                 return;
             };
             match Self::save_account_with_id(
+                &self.account_root,
                 candidate.kind,
                 candidate.existing_id.as_deref(),
                 Some(&candidate.assigned_id),
@@ -1460,12 +1491,14 @@ impl AccountsPane {
                     return;
                 }
                 let account_id = accounts::AccountId::from(id);
-                let Some(account) = accounts::AccountStore::load().get(&account_id).cloned() else {
+                let Some(account) = self.account_root.store().get(&account_id).cloned() else {
                     self.reauth_error = Some("account no longer exists".into());
                     self.structure_dirty = true;
                     return;
                 };
-                let mut secret = accounts::SecretVault::open()
+                let mut secret = self
+                    .account_root
+                    .vault()
                     .get(&account_id)
                     .unwrap_or_default();
                 secret.password = password.trim().to_string();
@@ -1501,7 +1534,7 @@ impl AccountsPane {
                 self.structure_dirty = true;
                 return;
             };
-            let mut vault = accounts::SecretVault::open();
+            let mut vault = self.account_root.vault();
             vault.put(&account_id, &secret);
             match vault.try_save() {
                 Ok(()) => {
@@ -1535,7 +1568,7 @@ impl AccountsPane {
                 automerge::ScalarValue::Boolean(false),
             );
             if let Some((kind, id)) = self.pending_remove.take() {
-                match Self::remove_account(kind, &id) {
+                match Self::remove_account(&self.account_root, kind, &id) {
                     Ok(()) => {
                         self.removed.push(id);
                         self.reload();
@@ -1614,10 +1647,11 @@ fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
 }
 
 fn restore_secret(
+    account_root: &AccountRoot,
     id: &accounts::AccountId,
     secret: Option<&accounts::Secret>,
 ) -> Result<(), String> {
-    let mut vault = accounts::SecretVault::open();
+    let mut vault = account_root.vault();
     match secret {
         Some(secret) => vault.put(id, secret),
         None => {
@@ -1642,9 +1676,9 @@ fn with_rollback_error(error: String, rollback: Result<(), String>) -> String {
     }
 }
 
-fn finish_or_recover(operation: &str) -> Result<(), String> {
-    if let Err(error) = crate::accounts::finish_account_mutation() {
-        return match crate::accounts::recover_account_mutation() {
+fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), String> {
+    if let Err(error) = account_root.finish_mutation() {
+        return match account_root.recover_mutation() {
             Ok(()) => Err(format!(
                 "could not complete {operation}: {error}; changes were rolled back"
             )),
@@ -1849,6 +1883,31 @@ mod tests {
         }
     }
 
+    /// A private config root: the stores, vault and mutation journal of one
+    /// test never meet another's, and nothing reaches the user's own.
+    fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
+        let dir = tempfile::tempdir().expect("scratch config root");
+        let root = AccountRoot::at(dir.path().join("tilo"));
+        (dir, root)
+    }
+
+    /// Drive the host's polling until the pending account probe reports,
+    /// however long the probe thread takes to be scheduled.
+    fn settle_probes(pane: &mut AccountsPane, doc: &mut AutoCommit) {
+        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
+        loop {
+            pane.sync(doc, &automerge::ROOT);
+            if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "account probe never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     fn count_named(w: &dyn Widget, name: &str) -> usize {
         let mut n = usize::from(w.name() == name);
         for c in w.children() {
@@ -2012,8 +2071,8 @@ mod tests {
 
     #[test]
     fn live_pane_over_empty_store_does_not_fabricate_sample() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("accounts_empty_live");
-        let pane = AccountsPane::new();
+        let (_dir, root) = scratch_root();
+        let pane = AccountsPane::in_root(root);
         assert!(!pane.is_sample(), "the live pane never flags the sample");
         assert!(
             pane.directory().is_empty(),
@@ -2037,15 +2096,17 @@ mod tests {
     fn save_with_empty_email_is_a_noop() {
         // Guard: saving a blank address must not create an account (and must
         // not touch disk). We assert the pure guard directly.
+        let (_dir, root) = scratch_root();
         assert!(
-            AccountsPane::save_account(AccountKind::Mail, None, "Nobody", "  ", "", "", "")
+            AccountsPane::save_account(&root, AccountKind::Mail, None, "Nobody", "  ", "", "", "")
                 .is_err()
         );
+        assert!(root.store().is_empty());
     }
 
     #[test]
     fn edit_preserves_envelope_unknown_config_and_service_toggles() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("accounts_edit_preserves_shape");
+        let (_dir, root) = scratch_root();
         let id = accounts::AccountId::from("nextcloud-stable-id");
         let mut original = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);
         original.display_name = "Old label".into();
@@ -2064,8 +2125,8 @@ mod tests {
         });
         let mut store = accounts::AccountStore::new();
         store.upsert(original);
-        store.save().expect("seed canonical account");
-        let mut vault = accounts::SecretVault::open();
+        root.save_store(&store).expect("seed canonical account");
+        let mut vault = root.vault();
         vault.put(
             &id,
             &accounts::Secret {
@@ -2076,6 +2137,7 @@ mod tests {
         vault.try_save().expect("seed credential");
 
         AccountsPane::save_account(
+            &root,
             AccountKind::Nextcloud,
             Some(id.as_str()),
             "New label",
@@ -2086,10 +2148,7 @@ mod tests {
         )
         .expect("edit account");
 
-        let saved = accounts::AccountStore::load()
-            .get(&id)
-            .cloned()
-            .expect("saved account");
+        let saved = root.store().get(&id).cloned().expect("saved account");
         assert!(!saved.enabled);
         assert_eq!(saved.tint, 7);
         assert_eq!(saved.owner.as_deref(), Some("local-owner"));
@@ -2100,7 +2159,7 @@ mod tests {
         assert_eq!(saved.config["server_url"], "https://new.example");
         assert_eq!(saved.config["username"], "new-user");
         assert_eq!(
-            accounts::SecretVault::open().get(&id),
+            root.vault().get(&id),
             Some(accounts::Secret {
                 password: "old-password".into(),
                 token: Some("future-provider-token".into()),
@@ -2110,7 +2169,7 @@ mod tests {
 
     #[test]
     fn reauthentication_probes_candidate_before_persisting() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("reauth_probe_rejects");
+        let (_dir, root) = scratch_root();
         let id = accounts::AccountId::from("reauth@example.test");
         let mut account = accounts::Account::new(id.clone(), "email");
         account.display_name = "Reauth".into();
@@ -2120,13 +2179,13 @@ mod tests {
         });
         let mut store = accounts::AccountStore::new();
         store.upsert(account);
-        store.save().expect("seed account");
-        let mut vault = accounts::SecretVault::open();
+        root.save_store(&store).expect("seed account");
+        let mut vault = root.vault();
         vault.put(&id, &accounts::Secret::password("old-password"));
         vault.try_save().expect("seed credential");
 
         let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::new()
+        let mut pane = AccountsPane::in_root(root.clone())
             .with_command_state(&commands)
             .with_account_tester(std::sync::Arc::new(RejectCandidate));
         let mut doc = AutoCommit::new();
@@ -2135,24 +2194,13 @@ mod tests {
         pane.set_reauth_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::SubmitReauthentication));
         pane.sync(&mut doc, &automerge::ROOT);
-        // The probe answers on a background thread; give it a generous
-        // deadline so a loaded test runner cannot outrun it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            pane.sync(&mut doc, &automerge::ROOT);
-            if pane.reauth_error_for_test() == Some("server rejected candidate") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        settle_probes(&mut pane, &mut doc);
         assert_eq!(
             pane.reauth_error_for_test(),
             Some("server rejected candidate")
         );
         assert_eq!(
-            accounts::SecretVault::open()
-                .get(&id)
-                .map(|secret| secret.password),
+            root.vault().get(&id).map(|secret| secret.password),
             Some("old-password".into()),
             "rejected candidate must never replace the stored credential"
         );
@@ -2160,9 +2208,9 @@ mod tests {
 
     #[test]
     fn add_rejection_keeps_the_draft_open_and_persists_nothing() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("account_add_probe_rejects");
+        let (_dir, root) = scratch_root();
         let commands = ui::LocalState::new(None);
-        let mut pane = AccountsPane::new()
+        let mut pane = AccountsPane::in_root(root.clone())
             .with_command_state(&commands)
             .with_account_tester(std::sync::Arc::new(RejectCandidate));
         let mut doc = AutoCommit::new();
@@ -2177,24 +2225,15 @@ mod tests {
         pane.set_form_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::Submit));
         pane.sync(&mut doc, &automerge::ROOT);
-        // The probe answers on a background thread; give it a generous
-        // deadline so a loaded test runner cannot outrun it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            pane.sync(&mut doc, &automerge::ROOT);
-            if pane.form_error.as_deref() == Some("server rejected candidate") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        settle_probes(&mut pane, &mut doc);
         assert_eq!(
             pane.form_error.as_deref(),
             Some("server rejected candidate")
         );
         assert!(pane.form_open(), "a rejected draft remains editable");
-        assert!(accounts::AccountStore::load().is_empty());
+        assert!(root.store().is_empty());
         assert!(
-            accounts::SecretVault::open()
+            root.vault()
                 .get(&accounts::AccountId::from("rejected@example.test"))
                 .is_none(),
             "a rejected credential never reaches the vault"

@@ -287,10 +287,10 @@ vello_encoding.workspace = true
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.
 tempfile.workspace = true
-# `record::tests` point `XDG_DATA_HOME` at a scratch tree to exercise
-# per-record persistence, which is process-global — those tests run
-# serially so they cannot see each other's data root.
-serial_test.workspace = true
+# Tests whose interface is the process environment (launcher variables such
+# as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
+# prior value and serialises every such test in the process.
+tilo-test-env = { path = "../../dev/test-env" }
 # The `collaboration` shim tests stand up a fake capnp broker on one end
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.

@@ -3034,7 +3034,7 @@ mod tests {
         assert_eq!(
             doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
                 .expect("read begin action")
-                .and_then(|(value, _)| value.to_bool()),
+                .and_then(|(value, _)| value.as_bool()),
             Some(true),
             "activation must write the begin action into the document"
         );

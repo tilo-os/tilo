@@ -58,6 +58,7 @@ unicode-normalization = "0.1.25"
 zbus = { workspace = true, features = ["blocking-api"] }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
 serial_test.workspace = true

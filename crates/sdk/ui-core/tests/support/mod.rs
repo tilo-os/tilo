@@ -9,6 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod evidence;
 pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]

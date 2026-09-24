@@ -645,11 +645,37 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            HEARTBEAT_INTERVAL,
+        )
+    }
+
+    /// [`Self::spawn_reporting_addrs`] with an explicit liveness and
+    /// host-retry cadence, so a test can observe several heartbeats without
+    /// waiting out the production interval.
+    fn spawn_with_heartbeat(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        heartbeat: Duration,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
         }
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let task = tokio::spawn(run(endpoint, lookup, host_identity, listen_addrs, cmd_rx));
+        let task = tokio::spawn(run(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            cmd_rx,
+            heartbeat,
+        ));
         (cmd_tx, task)
     }
 }
@@ -2577,6 +2603,7 @@ async fn run(
     host_identity: Option<HostIdentity>,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
+    heartbeat_interval: Duration,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -2626,7 +2653,7 @@ async fn run(
         active_personal_media: HashMap::new(),
         next_personal_media_generation: 0,
     };
-    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut heartbeat = tokio::time::interval(heartbeat_interval);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
     let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -4130,6 +4157,10 @@ mod tests {
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
     /// and block until both report `HostReady`. Returns each actor's
     /// command sender and event receiver.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each peer's endpoint, lookup and identity, plus the shared relay and cadence"
+    )]
     async fn join_workspace_and_await_host_ready(
         a: Endpoint,
         lookup_a: MemoryLookup,
@@ -4138,23 +4169,26 @@ mod tests {
         lookup_b: MemoryLookup,
         identity_b: HostIdentity,
         relay: &Relay,
+        heartbeat: Duration,
     ) -> (
         mpsc::Sender<NetCmd>,
         mpsc::Receiver<NetEvent>,
         mpsc::Sender<NetCmd>,
         mpsc::Receiver<NetEvent>,
     ) {
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+        let (cmd_a, _task_a) = Actor::spawn_with_heartbeat(
             a,
             lookup_a,
             Some(identity_a),
             Arc::new(Mutex::new(Vec::new())),
+            heartbeat,
         );
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+        let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
             lookup_b,
             Some(identity_b),
             Arc::new(Mutex::new(Vec::new())),
+            heartbeat,
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
@@ -4229,7 +4263,14 @@ mod tests {
             identity_paths: None,
         };
         let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a, lookup_a, identity_a, b, lookup_b, identity_b, &relay,
+            a,
+            lookup_a,
+            identity_a,
+            b,
+            lookup_b,
+            identity_b,
+            &relay,
+            HEARTBEAT_INTERVAL,
         )
         .await;
 
@@ -4295,6 +4336,7 @@ mod tests {
             lookup_b,
             identity(b_key, b_cert),
             &relay,
+            HEARTBEAT_INTERVAL,
         )
         .await;
 
@@ -4331,6 +4373,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
+        const TEST_HEARTBEAT: Duration = Duration::from_millis(100);
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let a_public = a_key.verifying_key().to_bytes();
@@ -4355,6 +4398,7 @@ mod tests {
             lookup_b,
             identity(b_key, b_cert),
             &relay,
+            TEST_HEARTBEAT,
         )
         .await;
 
@@ -4430,7 +4474,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(!relay.is_subscribed(42, &a_public).await);
-        tokio::time::sleep(HEARTBEAT_INTERVAL + Duration::from_millis(250)).await;
+        // Several retry rounds pass; any of them would redial a host it still held.
+        tokio::time::sleep(TEST_HEARTBEAT * 4).await;
         assert!(
             !relay.is_subscribed(42, &a_public).await,
             "a removed host must not be redialled by the heartbeat retry loop"
@@ -4471,6 +4516,7 @@ mod tests {
             lookup_b,
             identity(b_key, b_cert),
             &relay,
+            HEARTBEAT_INTERVAL,
         )
         .await;
         let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {

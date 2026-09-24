@@ -601,9 +601,8 @@ mod content_index_integration {
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
-        unsafe {
-            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
 
         fs::write(
             home.join("shopping.md"),
@@ -650,9 +649,8 @@ mod content_index_integration {
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
-        unsafe {
-            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
 
         // Sprinkle enough files that BM25 has something to score.
         for i in 0..40 {
@@ -698,9 +696,8 @@ mod content_index_integration {
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
-        unsafe {
-            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
 
         fs::write(home.join("a.md"), "alpha content").unwrap();
         fs::write(home.join("b.md"), "bravo content").unwrap();
@@ -734,9 +731,8 @@ mod content_index_integration {
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
         fs::create_dir_all(&cache_dir).ok();
-        unsafe {
-            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FILES_INDEX_DIR", &cache_dir);
 
         let deleted_path = home.join("retired.md");
         fs::write(&deleted_path, "uniquely retired search content").unwrap();

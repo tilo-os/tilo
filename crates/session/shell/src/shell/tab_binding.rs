@@ -2293,7 +2293,8 @@ mod tests {
     fn a_hyphenated_app_id_becomes_a_name_not_a_slug() {
         let tmp = tempfile::tempdir().unwrap();
         // Point the launcher at an empty registry so the lookup misses and the fallback is what is under test.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
@@ -2308,7 +2309,7 @@ mod tests {
         // The documented behaviour for an already-camel-cased id is unchanged.
         assert_eq!(tab_label_for_foreign("org.example.MyApp"), "MyApp");
 
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 
@@ -2318,7 +2319,8 @@ mod tests {
     fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
         let tmp = tempfile::tempdir().unwrap();
         install_named(tmp.path(), "so.tilo.file-explorer", "Files");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
@@ -2334,7 +2336,7 @@ mod tests {
             "the tab the compositor actually builds carries the real name"
         );
 
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 

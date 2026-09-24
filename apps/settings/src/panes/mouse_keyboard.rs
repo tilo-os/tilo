@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn document_active_source_selection_is_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_layout");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let initial = InputPrefs {
             keyboard_layouts: vec!["us".into(), "de".into()],
             ..Default::default()
@@ -1208,7 +1208,7 @@ mod tests {
 
     #[test]
     fn document_source_latches_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_sources");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1234,7 +1234,7 @@ mod tests {
     /// Device class speed sliders only travel through local effect actions.
     #[test]
     fn document_pointer_speed_changes_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_pointer");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

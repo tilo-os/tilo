@@ -376,21 +376,24 @@ mod tests {
     /// A scratch tab has no file to be found by, so this is the whole of
     /// whether its content survives a restart — and why the tab id,
     /// persisted with the window tree, is what names the record.
+    /// A store persisting below `data_home` rather than `$XDG_DATA_HOME`,
+    /// in the non-routable nil room a launcher-less process gets.
+    fn store_at(data_home: &std::path::Path, package: &str) -> RecordStore {
+        RecordStore::new(ui::record::RecordSet::open_in(
+            std::rc::Rc::new(app_state::FsStore::new(data_home)),
+            package,
+            uuid::Uuid::nil().to_string(),
+        ))
+    }
+
     #[test]
-    #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
         const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: serialised on `record_state_dir`; no other thread reads
-        // these between the writes here and the reads below.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
         {
-            let store = RecordStore::open(PACKAGE);
+            let store = store_at(tmp.path(), PACKAGE);
             store.create_record(&scratch_tab_record(TAB_A)).unwrap();
             store.create_record(&scratch_tab_record(TAB_B)).unwrap();
             let mut shared = AutoCommit::new();
@@ -403,7 +406,7 @@ mod tests {
 
         // A fresh session: same tab ids out of the persisted window tree,
         // nothing else carried over.
-        let store = RecordStore::open(PACKAGE);
+        let store = store_at(tmp.path(), PACKAGE);
         let mut shared = AutoCommit::new();
         let mut a = Tile::notes(TAB_A, &store);
         let mut b = Tile::notes(TAB_B, &store);
@@ -420,8 +423,6 @@ mod tests {
             Some("second tab"),
             "and the second with its own, not the first's",
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     /// The store's writers are debounced and off-thread, so something has
@@ -429,18 +430,12 @@ mod tests {
     /// *different* store, so it's the file on disk being checked, not the
     /// live copy.
     #[test]
-    #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
         const PACKAGE: &str = "so.tilo.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: serialised on `record_state_dir`.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
-        let store = RecordStore::open(PACKAGE);
+        let store = store_at(tmp.path(), PACKAGE);
         store.create_record(&scratch_tab_record(TAB_A)).unwrap();
         store.create_record(&scratch_tab_record(TAB_B)).unwrap();
         let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
@@ -456,19 +451,33 @@ mod tests {
 
         let mut shell_doc = AutoCommit::new();
         host.update(&mut shell_doc, &automerge::ROOT);
-        // The writer debounces (`app_state::DEFAULT_DEBOUNCE`, 400 ms) and
-        // waits on its own thread; give it longer than that to land.
-        std::thread::sleep(std::time::Duration::from_millis(900));
+        // Nothing but the frame offers the edit to the debounced writer, so
+        // the record reaches `Saved` only if the frame did. The deadline is
+        // a hang guard, far past the writer's debounce.
+        let tab_a = RecordId::for_tab(TAB_A);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match store.save_status(&tab_a) {
+                Ok(ui::record::RecordSaveStatus::Saved) => break,
+                Ok(ui::record::RecordSaveStatus::Failed(error)) => {
+                    panic!("the tab's writer failed: {error}")
+                }
+                _ => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a frame must offer each open tab's document to its writer"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
-        let reader = RecordStore::open(PACKAGE);
+        let reader = store_at(tmp.path(), PACKAGE);
         reader.open_record(&scratch_tab_record(TAB_A));
         assert_eq!(
             tab_body(&reader, TAB_A, BODY_KEY).as_deref(),
             Some("written by a frame"),
             "a frame must offer each open tab's document to its writer",
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     /// A peer's caret is a position in *a* document; the wrong key paints

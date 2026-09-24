@@ -2427,11 +2427,16 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
         let mut ws = Workspace::new(id, "Demo");
-        ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
+        // An explicit identity: the session registry lives under the user's
+        // configuration directory, which is not this test's to read.
+        ws.set_owner("shell-fixture");
         tree.desktop.workspaces.push(ws);
         tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
-        ChromeState::new_with_handle(handle)
+        ChromeState::new_with_fixture_handle(
+            handle,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        )
     }
 
     fn action_results(

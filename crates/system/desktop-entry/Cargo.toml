@@ -21,6 +21,7 @@ xdg-paths = { path = "../xdg-paths" }
 [dev-dependencies]
 tempfile = { workspace = true }
 serial_test = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -2268,19 +2268,20 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
+        // The save stays held until this thread releases it. A UI call that
+        // waited for it would only return once the hold timed out, which
+        // drops the release receiver and fails the send below.
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
-        let started = Instant::now();
         app.start_operation(0).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(200));
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(!destination_parent.join("source").exists());
-        let started = Instant::now();
         app.poll_background();
         assert!(app.cancel_active());
-        assert!(started.elapsed() < Duration::from_millis(200));
         drop(app);
         assert!(MigrationStore::open_at(&root).is_err());
-        release.send(()).unwrap();
+        release
+            .send(())
+            .expect("the start checkpoint was still held when the UI calls returned");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Ok(store) = MigrationStore::open_at(&root) {
@@ -2309,11 +2310,13 @@ mod tests {
         // disks to reach the terminal checkpoint without weakening the state
         // assertion that follows.
         entered.recv_timeout(Duration::from_secs(15)).unwrap();
-        let started = Instant::now();
         app.poll_background();
-        assert!(started.elapsed() < Duration::from_millis(200));
         assert_eq!(app.operations[0].state(), OperationState::Running);
-        release.send(()).unwrap();
+        // Polling must not wait for the held checkpoint: had it waited, the
+        // hold would have timed out and dropped its release receiver.
+        release
+            .send(())
+            .expect("the terminal checkpoint was still held when polling returned");
         wait_terminal(&mut app);
         assert_eq!(app.operations[0].state(), OperationState::Complete);
     }
