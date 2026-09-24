@@ -22,6 +22,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
+use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
@@ -1398,7 +1399,10 @@ impl ActorState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one resumable transfer is described by its route, identity, resume point and integrity digests together"
+    )]
     fn publish_nearby_transfer(
         &self,
         ws: WorkspaceId,
@@ -2586,52 +2590,6 @@ async fn publish(
     }
 }
 
-/// Only replayable state is allowed into the host's durable queue. Everything
-/// else is live session traffic; persisting input, presence, media, permission
-/// prompts or request/response control frames would make them execute late.
-#[derive(Clone, Copy)]
-enum Retention {
-    Checkpoint,
-    Delta,
-}
-
-fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Retention)> {
-    let (route, kind) = match msg {
-        NeighbourMsg::SyncResp { .. } => (
-            b"shell-tree".as_slice(),
-            if shell_checkpoint {
-                Retention::Checkpoint
-            } else {
-                Retention::Delta
-            },
-        ),
-        NeighbourMsg::AppDocument {
-            app_id,
-            record_id,
-            envelope,
-            ..
-        } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
-            let retention = match mutation {
-                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
-                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
-            };
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
-        }
-        NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } => {
-            let mut route = Vec::new();
-            route.extend_from_slice(b"personal-continuity\0");
-            route.extend_from_slice(user_public_key);
-            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
-        }
-        _ => return None,
-    };
-    Some((*blake3::hash(route).as_bytes(), kind))
-}
-
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
@@ -3078,118 +3036,6 @@ mod tests {
         sign_revocation_entry,
     };
     use tokio::time::timeout;
-
-    fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
-        let envelope = collab_types::SignedOp::new_unsigned(
-            mutation.encode().expect("typed mutation"),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-        );
-        NeighbourMsg::AppDocument {
-            peer: 1,
-            app_id: "app".into(),
-            cluster_id: "room".into(),
-            record_id: "doc".into(),
-            envelope: Box::new(envelope),
-        }
-    }
-
-    #[test]
-    fn host_persists_state_but_never_late_session_actions() {
-        assert!(matches!(
-            retention(
-                &NeighbourMsg::SyncResp {
-                    changes: vec![vec![1]],
-                    room: "room".into(),
-                },
-                true,
-            ),
-            Some((_, Retention::Checkpoint))
-        ));
-        assert!(matches!(
-            retention(
-                &NeighbourMsg::SyncResp {
-                    changes: vec![vec![1]],
-                    room: "room".into(),
-                },
-                false,
-            ),
-            Some((_, Retention::Delta))
-        ));
-        assert!(matches!(
-            retention(
-                &document(&collab_types::DocumentMutation::Snapshot(vec![2])),
-                false,
-            ),
-            Some((_, Retention::Checkpoint))
-        ));
-        assert!(matches!(
-            retention(
-                &document(&collab_types::DocumentMutation::Incremental(vec![2])),
-                false,
-            ),
-            Some((_, Retention::Delta))
-        ));
-        let root_a = [0xA1; 32];
-        let root_b = [0xB2; 32];
-        let checkpoint_a = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_a,
-            publisher: 1,
-            snapshot: vec![7],
-        };
-        let checkpoint_b = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_b,
-            publisher: 2,
-            snapshot: vec![8],
-        };
-        let Some((channel_a, Retention::Checkpoint)) = retention(&checkpoint_a, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        let Some((channel_b, Retention::Checkpoint)) = retention(&checkpoint_b, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        assert_ne!(
-            channel_a, channel_b,
-            "each user root has an isolated host channel"
-        );
-        assert!(
-            retention(
-                &NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: root_a,
-                    requester: 1,
-                },
-                false,
-            )
-            .is_none(),
-            "requests are live probes, never retained work"
-        );
-        for live in [
-            NeighbourMsg::RemoteInput {
-                peer: 1,
-                surface: 2,
-                event: vec![3],
-            },
-            NeighbourMsg::PermissionGrant {
-                peer: 1,
-                capability: "remote-input".into(),
-            },
-            NeighbourMsg::AppPresenceV2 {
-                peer: 1,
-                app_id: "app".into(),
-                cluster_id: "room".into(),
-                presence: collab_types::PeerPresence {
-                    key: vec![4],
-                    payload: collab_types::PeerPresencePayload::Arrived,
-                },
-            },
-        ] {
-            assert!(retention(&live, false).is_none());
-        }
-    }
 
     async fn endpoint() -> (Endpoint, MemoryLookup) {
         let lookup = MemoryLookup::new();

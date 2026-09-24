@@ -179,6 +179,9 @@ image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `tilo-collab-types`.
 collab-types = { path = "../../collab/collab-types" }
+# The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
+# shared with every other peer that speaks the collaboration protocol.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The reusable video-streaming stack (H.264 encode/decode, per-share frame
 # transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
@@ -247,11 +250,6 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
 runtime-portal = { path = "../../runtime/runtime-portal" }
-# Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
-# `src/network/protocol.rs`. `qos-collab-types` already uses this for
-# signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
-# survives the same codec.
-postcard = { workspace = true, features = ["alloc"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_08 = { package = "rand", version = "0.8" }
 rand_chacha.workspace = true
