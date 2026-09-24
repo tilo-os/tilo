@@ -359,6 +359,26 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
+      # The ci profile retries a failed test once; a test that then passes
+      # is FLAKY and does not fail the shard. List those, and every retried
+      # failure, in the job summary and keep the JUnit report.
+      - name: Report retried tests in shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        run: >-
+          python3 tools/ci/nextest_report.py
+          --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})"
+          target/nextest/ci/junit.xml
+
+      - name: Save test results of shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: warn
+
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
