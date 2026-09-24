@@ -46,6 +46,40 @@ impl BrokerActionHost {
     }
 }
 
+impl BrokerActionHost {
+    /// [`ActionHost::invoke`], also returning the broker job — for an
+    /// in-process caller, such as the palette, that lists and cancels jobs.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ActionHost::invoke`].
+    pub(crate) fn invoke_job(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
+        self.broker.state().action_invoke_job(caller, request)
+    }
+
+    /// Invoke an action a provider publishes through a live, revision-bound
+    /// directory rather than its eager surface. The owner re-resolves the
+    /// target at `request.revision` before anything starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ActionHostError`] when the invocation was not admitted.
+    pub(crate) async fn invoke_resolved(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
+        self.broker
+            .state()
+            .action_invoke_resolved(caller, request)
+            .await
+    }
+}
+
 impl ActionHost for BrokerActionHost {
     fn catalogue(&self, caller: &Caller) -> Result<Catalogue, ActionHostError> {
         Ok(self.broker.state().action_catalogue_for(caller))
@@ -169,6 +203,7 @@ mod tests {
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
+            revision: None,
         }
     }
 

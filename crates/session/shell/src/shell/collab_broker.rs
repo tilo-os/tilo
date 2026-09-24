@@ -530,23 +530,6 @@ impl AppActionBroker {
             .action_directory_root_page(after_peer, max_results)
     }
 
-    /// Start a published action and return its lifecycle job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be dispatched.
-    pub fn start(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-        self.state
-            .start_invocation(peer_id, resource, action, argument, actor)
-    }
-
     /// The broker state behind this facade, for the action host.
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
@@ -596,56 +579,6 @@ impl AppActionBroker {
     /// task.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
         self.state.dispatch_workspace_task(room, task_id)
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "confirmation forwarding binds peer, resource, action, argument, actor and confirmation evidence to one invocation"
-    )]
-    /// Prepare a one-use confirmation token for the exact invocation inputs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action disappeared or confirmation evidence is invalid.
-    pub fn prepare_confirmation(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        phrase: Option<&str>,
-    ) -> Result<String, String> {
-        self.state
-            .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "confirmed invocation forwarding binds the token to its peer, resource, action, argument and actor"
-    )]
-    /// Start a published action using a previously prepared confirmation token.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action or token is unavailable or invalid.
-    pub fn start_confirmed(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        token: &str,
-    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-        self.state.start_invocation_confirmed(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            Some(token),
-        )
     }
 }
 
