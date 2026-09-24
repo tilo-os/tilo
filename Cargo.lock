@@ -4246,6 +4246,7 @@ name = "frame-link"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "media",
  "proptest",
  "shell",
  "tracing",
