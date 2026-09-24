@@ -3163,19 +3163,18 @@ mod view_presence_tests {
 
     #[test]
     fn application_launch_receipts_are_terminal_once_and_late_replies_are_inert() {
+        use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
         let mut app = app_with_root(ViewRoot::new());
-        for (request_id, update) in [
+        for (request_id, status) in [
             (
                 1,
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: tilo_actions::InvocationId::new(),
+                ReceiptStatus::Completed {
                     output: tilo_actions::ActionOutput::default(),
                 },
             ),
             (
                 2,
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation: tilo_actions::InvocationId::new(),
+                ReceiptStatus::Failed {
                     error: tilo_actions::ActionFailure {
                         code: "missing_hash".into(),
                         message: "launch content is unavailable on this device".into(),
@@ -3186,16 +3185,19 @@ mod view_presence_tests {
             ),
             (
                 3,
-                tilo_actions::InvocationUpdate::Cancelled {
-                    invocation: tilo_actions::InvocationId::new(),
+                ReceiptStatus::Cancelled {
                     message: Some("launcher refused".into()),
                 },
             ),
         ] {
             let invocation = tilo_actions::InvocationId::new();
+            let launch = tilo_actions::InvocationId::new();
             app.actions
                 .pending_application_launches
                 .insert(request_id, invocation);
+            app.actions
+                .broker_requests
+                .insert(BrokerReply::Receipt(launch), request_id);
             app.actions.directed_invocations.insert(
                 invocation,
                 DirectedInvocation {
@@ -3203,9 +3205,11 @@ mod view_presence_tests {
                     cancellation_requested: false,
                 },
             );
-            app.apply_collab_event_for_test(CollabEvent::PublishedInvocationResult {
-                request_id,
-                result: Ok((request_id + 10, update)),
+            app.apply_collab_event_for_test(CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Receipt(InvocationReceipt {
+                    invocation: launch,
+                    status,
+                }),
             });
             assert!(
                 !app.actions
@@ -3214,9 +3218,13 @@ mod view_presence_tests {
             );
             assert!(!app.actions.directed_invocations.contains_key(&invocation));
             // A duplicate broker receipt cannot emit a second terminal update.
-            app.apply_collab_event_for_test(CollabEvent::PublishedInvocationResult {
-                request_id,
-                result: Err("late duplicate".into()),
+            app.apply_collab_event_for_test(CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Receipt(InvocationReceipt {
+                    invocation: launch,
+                    status: ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionHostError::UnknownAction,
+                    },
+                }),
             });
             assert!(!app.actions.directed_invocations.contains_key(&invocation));
         }
@@ -7572,21 +7580,35 @@ mod bound_component_tests {
             )
             .unwrap();
         assert_eq!(requests.len(), 1);
-        let CollabRequest::InvokePublishedAction {
-            request_id,
-            peer_id,
-            resource,
-            action,
-            arguments,
-            confirmation,
+        let CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
         } = requests.pop().unwrap()
         else {
             panic!("expected action request")
         };
-        assert_eq!(peer_id, crate::collaboration::CURRENT_CONNECTION_PEER_ID);
-        assert_eq!(request_id, 0);
-        assert!(arguments.is_empty());
-        assert_eq!(confirmation, evidence);
+        assert_eq!(
+            request.target.provider,
+            tilo_actions::remote::OWN_PROVIDER,
+            "an app routes its own action through the host"
+        );
+        assert_eq!(
+            fixture
+                .app
+                .actions
+                .broker_requests
+                .get(&BrokerReply::Receipt(request.invocation)),
+            Some(&0)
+        );
+        assert_eq!(
+            request.argument,
+            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
+        );
+        assert_eq!(
+            request.confirmation,
+            App::broker_confirmation(Some(&evidence))
+        );
+        let resource = request.target.address.resource;
+        let action = request.target.address.action;
         let descriptor = tilo_actions::door::resolve(
             &resources,
             &tilo_actions::ActionAddress::new(&resource, &action),
@@ -7655,7 +7677,7 @@ mod bound_component_tests {
                 None,
                 None,
                 None,
-                |_| sent = true
+                |_, _| sent = true
             )
             .is_err()
         );

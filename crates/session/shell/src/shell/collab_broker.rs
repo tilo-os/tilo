@@ -456,6 +456,10 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
+    pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production construction remains owned by
     /// the shell bootstrap, so tests cannot accidentally bypass it in a
@@ -526,27 +530,6 @@ impl AppActionBroker {
             .action_directory_root_page(after_peer, max_results)
     }
 
-    /// Invoke one published application action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the surface or action is unavailable or dispatch
-    /// to its application connection fails.
-    pub fn invoke(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<
-        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
-        String,
-    > {
-        self.state
-            .invoke(peer_id, resource, action, argument, actor)
-    }
-
     /// Start a published action and return its lifecycle job.
     ///
     /// # Errors
@@ -564,31 +547,9 @@ impl AppActionBroker {
             .start_invocation(peer_id, resource, action, argument, actor)
     }
 
-    /// Start a published action for a person, carrying their provenance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be dispatched.
-    pub fn start_with_context(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        person: &str,
-        context: Option<tilo_actions::ActionContext>,
-    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-        self.state
-            .start_invocation_with_context(peer_id, resource, action, argument, person, context)
-    }
-
-    /// Live surfaces offered to `person` as a member of the hosted
-    /// workspaces, filtered by what their role may invoke.
-    pub fn surfaces_offered_to_member(
-        &self,
-        person: &str,
-    ) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
-        self.state.surfaces_offered_to_member(person)
+    /// The broker state behind this facade, for the action host.
+    pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
+        &self.state
     }
 
     #[cfg(test)]
@@ -797,30 +758,6 @@ impl BrokerHandle {
         self.fanout
             .capnp_state()
             .map_or_else(Vec::new, |state| state.published_surfaces())
-    }
-
-    /// Direct one invocation to the exact application connection that
-    /// published the addressed operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action broker, surface, or action is
-    /// unavailable or dispatch to its application connection fails.
-    pub fn invoke_published_action(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<
-        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
-        String,
-    > {
-        self.fanout
-            .capnp_state()
-            .ok_or_else(|| "the application action broker is unavailable".to_string())?
-            .invoke(peer_id, resource, action, argument, actor)
     }
 
     /// Install a populated [`ChannelState`] for one artifact id.
@@ -1367,60 +1304,17 @@ pub(crate) fn answer_remote_actions(
     for request in requests {
         let reply = match host {
             Some(host) => tilo_actions::remote::serve(host, &request.caller, request.message),
-            None => unavailable_reply(request.message),
+            None => tilo_actions::remote::refuse(
+                &request.message,
+                tilo_actions::remote::ActionHostError::Unavailable {
+                    reason: "the application broker is not running".into(),
+                },
+            ),
         };
         if let Some(reply) = reply {
             net.send_remote_action(request.workspace_topic, request.from, reply);
         }
     }
-}
-
-/// The answer to a request that arrived before the application broker was
-/// up: every request is answered, so the caller never waits out a timeout.
-fn unavailable_reply(
-    message: tilo_actions::remote::RemoteActionMessage,
-) -> Option<tilo_actions::remote::RemoteActionMessage> {
-    struct Unavailable;
-    impl tilo_actions::remote::ActionHost for Unavailable {
-        fn catalogue(
-            &self,
-            _: &tilo_actions::remote::Caller,
-        ) -> Result<tilo_actions::remote::Catalogue, tilo_actions::remote::ActionHostError>
-        {
-            Err(Self::error())
-        }
-        fn invoke(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            _: tilo_actions::remote::InvokeRequest,
-        ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>
-        {
-            Err(Self::error())
-        }
-        fn observe(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            _: &tilo_actions::InvocationId,
-        ) -> Option<tilo_actions::remote::InvocationState> {
-            None
-        }
-        fn cancel(
-            &self,
-            _: &tilo_actions::remote::Caller,
-            _: &tilo_actions::InvocationId,
-        ) -> Result<(), tilo_actions::remote::ActionHostError> {
-            Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
-        }
-    }
-    impl Unavailable {
-        fn error() -> tilo_actions::remote::ActionHostError {
-            tilo_actions::remote::ActionHostError::Unavailable {
-                reason: "the application broker is not running".into(),
-            }
-        }
-    }
-    let nobody = tilo_actions::remote::Caller::authenticated([0; 32], [0; 32]);
-    tilo_actions::remote::serve(&Unavailable, &nobody, message)
 }
 
 /// The id a remote peer's traffic is attributed under, announcing the

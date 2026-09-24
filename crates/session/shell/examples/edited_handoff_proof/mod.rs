@@ -3,6 +3,9 @@ mod pixels;
 use super::*;
 use std::path::Path;
 use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+};
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
 const CALLER: &str = "dev.qos.edited-handoff-proof";
@@ -28,19 +31,37 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
             std::thread::sleep(Duration::from_millis(20));
         }
         let request: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
-        manager.send(CollabRequest::InvokePublishedAction {
-            request_id: sequence,
-            peer_id: request["peer"].as_u64().ok_or("missing peer")?,
-            resource: request["resource"]
-                .as_str()
-                .ok_or("missing resource")?
-                .into(),
-            action: request["action"].as_str().ok_or("missing action")?.into(),
-            arguments: request["arguments"]
-                .as_object()
-                .ok_or("missing arguments")?
-                .clone(),
-            confirmation: json!({}),
+        let invocation = tilo_actions::InvocationId::new();
+        manager.send(CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(InvokeRequest {
+                invocation,
+                target: RemoteActionTarget {
+                    provider: request
+                        .get("peer")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or("missing peer")?
+                        .to_string(),
+                    address: tilo_actions::ActionAddress::new(
+                        request
+                            .get("resource")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or("missing resource")?,
+                        request
+                            .get("action")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or("missing action")?,
+                    ),
+                },
+                argument: InvokeArgument::Json(
+                    request
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or("missing arguments")?
+                        .clone(),
+                ),
+                context: None,
+                confirmation: None,
+            }),
         });
         let deadline = Instant::now();
         let result = loop {
@@ -49,22 +70,47 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
             }
             let mut finished = None;
             for event in manager.poll() {
-                if let CollabEvent::PublishedInvocationResult { request_id, result } = event {
-                    if request_id != sequence {
-                        continue;
-                    }
-                    match result {
-                        Err(error) => finished = Some(json!({"error":error})),
-                        Ok((id, update)) if update.is_terminal() => {
-                            finished = Some(json!({"id":id,"update":update}))
+                let CollabEvent::RemoteAction { message } = event else {
+                    continue;
+                };
+                let update = match message {
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
+                        match receipt.status {
+                            ReceiptStatus::Rejected { error } => {
+                                finished = Some(json!({"error": error.to_string()}));
+                                continue;
+                            }
+                            ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
+                            ReceiptStatus::Completed { output } => {
+                                InvocationUpdate::Succeeded { invocation, output }
+                            }
+                            ReceiptStatus::Failed { error } => {
+                                InvocationUpdate::Failed { invocation, error }
+                            }
+                            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                                invocation,
+                                message,
+                            },
                         }
-                        Ok((id, _)) => {
-                            manager.send(CollabRequest::PublishedInvocationStatus {
-                                request_id: sequence,
-                                id,
-                            });
-                        }
                     }
+                    RemoteActionMessage::Update {
+                        invocation: observed,
+                        state,
+                    } if observed == invocation => {
+                        let Some(state) = state else {
+                            finished = Some(json!({"error": "unknown invocation"}));
+                            continue;
+                        };
+                        state.update
+                    }
+                    _ => continue,
+                };
+                if update.is_terminal() {
+                    finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
+                } else {
+                    manager.send(CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Observe { invocation },
+                    });
                 }
             }
             if let Some(result) = finished {
@@ -419,7 +465,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
                         "record": writer_surface.route.record_id},
                     "image_block": block.id, "signed_document_events": events.len(),
                     "both_apps_alive": true,
-                    "dispatch": "SDK InvokePublishedAction typed arguments",
+                    "dispatch": "SDK remote-action Invoke with typed arguments",
                     "live_result_is_durable_receipt": false,
                     "persisted_receipt_output_redaction_verified": true,
                     "headless_parity_proven": false, "permission_denials_proven": true
