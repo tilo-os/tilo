@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
 use crate::clipboard::{ClipboardBackend, InProcessClipboard};
 use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisCommand, MprisConfig, PlayerSnapshot};
@@ -128,6 +129,13 @@ pub trait LocationProvider: Send + Sync {
     fn locate(&self) -> LocationChannel;
 }
 
+/// Host-provided screen capture.
+pub trait ScreenCaptureProvider: Send + Sync {
+    /// Ask the user for a screen or window to capture. Answers over the
+    /// channel, never blocking the caller while the host shows its picker.
+    fn request(&self, request: ScreenCaptureRequest) -> ScreenCaptureChannel;
+}
+
 /// Receives player state for the host's media controls.
 pub trait MediaSessionPublisher: Send {
     /// Publish the latest player state. Must not block.
@@ -161,12 +169,13 @@ pub struct HostServices {
     pub notifications: Arc<dyn Notifier>,
     pub media_session: Arc<dyn MediaSessionFactory>,
     pub location: Arc<dyn LocationProvider>,
+    pub screen_capture: Arc<dyn ScreenCaptureProvider>,
 }
 
 impl HostServices {
     /// Services that never leave the process: an in-process clipboard, file
     /// choosers that fail, no URI handler, silent speech, no notifications,
-    /// no media controls and no location.
+    /// no media controls, no location and no screen capture.
     pub fn null() -> Self {
         Self {
             clipboard: Arc::new(InProcessClipboard::default()),
@@ -176,6 +185,7 @@ impl HostServices {
             notifications: Arc::new(UnavailableNotifier),
             media_session: Arc::new(NoMediaSession),
             location: Arc::new(NoLocation),
+            screen_capture: Arc::new(NoScreenCapture),
         }
     }
 
@@ -275,6 +285,16 @@ impl LocationProvider for NoLocation {
     fn locate(&self) -> LocationChannel {
         answered(LocationOutcome::Unavailable(
             "location is unavailable in this host".to_string(),
+        ))
+    }
+}
+
+struct NoScreenCapture;
+
+impl ScreenCaptureProvider for NoScreenCapture {
+    fn request(&self, _request: ScreenCaptureRequest) -> ScreenCaptureChannel {
+        answered(ScreenCaptureOutcome::Unavailable(
+            "screen capture is unavailable in this host".to_string(),
         ))
     }
 }

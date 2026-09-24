@@ -27,8 +27,8 @@ live-media = [
     "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
-    "dep:ashpd",
     "dep:tilo-callstream",
+    "ui/portal",
 ]
 
 [dependencies]
@@ -69,9 +69,6 @@ gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
-# Use ashpd's tokio-only workspace configuration; enabling async-std alongside
-# tokio is unsupported.
-ashpd = { workspace = true, optional = true }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]

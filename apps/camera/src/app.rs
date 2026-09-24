@@ -2508,15 +2508,10 @@ fn valid_frame(frame: &FrameBuf) -> bool {
         && frame.rgba.len() == expected
 }
 
-/// Best-effort hand-off to the system default handler for a URI. Never
-/// blocks and ignores failures — the clipboard copy is the guaranteed path.
+/// Best-effort hand-off to the host's URI handler. Never blocks and ignores
+/// failures — the clipboard copy is the guaranteed path.
 fn open_external(uri: &str) -> bool {
-    std::process::Command::new("xdg-open")
-        .arg(uri)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
+    ui::widget::try_open_external_url(uri).is_ok()
 }
 
 fn frame_image_fill(buf: FrameBuf) -> Image {

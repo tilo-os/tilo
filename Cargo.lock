@@ -2048,7 +2048,6 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
- "ashpd",
  "automerge",
  "dirs 6.0.0",
  "gstreamer",
