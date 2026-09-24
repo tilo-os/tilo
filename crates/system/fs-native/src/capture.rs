@@ -86,6 +86,17 @@ impl Node {
         }
     }
 
+    fn state(&self) -> NodeState {
+        NodeState {
+            kind: self.kind.clone(),
+            mode: self.mode,
+            size: self.size,
+            mtime_ns: self.mtime_ns,
+            ctime_ns: self.ctime_ns,
+            ino: self.ino,
+        }
+    }
+
     /// Whether nothing about the inode changed at all since `base`.
     fn untouched_since(&self, base: &Self) -> bool {
         self.ino == base.ino
@@ -133,9 +144,36 @@ pub struct Changeset {
     pub through: u64,
     pub ops: Vec<ChangeOp>,
     /// Placeholder or partially resident files that were written locally.
-    /// Their content can only be captured once they are fully resident.
+    /// Their content can only be captured once they are fully resident;
+    /// they are examined again in the next epoch.
     pub deferred: Vec<PathBuf>,
+    /// Placeholders now tracked without a published change: their content
+    /// is fixed by the version they were created from, but a later local
+    /// delete or rename of them must still be captured.
+    pub tracked: Vec<PathBuf>,
     pub stats: CaptureStats,
+}
+
+/// The persistable part of one captured node. Manifests are not included:
+/// after a restart a changed file is chunked from scratch.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NodeState {
+    pub kind: NodeKind,
+    pub mode: u32,
+    pub size: u64,
+    pub mtime_ns: i128,
+    pub ctime_ns: i128,
+    pub ino: u64,
+}
+
+/// What a restart needs to continue from the last epoch: the retained
+/// snapshot and the captured state of every path in it.
+#[derive(Clone, Debug)]
+pub struct CaptureState {
+    /// Number the next epoch will get.
+    pub next_epoch: u64,
+    pub snapshot: PathBuf,
+    pub nodes: Vec<(PathBuf, NodeState)>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +183,16 @@ pub struct CaptureConfig {
     /// Where epoch snapshots are created; same filesystem as `live`.
     pub epochs: PathBuf,
     pub hash_threads: usize,
+    /// Build content manifests for changed files. A consumer that hashes
+    /// the snapshot itself in another format turns this off; changes are
+    /// then detected from size, mtime and mode, and the snapshot file is
+    /// what it reads.
+    pub hash_content: bool,
+    /// Keep the previous epoch's snapshot until
+    /// [`EpochCapture::release_retired`] is called, so a consumer can
+    /// persist the new epoch before the one a restart would fall back to
+    /// disappears.
+    pub defer_release: bool,
 }
 
 impl CaptureConfig {
@@ -153,6 +201,8 @@ impl CaptureConfig {
             live: live.into(),
             epochs: epochs.into(),
             hash_threads: std::thread::available_parallelism().map_or(2, |n| n.get().min(8)),
+            hash_content: true,
+            defer_release: false,
         }
     }
 }
@@ -167,6 +217,13 @@ pub struct EpochCapture {
     cfg: CaptureConfig,
     prev: Option<EpochState>,
     next_epoch: u64,
+    /// Paths to examine in the next epoch even if the journal does not name
+    /// them (deferred placeholders, paths a consumer asks for).
+    dirty: HashSet<PathBuf>,
+    /// Snapshots of earlier epochs kept alive by `defer_release`.
+    retired: Vec<PathBuf>,
+    /// Compare the whole room in the next epoch.
+    rescan_next: bool,
 }
 
 struct Classified {
@@ -174,6 +231,7 @@ struct Classified {
     removes: Vec<(PathBuf, bool)>,
     jobs: Vec<HashJob>,
     deferred: Vec<PathBuf>,
+    tracked: Vec<(PathBuf, Node)>,
     examined: u64,
 }
 
@@ -191,7 +249,141 @@ impl EpochCapture {
             cfg,
             prev: None,
             next_epoch: 1,
+            dirty: HashSet::new(),
+            retired: Vec::new(),
+            rescan_next: false,
         })
+    }
+
+    /// Continues from a persisted epoch. The next capture compares the
+    /// whole room against `state.snapshot`, which finds everything that
+    /// changed while nothing was journaling (a crash, a stopped daemon) by
+    /// its metadata; only files whose inode, size, mtime or ctime moved are
+    /// read.
+    pub fn resume(cfg: CaptureConfig, state: CaptureState) -> io::Result<Self> {
+        fs::create_dir_all(&cfg.epochs)?;
+        if !state.snapshot.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("retained snapshot {} is gone", state.snapshot.display()),
+            ));
+        }
+        let nodes = state
+            .nodes
+            .into_iter()
+            .map(|(path, n)| {
+                (
+                    path,
+                    Node {
+                        kind: n.kind,
+                        mode: n.mode,
+                        size: n.size,
+                        mtime_ns: n.mtime_ns,
+                        manifest: None,
+                        ctime_ns: n.ctime_ns,
+                        ino: n.ino,
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
+            cfg,
+            prev: Some(EpochState {
+                snapshot: state.snapshot,
+                nodes,
+            }),
+            next_epoch: state.next_epoch.max(1),
+            dirty: HashSet::new(),
+            retired: Vec::new(),
+            rescan_next: true,
+        })
+    }
+
+    /// The state a restart continues from, while an epoch is retained.
+    pub fn state(&self) -> Option<CaptureState> {
+        let prev = self.prev.as_ref()?;
+        Some(CaptureState {
+            next_epoch: self.next_epoch,
+            snapshot: prev.snapshot.clone(),
+            nodes: prev
+                .nodes
+                .iter()
+                .map(|(p, n)| (p.clone(), n.state()))
+                .collect(),
+        })
+    }
+
+    /// Number the next epoch will get.
+    pub fn next_epoch(&self) -> u64 {
+        self.next_epoch
+    }
+
+    /// The captured state of one path.
+    pub fn node_state(&self, rel: &Path) -> Option<NodeState> {
+        self.prev.as_ref()?.nodes.get(rel).map(Node::state)
+    }
+
+    /// Records the live state of `rel` as already captured, without
+    /// publishing it: for changes the consumer made itself (applying a
+    /// remote version), which the journal does not report. A later local
+    /// change or removal of the path is then diffed against it.
+    pub fn track(&mut self, rel: &Path) -> io::Result<()> {
+        let Some(prev) = self.prev.as_mut() else {
+            // The first epoch compares the whole room anyway.
+            return Ok(());
+        };
+        let abs = self.cfg.live.join(rel);
+        let meta = match fs::symlink_metadata(&abs) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                untrack_in(&mut prev.nodes, rel);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let ft = meta.file_type();
+        let kind = if ft.is_dir() {
+            NodeKind::Dir
+        } else if ft.is_symlink() {
+            NodeKind::Symlink(fs::read_link(&abs)?)
+        } else if ft.is_file() {
+            NodeKind::File
+        } else {
+            return Ok(());
+        };
+        prev.nodes
+            .insert(rel.to_path_buf(), Node::from_metadata(&meta, kind));
+        Ok(())
+    }
+
+    /// Forgets `rel` and everything below it, for removals the consumer
+    /// made itself.
+    pub fn untrack(&mut self, rel: &Path) {
+        if let Some(prev) = self.prev.as_mut() {
+            untrack_in(&mut prev.nodes, rel);
+        }
+    }
+
+    /// Compares the whole room in the next epoch, for when the journal may
+    /// have missed changes.
+    pub fn request_rescan(&mut self) {
+        self.rescan_next = true;
+    }
+
+    /// Examines `rel` in the next epoch even if the journal does not name it.
+    pub fn mark_dirty(&mut self, rel: &Path) {
+        self.dirty.insert(rel.to_path_buf());
+    }
+
+    /// Deletes the snapshots of earlier epochs kept by `defer_release`.
+    pub fn release_retired(&mut self) -> io::Result<()> {
+        while let Some(s) = self.retired.pop() {
+            if let Err(e) = btrfs::delete_subvolume(&s) {
+                self.retired.push(s);
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 
     /// Captured state of every synced path after the last epoch.
@@ -252,7 +444,8 @@ impl EpochCapture {
         snapshot: PathBuf,
         batch: &JournalBatch,
     ) -> io::Result<Changeset> {
-        let full = self.prev.is_none() || batch.rescan.is_some();
+        let full = self.prev.is_none() || batch.rescan.is_some() || self.rescan_next;
+        self.rescan_next = false;
         let (candidates, order) = self.candidates(&snapshot, batch, full)?;
 
         let empty = BTreeMap::new();
@@ -262,11 +455,17 @@ impl EpochCapture {
             removes,
             jobs,
             deferred,
+            tracked,
             examined,
         } = self.classify(&snapshot, candidates, full)?;
         let t_scan = t0.elapsed();
 
-        let (hashed, chunk_stats) = run_jobs(jobs, self.cfg.hash_threads.max(1), &snapshot)?;
+        let (hashed, chunk_stats) = run_jobs(
+            jobs,
+            self.cfg.hash_threads.max(1),
+            &snapshot,
+            self.cfg.hash_content,
+        )?;
         let files_hashed = hashed.len() as u64;
         upserts.extend(hashed);
         let t_hash = t0.elapsed();
@@ -274,9 +473,17 @@ impl EpochCapture {
         // Drop no-op upserts, then order everything.
         upserts.retain(|(p, n)| prev_nodes.get(p).is_none_or(|old| !old.same_replicated(n)));
         let ops = order_ops(upserts, removes, &order, full);
-        let new_nodes = next_state(prev_nodes, &ops, full, &snapshot);
+        let mut new_nodes = next_state(prev_nodes, &ops, full, &snapshot);
+        let tracked_paths: Vec<PathBuf> = tracked.iter().map(|(p, _)| p.clone()).collect();
+        new_nodes.extend(tracked);
+        self.dirty.clear();
+        self.dirty.extend(deferred.iter().cloned());
         if let Some(old) = self.prev.take() {
-            btrfs::delete_subvolume(&old.snapshot)?;
+            if self.cfg.defer_release {
+                self.retired.push(old.snapshot);
+            } else {
+                btrfs::delete_subvolume(&old.snapshot)?;
+            }
         }
         self.prev = Some(EpochState {
             snapshot,
@@ -287,6 +494,7 @@ impl EpochCapture {
             through: batch.through,
             ops,
             deferred,
+            tracked: tracked_paths,
             stats: CaptureStats {
                 snapshot: t_snap,
                 scan: t_scan.saturating_sub(t_snap),
@@ -327,6 +535,7 @@ impl EpochCapture {
         let mut removes: Vec<(PathBuf, bool)> = Vec::new();
         let mut jobs: Vec<HashJob> = Vec::new();
         let mut deferred = Vec::new();
+        let mut tracked = Vec::new();
         let mut examined = 0u64;
         for path in candidates {
             examined = examined.saturating_add(1);
@@ -364,9 +573,10 @@ impl EpochCapture {
                 if is_placeholder(&abs) {
                     // Its content is fixed by the version it was created
                     // from. The journal naming it means a local write.
-                    if !full {
-                        deferred.push(path);
+                    if !full && prev_nodes.contains_key(&path) {
+                        deferred.push(path.clone());
                     }
+                    tracked.push((path, node));
                     continue;
                 }
                 let base_path = match prev_nodes.get(&path) {
@@ -392,6 +602,7 @@ impl EpochCapture {
             removes,
             jobs,
             deferred,
+            tracked,
             examined,
         })
     }
@@ -412,6 +623,10 @@ impl EpochCapture {
                 candidates.extend(prev.nodes.keys().cloned());
             }
         } else {
+            for p in &self.dirty {
+                order.insert(p.clone(), u64::MAX);
+                candidates.insert(p.clone());
+            }
             for e in &batch.entries {
                 for p in e.paths() {
                     order.insert(p.to_path_buf(), e.seq);
@@ -450,10 +665,22 @@ impl EpochCapture {
     /// Deletes the retained snapshot. Call before dropping the capture
     /// when the snapshot is not needed for a restart.
     pub fn release(&mut self) -> io::Result<()> {
+        self.release_retired()?;
         if let Some(old) = self.prev.take() {
             btrfs::delete_subvolume(&old.snapshot)?;
         }
         Ok(())
+    }
+}
+
+fn untrack_in(nodes: &mut BTreeMap<PathBuf, Node>, rel: &Path) {
+    let below: Vec<PathBuf> = nodes
+        .range(rel.to_path_buf()..)
+        .take_while(|(k, _)| k.starts_with(rel))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in below {
+        nodes.remove(&k);
     }
 }
 
@@ -574,7 +801,11 @@ impl<'a> LocalOnly<'a> {
     }
 }
 
-fn hash_one(job: HashJob, snapshot: &Path) -> io::Result<((PathBuf, Node), ChunkStats)> {
+fn hash_one(
+    job: HashJob,
+    snapshot: &Path,
+    hash_content: bool,
+) -> io::Result<((PathBuf, Node), ChunkStats)> {
     let HashJob {
         path,
         mut node,
@@ -582,6 +813,10 @@ fn hash_one(job: HashJob, snapshot: &Path) -> io::Result<((PathBuf, Node), Chunk
     } = job;
     let file = File::open(snapshot.join(&path))?;
     let len = file.metadata()?.len();
+    if !hash_content {
+        node.size = len;
+        return Ok(((path, node), ChunkStats::default()));
+    }
     let (manifest, stats) = if let Some((base_file, base_manifest)) = base {
         let old = File::open(&base_file)?;
         let changed = extents::diff_files(&old, &file)?;
@@ -608,7 +843,12 @@ fn hash_one(job: HashJob, snapshot: &Path) -> io::Result<((PathBuf, Node), Chunk
 
 type HashResults = (Vec<(PathBuf, Node)>, ChunkStats);
 
-fn run_jobs(jobs: Vec<HashJob>, threads: usize, snapshot: &Path) -> io::Result<HashResults> {
+fn run_jobs(
+    jobs: Vec<HashJob>,
+    threads: usize,
+    snapshot: &Path,
+    hash_content: bool,
+) -> io::Result<HashResults> {
     if jobs.is_empty() {
         return Ok((Vec::new(), ChunkStats::default()));
     }
@@ -626,7 +866,7 @@ fn run_jobs(jobs: Vec<HashJob>, threads: usize, snapshot: &Path) -> io::Result<H
                     let Some(slot) = jobs.get(i) else { break };
                     let job = slot.lock().ok().and_then(|mut g| g.take());
                     let Some(job) = job else { continue };
-                    match hash_one(job, snapshot) {
+                    match hash_one(job, snapshot, hash_content) {
                         Ok((r, st)) => {
                             if let Ok(mut g) = results.lock() {
                                 g.push(r);

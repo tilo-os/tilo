@@ -364,3 +364,126 @@ fn writers_keep_writing_while_epochs_are_cut() {
     eprintln!("longest single 4 KiB append while capturing: {max_write:?}");
     cap.release().unwrap();
 }
+
+fn op_paths(cs: &Changeset) -> Vec<String> {
+    cs.ops
+        .iter()
+        .map(|op| match op {
+            ChangeOp::Upsert { path, .. } => format!("+{}", path.display()),
+            ChangeOp::Remove { path, .. } => format!("-{}", path.display()),
+        })
+        .collect()
+}
+
+#[test]
+fn a_resumed_capture_finds_what_changed_while_nothing_was_journaling() {
+    let Some(s) = btrfs_scratch("capture_resume") else {
+        return;
+    };
+    fs::create_dir_all(s.live.join("d")).unwrap();
+    for name in ["a", "b", "c", "d/e"] {
+        fs::write(s.live.join(name), name.as_bytes()).unwrap();
+    }
+    let mut cfg = CaptureConfig::new(&s.live, &s.epochs);
+    cfg.defer_release = true;
+    let mut cap = EpochCapture::new(cfg.clone()).unwrap();
+    cap.capture(&batch(&[])).unwrap();
+    let state = cap.state().unwrap();
+    assert_eq!(state.next_epoch, 2);
+    assert_eq!(state.nodes.len(), 5, "{:?}", state.nodes);
+    // The process goes away without releasing its snapshot.
+    drop(cap);
+
+    fs::write(s.live.join("a"), b"changed while stopped").unwrap();
+    fs::remove_file(s.live.join("b")).unwrap();
+    fs::write(s.live.join("new"), b"n").unwrap();
+
+    let mut cap = EpochCapture::resume(cfg, state).unwrap();
+    let cs = cap.capture(&batch(&[])).unwrap();
+    assert_eq!(cs.epoch, 2);
+    let mut got = op_paths(&cs);
+    got.sort();
+    assert_eq!(got, ["+a", "+new", "-b"]);
+    assert!(cs.stats.full_rescan);
+    // Unchanged files were compared by metadata only.
+    assert_eq!(cs.stats.files_hashed, 2);
+    cap.release().unwrap();
+}
+
+#[test]
+fn a_tracked_path_is_diffed_against_and_its_local_removal_is_captured() {
+    let Some(s) = btrfs_scratch("capture_track") else {
+        return;
+    };
+    let mut cap = EpochCapture::new(CaptureConfig::new(&s.live, &s.epochs)).unwrap();
+    cap.capture(&batch(&[])).unwrap();
+
+    // Written by the consumer itself (a remote version), never journaled.
+    fs::write(s.live.join("remote.txt"), b"from a peer").unwrap();
+    cap.track(Path::new("remote.txt")).unwrap();
+    assert!(cap.node_state(Path::new("remote.txt")).is_some());
+
+    // A journal entry that names it without a change publishes nothing.
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Attrib, "remote.txt", false)]))
+        .unwrap();
+    assert!(cs.ops.is_empty(), "{:?}", op_paths(&cs));
+
+    // A local delete of it is captured.
+    fs::remove_file(s.live.join("remote.txt")).unwrap();
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Delete, "remote.txt", false)]))
+        .unwrap();
+    assert_eq!(op_paths(&cs), ["-remote.txt"]);
+
+    // Untracking forgets a path the consumer removed itself.
+    fs::write(s.live.join("gone"), b"x").unwrap();
+    cap.track(Path::new("gone")).unwrap();
+    fs::remove_file(s.live.join("gone")).unwrap();
+    cap.untrack(Path::new("gone"));
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Delete, "gone", false)]))
+        .unwrap();
+    assert!(cs.ops.is_empty(), "{:?}", op_paths(&cs));
+    cap.release().unwrap();
+}
+
+#[test]
+fn without_content_hashing_changes_are_still_found_by_metadata() {
+    let Some(s) = btrfs_scratch("capture_nohash") else {
+        return;
+    };
+    fs::write(s.live.join("f"), b"one").unwrap();
+    let mut cfg = CaptureConfig::new(&s.live, &s.epochs);
+    cfg.hash_content = false;
+    let mut cap = EpochCapture::new(cfg).unwrap();
+    let cs = cap.capture(&batch(&[])).unwrap();
+    assert_eq!(op_paths(&cs), ["+f"]);
+    assert!(upserts(&cs).iter().all(|(_, id)| id.is_none()));
+    fs::write(s.live.join("f"), b"two, longer").unwrap();
+    let cs = cap
+        .capture(&batch(&[(JournalOp::Modify, "f", false)]))
+        .unwrap();
+    assert_eq!(op_paths(&cs), ["+f"]);
+    let cs = cap
+        .capture(&batch(&[(JournalOp::CloseWrite, "f", false)]))
+        .unwrap();
+    assert!(cs.ops.is_empty());
+    cap.release().unwrap();
+}
+
+#[test]
+fn a_path_marked_dirty_is_examined_without_a_journal_entry() {
+    let Some(s) = btrfs_scratch("capture_dirty") else {
+        return;
+    };
+    let mut cap = EpochCapture::new(CaptureConfig::new(&s.live, &s.epochs)).unwrap();
+    cap.capture(&batch(&[])).unwrap();
+    fs::write(s.live.join("quiet"), b"never journaled").unwrap();
+    let cs = cap.capture(&batch(&[])).unwrap();
+    assert!(cs.ops.is_empty());
+    cap.mark_dirty(Path::new("quiet"));
+    let cs = cap.capture(&batch(&[])).unwrap();
+    assert_eq!(op_paths(&cs), ["+quiet"]);
+    cap.release().unwrap();
+}
