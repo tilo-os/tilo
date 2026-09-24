@@ -154,6 +154,37 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
+const OMITTED_FILESYSTEM_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
+
+fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS.len()], String> {
+    let mut supported = [true; FILESYSTEMS.len()];
+    for line in manifest.lines() {
+        let Some(index) = FILESYSTEMS
+            .iter()
+            .position(|filesystem| *filesystem == line)
+        else {
+            return Err("The image has an invalid initramfs driver manifest".into());
+        };
+        if !supported[index] {
+            return Err("The image has a duplicate initramfs driver entry".into());
+        }
+        supported[index] = false;
+    }
+    Ok(supported)
+}
+
+fn load_filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let path = std::path::Path::new(OMITTED_FILESYSTEM_DRIVERS);
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "The image's initramfs driver manifest is unavailable".to_string())?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err("The image's initramfs driver manifest is not a trusted regular file".into());
+    }
+    let manifest = std::fs::read_to_string(path)
+        .map_err(|_| "The image's initramfs driver manifest is unreadable".to_string())?;
+    filesystem_support_from_manifest(&manifest)
+}
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.";
 
@@ -1056,6 +1087,9 @@ pub struct InstallerApp {
     guided_root_partuuid: String,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
+    /// Image initramfs policy; false means its root driver is omitted.
+    supported_filesystems: [bool; FILESYSTEMS.len()],
+    filesystem_policy_error: Option<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor (only with
     /// encryption). Default `false`.
     fido2: bool,
@@ -1186,6 +1220,7 @@ impl InstallerApp {
             }
             Err(message) => s.status = message,
         }
+        s.set_filesystem_support(load_filesystem_support());
         s
     }
 
@@ -1268,6 +1303,8 @@ impl InstallerApp {
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
             selected_fs: 0,
+            supported_filesystems: [true; FILESYSTEMS.len()],
+            filesystem_policy_error: None,
             fido2: false,
             recovery_ack: false,
             tpm2: has_tpm2(),
@@ -1373,6 +1410,53 @@ impl InstallerApp {
         };
         self.profile_completion = Some(completion);
         self.status = status;
+    }
+
+    fn set_filesystem_support(&mut self, result: Result<[bool; FILESYSTEMS.len()], String>) {
+        match result {
+            Ok(supported) => {
+                self.supported_filesystems = supported;
+                self.filesystem_policy_error = None;
+                if !supported.get(self.selected_fs).copied().unwrap_or(false) {
+                    if let Some(completion) = self.profile_completion.as_mut() {
+                        completion.filesystem = FieldCompletion::NeedsRepair;
+                    }
+                    if let Some(index) = supported.iter().position(|available| *available) {
+                        self.selected_fs = index;
+                    }
+                    self.status = "The preselected filesystem cannot boot from this image; choose a supported filesystem.".into();
+                }
+            }
+            Err(message) => {
+                self.supported_filesystems = [false; FILESYSTEMS.len()];
+                self.filesystem_policy_error = Some(message.clone());
+                if let Some(completion) = self.profile_completion.as_mut() {
+                    completion.filesystem = FieldCompletion::NeedsRepair;
+                }
+                self.status = format!("{message}. Installation is unavailable.");
+            }
+        }
+    }
+
+    fn filesystem_policy_ready(&self) -> bool {
+        self.filesystem_policy_error.is_none()
+            && self.supported_filesystems.get(self.selected_fs) == Some(&true)
+    }
+
+    fn available_filesystem_indices(&self) -> Vec<usize> {
+        (0..FILESYSTEMS.len())
+            .filter(|index| self.supported_filesystems[*index])
+            .collect()
+    }
+
+    fn filesystem_policy_message(&self) -> String {
+        if let Some(message) = &self.filesystem_policy_error {
+            return format!("{message}. Installation is unavailable.");
+        }
+        format!(
+            "{} cannot boot from this image's initramfs; choose a supported filesystem.",
+            self.filesystem()
+        )
     }
 
     /// Wire the shared event-loop-proxy slot used to stream install
@@ -1831,6 +1915,9 @@ impl InstallerApp {
             .map_err(str::to_string)?;
         }
         if self.step == Step::Options {
+            if !self.filesystem_policy_ready() {
+                return Err(self.filesystem_policy_message());
+            }
             if !valid_locale(self.locale.trim()) {
                 return Err("Choose a supported language and locale from the list".into());
             }
@@ -1848,6 +1935,15 @@ impl InstallerApp {
 
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
+        if self.step == Step::Account
+            && self
+                .profile_completion
+                .is_some_and(ProfileCompletion::options_complete)
+            && !self.filesystem_policy_ready()
+        {
+            self.set_status(&self.filesystem_policy_message());
+            return;
+        }
         if self.step == Step::Disk {
             if self.selected_disk_ref().is_some_and(Disk::blocks_install) {
                 self.set_status("The running installer disk cannot be used as its own destination");
@@ -2018,6 +2114,10 @@ impl InstallerApp {
     /// blocking run when no proxy is wired (tests / no event loop).
     fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.install_launched {
+            return;
+        }
+        if !self.filesystem_policy_ready() {
+            self.set_status(&self.filesystem_policy_message());
             return;
         }
         let Some(disk) = self.selected_dev() else {
@@ -2660,19 +2760,32 @@ impl InstallerApp {
 
         if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
             children.push(Box::new(Text::new("Filesystem").with_size(base)));
-            children.push(Box::new(SegChoice::new(
-                FILESYSTEMS
+            let choices = self.available_filesystem_indices();
+            if !choices.is_empty() {
+                let selected = choices
                     .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                (0..FILESYSTEMS.len()).map(fs_path).collect(),
-                self.selected_fs,
-            )));
-            children.push(Box::new(
-                Text::new(fs_description(self.selected_fs))
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
+                    .position(|index| *index == self.selected_fs)
+                    .unwrap_or(0);
+                children.push(Box::new(SegChoice::new(
+                    choices
+                        .iter()
+                        .map(|index| FILESYSTEMS[*index].to_string())
+                        .collect(),
+                    choices.iter().map(|index| fs_path(*index)).collect(),
+                    selected,
+                )));
+                children.push(Box::new(
+                    Text::new(fs_description(self.selected_fs))
+                        .with_size(sm)
+                        .with_color(dim),
+                ));
+            } else {
+                children.push(Box::new(
+                    Text::new(&self.filesystem_policy_message())
+                        .with_size(sm)
+                        .with_color(theme.tokens.colors.semantic.danger),
+                ));
+            }
         }
 
         children.push(Box::new(Text::new("Disk encryption").with_size(base)));
@@ -2749,7 +2862,12 @@ impl InstallerApp {
             ));
         }
 
-        children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
+        children.push(nav_row(
+            Step::Options,
+            NEXT_PATH,
+            "Next",
+            !self.filesystem_policy_ready(),
+        ));
     }
 
     fn compose_destructive_confirmation(
@@ -2956,7 +3074,9 @@ impl InstallerApp {
 
         // Begin is gated on the recovery-key acknowledgement when
         // encrypting (otherwise always enabled).
-        let begin_disabled = !self.encryption_ready() || !self.destructive_confirmation_ready();
+        let begin_disabled = !self.encryption_ready()
+            || !self.destructive_confirmation_ready()
+            || !self.filesystem_policy_ready();
         children.push(nav_row(
             Step::Review,
             BEGIN_PATH,
@@ -4381,6 +4501,70 @@ mod tests {
         assert_eq!(app.selected_fs, 2);
         assert_eq!(app.filesystem(), "xfs");
         assert!(!read_bool(&doc, &root, fs_path(2).as_str()).unwrap_or(false));
+    }
+
+    #[test]
+    fn image_driver_manifest_filters_choices_and_rejects_stale_selection() {
+        assert_eq!(
+            filesystem_support_from_manifest("ext4\nxfs\n").unwrap(),
+            [true, false, false]
+        );
+        assert_eq!(
+            filesystem_support_from_manifest("xfs\n").unwrap(),
+            [true, true, false]
+        );
+        assert!(filesystem_support_from_manifest("unknown\n").is_err());
+
+        let mut app = InstallerApp::with_disks(sample());
+        app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
+        assert_eq!(app.available_filesystem_indices(), vec![0]);
+        app.set_filesystem_support(filesystem_support_from_manifest("xfs\n"));
+        assert_eq!(app.available_filesystem_indices(), vec![0, 1]);
+        app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        let _ = doc.put(&root, fs_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert_eq!(
+            app.filesystem(),
+            "btrfs",
+            "hidden ext4 CRDT actions must be rejected"
+        );
+        assert!(!InstallerApp::read_flag(&doc, &root, fs_path(1).as_str()));
+
+        app.selected_fs = 1; // stale selection from a media profile or UI rebuild
+        assert!(!app.filesystem_policy_ready());
+        let mut review = InstallerApp::for_shot(Step::Review);
+        review.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
+        review.selected_fs = 1;
+        review.begin_install(&doc, &root);
+        assert!(!review.install_launched);
+        assert_eq!(review.step, Step::Review);
+    }
+
+    #[test]
+    fn unsupported_profile_filesystem_requires_repair_and_missing_manifest_blocks_install() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: Some("studio".into()),
+            username: Some("ada".into()),
+            full_name: None,
+            locale: Some("en_US.UTF-8".into()),
+            keyboard: Some("us".into()),
+            timezone: Some("UTC".into()),
+            filesystem: Some("ext4".into()),
+            repairs: Vec::new(),
+        });
+        app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
+        assert_eq!(app.filesystem(), "btrfs");
+        assert!(!app.profile_completion.unwrap().options_complete());
+
+        app.set_filesystem_support(Err("manifest missing".into()));
+        assert!(!app.filesystem_policy_ready());
+        app.step = Step::Options;
+        assert!(app.validate_current_step_details().is_err());
     }
 
     #[test]
