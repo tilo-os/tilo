@@ -15,6 +15,7 @@
 
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
+pub mod location;
 pub mod mpris;
 pub mod portal;
 pub mod services;

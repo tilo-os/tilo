@@ -8,7 +8,8 @@
 //! - opener: the desktop's registered URI handler through `open`;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: Windows toasts (with the `notifications` feature);
-//! - media sessions: MPRIS on the session bus (with the `mpris` feature).
+//! - media sessions: MPRIS on the session bus (with the `mpris` feature);
+//! - location: the XDG Location portal (with the `portal` feature).
 //!
 //! It is also the one place the toolkit reads the process environment:
 //! [`process_environment`] turns launcher variables, XDG paths and
@@ -34,6 +35,7 @@ pub fn services(app_id: Option<&str>) -> HostServices {
         speech: Arc::new(SystemSpeech),
         notifications: notifier(app_id),
         media_session: Arc::new(super::mpris::DesktopMediaSessions),
+        location: Arc::new(super::location::DesktopLocation),
     }
 }
 

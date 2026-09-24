@@ -46,7 +46,6 @@ use crate::doc::MapsDoc;
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
 use crate::geo::{self, Projection};
-use crate::location::{self, LocationChannel, LocationOutcome};
 use crate::map_controls::{MapControlAction, MapControls};
 use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{
@@ -58,6 +57,7 @@ use crate::sample::{self, Basemap};
 use crate::search_box::{SearchBox, SearchEffect, SearchHit, SearchKeyEffect, SearchOverlay};
 use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
+use ui::location::{self, LocationChannel, LocationOutcome};
 
 mod interaction;
 
@@ -5965,6 +5965,17 @@ impl Widget for MapsApp {
     }
 }
 
+/// A location request answered by a recording host with `outcome` — the
+/// production request path, without the device's location service.
+#[cfg(test)]
+fn host_location(outcome: LocationOutcome) -> LocationChannel {
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_location(outcome);
+    let channel = ui::host::scoped(&services, location::request_location);
+    assert_eq!(recorder.location_requests(), 1);
+    channel
+}
+
 #[cfg(test)]
 mod local_layout_tests {
     use super::*;
@@ -6312,9 +6323,9 @@ mod local_layout_tests {
 
         let invocation = InvocationId::default();
         app.location_invocation = Some(invocation);
-        app.location_rx = Some(crate::location::inject_for_test(
-            LocationOutcome::Unavailable("permission denied".into()),
-        ));
+        app.location_rx = Some(host_location(LocationOutcome::Unavailable(
+            "permission denied".into(),
+        )));
         app.drain_location();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &state.doc, &state.root),
@@ -7743,7 +7754,7 @@ mod local_layout_tests {
 
     // --- Location services -------------------------------------------------
 
-    /// The "use my location" success path: a mocked portal fix becomes the route
+    /// The "use my location" success path: a host-provided fix becomes the route
     /// origin and the journey re-plans from it. The real coordinates depend on
     /// the host location service + user permission (unverifiable headlessly);
     /// this proves the result *handling* around the portal.
@@ -7754,7 +7765,7 @@ mod local_layout_tests {
         a.enter_directions();
 
         a.locating = true;
-        a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+        a.location_rx = Some(host_location(LocationOutcome::Located {
             lat: 48.11,
             lon: 11.53,
             accuracy_m: 8.0,
@@ -7789,7 +7800,7 @@ mod local_layout_tests {
         let mut a = app_at(1280.0, 800.0);
         let before = a.model.origin;
         a.locating = true;
-        a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+        a.location_rx = Some(host_location(LocationOutcome::Unavailable(
             "permission denied".into(),
         )));
         a.drain_location();
