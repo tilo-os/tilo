@@ -323,6 +323,13 @@ pub fn rank_for(policy: HwPolicy, kind: DecoderKind) -> u32 {
     }
 }
 
+pub mod realtime;
+
+pub use realtime::{
+    CodecElement, CodecFamily, CodecTier, RealtimePolicy, StreamCodec, realtime_candidates,
+    realtime_decoders, realtime_encoders,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
