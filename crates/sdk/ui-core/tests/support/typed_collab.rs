@@ -27,8 +27,8 @@ use std::thread;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
-    action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
-    presence_event, presence_handle, presence_payload, presence_stream, stream,
+    action_stream, channel_handle, collab_service, context_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, stream,
 };
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
@@ -373,21 +373,6 @@ impl channel_handle::Server for ChannelHandle {
         results.get().set_stream(client);
         Promise::ok(())
     }
-
-    fn subscribe_action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeActionCatalogueParams,
-        mut results: channel_handle::SubscribeActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        let client: action_catalogue_stream::Client =
-            capnp_rpc::new_client(EmptyActionCatalogueStream {
-                initial: RefCell::new(Some(
-                    serde_json::json!({"version": 1, "surfaces": []}).to_string(),
-                )),
-            });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
 }
 
 struct OpStream {
@@ -430,24 +415,6 @@ impl context_stream::Server for EmptyContextStream {
         _results: context_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(std::future::pending())
-    }
-}
-
-struct EmptyActionCatalogueStream {
-    initial: RefCell<Option<String>>,
-}
-
-impl action_catalogue_stream::Server for EmptyActionCatalogueStream {
-    fn read(
-        self: Rc<Self>,
-        _params: action_catalogue_stream::ReadParams,
-        mut results: action_catalogue_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let Some(initial) = self.initial.borrow_mut().take() else {
-            return Promise::from_future(std::future::pending());
-        };
-        results.get().set_catalogue_json(&initial);
-        Promise::ok(())
     }
 }
 

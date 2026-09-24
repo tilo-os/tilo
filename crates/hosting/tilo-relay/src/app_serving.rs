@@ -10,21 +10,21 @@
 //! Without one, the capability stays off and such frames are refused as
 //! undeliverable.
 
-use tilo_actions::remote::{ActionHost, Caller, RemoteActionMessage};
+use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
 
 /// Answers remote-action requests addressed to this host.
 ///
 /// `caller` is the principal the relay authenticated for the connection the
 /// request arrived on; implementations decide authority from it alone.
 pub trait AppServingPlane: Send + Sync {
-    /// Answer one message for `workspace_id`, or `None` when it needs no
-    /// reply.
+    /// Answer one message for `workspace_id` — whenever the answer is ready,
+    /// never blocking the connection — or `None` when it needs no reply.
     fn serve(
         &self,
         workspace_id: u64,
         caller: &Caller,
         message: RemoteActionMessage,
-    ) -> Option<RemoteActionMessage>;
+    ) -> Option<Pending<RemoteActionMessage>>;
 }
 
 /// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.
@@ -45,7 +45,7 @@ impl<H: ActionHost + Send + Sync> AppServingPlane for ActionHostPlane<H> {
         _workspace_id: u64,
         caller: &Caller,
         message: RemoteActionMessage,
-    ) -> Option<RemoteActionMessage> {
+    ) -> Option<Pending<RemoteActionMessage>> {
         tilo_actions::remote::serve(&self.host, caller, message)
     }
 }

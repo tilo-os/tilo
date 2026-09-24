@@ -280,6 +280,16 @@ pub enum NeighbourMsg {
         publisher: PeerId,
         snapshot: Vec<u8>,
     },
+    /// One remote-action frame (`tilo_actions::remote::RemoteActionFrame`
+    /// bytes) for exactly one authenticated device: a request to list,
+    /// invoke, observe or cancel its actions, or the answer to one.
+    ///
+    /// It travels only on an exact-target route, never workspace-wide
+    /// gossip, so arguments and results are not disclosed to the rest of
+    /// the room. The receiver takes the caller from the authenticated
+    /// transport; nothing in the frame names it. Appended to preserve all
+    /// existing Postcard discriminants.
+    RemoteAction { frame: Vec<u8> },
 }
 
 #[cfg(test)]
@@ -489,6 +499,12 @@ mod tests {
                     snapshot: vec![1, 2, 3],
                 },
             ),
+            (
+                "remote action",
+                NeighbourMsg::RemoteAction {
+                    frame: b"{}".to_vec(),
+                },
+            ),
         ]
     }
 
@@ -573,10 +589,11 @@ mod tests {
             NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
             NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
             NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+            NeighbourMsg::RemoteAction { .. } => "RemoteAction",
         }
     }
 
-    const VARIANT_COUNT: usize = 20;
+    const VARIANT_COUNT: usize = 21;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -679,6 +696,7 @@ mod tests {
                 "07ef9baf0503010203",
             ),
         ),
+        ("remote action", "14027b7d"),
         (
             "signed app document",
             concat!(

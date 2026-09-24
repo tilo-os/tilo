@@ -3,6 +3,9 @@ mod pixels;
 use super::*;
 use std::path::Path;
 use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+};
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
 const CALLER: &str = "dev.qos.edited-handoff-proof";
@@ -28,19 +31,9 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
             std::thread::sleep(Duration::from_millis(20));
         }
         let request: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
-        manager.send(CollabRequest::InvokePublishedAction {
-            request_id: sequence,
-            peer_id: request["peer"].as_u64().ok_or("missing peer")?,
-            resource: request["resource"]
-                .as_str()
-                .ok_or("missing resource")?
-                .into(),
-            action: request["action"].as_str().ok_or("missing action")?.into(),
-            arguments: request["arguments"]
-                .as_object()
-                .ok_or("missing arguments")?
-                .clone(),
-            confirmation: json!({}),
+        let invocation = tilo_actions::InvocationId::new();
+        manager.send(CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(invoke_request(&request, invocation)?),
         });
         let deadline = Instant::now();
         let result = loop {
@@ -49,22 +42,23 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
             }
             let mut finished = None;
             for event in manager.poll() {
-                if let CollabEvent::PublishedInvocationResult { request_id, result } = event {
-                    if request_id != sequence {
+                let CollabEvent::RemoteAction { message } = event else {
+                    continue;
+                };
+                let update = match invocation_update(message, invocation) {
+                    Some(Ok(update)) => update,
+                    Some(Err(error)) => {
+                        finished = Some(json!({"error": error}));
                         continue;
                     }
-                    match result {
-                        Err(error) => finished = Some(json!({"error":error})),
-                        Ok((id, update)) if update.is_terminal() => {
-                            finished = Some(json!({"id":id,"update":update}))
-                        }
-                        Ok((id, _)) => {
-                            manager.send(CollabRequest::PublishedInvocationStatus {
-                                request_id: sequence,
-                                id,
-                            });
-                        }
-                    }
+                    None => continue,
+                };
+                if update.is_terminal() {
+                    finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
+                } else {
+                    manager.send(CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Observe { invocation },
+                    });
                 }
             }
             if let Some(result) = finished {
@@ -77,6 +71,68 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
         std::fs::rename(temporary, root.join(format!("response-{sequence}.json")))?;
     }
     Ok(())
+}
+
+/// The typed invocation a helper request file describes.
+fn invoke_request(
+    request: &serde_json::Value,
+    invocation: tilo_actions::InvocationId,
+) -> Result<InvokeRequest> {
+    let field = |name: &'static str| request.get(name).ok_or_else(|| format!("missing {name}"));
+    Ok(InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: field("peer")?.as_u64().ok_or("missing peer")?.to_string(),
+            address: tilo_actions::ActionAddress::new(
+                field("resource")?.as_str().ok_or("missing resource")?,
+                field("action")?.as_str().ok_or("missing action")?,
+            ),
+        },
+        argument: InvokeArgument::Json(
+            field("arguments")?
+                .as_object()
+                .ok_or("missing arguments")?
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+    })
+}
+
+/// The invocation state `message` reports for `invocation`: `None` when it
+/// concerns something else, `Err` when the host rejected or forgot it.
+fn invocation_update(
+    message: RemoteActionMessage,
+    invocation: tilo_actions::InvocationId,
+) -> Option<std::result::Result<InvocationUpdate, String>> {
+    match message {
+        RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
+            Some(match receipt.status {
+                ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                ReceiptStatus::Accepted => Ok(InvocationUpdate::Accepted { invocation }),
+                ReceiptStatus::Completed { output } => {
+                    Ok(InvocationUpdate::Succeeded { invocation, output })
+                }
+                ReceiptStatus::Failed { error } => {
+                    Ok(InvocationUpdate::Failed { invocation, error })
+                }
+                ReceiptStatus::Cancelled { message } => Ok(InvocationUpdate::Cancelled {
+                    invocation,
+                    message,
+                }),
+            })
+        }
+        RemoteActionMessage::Update {
+            invocation: observed,
+            state,
+        } if observed == invocation => Some(
+            state
+                .map(|state| state.update)
+                .ok_or_else(|| "unknown invocation".to_string()),
+        ),
+        _ => None,
+    }
 }
 
 struct Caller {
@@ -419,7 +475,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
                         "record": writer_surface.route.record_id},
                     "image_block": block.id, "signed_document_events": events.len(),
                     "both_apps_alive": true,
-                    "dispatch": "SDK InvokePublishedAction typed arguments",
+                    "dispatch": "SDK remote-action Invoke with typed arguments",
                     "live_result_is_durable_receipt": false,
                     "persisted_receipt_output_redaction_verified": true,
                     "headless_parity_proven": false, "permission_denials_proven": true

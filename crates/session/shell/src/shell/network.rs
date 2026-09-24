@@ -1170,6 +1170,11 @@ pub struct ShellNetwork {
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    /// Remote-action requests from authenticated devices, answered by the
+    /// broker's drainer.
+    inbound_remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Local callers waiting for a remote-action answer from a device.
+    remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
     /// Authenticated legacy-surface control, frame, and input messages.
     /// Frames are coalesced per surface when the render loop falls behind,
     /// keeping network jitter from turning into unbounded compositor memory.
@@ -1525,6 +1530,8 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+            inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+            remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
@@ -2136,6 +2143,70 @@ impl ShellNetwork {
     /// answered by the broker's drainer on each tick.
     pub fn inbound_scrollback_request_handle(&self) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
         Arc::clone(&self.inbound_scrollback_request)
+    }
+
+    /// Shared handle to the remote-action request buffer, answered by the
+    /// broker's drainer.
+    pub fn inbound_remote_actions_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>> {
+        Arc::clone(&self.inbound_remote_actions)
+    }
+
+    /// Send one remote-action message to exactly `target` on the workspace
+    /// topic. Returns whether it was handed to the transport.
+    pub fn send_remote_action(
+        &self,
+        workspace_topic: u64,
+        target: iroh::EndpointId,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> bool {
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::new(message).encode() else {
+            return false;
+        };
+        self.cmd_tx
+            .try_send(NetCmd::PublishRemoteAction {
+                ws: workspace_topic,
+                target,
+                msg: NeighbourMsg::RemoteAction { frame },
+            })
+            .is_ok()
+    }
+
+    /// Sort one authenticated remote-action frame: requests queue for the
+    /// broker with the caller the transport proved, answers wake the local
+    /// caller waiting on that device. An unauthenticated device reaches
+    /// neither, whatever the compatibility mode.
+    fn dispatch_remote_action(
+        &self,
+        workspace_topic: u64,
+        origin: &crate::shell::state::PeerOrigin,
+        peer: iroh::EndpointId,
+        frame: &[u8],
+    ) {
+        let Some(identity) = self.peer_identities.get(origin) else {
+            tracing::warn!(peer = %peer, "dropping remote action from an unauthenticated device");
+            return;
+        };
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::decode(frame) else {
+            tracing::warn!(peer = %peer, "dropping malformed remote action frame");
+            return;
+        };
+        if frame.message.is_request() {
+            if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
+                inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
+                    workspace_topic,
+                    from: peer,
+                    caller: tilo_actions::remote::Caller::authenticated(
+                        identity.user_pubkey,
+                        identity.device_pubkey,
+                    ),
+                    message: frame.message,
+                });
+            }
+        } else if !self.remote_action_replies.deliver(peer, &frame.message) {
+            tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
+        }
     }
 
     /// Shared handle to the cooperative-scrollback response buffer.
@@ -4861,6 +4932,9 @@ impl ShellNetwork {
                 // per-op indirection once it's off the wire.
                 ops.into_iter().map(|op| *op).collect(),
             ),
+            NeighbourMsg::RemoteAction { frame } => {
+                self.dispatch_remote_action(ws, &origin, peer, &frame);
+            }
             message @ (NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
@@ -5077,7 +5151,8 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }
             | NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::IdentityAnnouncement { .. }
-            | NeighbourMsg::IdentityAnnouncementV2 { .. } => None,
+            | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            | NeighbourMsg::RemoteAction { .. } => None,
         }
     }
 
@@ -5700,11 +5775,32 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+        inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
+        remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
+}
+
+impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
+    fn request(
+        &self,
+        workspace_topic: u64,
+        peer: iroh::EndpointId,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>, String>
+    {
+        let key = crate::shell::remote_action_link::ReplyKey::for_request(&message)
+            .ok_or_else(|| "only requests are sent to a remote action host".to_string())?;
+        let answer = self.remote_action_replies.register(peer, key);
+        if self.send_remote_action(workspace_topic, peer, message) {
+            Ok(answer)
+        } else {
+            Err("the remote action could not be handed to the network".into())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -9770,5 +9866,197 @@ mod tests {
         );
         let other_root = ed25519_dalek::SigningKey::from_bytes(&[103; 32]);
         assert!(load_identity_revocations(&path, other_root.verifying_key().to_bytes()).is_err());
+    }
+
+    /// The shared room both peers hold: A's person owns it, B's person is a
+    /// member, and B runs a files app that publishes one action.
+    fn remote_action_room(
+        owner: &str,
+        member: &str,
+    ) -> (crate::shell::state::Workspace, crate::shell::state::RoomId) {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(51),
+            "Shared room",
+        );
+        workspace.set_owner(owner.to_string());
+        let room = workspace.room;
+        workspace.grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::person(member.to_string()),
+            room.to_string(),
+            collab_types::Verb::Write,
+        ));
+        (workspace, room)
+    }
+
+    /// Carry the next remote-action frame `from` published to the peer it
+    /// names, as the direct transport would.
+    fn deliver_remote_action(
+        from: &iroh::SecretKey,
+        commands: &mut mpsc::Receiver<NetCmd>,
+        to: &ShellNetwork,
+        to_key: &iroh::SecretKey,
+    ) {
+        let (ws, target, msg) = std::iter::from_fn(|| commands.try_recv().ok())
+            .find_map(|command| match command {
+                NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                _ => None,
+            })
+            .expect("a remote-action frame was sent");
+        assert_eq!(target, to_key.public(), "addressed to exactly one device");
+        to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "two peers, their identities, the serving broker and both round trips form one scenario"
+    )]
+    #[test]
+    fn a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt() {
+        use crate::shell::collab_broker::CrdtRoute;
+        use crate::shell::collab_broker_capnp::{
+            PublishedAction, PublishedInput, PublishedSurface,
+        };
+        use crate::shell::remote_action_link::RemoteActionLink as _;
+        use tilo_actions::remote::{
+            InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+        };
+
+        let root_a = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+        let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+        let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+        let device_b = iroh::SecretKey::from_bytes(&[0xB2; 32]);
+        let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            root_a.verifying_key().to_bytes(),
+        );
+        let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            root_b.verifying_key().to_bytes(),
+        );
+        let (room_workspace, room) = remote_action_room(&person_a, &person_b);
+        let topic = room_topic_id(room);
+        let tree_for = || {
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(room_workspace.clone());
+            tree.shared()
+        };
+
+        let (mut net_a, mut commands_a) = shell_network_for_test(tree_for(), 0xA);
+        net_a.require_peer_identity = true;
+        let tree_b = tree_for();
+        let (mut net_b, mut commands_b) = shell_network_for_test(tree_b.clone(), 0xB);
+        net_b.require_peer_identity = true;
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
+        authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
+
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
+                tree_b,
+            );
+        broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+            peer_id: 9,
+            app_id: "so.tilo.files".into(),
+            route: CrdtRoute::app("so.tilo.files", room.to_string()),
+            actions: vec![PublishedAction {
+                resource: "files.entry:/tmp/report".into(),
+                action: "refresh".into(),
+                resource_kind: "files.entry".into(),
+                resource_label: "report".into(),
+                action_label: "Refresh".into(),
+                description: None,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: tilo_actions::ActionContract::default(),
+                input: PublishedInput::None,
+            }],
+            live: true,
+        }]);
+        let mut app_invocations = broker.capture_invocations_for_test(9);
+        let host_b = crate::shell::remote_actions::BrokerActionHost::new(broker);
+        let net_b = Arc::new(net_b);
+
+        let id = tilo_actions::InvocationId::new();
+        let request = RemoteActionMessage::Invoke(InvokeRequest {
+            invocation: id,
+            target: RemoteActionTarget {
+                provider: "9".into(),
+                address: tilo_actions::ActionAddress::new("files.entry:/tmp/report", "refresh"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+        });
+
+        let mut round_trip = |request: RemoteActionMessage| {
+            let answer = net_a
+                .request(topic, device_b.public(), request)
+                .expect("request sent");
+            deliver_remote_action(&device_a, &mut commands_a, &net_b, &device_b);
+            let inbound =
+                std::mem::take(&mut *net_b.inbound_remote_actions.lock().expect("inbound queue"));
+            assert_eq!(inbound.len(), 1, "B queued the authenticated request");
+            assert_eq!(
+                inbound[0].caller,
+                tilo_actions::remote::Caller::authenticated(
+                    root_a.verifying_key().to_bytes(),
+                    *device_a.public().as_bytes(),
+                ),
+                "the caller is the device the transport authenticated"
+            );
+            crate::shell::collab_broker::answer_remote_actions(&net_b, Some(&host_b), inbound);
+            deliver_remote_action(&device_b, &mut commands_b, &net_a, &device_a);
+            let mut answer = answer;
+            match answer.poll_ready() {
+                tilo_actions::remote::PendingPoll::Ready(answer) => answer,
+                _ => panic!("A received B's answer"),
+            }
+        };
+
+        let RemoteActionMessage::Receipt(receipt) = round_trip(request.clone()) else {
+            panic!("an invocation is answered with a receipt");
+        };
+        assert_eq!(receipt.invocation, id);
+        assert_eq!(receipt.status, ReceiptStatus::Accepted);
+        let delivered = app_invocations
+            .try_recv()
+            .expect("B's app received the invocation");
+        assert_eq!(delivered.resource, "files.entry:/tmp/report");
+        assert_eq!(
+            delivered.actor, person_a,
+            "attributed to the calling person"
+        );
+
+        let RemoteActionMessage::Receipt(retried) = round_trip(request) else {
+            panic!("a retry is answered with a receipt");
+        };
+        assert_eq!(retried, receipt, "a retry reports the original invocation");
+        assert!(
+            app_invocations.try_recv().is_err(),
+            "a retry never reaches the app twice"
+        );
+    }
+
+    #[test]
+    fn remote_actions_from_unauthenticated_devices_are_dropped() {
+        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xC);
+        let stranger = iroh::SecretKey::from_bytes(&[0xC2; 32]);
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
+        )
+        .encode()
+        .expect("frame");
+        // Even in the in-process compatibility mode, an action needs a proven
+        // caller.
+        assert!(!net.require_peer_identity);
+        net.dispatch_neighbour_msg(
+            DEFAULT_WS_TOPIC,
+            stranger.public(),
+            None,
+            NeighbourMsg::RemoteAction { frame },
+        );
+        assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
     }
 }

@@ -148,14 +148,20 @@ async fn protocol_and_argument_boundaries() {
     }
     assert_eq!(
         server
-            .handle(call("qos_status", json!({"invocation_id":999})))
+            .handle(call(
+                "qos_status",
+                json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
+            ))
             .await
             .unwrap()["result"]["isError"],
         true
     );
     assert_eq!(
         server
-            .handle(call("qos_cancel", json!({"invocation_id":999})))
+            .handle(call(
+                "qos_cancel",
+                json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
+            ))
             .await
             .unwrap()["result"]["isError"],
         true
@@ -270,7 +276,7 @@ async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         assert_eq!(reply["result"]["isError"],false,"{reply}");
-        let id=reply["result"]["structuredContent"]["invocation_id"].as_u64().unwrap();
+        let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
         assert_eq!(fixture.take_invocation_actor(),Some(actor));
         assert_eq!(fixture.resolve_count(),1);
@@ -281,6 +287,27 @@ async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
         let status=server.handle(call("qos_status",json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"]["invocation_id"],id);
         assert_ne!(status["result"]["structuredContent"]["update"]["state"],"succeeded");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_retried_invocation_id_starts_the_action_once() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (mut fixture,room,actor)=fixture();
+        let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor.clone());
+        let id="6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
+        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"invocation_id":id});
+        let invoke=server.handle(call("qos_invoke",args.clone()));
+        let (first,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        let first=first.unwrap();
+        assert_eq!(first["result"]["structuredContent"]["invocation_id"],id,"{first}");
+        assert_eq!(fixture.take_invocation_actor(),Some(actor));
+        let retry=server.handle(call("qos_invoke",args)).await.unwrap();
+        assert_eq!(retry["result"]["structuredContent"],first["result"]["structuredContent"]);
+        assert_eq!(fixture.take_invocation_actor(),None,"a retry never reaches the app again");
+        assert_eq!(fixture.resolve_count(),1,"nor re-resolves the directory");
+        let other=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{"changed":true},"invocation_id":id});
+        assert_eq!(server.handle(call("qos_invoke",other)).await.unwrap()["result"]["isError"],true,"an id cannot be reused for another request");
     }).await;
 }
 
@@ -355,45 +382,6 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bridge_errors_and_terminal_content_are_not_fabricated() {
-    use crate::shell::collab_broker_capnp::{
-        ActionDirectoryBridgeError as Error, StartedDirectoryAction,
-    };
-    for failure in [
-        Error::Busy,
-        Error::TimedOut,
-        Error::Unavailable,
-        Error::ConfirmationRequired,
-        Error::NotFound,
-        Error::StaleRevision,
-    ] {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tx.send(Err(failure)).unwrap();
-        assert_eq!(bridge_reply(rx).await.unwrap_err(), format!("{failure:?}"));
-    }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    drop(tx);
-    assert_eq!(bridge_reply(rx).await.unwrap_err(), "Unavailable");
-    let update = tilo_actions::InvocationUpdate::Succeeded {
-        invocation: tilo_actions::InvocationId::new(),
-        output: tilo_actions::ActionOutput {
-            value: Some(json!({"content":"sha256:123","width":200})),
-            resources: vec!["content:sha256:123".into()],
-        },
-    };
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tx.send(Ok(Reply::StartedDirectoryAction(StartedDirectoryAction {
-        invocation_id: 42,
-        initial_update: update.clone(),
-    })))
-    .unwrap();
-    assert_eq!(
-        bridge_reply(rx).await.unwrap(),
-        json!({"invocation_id":42,"update":update})
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn targets_require_a_nonempty_revision_before_enqueueing() {
     let (fixture, room, actor) = fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
@@ -423,9 +411,10 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
         pending.push(
             fixture
                 .broker
+                .state()
                 .action_directory_request_queue()
                 .try_query(
-                    BrokerActor::person(&actor),
+                    crate::shell::collab_broker_capnp::BrokerActor::person(&actor),
                     &room,
                     runtime_collab::ActionDirectoryQuery {
                         peer_id: 71,
@@ -447,13 +436,23 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
         .await
         .unwrap();
     assert_eq!(busy["result"]["isError"], true);
-    assert_eq!(busy["result"]["content"][0]["text"], "Busy");
+    assert!(
+        busy["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Busy")),
+        "{busy}"
+    );
     drop(fixture);
     let disconnected = server
         .handle(call("qos_query", json!({"peer_id":71})))
         .await
         .unwrap();
-    assert_eq!(disconnected["result"]["content"][0]["text"], "Unavailable");
+    assert!(
+        disconnected["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Unavailable")),
+        "{disconnected}"
+    );
     let (fixture, room, actor) = self::fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
     let timeout = server
@@ -473,21 +472,28 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
 async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker() {
     tokio::task::LocalSet::new().run_until(async {
         let (fixture,room,actor)=fixture();
+        let actor_name=actor.clone();
         let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor);
         fixture.set_confirmation_required(true);
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}});
         let invoke=server.handle(call("qos_invoke",args.clone()));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
-        assert_eq!(reply.unwrap()["result"]["content"][0]["text"],"ConfirmationRequired");
+        assert_eq!(reply.unwrap()["result"]["content"][0]["text"],"the action requires confirmation");
         fixture.set_confirmation_required(false);
         fixture.set_result_spec(tilo_actions::ResultSpec::Json {schema:json!({"type":"object"})});
         let invoke=server.handle(call("qos_invoke",args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
-        let id=reply["result"]["structuredContent"]["invocation_id"].as_u64().unwrap();
-        let invocation=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
-        let update=tilo_actions::InvocationUpdate::Succeeded {invocation,output:tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]}};
-        fixture.complete_invocation(id,&update).await.unwrap();
+        let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
+        let invocation:tilo_actions::InvocationId=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
+        assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
+        let job=fixture.broker.statuses(&actor_name).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
+        let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
+        // The application answers in the broker's own id for its job; the
+        // caller keeps hearing about it under the id it chose.
+        let broker_invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
+        fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:broker_invocation,output:output.clone()}).await.unwrap();
+        let update=tilo_actions::InvocationUpdate::Succeeded {invocation,output};
         let status=server.handle(call("qos_status",json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
         let mut other=McpServer::new(fixture.broker.clone(),room,"foreign".into());
@@ -497,23 +503,31 @@ async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker()
 
 #[test]
 fn container_rows_preserve_their_canonical_visibility_contract() {
-    let contract = serde_json::to_value(tilo_actions::ActionContract::view()).unwrap();
-    let row = runtime_collab::ActionDirectoryRow {
+    let contract = tilo_actions::ActionContract::view();
+    let row = CatalogueRow {
+        provider: "71".into(),
+        app_id: "so.tilo.test".into(),
         parent_resource: "root".into(),
-        resource: "aux:document".into(),
-        resource_kind: "document".into(),
-        resource_label: "A decorative label".into(),
-        resource_presentation_json: "{}".into(),
+        resource: tilo_actions::remote::CatalogueResource {
+            id: "aux:document".into(),
+            kind: "document".into(),
+            label: "A decorative label".into(),
+            presentation: None,
+        },
         action: None,
-        descriptor: None,
         has_children: true,
-        visibility_action: Some("read".into()),
-        visibility_contract_json: contract.to_string(),
+        visibility: Some(tilo_actions::remote::RowVisibility {
+            action: "read".into(),
+            contract: contract.clone(),
+        }),
     };
-    let value = row_json(&row).unwrap();
+    let value = row_json(&row);
     assert_eq!(value["resource"], "aux:document");
     assert_eq!(value["visibility_action"], "read");
-    assert_eq!(value["visibility_contract"], contract);
+    assert_eq!(
+        value["visibility_contract"],
+        serde_json::to_value(contract).unwrap()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -578,7 +592,8 @@ async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
-    tokio::task::LocalSet::new().run_until(async {
+    // Boxed: the query, resolve and invoke turns keep a large future alive.
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::test_default(WorkspaceId(71), "First connection");
         let room = workspace.room.to_string();
@@ -614,5 +629,5 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"], "accepted");
         assert_eq!(fixture.take_invocation_actor(), Some(actor));
         assert_eq!(fixture.resolve_count(), 2, "invoke must re-resolve, not execute the previous descriptor");
-    }).await;
+    })).await;
 }
