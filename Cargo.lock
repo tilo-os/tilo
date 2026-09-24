@@ -14404,6 +14404,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-pdf"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "image",
+ "libc",
+ "memmap2",
+ "pdfium-render",
+ "postcard",
+ "qdoc",
+ "runtime-portal",
+ "sandbox-core",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "unicode-bidi",
+ "unicode-normalization",
+ "wire-frame",
+]
+
+[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
