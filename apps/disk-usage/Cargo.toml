@@ -22,5 +22,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true
