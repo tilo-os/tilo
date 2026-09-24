@@ -557,3 +557,21 @@ fn authenticated_bootstrap_requires_one_complete_cut_of_original_member_publicat
     );
     assert_eq!(bootstrap.governance_messages, original);
 }
+
+// Legacy v2 enrollment material stays readable by the enrollment identity
+// source, and is never accepted as an invited identity.
+#[test]
+fn literal_v2_enrollment_material_remains_accepted_only_by_the_existing_owner_source() {
+    let legacy = br#"{"version":2,"secret":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],"request_id":[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],"scope":null}"#;
+    let request: serde_json::Value =
+        serde_json::from_str(&crate::identity::request(legacy).unwrap()).unwrap();
+    assert_eq!(
+        request["device_public_key"],
+        "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+    );
+    assert_eq!(
+        request["request_id"],
+        "0909090909090909090909090909090909090909090909090909090909090909"
+    );
+    assert!(super::InvitedIdentity::read(legacy, 1_000_000_000_000).is_err());
+}
