@@ -171,16 +171,15 @@ pub enum MprisCommand {
     Quit,
 }
 
-/// The widget-side handle to the MPRIS worker. In the default (non-`mpris`)
-/// build, on non-Unix platforms, and whenever the session bus is unavailable,
-/// this is an inert stub:
-/// `publish` is a no-op and `drain_commands` yields nothing — so the widget code
-/// path is identical everywhere.
+/// The widget-side handle to the host's media controls, started through the
+/// current [`crate::host::MediaSessionFactory`]. When the host has none — the
+/// default (non-`mpris`) build, non-Unix platforms, no session bus, headless
+/// hosts — this is an inert stub: `publish` is a no-op and `drain_commands`
+/// yields nothing, so the widget code path is identical everywhere.
 pub struct MprisHandle {
     cmd_rx: Option<Receiver<MprisCommand>>,
     last: PlayerSnapshot,
-    #[cfg(feature = "mpris")]
-    publish_tx: Option<tokio::sync::mpsc::UnboundedSender<PlayerSnapshot>>,
+    publisher: Option<Box<dyn crate::host::MediaSessionPublisher>>,
 }
 
 impl MprisHandle {
@@ -190,35 +189,29 @@ impl MprisHandle {
         Self {
             cmd_rx: None,
             last: PlayerSnapshot::default(),
-            #[cfg(feature = "mpris")]
-            publish_tx: None,
+            publisher: None,
         }
     }
 
-    /// Whether the MPRIS D-Bus service is running.
+    /// Whether the host's media session is running.
     pub fn is_active(&self) -> bool {
         self.cmd_rx.is_some()
     }
 
-    /// Bring up the MPRIS service under `config`, publishing `initial` as the
-    /// starting state. Never panics: on non-Unix platforms, without the `mpris` feature, or if the
-    /// session bus can't be reached, it returns an inert [`Self::disabled`].
+    /// Register a player under `config` with the current host, publishing
+    /// `initial` as the starting state. Never panics: when the host has no
+    /// media controls it returns an inert [`Self::disabled`].
     pub fn spawn(config: MprisConfig, initial: PlayerSnapshot) -> Self {
-        #[cfg(feature = "mpris")]
+        match crate::host::current()
+            .media_session
+            .start(config, initial.clone())
         {
-            match imp::spawn(config, initial.clone()) {
-                Some((cmd_rx, publish_tx)) => Self {
-                    cmd_rx: Some(cmd_rx),
-                    last: initial,
-                    publish_tx: Some(publish_tx),
-                },
-                None => Self::disabled(),
-            }
-        }
-        #[cfg(not(feature = "mpris"))]
-        {
-            let _ = (config, initial);
-            Self::disabled()
+            Some(session) => Self {
+                cmd_rx: Some(session.commands),
+                last: initial,
+                publisher: Some(session.publisher),
+            },
+            None => Self::disabled(),
         }
     }
 
@@ -233,19 +226,49 @@ impl MprisHandle {
         out
     }
 
-    /// Publish the current player state to the bus, emitting `PropertiesChanged`
-    /// for whatever changed. Cheap and deduped: identical/insignificant updates
-    /// are dropped so the bus isn't spammed each frame.
+    /// Publish the current player state to the host, which for MPRIS emits
+    /// `PropertiesChanged` for whatever changed. Cheap and deduped:
+    /// identical/insignificant updates are dropped so the bus isn't spammed
+    /// each frame.
     pub fn publish(&mut self, snap: PlayerSnapshot) {
         if !snap.should_republish(&self.last) {
             return;
         }
-        #[cfg(feature = "mpris")]
-        if let Some(tx) = &self.publish_tx {
-            // Unbounded send is sync + non-blocking; a dead worker just drops it.
-            let _ = tx.send(snap.clone());
+        if let Some(publisher) = &mut self.publisher {
+            publisher.publish(snap.clone());
         }
         self.last = snap;
+    }
+}
+
+/// The native [`crate::host::MediaSessionFactory`]: MPRIS on the session bus.
+pub(crate) struct DesktopMediaSessions;
+
+/// Serve MPRIS for one player. `None` on non-Unix platforms, without the
+/// `mpris` feature, or when the session bus can't be reached.
+pub(crate) fn start_desktop_session(
+    config: MprisConfig,
+    initial: PlayerSnapshot,
+) -> Option<crate::host::MediaSession> {
+    #[cfg(feature = "mpris")]
+    {
+        struct Worker(tokio::sync::mpsc::UnboundedSender<PlayerSnapshot>);
+        impl crate::host::MediaSessionPublisher for Worker {
+            fn publish(&mut self, snapshot: PlayerSnapshot) {
+                // Unbounded send is sync + non-blocking; a dead worker just drops it.
+                let _ = self.0.send(snapshot);
+            }
+        }
+        let (commands, publish_tx) = imp::spawn(config, initial)?;
+        Some(crate::host::MediaSession {
+            commands,
+            publisher: Box::new(Worker(publish_tx)),
+        })
+    }
+    #[cfg(not(feature = "mpris"))]
+    {
+        let _ = (config, initial);
+        None
     }
 }
 

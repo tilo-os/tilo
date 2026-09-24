@@ -1410,11 +1410,18 @@ fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
     }
 }
 
-/// Point `ui`'s clipboard at the compositor's mirror, for hosted widgets.
-/// Called once at startup; without it hosted widgets fall back to `ui`'s
-/// in-process buffer, invisible to every client.
-pub fn install_host_clipboard(store: SharedSelection) {
-    ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
+/// Install the host services hosted widgets use: the native desktop's, with
+/// the clipboard pointed at the compositor's mirror. Called once at startup;
+/// without it hosted widgets fall back to `ui`'s in-process buffer, invisible
+/// to every client.
+pub fn install_host_services(store: SharedSelection) {
+    ui::host::install_default(host_services(store));
+}
+
+/// The services in-process widgets see: native, except that the clipboard is
+/// the compositor's own mirror.
+fn host_services(store: SharedSelection) -> ui::host::HostServices {
+    ui::host::native::services(None).with_clipboard(Arc::new(HostClipboard { store }))
 }
 
 #[cfg(target_os = "linux")]

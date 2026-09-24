@@ -625,6 +625,9 @@ impl AppConstructionInputs {
     }
 
     fn production(collab_manager: CollaborationManager) -> Self {
+        // The screen reader below speaks through the host's services, so a
+        // process that never installed any gets the native desktop's.
+        crate::host::native::install_default_if_unset(None);
         Self {
             collab_manager,
             configured_theme: ConstructionValue::Lazy(Theme::configured),
@@ -2078,6 +2081,7 @@ impl App {
         if self.history.is_none() {
             self.enable_document_history_chrome();
         }
+        crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]
         if std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1") {
