@@ -450,9 +450,13 @@ impl ContentStore {
     }
 
     async fn persist_owned_batch(&self, data: Vec<Bytes>) -> Result<Vec<Hash>> {
+        /// Blob-store requests in flight at once: the store's actor serves
+        /// them in parallel, so a batch of small chunks is not a round trip
+        /// per chunk.
+        const IN_FLIGHT: usize = 64;
+
         let _owned_tags = self.owned_tags.lock().await;
-        let mut protected = Vec::with_capacity(data.len());
-        for bytes in data {
+        let adds = data.into_iter().map(|bytes| async move {
             let temporary = self
                 .store()
                 .blobs()
@@ -467,8 +471,12 @@ impl ContentStore {
                     temporary.hash_and_format(),
                 )
                 .await?;
-            protected.push((temporary, bytes));
-        }
+            Ok::<_, anyhow::Error>((temporary, bytes))
+        });
+        let protected: Vec<_> = futures_util::TryStreamExt::try_collect(
+            futures_util::StreamExt::buffered(futures_util::stream::iter(adds), IN_FLIGHT),
+        )
+        .await?;
         // `FsStore` explicitly does not promise that dropping it flushes recent
         // writes. Make the named protection durable before releasing the
         // temporary protection. This is a no-op-compatible boundary for the
