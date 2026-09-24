@@ -14547,6 +14547,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-dav"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.2",
+ "roxmltree 0.20.0",
+ "test-http",
+ "tilo-net",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [

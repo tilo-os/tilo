@@ -203,6 +203,7 @@ members = [
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
     "crates/system/tilo-crypto",
+    "crates/system/tilo-dav",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-net",
     "crates/system/tilo-rollback",
