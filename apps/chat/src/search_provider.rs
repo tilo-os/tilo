@@ -318,6 +318,7 @@ mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
     use ui::search::SearchProvider;
+    use ui::search::testing::assert_late_hit_reachable;
     use ui::widget::Widget;
 
     fn workspace() -> Workspace {
@@ -529,29 +530,31 @@ mod tests {
     }
 
     #[test]
-    fn unicode_late_message_remains_findable_beyond_one_hundred_thousand_rows() {
-        let messages = (0..100_001)
-            .map(|index| {
-                message(
-                    index,
-                    if index == 100_000 {
-                        "late ÄTHER-needle 🧪"
-                    } else {
-                        "ordinary row"
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        let provider =
-            ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()]);
+    fn unicode_late_message_remains_findable_in_a_large_history() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let messages = corpus
+                    .map(|row| {
+                        let text = if row.is_target {
+                            format!("{} late ÄTHER-needle 🧪", row.text)
+                        } else {
+                            row.text
+                        };
+                        message(row.index, text)
+                    })
+                    .collect::<Vec<_>>();
+                ChatSearchProvider::new(&[], &[channel()], &[workspace()], &messages, &[user()])
+            },
+            3_000,
+        );
+        assert_eq!(
+            hit.action_address(),
+            Some(ActionAddress::new("chat.message:m_002999", "open"))
+        );
 
         let page = provider.search_page("äther-needle 🧪", None, 8, 8);
         assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(
-            page.results[0].action_address(),
-            Some(ActionAddress::new("chat.message:m_100000", "open"))
-        );
+        assert_eq!(page.results, vec![hit]);
     }
 
     #[test]

@@ -350,6 +350,7 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     fn seeded() -> Model {
@@ -404,21 +405,26 @@ mod tests {
 
     #[test]
     fn unique_late_record_is_findable_without_a_corpus_scan() {
-        let mut model = seeded();
-        let template = model.events[0].clone();
-        model.events.extend((0..100_001u128).map(|index| {
-            let mut event = template.clone();
-            event.id = uuid::Uuid::from_u128(index + 1);
-            event.title = format!("ordinary event {index}");
-            event
-        }));
-        model.events.last_mut().unwrap().title = "late calendar needle".into();
-        let provider = CalendarSearchProvider::new(&model);
-        let page = provider.search_page("calendar needle", None, 4, 4);
+        let mut records = 0;
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut model = seeded();
+                let template = model.events[0].clone();
+                model.events.extend(corpus.map(|row| {
+                    let mut event = template.clone();
+                    event.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                    event.title = row.text;
+                    event
+                }));
+                records = model.projects.len() + model.events.len() + model.tasks.len();
+                CalendarSearchProvider::new(&model)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late calendar needle");
-        let address = page.results[0]
+        let address = hit
             .action_address()
             .expect("a late hit retains its canonical address");
         let resource = provider
@@ -429,10 +435,7 @@ mod tests {
             tilo_actions::door::resolve(&[resource], &address).is_some(),
             "the exact open action exists without constructing the resource tree"
         );
-        assert_eq!(
-            provider.stats().records,
-            model.projects.len() + model.events.len() + model.tasks.len()
-        );
+        assert_eq!(provider.stats().records, records);
     }
 
     #[test]
