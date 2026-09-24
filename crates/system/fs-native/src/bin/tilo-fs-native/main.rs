@@ -1,11 +1,12 @@
-//! Capability report for the native data plane.
+//! Capability report and local benchmarks for the native data plane.
 //!
 //! ```text
 //! tilo-fs-native probe <store> [--k5 FILES,DIRTY_MIB,SAMPLES]
 //! tilo-fs-native userns-probe [<btrfs-dir>]
+//! tilo-fs-native bench <io|meta|capture|hash|ttfb|all> <store> [--quick]
 //! ```
 //!
-//! `probe` needs `CAP_SYS_ADMIN` and a dedicated Btrfs
+//! `probe` and most benchmarks need `CAP_SYS_ADMIN` and a dedicated Btrfs
 //! store volume; `userns-probe` shows what an unprivileged user namespace
 //! can and cannot do.
 
@@ -14,12 +15,14 @@ use std::process::ExitCode;
 
 use fs_native::probe::{self, K5Params};
 
+mod bench;
 mod userns;
 
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  tilo-fs-native probe <store> [--k5 FILES,DIRTY_MIB,SAMPLES]\n  \
-         tilo-fs-native userns-probe [<btrfs-dir>]"
+         tilo-fs-native userns-probe [<btrfs-dir>]\n  \
+         tilo-fs-native bench <io|meta|capture|hash|ttfb|all> <store> [--quick]"
     );
     ExitCode::from(2)
 }
@@ -63,6 +66,13 @@ fn main() -> ExitCode {
             }
         }
         Some("userns-probe") => userns::run(args.get(1).map(Path::new)),
+        Some("bench") => {
+            let (Some(what), Some(store)) = (args.get(1), args.get(2)) else {
+                return usage();
+            };
+            let quick = args.iter().any(|a| a == "--quick");
+            bench::run(what, Path::new(store), quick)
+        }
         _ => usage(),
     }
 }
