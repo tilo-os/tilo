@@ -14330,8 +14330,7 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
- "openh264",
- "serde",
+ "media",
  "thiserror 2.0.18",
  "tracing",
 ]
