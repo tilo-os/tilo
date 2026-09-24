@@ -175,12 +175,11 @@ pub use usb::UsbBackend;
 pub use wallpaper::WallpaperBackend;
 
 #[cfg(any(test, target_os = "linux"))]
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -312,10 +311,13 @@ impl GrantStoreHandle {
     pub fn test_with_workspace(ws: Workspace) -> (Self, WorkspaceId) {
         let ws_id = ws.id;
         let mut tree = WorkspaceTree {
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.workspaces.push(ws);
+        tree.desktop.workspaces.push(ws);
         (Self::with_consent_path(tree.shared(), None), ws_id)
     }
 
@@ -344,6 +346,7 @@ impl GrantStoreHandle {
         let matching_expiries: Vec<GrantScope> = {
             let tree = self.tree.read();
             let ws = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == caller.workspace_id)?;
@@ -379,7 +382,12 @@ impl GrantStoreHandle {
     )]
     pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
         let tree = self.tree.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
+        let Some(ws) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+        else {
             return false;
         };
         let actor = ws.actor_for_app(&caller.app_id);
@@ -394,6 +402,7 @@ impl GrantStoreHandle {
     pub fn insert(&self, caller: &PortalCaller, capability: &Capability) -> bool {
         let mut tree = self.tree.write();
         let Some(ws) = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == caller.workspace_id)
@@ -457,7 +466,8 @@ impl GrantStoreHandle {
 
     fn portal_consent_key(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<String> {
         let tree = self.tree.read();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .any(|workspace| workspace.id == caller.workspace_id)
             .then(|| {
@@ -483,7 +493,12 @@ impl GrantStoreHandle {
     )]
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
         let tree = self.tree.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
+        let Some(ws) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+        else {
             return false;
         };
         // Asks the capability model rather than re-deriving prefix logic:
@@ -516,6 +531,7 @@ impl GrantStoreHandle {
         let rooms = crate::shell::launcher::verified_workspaces_for_app(app_id);
         let tree = self.tree.read();
         let mut matches = tree
+            .desktop
             .workspaces
             .iter()
             .filter(|workspace| rooms.iter().any(|room| room == &workspace.room.to_string()));
@@ -557,11 +573,10 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// A user-private persistent root.  Never fall back to a predictable shared
 /// `/tmp` directory for portal authority, secrets, or user choices: without a
 /// per-user state/runtime directory persistence fails closed instead.
+/// Both variables follow the XDG rule: an empty or relative value is ignored
+/// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::state_dir)
-        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
@@ -569,27 +584,12 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("portal consent path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let temporary = path.with_extension("tmp");
-    let bytes = serde_json::to_vec(&PortalConsentFile {
-        always: always.clone(),
-    })
-    .map_err(std::io::Error::other)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    fs::File::open(parent)?.sync_all()
+    atomic_file::json::write_private(
+        path,
+        &PortalConsentFile {
+            always: always.clone(),
+        },
+    )
 }
 
 /// The user-prompt the portal needs to surface, waiting on a choice.
@@ -1254,8 +1254,10 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    // Never read on purpose: holding the `Connection` IS the job — dropping it releases the bus name and tears the object server down.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
+    )]
     connection: zbus::Connection,
     owns_name: bool,
 }
@@ -1276,7 +1278,7 @@ mod tests {
     use super::*;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "t")
+        Workspace::new(WorkspaceId(id), "t")
     }
 
     #[test]
@@ -1381,8 +1383,8 @@ mod tests {
         let ws_id = WorkspaceId(1);
         {
             let mut tree = handle.write();
-            tree.active = ws_id;
-            tree.workspaces.push(empty_ws(1));
+            tree.desktop.active = ws_id;
+            tree.desktop.workspaces.push(empty_ws(1));
         }
 
         let portal = GrantStoreHandle::new(handle.clone());
@@ -1402,7 +1404,10 @@ mod tests {
         let has_camera_app_grant = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let ws = tree.active_workspace().expect("active workspace exists");
+            let ws = tree
+                .desktop
+                .active_workspace()
+                .expect("active workspace exists");
             ws.app_grants_snapshot().contains_key("camera-app")
         };
         assert!(
@@ -1541,7 +1546,8 @@ mod tests {
         let tree = store.tree_handle();
         let tree = tree.read();
         assert!(
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .unwrap()
                 .app_grants_snapshot()
                 .get("app")
@@ -1555,10 +1561,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("consents.json");
         let mut tree = WorkspaceTree {
-            active: WorkspaceId(31),
+            desktop: crate::shell::state::DesktopTree {
+                active: WorkspaceId(31),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.workspaces.push(empty_ws(31));
+        tree.desktop.workspaces.push(empty_ws(31));
         let shared = tree.shared();
         let caller = PortalCaller::new(WorkspaceId(31), "private-app");
         let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
@@ -1574,7 +1583,7 @@ mod tests {
             Some(GRANT_ALWAYS)
         );
         assert!(
-            shared.read().workspaces[0]
+            shared.read().desktop.workspaces[0]
                 .app_grants_snapshot()
                 .get("private-app")
                 .is_none()

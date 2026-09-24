@@ -199,13 +199,7 @@ impl OffscreenRenderer {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let file = std::fs::File::create(path).expect("create png file");
-        let mut w = std::io::BufWriter::new(file);
-        let mut encoder = png::Encoder::new(&mut w, self.width, self.height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(&rgba).expect("png write");
+        ui::png::write_rgba8(path, self.width, self.height, &rgba).expect("write png file");
     }
 
     /// Sample the RGBA at `(x, y)` from the last render — tight-packed, not padded.

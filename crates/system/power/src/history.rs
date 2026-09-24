@@ -92,14 +92,7 @@ pub fn record_power_history(
 }
 
 fn history_path(kind: PowerSourceKind) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
+    let base = xdg_paths::xdg::state_home()?;
     let name = match kind {
         PowerSourceKind::Battery => "power-history.json",
         PowerSourceKind::Ups => "ups-history.json",

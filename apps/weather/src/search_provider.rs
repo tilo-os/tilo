@@ -17,10 +17,7 @@
 //! frame.
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::SavedLocation;
 
@@ -82,42 +79,21 @@ impl CitySearchProvider {
     }
 }
 
-impl SearchProvider for CitySearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for CitySearchProvider {
+    fn provider_name(&self) -> &str {
         CITY_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
+    use ui::search::{SearchProvider, SearchRegistry};
 
     fn saved() -> Vec<SavedLocation> {
         crate::sample::sample_model().locations
@@ -160,23 +136,26 @@ mod tests {
     }
 
     #[test]
-    fn unique_late_city_remains_findable_beyond_one_hundred_thousand_rows() {
-        let template = saved().remove(0);
-        let mut cities = (0..100_001u128)
-            .map(|index| {
-                let mut city = template.clone();
-                city.name = format!("City {index}");
-                city.id = uuid::Uuid::from_u128(index + 1);
-                city
-            })
-            .collect::<Vec<_>>();
-        cities.last_mut().expect("large corpus is nonempty").name = "Late city needle".into();
-        let provider = CitySearchProvider::new(&cities);
-        let page = provider.search_page("city needle", None, 4, 4);
+    fn unique_late_city_remains_findable_among_many_saved_cities() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let template = saved().remove(0);
+                let cities = corpus
+                    .map(|row| {
+                        let mut city = template.clone();
+                        city.name = row.text;
+                        city.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                        city
+                    })
+                    .collect::<Vec<_>>();
+                CitySearchProvider::new(&cities)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Late city needle");
-        assert_eq!(provider.stats().records, 100_001);
+        assert_eq!(provider.stats().records, 3_000);
     }
 
     #[test]

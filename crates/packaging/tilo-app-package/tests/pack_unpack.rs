@@ -12,12 +12,12 @@
 
 use crate::fixtures;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::{MemoryBlobStore, SigningIdentity, Verification, pack, unpack, verify};
 
 fn fresh_identity() -> (SigningKey, String) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pub_hex)
@@ -172,7 +172,7 @@ fn sign_verify_symmetric() {
 
     // Verify against B's pubkey → UntrustedPublisher (signature
     // is still valid; the publisher just isn't in the trust set).
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk_b = SigningKey::generate(&mut rng);
     let other_pub_bytes = sk_b.verifying_key().to_bytes();
     let v_b = verify(id, &store, &[other_pub_bytes]);

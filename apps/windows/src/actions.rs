@@ -50,7 +50,7 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Read one collaborative route override from the shared document.
 pub fn route_override(doc: &Doc, app_id: &str) -> Option<Route> {
     let (_, map) = doc.get(&ROOT, ROOT_KEY).ok().flatten()?;
-    match doc.get(&map, app_id).ok().flatten()?.0.to_str()? {
+    match doc.get(&map, app_id).ok().flatten()?.0.as_str()? {
         "Wine" => Some(Route::Wine),
         "Proton" => Some(Route::Proton),
         "Windows VM" => Some(Route::Vm),
@@ -487,7 +487,7 @@ mod tests {
         .unwrap();
         let (_, map) = doc.get(&ROOT, ROOT_KEY).unwrap().unwrap();
         assert_eq!(
-            doc.get(&map, "reader").unwrap().unwrap().0.to_str(),
+            doc.get(&map, "reader").unwrap().unwrap().0.as_str(),
             Some("Proton")
         );
         WindowsAction::ResetRoute {

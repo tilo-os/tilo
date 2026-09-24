@@ -23,7 +23,6 @@
 
 use std::cell::RefCell;
 
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
@@ -195,10 +194,9 @@ impl NameField {
             Key::Named(NamedKey::Enter) => NameFieldOutcome::Commit(self.buffer.trim().to_string()),
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
-                if let Some(grapheme) = self.buffer.graphemes(true).next_back() {
-                    self.buffer
-                        .truncate(self.buffer.len().saturating_sub(grapheme.len()));
-                }
+                let end = self.buffer.len();
+                self.buffer
+                    .truncate(crate::text_selection::prev_char_boundary(&self.buffer, end));
                 NameFieldOutcome::Edited
             }
             Key::Named(NamedKey::Space) => {

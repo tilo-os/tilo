@@ -10,7 +10,7 @@
 //!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_scroll_repro
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_ui::webview::wpe::WpeEngine;
 use tilo_ui::webview::{WebViewCommand, WebViewEngine};
@@ -69,9 +69,9 @@ fn save(f: &Option<(Arc<Vec<u8>>, u32, u32)>, name: &str) {
 fn phase(engine: &dyn WebViewEngine, label: &str, window: Duration, mut action: impl FnMut()) {
     let start_ptr = ptr(&latest(engine));
     action();
-    let deadline = Instant::now() + window;
+    let deadline = tilo_ui::time::now() + window;
     let (mut changes, mut last) = (0u64, start_ptr);
-    while Instant::now() < deadline {
+    while tilo_ui::time::now() < deadline {
         let p = ptr(&latest(engine));
         if p != last && p != 0 {
             changes += 1;
@@ -99,9 +99,9 @@ pub fn run(args: &[String]) {
     engine.send(WebViewCommand::Navigate(url));
 
     // Wait for the first real (non-blank) frame.
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = tilo_ui::time::now() + Duration::from_secs(25);
     loop {
-        if Instant::now() > deadline {
+        if tilo_ui::time::now() > deadline {
             eprintln!("no initial frame in 25s");
             std::process::exit(1);
         }

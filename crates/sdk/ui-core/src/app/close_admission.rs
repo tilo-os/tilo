@@ -1,6 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
-use super::{App, ResourceInvocation};
+use super::{App, BrokerReply, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
@@ -71,6 +71,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn finish_close_if_ready(&mut self) -> bool {
         if !self.close_admission.ready || !self.request_close() {
             return false;
@@ -239,7 +240,7 @@ impl App {
     pub(super) fn close_broker_result(
         &mut self,
         request_id: u64,
-        result: &Result<(u64, tilo_actions::InvocationUpdate), String>,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) -> bool {
         if self.close_admission.save_broker_request != Some(request_id) {
             return false;
@@ -250,7 +251,7 @@ impl App {
                 self.close_admission.save_broker_id = Some(*id);
                 self.observe_close_save(update);
                 self.close_admission.save_poll_at =
-                    std::time::Instant::now() + std::time::Duration::from_millis(100);
+                    crate::time::now() + crate::time::Duration::from_millis(100);
             }
             Err(error) => self.close_admission.save_result = Some(Err(error.clone())),
         }
@@ -315,7 +316,7 @@ impl App {
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_id.is_some()
             && self.close_admission.save_broker_request.is_none()
-            && std::time::Instant::now() >= self.close_admission.save_poll_at
+            && crate::time::now() >= self.close_admission.save_poll_at
         {
             if !self.collaboration.manager.is_connected() {
                 self.close_admission.save_result = Some(Err("save broker disconnected".into()));
@@ -326,10 +327,14 @@ impl App {
                 self.close_admission.save_broker_id,
             ) {
                 self.close_admission.save_broker_request = Some(request_id);
+                self.actions
+                    .broker_requests
+                    .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
-                    crate::collaboration::CollabRequest::PublishedInvocationStatus {
-                        request_id,
-                        id,
+                    crate::collaboration::CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::Observe {
+                            invocation: id,
+                        },
                     },
                 );
             }
@@ -411,6 +416,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn layout_close_dialog(&mut self, logical: (f64, f64)) {
         let Some(root) = self.layout.root_node else {
             return;
@@ -577,7 +583,7 @@ mod tests {
             save_allowed: false,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture root owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
@@ -586,7 +592,7 @@ mod tests {
         assert!(app.close_admission.dialog.is_some());
         let resource = app.close_admission.resources()[0].id.clone();
         let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let dialog = dialog as *const dyn Widget as *const () as usize;
+        let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
         app.state
             .doc
             .put(automerge::ROOT, "edited_after_refusal", true)
@@ -603,7 +609,7 @@ mod tests {
         );
         assert_eq!(app.close_admission.resources()[0].id, resource);
         let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+        assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
 
         close_choice(&mut app, Choice::Retry);
         assert_eq!(
@@ -630,7 +636,7 @@ mod tests {
             crate::State::new(),
             Box::new(crate::widget::Text::new("body")),
         )
-        .with_autosave(crate::persist::Autosave::disabled(
+        .with_autosave(crate::persist::DocWriter::disabled(
             "required writer unavailable",
         ));
         assert!(
@@ -704,7 +710,7 @@ mod tests {
             save_allowed,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
@@ -794,7 +800,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("edited after cancelled Quit")
         );
         assert!(!app.close_admission.admitted);
@@ -820,7 +826,7 @@ mod tests {
         let reviewed = app.close_admission.reviewed.clone();
         let focused = app.focused_node;
         let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let dialog = dialog as *const dyn Widget as *const () as usize;
+        let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
 
         assert!(!deliver_quit(&mut quit, &mut app));
         let repeated = app.close_admission.resources();
@@ -833,7 +839,7 @@ mod tests {
         assert_eq!(app.close_admission.reviewed, reviewed);
         assert_eq!(app.focused_node, focused);
         let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+        assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
         assert!(dirty.get());
     }
 
@@ -908,16 +914,19 @@ mod tests {
         );
         app.init_layout();
         let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        let admitted = modal as *const dyn Widget as *const () as usize;
+        let admitted = (modal as *const dyn Widget).cast::<()>() as usize;
         let root = app.layout.root_node.unwrap();
-        assert_eq!(app.layout.node_map[&root] as *mut () as usize, admitted);
+        assert_eq!(app.layout.node_map[&root].cast::<()>() as usize, admitted);
         // Move the entire initialized App into a different allocation. Compare
         // real tree addresses to the map before dereferencing a single map entry.
         let mut moved = Box::new(app);
         let actual = moved.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-        assert_eq!(actual as *const dyn Widget as *const () as usize, admitted);
+        assert_eq!(
+            (actual as *const dyn Widget).cast::<()>() as usize,
+            admitted
+        );
         fn addresses(widget: &dyn Widget, result: &mut Vec<usize>) {
-            result.push(widget as *const dyn Widget as *const () as usize);
+            result.push((widget as *const dyn Widget).cast::<()>() as usize);
             for child in widget.children() {
                 addresses(child, result);
             }
@@ -929,7 +938,7 @@ mod tests {
                 .layout
                 .node_map
                 .values()
-                .all(|ptr| actual_addresses.contains(&(*ptr as *mut () as usize)))
+                .all(|ptr| actual_addresses.contains(&((*ptr).cast::<()>() as usize)))
         );
         moved.layout_close_dialog((640.0, 480.0));
         assert_eq!(moved.focusable_order.len(), 3);

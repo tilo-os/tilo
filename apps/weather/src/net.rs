@@ -215,7 +215,7 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
             return;
         }
     };
-    let client = reqwest::Client::builder()
+    let client = tilo_net::http::client()
         .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
         .build()
         .ok();

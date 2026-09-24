@@ -3,21 +3,38 @@
 //! Wraps the JSON command protocol of [`shell::compositor::test_control`] so
 //! scripts don't have to glue `socat` to `jq`. The socket path comes from
 //! `$TILO_TEST_CONTROL` — the same env var the compositor binds against —
-//! falling back to `/tmp/tilo.sock`. No `clap`, no async, just stdlib +
-//! `serde_json`. Run `--help` for the subcommand list.
+//! falling back to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. No
+//! `clap`, no async, just stdlib + `serde_json`. Run `--help` for the
+//! subcommand list.
 //!
 //! Exit codes: `0` on `Ok`/`Targets`/`State`, `1` on `Err` (echoing
 //! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Default socket path when neither `--socket` nor `$TILO_TEST_CONTROL`
-/// is set. Production runs never bind here because the env-var gate
-/// inside the compositor refuses to listen without a path.
-const DEFAULT_SOCKET: &str = "/tmp/tilo.sock";
+use shell::shell::test_control_socket::{TEST_CONTROL_ENV, default_socket_path};
+
+/// Pick the socket: `--socket`, else `$TILO_TEST_CONTROL`, else the default
+/// in the private runtime directory. Never a shared directory: without a
+/// runtime directory the caller has to name the socket.
+fn resolve_socket(
+    flag: Option<PathBuf>,
+    env: Option<OsString>,
+    runtime_dir: Option<OsString>,
+) -> Result<PathBuf, ParseError> {
+    flag.or_else(|| env.filter(|env| !env.is_empty()).map(PathBuf::from))
+        .or_else(|| default_socket_path(runtime_dir))
+        .ok_or_else(|| {
+            ParseError::Usage(format!(
+                "no control socket: pass --socket PATH or set ${TEST_CONTROL_ENV} \
+                 (XDG_RUNTIME_DIR is unset or relative, so there is no default)"
+            ))
+        })
+}
 
 /// Internal representation of a parsed CLI invocation. Built by
 /// [`parse_args`]; consumed by `main` to produce the JSON command +
@@ -80,10 +97,11 @@ enum Command {
     },
 }
 
-/// Top-level CLI invocation — socket path + the parsed subcommand.
+/// Top-level CLI invocation — the `--socket` override, if given, + the
+/// parsed subcommand. The effective path is settled by [`resolve_socket`].
 #[derive(Debug, Clone, PartialEq)]
 struct Invocation {
-    socket: PathBuf,
+    socket: Option<PathBuf>,
     command: Command,
 }
 
@@ -103,7 +121,7 @@ enum ParseError {
 /// Scan `argv` for `--help`/`-h` and `--socket PATH`, which may appear
 /// anywhere before the subcommand; everything else is returned as
 /// positional args. Split out of [`parse_args`] to keep it short.
-fn parse_global_flags(argv: &[String]) -> Result<(PathBuf, Vec<String>), ParseError> {
+fn parse_global_flags(argv: &[String]) -> Result<(Option<PathBuf>, Vec<String>), ParseError> {
     let mut socket: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::with_capacity(argv.len());
     let mut iter = argv.iter();
@@ -119,9 +137,6 @@ fn parse_global_flags(argv: &[String]) -> Result<(PathBuf, Vec<String>), ParseEr
             other => positional.push(other.to_string()),
         }
     }
-    let socket = socket
-        .or_else(|| std::env::var_os("TILO_TEST_CONTROL").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
     Ok((socket, positional))
 }
 
@@ -608,7 +623,7 @@ fn print_usage() {
          \x20 tilo-control [--socket PATH] <subcommand> [args]\n\
          \n\
          Default socket path comes from $TILO_TEST_CONTROL, falling back to\n\
-         {DEFAULT_SOCKET}.\n\
+         $XDG_RUNTIME_DIR/tilo-session/test-control.sock.\n\
          \n\
          Subcommands:\n\
          \x20 list-targets                  print every target as `NAME  (X, Y, W, H)`\n\
@@ -672,10 +687,25 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut stream = match connect(&invocation.socket) {
+    let socket = match resolve_socket(
+        invocation.socket.clone(),
+        std::env::var_os(TEST_CONTROL_ENV),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    ) {
+        Ok(socket) => socket,
+        Err(ParseError::Usage(msg)) => {
+            eprintln!("tilo-control: {msg}");
+            return ExitCode::from(2);
+        }
+        Err(ParseError::Help) => {
+            eprintln!("tilo-control: internal error: unexpected help state");
+            return ExitCode::from(2);
+        }
+    };
+    let mut stream = match connect(&socket) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("tilo-control: connect {}: {e}", invocation.socket.display());
+            eprintln!("tilo-control: connect {}: {e}", socket.display());
             return ExitCode::from(2);
         }
     };
@@ -928,7 +958,7 @@ mod tests {
     #[test]
     fn socket_flag_overrides_default() {
         let inv = parse(&["--socket", "/custom/path", "list-targets"]).unwrap();
-        assert_eq!(inv.socket, PathBuf::from("/custom/path"));
+        assert_eq!(inv.socket, Some(PathBuf::from("/custom/path")));
     }
 
     #[test]
@@ -938,23 +968,39 @@ mod tests {
     }
 
     #[test]
-    fn default_socket_used_when_env_unset() {
-        // SAFETY: clearing the env-var has process-wide effect — the
-        // test runner uses `--test-threads 1` in CI, and within a
-        // single thread the assertion holds. Other unit tests in the
-        // crate don't read this variable.
-        let prev = std::env::var_os("TILO_TEST_CONTROL");
-        unsafe {
-            std::env::remove_var("TILO_TEST_CONTROL");
+    fn socket_resolution_prefers_flag_then_env_then_runtime_dir() {
+        let flag = Some(PathBuf::from("/flag.sock"));
+        let env = Some(OsString::from("/env.sock"));
+        let runtime = Some(OsString::from("/run/user/1000"));
+        assert_eq!(
+            resolve_socket(flag, env.clone(), runtime.clone()).unwrap(),
+            PathBuf::from("/flag.sock")
+        );
+        assert_eq!(
+            resolve_socket(None, env, runtime.clone()).unwrap(),
+            PathBuf::from("/env.sock")
+        );
+        assert_eq!(
+            resolve_socket(None, None, runtime).unwrap(),
+            PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
+        );
+    }
+
+    #[test]
+    fn no_runtime_dir_means_no_default_rather_than_tmp() {
+        for runtime in [
+            None,
+            Some(OsString::new()),
+            Some(OsString::from("relative")),
+        ] {
+            // An empty TILO_TEST_CONTROL counts as unset, not as a path.
+            let err = resolve_socket(None, Some(OsString::new()), runtime).unwrap_err();
+            let ParseError::Usage(message) = err else {
+                panic!("expected a usage error, got {err:?}");
+            };
+            assert!(message.contains("--socket"), "{message}");
+            assert!(message.contains("TILO_TEST_CONTROL"), "{message}");
         }
-        let inv = parse(&["list-targets"]).unwrap();
-        // Restore before asserting so a panic can't poison the env for later tests.
-        if let Some(v) = prev {
-            unsafe {
-                std::env::set_var("TILO_TEST_CONTROL", v);
-            }
-        }
-        assert_eq!(inv.socket, PathBuf::from(DEFAULT_SOCKET));
     }
 
     // ===================================================================

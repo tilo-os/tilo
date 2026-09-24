@@ -10,6 +10,32 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+/// Each test's app keeps its account stores under a private root, so a
+/// suite run never reads the user's accounts, replays their interrupted
+/// account journal or writes a migration marker into their config.
+mod support {
+    use settings::SettingsApp;
+
+    pub struct ScratchConfig {
+        dir: tempfile::TempDir,
+    }
+
+    impl ScratchConfig {
+        pub fn new() -> Self {
+            Self {
+                dir: tempfile::Builder::new()
+                    .prefix("tilo-settings-it-")
+                    .tempdir()
+                    .expect("create scratch config root"),
+            }
+        }
+
+        pub fn app(&self) -> SettingsApp {
+            SettingsApp::with_config_root(self.dir.path().join("tilo"))
+        }
+    }
+}
+
 #[path = "category_nav.rs"]
 mod category_nav;
 #[path = "category_sidebar.rs"]

@@ -76,7 +76,7 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     {
         return Err("package URL must be HTTPS without credentials or a fragment".into());
     }
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-store/0.1")
         .timeout(Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())

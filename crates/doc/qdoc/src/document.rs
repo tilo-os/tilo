@@ -690,9 +690,9 @@ mod tests {
     fn new_doc_has_root_layout() {
         let d = Document::new();
         let (v, _) = d.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
-        assert_eq!(v.to_str(), Some(SCHEMA_ID));
+        assert_eq!(v.as_str(), Some(SCHEMA_ID));
         let (vv, _) = d.doc.get(&ROOT, KEY_SCHEMA_VERSION).unwrap().unwrap();
-        assert_eq!(vv.to_i64(), Some(SCHEMA_VERSION));
+        assert_eq!(vv.as_i64(), Some(SCHEMA_VERSION));
         for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS] {
             let got = d.doc.get(&ROOT, k).unwrap();
             assert!(
@@ -708,7 +708,7 @@ mod tests {
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         let (v, _) = d2.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
-        assert_eq!(v.to_str(), Some(SCHEMA_ID));
+        assert_eq!(v.as_str(), Some(SCHEMA_ID));
     }
 
     #[test]

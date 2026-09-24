@@ -21,9 +21,9 @@
 
 pub(crate) mod resource_trace;
 
+use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use vello::Scene;
@@ -39,6 +39,7 @@ pub const FRAME_BUDGET_US: u64 = 16_667;
 
 /// Optional logical desktop position for live profiling with several apps.
 /// Kept in the shared host so benchmarks never need per-app windowing code.
+#[cfg(feature = "native")]
 pub(crate) fn profile_window_position(value: &str) -> Option<(i32, i32)> {
     let (x, y) = value.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
@@ -274,7 +275,7 @@ struct HudLayout {
 impl FrameProfiler {
     fn new(hud: bool, dump: Option<DumpWriter>) -> Self {
         Self {
-            origin: Instant::now(),
+            origin: crate::time::now(),
             frame_index: 0,
             cur: FrameTiming::default(),
             pending_handle_event_us: 0,
@@ -291,12 +292,18 @@ impl FrameProfiler {
     /// Deliberately **not** gated on `debug_assertions`: the point of a
     /// profiler is to measure release builds, where frame cost matters.
     pub fn from_env() -> Option<Self> {
-        let hud = std::env::var_os("TILO_PROFILE").is_some_and(|v| !v.is_empty());
-        let out = std::env::var_os("TILO_PROFILE_OUT").filter(|v| !v.is_empty());
+        Self::from_diagnostics(&crate::host::environment().diagnostics)
+    }
+
+    /// The profiler `diagnostics` asks for, if any: its HUD flag and dump
+    /// path correspond to `TILO_PROFILE` and `TILO_PROFILE_OUT`.
+    pub fn from_diagnostics(diagnostics: &crate::host::RunnerDiagnostics) -> Option<Self> {
+        let hud = diagnostics.profile_hud;
+        let out = diagnostics.profile_out.as_deref();
         if !hud && out.is_none() {
             return None;
         }
-        let dump = out.and_then(|p| DumpWriter::open(Path::new(&p)));
+        let dump = out.and_then(DumpWriter::open);
         Some(Self::new(hud, dump))
     }
 

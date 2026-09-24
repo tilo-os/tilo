@@ -41,7 +41,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::time::Instant;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -834,7 +833,7 @@ fn full_draw(
     let allocation_before_layout = allocation_breakdown
         .as_ref()
         .map(|_| crate::allocation_profile_snapshot());
-    let t_layout = Instant::now();
+    let t_layout = tilo_ui::time::now();
     let layout_dirty = state.root.is_layout_dirty();
     if layout_dirty {
         let node_map = state.node_map;
@@ -871,7 +870,7 @@ fn full_draw(
     let allocation_before_draw = allocation_breakdown
         .as_ref()
         .map(|_| crate::allocation_profile_snapshot());
-    let t_draw = Instant::now();
+    let t_draw = tilo_ui::time::now();
     state.scene.reset();
     // Wire the spatial-culling viewport just like the live App
     // does. Without this the bench's `draw_with_presence` walks
@@ -903,7 +902,7 @@ fn full_draw(
         );
     }
 
-    let t_render = Instant::now();
+    let t_render = tilo_ui::time::now();
     let allocation_before_damage = allocation_breakdown
         .as_ref()
         .map(|_| crate::allocation_profile_snapshot());
@@ -1291,13 +1290,13 @@ fn run_bench_loop(
         .then(AllocationBreakdown::default);
 
     for (i, sample) in (0..iters).zip(&mut histo) {
-        let t_total = Instant::now();
+        let t_total = tilo_ui::time::now();
         let mut phase = Phase::default();
 
         let allocation_before_handle = allocation_breakdown
             .as_ref()
             .map(|_| crate::allocation_profile_snapshot());
-        let t_handle = Instant::now();
+        let t_handle = tilo_ui::time::now();
         dispatch_bench_event(
             state,
             doc,

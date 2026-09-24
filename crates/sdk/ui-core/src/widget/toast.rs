@@ -13,8 +13,8 @@
 //! state — enter/exit motion is wired by the shell consumer that owns the
 //! animation driver — so tests stay deterministic.
 
+use crate::time::Duration;
 use automerge::{AutoCommit, ObjId};
-use std::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};

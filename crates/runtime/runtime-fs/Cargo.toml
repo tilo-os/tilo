@@ -23,7 +23,7 @@ capnpc.workspace = true
 [dependencies]
 blake3.workspace = true
 cap-std = "3.4.6"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { workspace = true, features = ["fs"] }
 uuid.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 capnp.workspace = true
@@ -36,6 +36,7 @@ postcard = { workspace = true, features = ["use-std"] }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

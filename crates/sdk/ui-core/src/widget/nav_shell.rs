@@ -8,9 +8,9 @@
 //! shell owns the breakpoint, eased collapse/push slides, the scrim, and
 //! button/scrim/Esc self-routing.
 
+use crate::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, Stroke, Vec2};
@@ -958,7 +958,7 @@ impl NavShell {
             self.sidebar_flap.settle(self.sidebar_split_layout());
             self.push.settle(SplitLayout::Docked);
             self.animating = false;
-            self.last_tick = Some(Instant::now());
+            self.last_tick = Some(crate::time::now());
             if self.sidebar_flap.reveal().to_bits() != sidebar_before.to_bits()
                 || self.push.reveal().to_bits() != push_before.to_bits()
             {
@@ -967,7 +967,7 @@ impl NavShell {
             }
             return;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {
             now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
         });
@@ -1914,7 +1914,7 @@ mod tests {
 
     #[test]
     fn opaque_hold_deadline_reaches_host_through_modal_nav_shell() {
-        let deadline = Instant::now() + std::time::Duration::from_millis(900);
+        let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
         let mut content = EventProbe::new("content", Default::default());
         content.deadline = Some(deadline);
         let mut ns =
@@ -2605,7 +2605,7 @@ mod tests {
         draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
         assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
 
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        elapse(&mut ns, 16);
         draw_frame(&mut ns);
         let r = ns.push.reveal();
         assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
@@ -2615,7 +2615,7 @@ mod tests {
         );
 
         for _ in 0..240 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            elapse(&mut ns, 16);
             draw_frame(&mut ns);
             if !ns.push.is_animating(SplitLayout::Docked) {
                 break;
@@ -2663,7 +2663,7 @@ mod tests {
         ns.show_detail();
         ns.snap();
         assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        elapse(&mut ns, 20);
         draw_frame(&mut ns);
         assert_eq!(
             ns.push.reveal(),
@@ -2823,6 +2823,12 @@ mod tests {
     }
 
     // --- scaffolding -----------------------------------------------------
+
+    /// Pretend `ms` of wall clock passed since the last drawn frame, so the
+    /// next draw advances the animations by exactly that step.
+    fn elapse(ns: &mut NavShell, ms: u64) {
+        ns.last_tick = crate::time::now().checked_sub(crate::time::Duration::from_millis(ms));
+    }
 
     fn draw_frame(ns: &mut NavShell) {
         let theme = Theme::dark();

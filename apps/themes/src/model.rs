@@ -66,32 +66,13 @@ pub fn rgb_of(c: Color) -> Rgb {
 
 /// `#RRGGBB` uppercase hex string.
 pub fn hex(r: Rgb) -> String {
-    format!("#{:02X}{:02X}{:02X}", r[0], r[1], r[2])
+    ui::color::to_hex(Color::from_rgb8(r[0], r[1], r[2]))
 }
 
-/// Parse `#RGB`, `#RRGGBB` (with or without the leading `#`).
+/// Parse `#RGB`, `#RRGGBB` (with or without the leading `#`; see
+/// [`ui::color::parse_hex`]).
 pub fn parse_hex(s: &str) -> Option<Rgb> {
-    let s = s.trim().trim_start_matches('#');
-    match s.len() {
-        3 => {
-            let mut out = [0u8; 3];
-            for (slot, ch) in out.iter_mut().zip(s.chars()) {
-                let v = ch.to_digit(16)? as u8;
-                *slot = v << 4 | v;
-            }
-            Some(out)
-        }
-        // `.get(range)` (rather than `&s[range]`) so a byte range that lands
-        // inside a multi-byte character — possible since `s` is arbitrary
-        // user-typed text at this point — yields `None` instead of panicking.
-        6 => {
-            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-            Some([r, g, b])
-        }
-        _ => None,
-    }
+    ui::color::parse_hex(s).map(ui::color::to_rgb8)
 }
 
 /// Linearly mix two colours in straight-u8 space. `t = 0` → `a`, `t = 1` → `b`.

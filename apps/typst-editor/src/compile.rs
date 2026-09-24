@@ -10,15 +10,17 @@
 //! `typst-assets` (plus the shared Windows emoji face). There is no package
 //! resolution, no filesystem, no clock.
 
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
-use typst::foundations::{Bytes, Datetime};
-use typst::layout::{Frame, FrameItem, PagedDocument, Point as TypstPoint, Transform};
-use typst::syntax::{FileId, Source, VirtualPath};
+use typst::foundations::{Bytes, Datetime, Duration};
+use typst::layout::{Frame, FrameItem, Point as TypstPoint, Transform};
+use typst::syntax::{DiagSpanKind, FileId, Source};
 use typst::text::{Font, FontBook, TextItem};
-use typst::utils::LazyHash;
+use typst::utils::{LazyHash, Scalar};
 use typst::{Library, LibraryExt, World};
+use typst_layout::PagedDocument;
 use vello::kurbo::{Affine, Point};
 
 /// Severity of a flattened diagnostic — decoupled from `typst::Severity` so
@@ -174,8 +176,9 @@ struct TypstWorld {
 
 impl TypstWorld {
     fn new(parts: Arc<WorldParts>, src: &str) -> Self {
-        let main_id = FileId::new(None, VirtualPath::new("/main.typ"));
-        let main = Source::new(main_id, src.to_string());
+        // `/main.typ` in the project root: the one file this world serves.
+        let main = Source::detached(src);
+        let main_id = main.id();
         Self {
             parts,
             main_id,
@@ -198,24 +201,24 @@ impl World for TypstWorld {
         if id == self.main_id {
             Ok(self.main.clone())
         } else {
-            Err(FileError::NotFound(
-                id.vpath().as_rootless_path().to_path_buf(),
-            ))
+            Err(FileError::NotFound(PathBuf::from(
+                id.vpath().get_without_slash(),
+            )))
         }
     }
     fn file(&self, id: FileId) -> FileResult<Bytes> {
         if id == self.main_id {
             Ok(Bytes::new(self.main.text().to_string().into_bytes()))
         } else {
-            Err(FileError::NotFound(
-                id.vpath().as_rootless_path().to_path_buf(),
-            ))
+            Err(FileError::NotFound(PathBuf::from(
+                id.vpath().get_without_slash(),
+            )))
         }
     }
     fn font(&self, index: usize) -> Option<Font> {
         self.parts.fonts.get(index).cloned()
     }
-    fn today(&self, _offset: Option<i64>) -> Option<Datetime> {
+    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
         None
     }
 }
@@ -230,13 +233,17 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
     let result = typst::compile::<PagedDocument>(&world);
     let warnings = result.warnings;
 
+    let render_options = typst_render::RenderOptions {
+        pixel_per_pt: Scalar::new(f64::from(pixel_per_pt)),
+        render_bleed: false,
+    };
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let (pages, page_text, ok) = match result.output {
         Ok(document) => {
-            let mut imgs = Vec::with_capacity(document.pages.len());
-            let mut texts = Vec::with_capacity(document.pages.len());
-            for page in &document.pages {
-                let pixmap = typst_render::render(page, pixel_per_pt);
+            let mut imgs = Vec::with_capacity(document.pages().len());
+            let mut texts = Vec::with_capacity(document.pages().len());
+            for page in document.pages() {
+                let pixmap = typst_render::render(page, &render_options);
                 let size = page.frame.size();
                 let mut img = pixmap_to_rgba(&pixmap);
                 img.width_pt = size.x.to_pt();
@@ -383,7 +390,14 @@ fn flatten(world: &TypstWorld, d: &SourceDiagnostic) -> Diagnostic {
         Severity::Warning => DiagKind::Warning,
     };
     let text = world.main.text();
-    let (line, col, end_line, end_col) = match world.main.range(d.span) {
+    let range = match d.span.get() {
+        DiagSpanKind::Number { id, num, sub_range } if id == world.main_id => {
+            world.main.range(num, sub_range)
+        }
+        DiagSpanKind::Range { id, range } if id == world.main_id => Some(range),
+        _ => None,
+    };
+    let (line, col, end_line, end_col) = match range {
         Some(r) => {
             let (sl, sc) = byte_to_line_col(text, r.start);
             // Mark at least one column so a zero-width span (e.g. an insertion
@@ -401,11 +415,7 @@ fn flatten(world: &TypstWorld, d: &SourceDiagnostic) -> Diagnostic {
         col,
         end_line,
         end_col,
-        hints: d
-            .hints
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect(),
+        hints: d.hints.iter().map(|hint| hint.v.to_string()).collect(),
     }
 }
 
@@ -426,7 +436,7 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
 /// tiny-skia stores premultiplied RGBA8. Un-premultiply and composite over
 /// white so the page reads as opaque paper. `pixmap.data()` is RGBA order.
 ///
-/// `tiny-skia` is pinned to the same `0.11` series typst-render uses, so the
+/// `tiny-skia` is pinned to the same `0.12` series typst-render uses, so the
 /// `Pixmap` type returned by `typst_render::render` unifies with this one.
 fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
     let width = pixmap.width();

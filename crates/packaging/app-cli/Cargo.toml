@@ -14,6 +14,12 @@ path = "src/lib.rs"
 name = "app"
 path = "src/main.rs"
 
+[features]
+# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
+# release build. Debug builds always honour them; shipped images never enable
+# this.
+dev-overrides = []
+
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
@@ -27,7 +33,7 @@ launcher = { path = "../launcher" }
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
 clap.workspace = true
-dirs.workspace = true
+xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 libc.workspace = true
@@ -35,15 +41,15 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicitly install the workspace-standard ring provider at startup.
-rustls.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 # The end-to-end test packs, publishes, and installs a .tapp.
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -15,9 +15,9 @@ class ProjectionTests(unittest.TestCase):
         root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/system/tilo-crypto/Cargo.toml').read_text())
         projected=module.project_manifest(root,member)
         self.assertEqual(set(projected['dependencies']),set(member['dependencies']))
-        for name in ('ring','rand10','picky-asn1','picky-asn1-der','rsa'):
+        for name in ('ring','getrandom','cms','x509-cert','rsa'):
             self.assertEqual(projected['dependencies'][name],member['dependencies'][name])
-        self.assertEqual(projected['dependencies']['rand']['version'],root['workspace']['dependencies']['rand'])
+        self.assertEqual(projected['dependencies']['sha2']['version'],root['workspace']['dependencies']['sha2'])
 
     def test_inherited_alias_target_features_and_defaults(self):
         root={'workspace':{'package':{'license':'AGPL-3.0-only'},'dependencies':{'alias':{'package':'upstream','version':'=2.0','features':['base'],'default-features':False},'defaulted':'1'},'lints':{'rust':{'unsafe_code':'deny'}}}}

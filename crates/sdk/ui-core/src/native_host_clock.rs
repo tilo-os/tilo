@@ -3,7 +3,7 @@
 //! Metal's `presentedTime` and `CACurrentMediaTime` use host seconds. Keep these
 //! bounds separate from Instant offsets: no assumption about Instant's epoch
 //! or cross-clock rate is needed. The caller serializes after all reads finish.
-use std::time::Instant;
+use crate::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HostClockBracket {
@@ -21,12 +21,12 @@ pub(crate) const CLOCK_NAME: &str = if cfg!(target_os = "macos") {
 pub(crate) fn sample() -> (Instant, Option<HostClockBracket>) {
     #[cfg(target_os = "macos")]
     {
-        let (instant, bracket) = sample_with(host_seconds, Instant::now);
+        let (instant, bracket) = sample_with(host_seconds, crate::time::now);
         (instant, Some(bracket))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        (Instant::now(), None)
+        (crate::time::now(), None)
     }
 }
 
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn host_reads_bracket_the_original_instant_read_in_order() {
         let calls = RefCell::new(Vec::new());
-        let expected = Instant::now();
+        let expected = crate::time::now();
         let mut times = [120.125, 120.25].into_iter();
         let (instant, bracket) = sample_with(
             || {
@@ -97,9 +97,9 @@ mod tests {
 
     #[test]
     fn platform_sample_explicitly_reports_clock_availability() {
-        let before = Instant::now();
+        let before = crate::time::now();
         let (instant, bracket) = sample();
-        let after = Instant::now();
+        let after = crate::time::now();
         assert!(before <= instant && instant <= after);
         #[cfg(target_os = "macos")]
         {

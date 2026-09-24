@@ -15,10 +15,10 @@
 //! screens, so tests (including `end_to_end_ceremony_lets_both_devices_co_sign`)
 //! drive it directly without ever building a `TaffyTree`.
 
+use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
@@ -27,8 +27,9 @@ use collab_types::{
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
 };
 use ed25519_dalek::SigningKey as DalekSigningKey;
-use hmac::{Hmac, Mac};
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use hmac::{Hmac, KeyInit, Mac};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
@@ -473,7 +474,8 @@ type HmacSha512 = Hmac<Sha512>;
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
-    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha512 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     let bytes = mac.finalize().into_bytes();
     let mut out = [0u8; 64];
@@ -493,7 +495,8 @@ pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> bool {
-    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha512 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     mac.verify_slice(tag).is_ok()
 }
@@ -632,7 +635,7 @@ impl PairingHandshake {
             PairingBackend::Memory(_) => true,
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                let now = SystemTime::now()
+                let now = crate::time::wall()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map_or(u64::MAX, |duration| duration.as_secs());
                 now < backend.expires_unix && !backend.root.join("cancelled").exists()
@@ -767,7 +770,7 @@ impl PairingHandshake {
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
     ) -> Option<PairingChannelState> {
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
@@ -786,8 +789,7 @@ impl PairingHandshake {
         nonce: &[u8; 16],
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
-        use std::io::Write;
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
@@ -819,20 +821,7 @@ impl PairingHandshake {
             let _ = std::fs::remove_file(&lock);
             return false;
         };
-        let tmp = backend.root.join(format!(
-            ".{}.{}.tmp",
-            hex::encode(nonce),
-            std::process::id()
-        ));
-        let written = private_fs::rewrite(&tmp)
-            .and_then(|mut file| {
-                file.write_all(&bytes)?;
-                file.sync_all()
-            })
-            .and_then(|()| std::fs::rename(&tmp, &path))
-            .and_then(|()| private_fs::sync_directory(&backend.root))
-            .is_ok();
-        let _ = std::fs::remove_file(&tmp);
+        let written = private_fs::write_atomic(&path, &bytes).is_ok();
         let _ = std::fs::remove_file(&lock);
         written
     }
@@ -1473,6 +1462,10 @@ impl InviteRedemptionAuthority {
         self.root.join(hex::encode(Sha512::digest(capability)))
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a bounded retry on an advisory file lock held by another process; nothing to schedule"
+    )]
     fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
         let file = private_fs::lock_file(&(self.root.join("issue.lock")))?;
         for _ in 0..250 {
@@ -1491,7 +1484,7 @@ impl InviteRedemptionAuthority {
     }
 
     fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
-        use std::io::{Read, Write};
+        use std::io::Read;
         let path = self.root.join("authority-key");
         let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
             let file = match private_fs::read(&path) {
@@ -1514,29 +1507,17 @@ impl InviteRedemptionAuthority {
             bytes
         } else {
             let mut key = zeroize::Zeroizing::new([0; 32]);
-            OsRng.fill_bytes(&mut *key);
-            let mut random = [0; 16];
-            OsRng.fill_bytes(&mut random);
-            let temporary = self
-                .root
-                .join(format!(".authority-key-{}.tmp", hex::encode(random)));
-            let mut file = private_fs::create_new(&temporary)?;
-            file.write_all(&*key)?;
-            file.sync_all()?;
-            let published = std::fs::hard_link(&temporary, &path);
-            let _ = std::fs::remove_file(&temporary);
-            match published {
-                Ok(()) => {
-                    private_fs::sync_directory(&self.root)?;
-                    zeroize::Zeroizing::new(key.to_vec())
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing()?
-                    .ok_or_else(|| {
-                        IdentityFlowError::Io(std::io::Error::other(
-                            "published invite authority key disappeared",
-                        ))
-                    })?,
-                Err(error) => return Err(error.into()),
+            UnwrapErr(SysRng).fill_bytes(&mut *key);
+            // Publication never replaces a concurrently created key; the
+            // loser adopts the winner's.
+            if private_fs::create_atomic(&path, &*key)? {
+                zeroize::Zeroizing::new(key.to_vec())
+            } else {
+                read_existing()?.ok_or_else(|| {
+                    IdentityFlowError::Io(std::io::Error::other(
+                        "published invite authority key disappeared",
+                    ))
+                })?
             }
         };
         let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
@@ -1563,7 +1544,7 @@ impl InviteRedemptionAuthority {
         // across processes. `File`'s OS lock is released automatically after
         // a crash, unlike a sentinel lockfile.
         let _issue_lock = self.issue_lock()?;
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |value| value.as_secs());
         for entry in std::fs::read_dir(&self.root)?
@@ -1606,7 +1587,7 @@ impl InviteRedemptionAuthority {
         let key = self.master_key()?;
         let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
         let mut nonce = [0; 24];
-        OsRng.fill_bytes(&mut nonce);
+        UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let digest = Sha512::digest(capability);
         let mut aad = Vec::with_capacity(72);
         aad.extend_from_slice(&digest);
@@ -1707,10 +1688,10 @@ impl InviteRedemptionAuthority {
             .decrypt(
                 bytes
                     .get(8..32)
+                    .and_then(|nonce| <&chacha20poly1305::XNonce>::try_from(nonce).ok())
                     .ok_or_else(|| {
                         IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
-                    })?
-                    .into(),
+                    })?,
                 Payload {
                     msg: bytes.get(32..).ok_or_else(|| {
                         IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
@@ -1923,7 +1904,7 @@ fn mint_invite_at(
 ) -> Result<InviteEnvelope, IdentityFlowError> {
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
-    OsRng.fill_bytes(&mut capability);
+    UnwrapErr(SysRng).fill_bytes(&mut capability);
     let expires_unix = expires_at
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(u64::MAX, |d| d.as_secs());
@@ -2063,9 +2044,9 @@ impl RecoveryChallenge {
                 words.len()
             )));
         }
-        // Fisher–Yates directly on RngCore — avoids rand 0.8's SliceRandom.
+        // Fisher–Yates directly on the OS RNG; no `rand` dependency needed.
         let mut positions: Vec<usize> = (1..=24).collect();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         for i in (1..positions.len()).rev() {
             let j = (rng.next_u32() as usize)
                 .checked_rem(i.saturating_add(1))
@@ -2743,6 +2724,26 @@ pub(super) mod test_events {
 mod tests {
     use super::*;
 
+    /// Pairing codes and MACs cross two devices that may run different
+    /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.
+    #[test]
+    fn pairing_code_and_mac_match_known_answers() {
+        let nonce = [7_u8; 16];
+        assert_eq!(derive_pairing_code(&nonce), 206_239);
+        let key = derive_pairing_mac_key(&nonce);
+        assert_eq!(
+            hex::encode(key),
+            "280a9ed0cb37e06755677de2b73ba15a51524d6264f78ef9aebd4c2e9eacad77"
+        );
+        let mac = compute_pairing_mac(&key, b"kat-payload");
+        assert_eq!(
+            hex::encode(mac),
+            "7142c6f64bb78c1e90e93269cc63d9d22cce12d1ecd39fc6bead9f36096daab8\
+             b316dc90d0ee6deb7acc9818ce10535dc1df7a7bb72576238836a3e38aba52bd"
+        );
+        assert!(verify_pairing_mac(&key, b"kat-payload", &mac));
+    }
+
     fn fixture_mnemonic() -> String {
         // 24 distinct BIP39 words for deterministic verification.
         "ability abandon able about above absent absorb abstract absurd \
@@ -2808,7 +2809,7 @@ mod tests {
     #[test]
     fn pairing_payload_round_trip() {
         let nonce = [9u8; 16];
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let payload = PairingPayload::new(nonce, id.group_public_key(), &round1).unwrap();
@@ -2836,7 +2837,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let url = env.to_url().unwrap();
@@ -2857,7 +2858,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         env.channel_name = "treasury".into();
@@ -2873,7 +2874,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         endpoint_tampered.redemption_endpoint = "127.0.0.1:9".into();
@@ -2920,11 +2921,11 @@ mod tests {
             &owner_sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let (_invitee_sk, invitee_pk) = generate_keypair();
-        let event = build_attestation_from_invite(&env, invitee_pk, SystemTime::now()).unwrap();
+        let event = build_attestation_from_invite(&env, invitee_pk, crate::time::wall()).unwrap();
         if let ChannelEvent::AttestationIssued(ra) = &event {
             assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
             assert_eq!(ra.role, Role::Editor);
@@ -2949,13 +2950,13 @@ mod tests {
             &owner_signing_key,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let (_, first) = generate_keypair();
         let (_, second) = generate_keypair();
-        build_attestation_from_invite(&env, first, SystemTime::now()).unwrap();
-        let error = build_attestation_from_invite(&env, second, SystemTime::now()).unwrap_err();
+        build_attestation_from_invite(&env, first, crate::time::wall()).unwrap();
+        let error = build_attestation_from_invite(&env, second, crate::time::wall()).unwrap_err();
         assert!(error.to_string().contains("already redeemed"));
     }
 
@@ -3123,7 +3124,7 @@ mod tests {
 
     #[test]
     fn identity_record_json_round_trip() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec = IdentityRecord::from_threshold_identity(
             &id,
@@ -3152,7 +3153,7 @@ mod tests {
     fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
         use ed25519_dalek::{Signer, Verifier, VerifyingKey};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let rec = IdentityRecord::from_threshold_identity(
             &id,
@@ -3190,10 +3191,11 @@ mod tests {
     fn identity_record_round_trips_back_into_a_signing_identity() {
         use collab_types::verify_event;
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], SystemTime::now())
-            .unwrap();
+        let rec =
+            IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], crate::time::wall())
+                .unwrap();
         let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
 
         let revived = back.into_threshold_identity().unwrap();
@@ -3229,11 +3231,15 @@ mod tests {
 
     #[test]
     fn memory_store_round_trip() {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec =
-            IdentityRecord::from_threshold_identity(&id, "bob", [180, 200, 220], SystemTime::now())
-                .unwrap();
+        let rec = IdentityRecord::from_threshold_identity(
+            &id,
+            "bob",
+            [180, 200, 220],
+            crate::time::wall(),
+        )
+        .unwrap();
         let store = MemoryIdentityStore::new();
         assert!(store.load().unwrap().is_none());
         store.save(&rec).unwrap();
@@ -3263,7 +3269,7 @@ mod tests {
     fn pairing_handshake_publishes_the_complete_pairer_exchange_atomically() {
         let hs = PairingHandshake::new();
         let nonce = [0xAB; 16];
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut identity = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_session, round1) = identity.begin_enrolment(2, 2, 2, &mut rng).unwrap();
         let round2 = EnrolmentRound2 {
@@ -3300,7 +3306,7 @@ mod tests {
         assert!(first.take_pairer_reply(&nonce).is_none());
 
         let restarted =
-            PairingHandshake::durable(dir.path(), SystemTime::now() + Duration::from_secs(3600))
+            PairingHandshake::durable(dir.path(), crate::time::wall() + Duration::from_secs(3600))
                 .unwrap();
         restarted.publish_pairer_reply(&nonce, reply, [2; 64]);
         assert!(
@@ -3319,7 +3325,7 @@ mod tests {
         use threshold_identity::SigningRound1Commitment;
 
         // Host and pairer each bootstrap, then begin enrolment toward a 2-of-2 group.
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut host = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut host_session, host_round1) = host.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();

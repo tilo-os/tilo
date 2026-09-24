@@ -86,10 +86,33 @@ room.
 Only a locally governing administrator can mint an invite or change membership
 and capabilities. Ordinary role controls expose Viewer, Commenter, and Editor;
 Owner is structural governance authority and is never created or transferred
-by cycling a role chip. Document actions use their signed semantic class across
-apps: comments require `Comment`, edits/moves/deletes require `Write`, and
-governance/compaction/redaction require `Admin`, with the static role table and
-live capability restrictions both enforced before signing and on receipt.
+by cycling a role chip. What a role may change depends on the path the change
+takes:
+
+- **Directed action invocations** (an action invoked through the session action
+  broker by a person, script or agent) are checked against the action's
+  declared permission requirement — `Read`, `Comment`, `Write`, `Invite` or
+  `Admin` — and the caller's live capabilities.
+- **Replicated app documents are checked only as a whole.** The SDK signs every
+  document change, snapshot or incremental and whatever action produced it, as
+  `OpClass::Splice`, which requires `Write`. The identity service checks the
+  role table and live capability restrictions before signing, and every broker
+  checks them again on receipt. Owners and Editors can therefore change any
+  part of an app document; Commenters and Viewers can change none of it, so a
+  comment stored inside an app document is refused for a Commenter; and an
+  Editor is not limited to particular actions.
+- **Governance, compaction and redaction operations** are signed with their own
+  classes, which the role table grants to the owner only.
+
+Per-action enforcement does not exist for replicated app state, and signing the
+action's declared class would not create it: the broker holds no Automerge
+document, the payload may be MLS ciphertext, and an Automerge change does not
+name the action that made it, so a Commenter could label any edit as a comment.
+Enforcing actions such as "commenters may add comments" needs structure the
+receiver can check — for example comments kept as their own records that
+accept only `Comment`-class changes. Until then, treat the app-document role
+split as write or no write.
+
 Publishing a surface stream, granting or injecting remote control, and room
 state responses likewise require `Write`; passive presence, requests, and
 validated history reads require `Read`.

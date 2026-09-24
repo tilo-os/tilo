@@ -215,7 +215,7 @@ impl InhibitBackend {
             OwnedValue::from(SCREENSAVER_ACTIVE.load(Ordering::Acquire)),
         );
         state.insert("session-state".into(), OwnedValue::from(1_u32));
-        if let Ok(context) = zbus::object_server::SignalContext::new(connection, path.as_str()) {
+        if let Ok(context) = zbus::object_server::SignalEmitter::new(connection, path.as_str()) {
             let _ = Self::state_changed(&context, session, state).await;
         }
         0
@@ -238,7 +238,7 @@ impl InhibitBackend {
     }
     #[zbus(signal)]
     async fn state_changed(
-        ctxt: &zbus::object_server::SignalContext<'_>,
+        ctxt: &zbus::object_server::SignalEmitter<'_>,
         session: ObjectPath<'_>,
         state: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
@@ -269,7 +269,7 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
                         let Ok(session) = ObjectPath::try_from(path.clone()) else {
                             continue;
                         };
-                        let Ok(context) = zbus::object_server::SignalContext::new(
+                        let Ok(context) = zbus::object_server::SignalEmitter::new(
                             &task_connection,
                             path.as_str(),
                         ) else {
@@ -299,10 +299,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn context() -> PortalContext {
         let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "test"),
         );
         PortalContext::new_with_null_spawners(
             grants,

@@ -18,6 +18,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -80,7 +82,7 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
         // Everything else, including the workspace's durable collaboration room,
         // comes from the builder, so a field added to `Workspace` does not break
         // this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -89,11 +91,14 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
     active_group.insert(strip_id, g_left);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -195,7 +200,7 @@ fn hover_and_drop(host: &mut ShellOverlayHost, layout: &Layout, p: Point, path: 
 fn tab_count(chrome: &Chrome, group_id: GroupId) -> usize {
     let st = chrome.borrow();
     let tree = st.tree();
-    tree.workspaces[0]
+    tree.desktop.workspaces[0]
         .strips
         .iter()
         .flat_map(|s| s.window_groups.iter())
@@ -268,7 +273,7 @@ fn drop_over_right_group_routes_to_right_group_only() {
 )]
 fn drop_on_left_side_of_first_tab_inserts_before_it() {
     let (tree, strip_id, g_left, _g_right) = two_group_one_strip_tree();
-    let original_first = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+    let original_first = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let first_tab = host
@@ -285,7 +290,7 @@ fn drop_on_left_side_of_first_tab_inserts_before_it() {
 
     let state = chrome.borrow();
     let tree = state.tree();
-    let group = tree.workspaces[0].strips[0]
+    let group = tree.desktop.workspaces[0].strips[0]
         .window_groups
         .iter()
         .find(|group| group.id == g_left)
@@ -321,7 +326,7 @@ fn drop_between_groups_creates_a_group_at_that_seam() {
 
     let state = chrome.borrow();
     let tree = state.tree();
-    let groups = &tree.workspaces[0].strips[0].window_groups;
+    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
     assert_eq!(groups.len(), 3);
     assert_eq!(groups[0].id, g_left);
     assert_eq!(groups[1].tabs[0].title, "between.unknown");
@@ -400,7 +405,7 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let ws = &tree.workspaces[0];
+    let ws = &tree.desktop.workspaces[0];
     // The drop must record a per-app filesystem capability on the target
     // workspace — the same grants map the portal/permission-prompt path
     // writes into — keyed by the built-in Editor's canonical app-id (what
@@ -454,7 +459,7 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
     let st = chrome.borrow();
     let tree = st.tree();
     let editor_key = AppKind::Other("Editor".into()).app_id();
-    let view = tree.workspaces[0].app_grants_snapshot();
+    let view = tree.desktop.workspaces[0].app_grants_snapshot();
     let editor_caps = view.get(&editor_key).expect("grant present");
     let count = editor_caps
         .iter()

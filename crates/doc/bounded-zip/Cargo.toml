@@ -1,0 +1,20 @@
+[package]
+name = "bounded-zip"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Bounded reading of untrusted ZIP packages (zip-bomb and XXE defence) for Tilo's document formats"
+
+[features]
+default = []
+# EPUB container.xml -> OPF package resolution (manifest, spine, cover).
+epub = ["dep:roxmltree"]
+
+[dependencies]
+zip.workspace = true
+thiserror.workspace = true
+roxmltree = { workspace = true, optional = true }
+
+[lints]
+workspace = true

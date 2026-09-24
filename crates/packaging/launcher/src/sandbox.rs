@@ -553,7 +553,7 @@ pub fn egress_decision(
     // must come from the same answer, or the app gets an empty namespace
     // with nothing to reach through it.
     if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && std::env::var(crate::run::NET_GATE_ENV).is_ok_and(|v| v == "off")
+        && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
     {
         tracing::warn!(
             hosts = ?decision.policy().map(super::netgate::EgressPolicy::hosts),
@@ -838,11 +838,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("untrusted-parsers.conf");
         std::fs::write(&file, policy).unwrap();
-        // SAFETY: the test body is single-threaded and takes the process_env
-        // lock; the variable is removed before the assertions run.
-        unsafe { std::env::set_var(crate::hardening::POLICY_PATH_ENV, &file) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::hardening::POLICY_PATH_ENV, &file);
         let m = mk_manifest("off");
-        let argv = build_bwrap_argv(
+        build_bwrap_argv(
             &m,
             Path::new("/host/pkg"),
             None,
@@ -850,15 +849,13 @@ mod tests {
             None,
             None,
             &CapabilityPlan::empty(),
-        );
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(crate::hardening::POLICY_PATH_ENV) };
-        argv
+        )
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_listed_package_gets_the_allocator_bound_as_well_as_preloaded() {
+        // The argv builder reads the session environment.
+        let _env = tilo_test_env::lock();
         let argv = argv_with_hardening_policy("com.example.notes\n");
 
         let preload = argv
@@ -896,8 +893,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_unlisted_package_pays_for_neither_protection() {
+        // The argv builder reads the session environment.
+        let _env = tilo_test_env::lock();
         let argv = argv_with_hardening_policy("so.tilo.browser\n");
         assert!(
             !argv.iter().any(|a| a == "LD_PRELOAD"),
@@ -1037,14 +1035,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn argv_forwards_the_complete_validated_continuation_envelope() {
-        // SAFETY: serialized with every test that mutates process env.
-        unsafe {
-            std::env::set_var("TILO_CONTINUITY_INSTANCE", "42");
-            std::env::set_var("TILO_CONTINUITY_RESUME_SCHEMA", "7");
-            std::env::set_var("TILO_CONTINUITY_RESUME_HEX", "7b7d");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_CONTINUITY_INSTANCE", "42")
+            .set("TILO_CONTINUITY_RESUME_SCHEMA", "7")
+            .set("TILO_CONTINUITY_RESUME_HEX", "7b7d");
         let argv = build_bwrap_argv(
             &mk_manifest("off"),
             Path::new("/host/pkg"),
@@ -1054,12 +1049,7 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         );
-        // SAFETY: same serialized scope as the writes above.
-        unsafe {
-            std::env::remove_var("TILO_CONTINUITY_INSTANCE");
-            std::env::remove_var("TILO_CONTINUITY_RESUME_SCHEMA");
-            std::env::remove_var("TILO_CONTINUITY_RESUME_HEX");
-        }
+        drop(env);
         assert_eq!(setenv_value(&argv, "TILO_CONTINUITY_INSTANCE"), Some("42"));
         assert_eq!(
             setenv_value(&argv, "TILO_CONTINUITY_RESUME_SCHEMA"),
@@ -1144,8 +1134,9 @@ mod tests {
     /// The reads a launch gets are the system profile's; a manifest naming
     /// a path never reaches this builder.
     #[test]
-    #[serial_test::serial(process_env)]
     fn argv_reads_come_from_the_system_profile_not_the_manifest() {
+        // The argv builder reads the session environment.
+        let _env = tilo_test_env::lock();
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
             &m,
@@ -1835,8 +1826,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn no_capabilities_adds_no_binds_beyond_the_system_profile() {
+        // The argv builder reads the session environment.
+        let _env = tilo_test_env::lock();
         let baseline = argv_with_caps("com.example.notes", &[], 1_000);
         let m = mk_manifest("off");
         let manifest_only = build_bwrap_argv(
@@ -1974,8 +1966,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_expired_capability_produces_no_bind() {
+        // The argv builder reads the session environment.
+        let _env = tilo_test_env::lock();
         let caps = vec![
             fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
                 .expiring(Expiry::AtUnix(500)),

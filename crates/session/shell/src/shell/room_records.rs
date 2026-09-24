@@ -87,7 +87,7 @@ struct Held {
     doc: AutoCommit,
     /// `None` for in-memory, or a room whose store couldn't be opened —
     /// runs without durability rather than refusing to reference anything.
-    autosave: Option<app_state::Autosave>,
+    autosave: Option<app_state::DocWriter>,
 }
 
 #[derive(Default)]
@@ -787,7 +787,7 @@ impl Default for RoomRecords {
 }
 
 /// Open (and merge in) the stored index for `room`, returning its writer.
-fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::Autosave> {
+fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
     let mut store = match app_state::DocStore::open_room(SHELL_PACKAGE_ID, &room.to_string()) {
         Ok(store) => store,
         Err(e) => {
@@ -810,7 +810,7 @@ fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::Auto
             None
         }
     };
-    let mut autosave = app_state::Autosave::spawn(store, app_state::DEFAULT_DEBOUNCE);
+    let mut autosave = store.writer();
     if let Some(mut stored) = stored {
         autosave.seed(&mut stored);
         if let Err(e) = doc.merge(&mut stored) {
@@ -1026,7 +1026,8 @@ fn leaf_of(path: &Path) -> String {
 /// Human name for the room a record lives in — a raw uuid in a palette row
 /// tells the reader nothing and looks like a bug.
 pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Option<String> {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .find(|w| w.room == room)
         .map(|w| w.name.clone())
@@ -1034,7 +1035,7 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
 
 /// Rooms in tree order (most-recently-active isn't knowable here).
 pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId> {
-    tree.workspaces.iter().map(|w| w.room).collect()
+    tree.desktop.workspaces.iter().map(|w| w.room).collect()
 }
 
 #[cfg(test)]

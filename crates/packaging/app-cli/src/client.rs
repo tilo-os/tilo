@@ -102,7 +102,7 @@ struct SnapshotCheckpoint {
 }
 
 fn client() -> Result<reqwest::blocking::Client, RegistryError> {
-    reqwest::blocking::Client::builder()
+    tilo_net::http::blocking_client()
         .user_agent("app/0.1")
         .timeout(http_timeout())
         .redirect(reqwest::redirect::Policy::none())

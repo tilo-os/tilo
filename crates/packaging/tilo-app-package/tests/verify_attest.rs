@@ -24,7 +24,7 @@
 
 use crate::fixtures;
 use ed25519_dalek::{Signer, SigningKey};
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::manifest::{Manifest, TrustAttestation};
 use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, attestation_preimage,
@@ -35,7 +35,7 @@ use tilo_app_package::{
 };
 
 fn fresh_key() -> (SigningKey, String) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pub_hex)
