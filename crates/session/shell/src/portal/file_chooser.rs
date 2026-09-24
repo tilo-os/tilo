@@ -298,12 +298,13 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
+    use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
 
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "fc")
+        Workspace::new(WorkspaceId(id), "fc")
     }
 
     #[test]
@@ -455,6 +456,7 @@ mod tests {
         let grant_count = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
@@ -494,6 +496,7 @@ mod tests {
         let granted_fs = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)

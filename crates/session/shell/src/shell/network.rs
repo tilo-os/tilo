@@ -3,6 +3,7 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -1727,6 +1728,7 @@ impl ShellNetwork {
         replica
             .tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .filter(|workspace| workspace.room == room)
@@ -1757,6 +1759,7 @@ impl ShellNetwork {
         replica
             .tree
             .read()
+            .desktop
             .active_workspace()
             .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
     }
@@ -2619,7 +2622,7 @@ impl ShellNetwork {
             replica.tree.clone()
         };
         let tree = tree_handle.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == local) else {
+        let Some(ws) = tree.desktop.workspaces.iter().find(|w| w.id == local) else {
             drop(tree);
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
@@ -2746,6 +2749,7 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             let tree = replica.tree.read();
             let workspace = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)
@@ -2793,6 +2797,7 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             let tree = replica.tree.read();
             let workspace = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == local)
@@ -5233,7 +5238,8 @@ impl ShellNetwork {
             )
             .id()
             .to_string();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
                 .is_some_and(|workspace| {
@@ -5453,6 +5459,7 @@ impl ShellNetwork {
         let local = crate::shell::state::local_user_id_for_room(&room);
         let (granted, owner) = {
             let Some(workspace) = tree
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.room == room)
@@ -5541,6 +5548,7 @@ impl ShellNetwork {
         drop(replica);
         let tree = tree_handle.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)?;
@@ -5806,6 +5814,7 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
@@ -7430,6 +7439,7 @@ mod tests {
 
         let mut source_tree = WorkspaceTree::bootstrap_default();
         let source_workspace = source_tree
+            .desktop
             .workspaces
             .first_mut()
             .expect("bootstrap workspace");
@@ -7588,7 +7598,8 @@ mod tests {
                 Some(&file_reference)
             );
             assert!(
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .any(|workspace| workspace.room == room)
             );
@@ -7894,6 +7905,7 @@ mod tests {
             .expect("replica")
             .tree
             .read()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.id);
         let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
@@ -7938,11 +7950,14 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         assert_eq!(
-            tree.active_workspace().map(|workspace| workspace.id),
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.id),
             active_before,
             "receiving a continuation must not move focus"
         );
         let adopted = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8157,14 +8172,12 @@ mod tests {
         sign_device_cert(&mut cert, &root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(17),
-            "Shared",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
         net.require_peer_identity = true;
         let _ = net
@@ -8215,6 +8228,7 @@ mod tests {
                 .expect("replica")
                 .tree
                 .read()
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
@@ -8289,6 +8303,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         let joined = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8318,6 +8333,7 @@ mod tests {
             .expect("host room changes apply");
         assert_eq!(
             guest
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room == room)
@@ -8390,6 +8406,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8436,6 +8453,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8472,6 +8490,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let mut tree = replica.tree.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
@@ -8532,14 +8551,12 @@ mod tests {
         sign_device_cert(&mut cert, &root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(81),
-            "Read only",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(81), "Read only");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let (net, _commands) = shell_network_for_test(tree.shared(), 81);
         let _ = net
             .pending_identity_admissions
@@ -8571,6 +8588,7 @@ mod tests {
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();
         let joined = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -8889,11 +8907,11 @@ mod tests {
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
-            for ws in &mut t.workspaces {
+            for ws in &mut t.desktop.workspaces {
                 let me = crate::shell::state::local_user_id_for_room(&ws.room);
                 ws.set_owner(me);
             }
-            t.workspaces.iter().map(|w| w.room).collect()
+            t.desktop.workspaces.iter().map(|w| w.room).collect()
         };
         assert!(
             rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
@@ -8984,6 +9002,7 @@ mod tests {
 
         let workspace = tree
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -9035,7 +9054,7 @@ mod tests {
             let mut tree = tree.write();
             tree.adopt_roomless_workspaces();
             let local_user = crate::shell::state::local_user_id();
-            for workspace in &mut tree.workspaces {
+            for workspace in &mut tree.desktop.workspaces {
                 workspace.set_owner(local_user.clone());
             }
         }
@@ -9193,7 +9212,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == local)
             .expect("workspace")
@@ -9298,7 +9318,7 @@ mod tests {
         use crate::network::invite::make_invite_token;
         use crate::shell::state::Workspace;
 
-        let host_ws = Workspace::test_default(
+        let host_ws = Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Design review".to_string(),
         );
@@ -9398,7 +9418,7 @@ mod tests {
         };
         sign_device_cert(&mut owner_cert, &owner_root).expect("owner certificate");
 
-        let host_workspace = crate::shell::state::Workspace::test_default(
+        let host_workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Alice shared",
         );
@@ -9457,7 +9477,8 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Joined room");
         let room = tree.room_of(local).expect("room");
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == local)
             .expect("workspace")
@@ -9676,7 +9697,7 @@ mod tests {
     #[test]
     fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
-        let expected = room_topic_id(tree.read().active_workspace().unwrap().room);
+        let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room);
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), expected);
     }
@@ -9874,7 +9895,7 @@ mod tests {
         owner: &str,
         member: &str,
     ) -> (crate::shell::state::Workspace, crate::shell::state::RoomId) {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(51),
             "Shared room",
         );
@@ -9935,7 +9956,7 @@ mod tests {
         let topic = room_topic_id(room);
         let tree_for = || {
             let mut tree = WorkspaceTree::default();
-            tree.workspaces.push(room_workspace.clone());
+            tree.desktop.workspaces.push(room_workspace.clone());
             tree.shared()
         };
 

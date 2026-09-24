@@ -140,7 +140,7 @@ async fn two_actors_exchange_a_workspace_change() {
             .apply_room_changes(room, &changes, &PeerOrigin::peer(&sender))
             .unwrap()
     );
-    assert_eq!(target.workspaces[0].name, "Renamed");
+    assert_eq!(target.desktop.workspaces[0].name, "Renamed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -294,7 +294,7 @@ fn invite_token_carries_an_authenticated_iroh_address() {
     let key = iroh::SecretKey::generate();
     let addr =
         iroh::EndpointAddr::new(key.public()).with_ip_addr("127.0.0.1:8888".parse().unwrap());
-    let workspace = Workspace::test_default(WorkspaceId(99), "Shared");
+    let workspace = Workspace::new(WorkspaceId(99), "Shared");
     let token = make_invite_token(&key, &workspace, &addr, 3600).unwrap();
     let parsed = validate_invite_token(&token).unwrap();
     assert_eq!(parsed.workspace_id, 99);

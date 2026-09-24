@@ -302,7 +302,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     );
     let mut liveness_bridge = bridge();
     let baseline_pixels = render_dense(&mut liveness_bridge, &baseline.scene);
-    let prior_workspace_count = frame.chrome().tree().workspaces.len();
+    let prior_workspace_count = frame.chrome().tree().desktop.workspaces.len();
 
     frame.with_chrome(|chrome| {
         chrome.add_workspace("retained root rebuild");
@@ -313,7 +313,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     frame.relayout();
     let changed = frame.paint_with_damage();
     assert_eq!(
-        frame.chrome().tree().workspaces.len(),
+        frame.chrome().tree().desktop.workspaces.len(),
         prior_workspace_count + 1,
         "the root rebuild action must add its workspace"
     );
@@ -355,13 +355,14 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(chrome.active_local_user(), "shell-fixture");
     let tree = chrome.tree();
     assert_eq!(
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .map(|workspace| workspace.name.as_str())
             .collect::<Vec<_>>(),
         vec!["Home", "Research", "Design"]
     );
-    let home = tree.active_workspace().expect("Home stays active");
+    let home = tree.desktop.active_workspace().expect("Home stays active");
     assert_eq!(home.name, "Home");
     let group = &home.strips[0].window_groups[0];
     assert_eq!(
@@ -386,7 +387,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
             .collect::<Vec<_>>(),
         vec![("alice", "Alice", Some("#ec4899"), Some("editor"))]
     );
-    let research = &tree.workspaces[1];
+    let research = &tree.desktop.workspaces[1];
     assert_eq!(
         research
             .collaborators
@@ -403,7 +404,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
             ("bob", "Bob", Some("#f97316"), Some("viewer")),
         ]
     );
-    assert!(tree.workspaces[2].collaborators.is_empty());
+    assert!(tree.desktop.workspaces[2].collaborators.is_empty());
     drop(tree);
     let actual_records = chrome
         .records()

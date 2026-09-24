@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceAuthority as _;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -407,7 +408,7 @@ pub fn spawn_with_agent_actions(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::test_default(
+    let mut workspace = shell::shell::state::Workspace::new(
         shell::shell::state::WorkspaceId(1),
         "Agent integration room",
     );
@@ -477,7 +478,7 @@ pub fn spawn_with_agent_actions(
             .expect("the harness owner grants an app fixture its own surface");
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
-    tree.workspaces.push(workspace);
+    tree.desktop.workspaces.push(workspace);
     let trusted_devices = ["quinten", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()

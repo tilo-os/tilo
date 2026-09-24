@@ -186,6 +186,8 @@ qdoc = { path = "../../doc/qdoc" }
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { path = "../../collab/actions" }
+# Window-group widths and drop targets are the desktop model's own types.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned

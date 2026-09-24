@@ -5,6 +5,7 @@
 //! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`] and
 //! paints the bar onto the root scene.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -928,13 +929,18 @@ impl TopBarChrome {
     }
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
-        self.workspace_total = tree.workspaces.len().max(1);
-        let active_ws = tree.workspaces.iter().find(|w| w.id == tree.active);
+        self.workspace_total = tree.desktop.workspaces.len().max(1);
+        let active_ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.desktop.active);
         let (idx, name) = tree
+            .desktop
             .workspaces
             .iter()
             .enumerate()
-            .find(|(_, w)| w.id == tree.active)
+            .find(|(_, w)| w.id == tree.desktop.active)
             .map_or_else(
                 || (0, String::from("Workspace")),
                 |(i, w)| (i, w.name.clone()),
@@ -1260,13 +1266,15 @@ impl TopBarChrome {
         let tree = state.tree();
         let mut viewers = Vec::new();
         for (peer, can_control) in authority {
-            if let Some((workspace, participant)) = tree.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .collaborators
-                    .iter()
-                    .find(|person| person.session == Some(peer))
-                    .map(|participant| (workspace, participant))
-            }) {
+            if let Some((workspace, participant)) =
+                tree.desktop.workspaces.iter().find_map(|workspace| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .find(|person| person.session == Some(peer))
+                        .map(|participant| (workspace, participant))
+                })
+            {
                 let is_agent = workspace.agent_members().iter().any(|(id, _)| {
                     id.eq_ignore_ascii_case(&participant.id)
                         || id.eq_ignore_ascii_case(&participant.name)
@@ -1350,7 +1358,8 @@ impl TopBarChrome {
         surfaces
             .into_iter()
             .map(|surface| {
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .find_map(|workspace| {
                         workspace
@@ -1370,7 +1379,7 @@ impl TopBarChrome {
                     .map_or_else(
                         || format!("surface {surface}"),
                         |(workspace, tab)| {
-                            if workspace.id == tree.active {
+                            if workspace.id == tree.desktop.active {
                                 tab.title.clone()
                             } else {
                                 format!("{} › {}", workspace.name, tab.title)
@@ -4952,6 +4961,7 @@ mod calendar_strip_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         CapOverride, Strip, Subject, Tab, TileContent, Verb, WindowGroup, WindowWidth, Workspace,
         WorkspaceId, WorkspaceTree,
@@ -5012,24 +5022,30 @@ mod tests {
 
     fn sample_chrome() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
     }
 
     fn floating_clock() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         {
             let mut state = chrome.borrow_mut();
@@ -5341,14 +5357,17 @@ mod tests {
     #[test]
     fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         // The 960px chrome reserves a 360px centre selector; after its dots
@@ -5475,11 +5494,14 @@ mod tests {
         let second = Workspace::new(WorkspaceId::new(), "B");
         let active = first.id;
         WorkspaceTree {
-            workspaces: vec![first, second],
-            active,
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![first, second],
+                active,
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -5554,13 +5576,13 @@ mod tests {
         // report unhandled just like a disabled pointer target.
         bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_UP.to_string());
         assert!(!press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let first_id = tree.workspaces.first().expect("first workspace").id;
-        assert_eq!(chrome.borrow().tree().active, first_id);
+        let first_id = tree.desktop.workspaces.first().expect("first workspace").id;
+        assert_eq!(chrome.borrow().tree().desktop.active, first_id);
 
         bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_DOWN.to_string());
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let second_id = tree.workspaces.get(1).expect("second workspace").id;
-        assert_eq!(chrome.borrow().tree().active, second_id);
+        let second_id = tree.desktop.workspaces.get(1).expect("second workspace").id;
+        assert_eq!(chrome.borrow().tree().desktop.active, second_id);
     }
 
     #[test]
@@ -5691,15 +5713,18 @@ mod tests {
     #[test]
     fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("alice", "Alice"));
         let mut bar = TopBarChrome::from_tree(&tree);
@@ -5797,14 +5822,17 @@ mod tests {
     #[test]
     fn new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         bar.center_widget = CenterWidget::Calendar;
@@ -5839,14 +5867,17 @@ mod tests {
     #[test]
     fn clicking_a_person_opens_people_not_history() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
@@ -5866,15 +5897,18 @@ mod tests {
     #[test]
     fn live_share_is_persistent_visible_named_and_accessible() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("ada", "Ada").with_session(7));
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
@@ -5904,12 +5938,15 @@ mod tests {
     #[test]
     fn disclosure_attributes_each_surface_to_its_actual_viewer() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0].collaborators.extend([
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0].collaborators.extend([
             crate::shell::state::Collaborator::new("ada", "Ada").with_session(7),
             crate::shell::state::Collaborator::new("lin", "Lin").with_session(9),
         ]);
@@ -5948,12 +5985,15 @@ mod tests {
     #[test]
     fn agent_viewer_is_never_described_as_a_person() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        let workspace = &mut tree.workspaces[0];
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        let workspace = &mut tree.desktop.workspaces[0];
         workspace.owner = Some("owner".to_string());
         let room = workspace.id.raw().to_string();
         workspace
@@ -5991,7 +6031,7 @@ mod tests {
     #[test]
     fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
         let mut tree = two_workspace_tree();
-        let shared = &mut tree.workspaces[1];
+        let shared = &mut tree.desktop.workspaces[1];
         shared.name = "Private".into();
         shared.owner = Some("owner".into());
         let room = shared.id.raw().to_string();
@@ -6137,15 +6177,18 @@ mod tests {
     #[test]
     fn avatar_stack_has_breathing_room_to_tray_pill() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("alice", "Alice"));
 
@@ -6200,14 +6243,17 @@ mod tests {
     #[test]
     fn empty_roster_restores_the_clickable_invite_affordance() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let chrome = crate::shell::chrome_state::ChromeState::new(tree);
@@ -6265,14 +6311,17 @@ mod tests {
     #[test]
     fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default();
@@ -6334,15 +6383,18 @@ mod tests {
     #[test]
     fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
         let empty = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut empty = empty;
-        empty.active = empty.workspaces[0].id;
+        empty.desktop.active = empty.desktop.workspaces[0].id;
         let bar = TopBarChrome::from_tree(&empty);
         assert!(
             bar.collaborator_initials().is_empty(),
@@ -6350,7 +6402,8 @@ mod tests {
         );
 
         let mut elsewhere = empty.clone();
-        elsewhere.collaborators = vec![crate::shell::state::Collaborator::new("alice", "Alice")];
+        elsewhere.desktop.collaborators =
+            vec![crate::shell::state::Collaborator::new("alice", "Alice")];
         let bar = TopBarChrome::from_tree(&elsewhere);
         assert!(
             bar.collaborator_initials().is_empty(),
@@ -6358,7 +6411,7 @@ mod tests {
         );
 
         let mut joined = empty.clone();
-        joined.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
+        joined.desktop.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
             "peer@11895642303397647149",
             "Xaver",
         )];
@@ -6377,7 +6430,7 @@ mod tests {
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
         let mut asked = empty;
-        asked.workspaces[0].collaborators = vec![
+        asked.desktop.workspaces[0].collaborators = vec![
             crate::shell::state::Collaborator::new("peer@11895642303397647149", "Xaver")
                 .as_invited(),
         ];

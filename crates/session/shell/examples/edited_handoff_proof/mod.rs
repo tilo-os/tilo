@@ -184,7 +184,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         return Err("edited proof requires a fresh isolated profile".into());
     }
     let mut tree = shell::shell::state::WorkspaceTree::bootstrap_default();
-    let workspace = &mut tree.workspaces[0];
+    let workspace = &mut tree.desktop.workspaces[0];
     workspace.grant_capability(shell::shell::state::CapOverride::membership(
         shell::shell::state::Subject::agent(READER),
         workspace.room.to_string(),
@@ -372,7 +372,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     )?)?;
     // Inspect the actual broker-persisted workspace, not a local reduction of
     // the live output. The producer invocation links the two observations.
-    let persisted = shell::shell::persist::load_tree_from(&root.join("workspace.json"))?;
+    let persisted = shell::shell::persist::load_tree_from(&root.join("workspace.json"))?.desktop;
     let workspace = persisted
         .workspaces
         .iter()
