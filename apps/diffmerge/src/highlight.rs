@@ -2,8 +2,8 @@
 //! panels. This is deliberately language-agnostic and conservative: it tints
 //! a small set of universally-recognisable token classes (keywords, strings,
 //! comments, numbers, punctuation) so code reads as code without pulling in a
-//! full grammar engine. Every colour is derived from the [`ui::theme::Theme`]
-//! so highlighting respects the OS palette.
+//! full grammar engine. Every colour comes from the theme's shared syntax
+//! palette so highlighting respects the OS palette.
 
 use ui::theme::Theme;
 use vello::peniko::Color;
@@ -28,17 +28,17 @@ pub enum TokenClass {
 }
 
 impl TokenClass {
-    /// Resolve a colour from the theme. Tints are pulled from the accent and
-    /// neutral ramps + semantic colours so they harmonise with any theme.
+    /// Resolve a colour from the theme's shared syntax palette, so diff and
+    /// merge panels colour code exactly as every other code surface does.
     pub fn color(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
+        let syntax = &theme.tokens.syntax;
         match self {
-            TokenClass::Plain | TokenClass::Ident => c.text_primary,
-            TokenClass::Keyword => c.accent[6], // lighter accent
-            TokenClass::Str => c.semantic.success,
-            TokenClass::Number => c.semantic.warning,
-            TokenClass::Comment => c.text_dim,
-            TokenClass::Punct => c.neutral[6],
+            TokenClass::Plain | TokenClass::Ident => syntax.text,
+            TokenClass::Keyword => syntax.keyword,
+            TokenClass::Str => syntax.string,
+            TokenClass::Number => syntax.number,
+            TokenClass::Comment => syntax.comment,
+            TokenClass::Punct => syntax.operator,
         }
     }
 }
