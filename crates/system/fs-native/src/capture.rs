@@ -370,6 +370,20 @@ impl EpochCapture {
         self.rescan_next = true;
     }
 
+    /// Keeps `rel` tracked but forgets that its current state was captured,
+    /// for a change the consumer failed to publish: the next epoch captures
+    /// the path again if it still exists, and its removal if it does not.
+    pub fn invalidate(&mut self, rel: &Path) {
+        if let Some(node) = self.prev.as_mut().and_then(|p| p.nodes.get_mut(rel)) {
+            // No real inode matches these, so neither the unchanged-inode
+            // shortcut nor the no-op filter can drop the next capture.
+            node.ctime_ns = i128::MIN;
+            node.mode = u32::MAX;
+            node.manifest = None;
+        }
+        self.dirty.insert(rel.to_path_buf());
+    }
+
     /// Examines `rel` in the next epoch even if the journal does not name it.
     pub fn mark_dirty(&mut self, rel: &Path) {
         self.dirty.insert(rel.to_path_buf());
