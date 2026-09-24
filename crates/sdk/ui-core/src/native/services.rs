@@ -12,14 +12,16 @@
 //!
 //! It is also the one place the toolkit reads the process environment:
 //! [`process_environment`] turns launcher variables, XDG paths and
-//! accessibility flags into a [`super::HostEnvironment`].
+//! accessibility flags into a [`crate::host::HostEnvironment`].
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::{HostServices, MediaSession, MediaSessionFactory, Notifier, SpeechFactory, UriOpener};
-#[cfg(all(windows, feature = "notifications"))]
-use super::{Notification, NotifyError};
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard, warn_fallback_once};
+use crate::host::{
+    HostServices, MediaSession, MediaSessionFactory, Notifier, SpeechFactory, UriOpener,
+};
+#[cfg(all(windows, feature = "notifications"))]
+use crate::host::{Notification, NotifyError};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 
 /// The native services for this process. `app_id` names the app to the
@@ -27,18 +29,18 @@ use crate::mpris::{MprisConfig, PlayerSnapshot};
 pub fn services(app_id: Option<&str>) -> HostServices {
     HostServices {
         clipboard: native_clipboard(),
-        files: Arc::new(crate::portal::DesktopFilePicker),
+        files: Arc::new(super::portal::DesktopFilePicker),
         opener: Arc::new(DesktopOpener),
         speech: Arc::new(SystemSpeech),
         notifications: notifier(app_id),
-        media_session: Arc::new(crate::mpris::DesktopMediaSessions),
+        media_session: Arc::new(super::mpris::DesktopMediaSessions),
     }
 }
 
 /// Install [`services`] as the process default unless a host already
 /// installed its own. Called by the native runner before it builds an app.
 pub fn install_default_if_unset(app_id: Option<&str>) -> bool {
-    super::install_default_if_unset(|| services(app_id))
+    crate::host::install_default_if_unset(|| services(app_id))
 }
 
 fn native_clipboard() -> Arc<dyn ClipboardBackend> {
@@ -49,7 +51,7 @@ fn native_clipboard() -> Arc<dyn ClipboardBackend> {
 }
 
 /// The host inputs a native launcher passes through the process environment.
-pub fn process_environment() -> super::HostEnvironment {
+pub fn process_environment() -> crate::host::HostEnvironment {
     /// Empty is unset — an explicit `""` is the shape an unset forwarded
     /// shell variable produces, and taking it literally would put every such
     /// app in the same (empty-id) room.
@@ -84,8 +86,8 @@ pub fn process_environment() -> super::HostEnvironment {
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX").and_then(|hex| {
         crate::collaboration::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
     });
-    super::HostEnvironment {
-        identity: super::HostIdentity {
+    crate::host::HostEnvironment {
+        identity: crate::host::HostIdentity {
             package_id: text("TILO_PACKAGE_ID"),
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
@@ -97,12 +99,12 @@ pub fn process_environment() -> super::HostEnvironment {
             continuity_resume,
             continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
         },
-        paths: super::HostPaths {
+        paths: crate::host::HostPaths {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),
         },
-        accessibility: super::AccessibilityInputs {
+        accessibility: crate::host::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),
             high_contrast: flag(&["TILO_A11Y_HIGH_CONTRAST", "TILO_HIGH_CONTRAST"]),
             reduce_motion: flag(&["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]),
@@ -115,7 +117,7 @@ pub fn process_environment() -> super::HostEnvironment {
             .into_iter()
             .filter_map(|name| std::env::var(name).ok())
             .find(|value| crate::i18n::is_usable_locale(value)),
-        diagnostics: super::RunnerDiagnostics {
+        diagnostics: crate::host::RunnerDiagnostics {
             debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
             perf_log: set("QUICK_UI_PERF"),
             disable_scroll_fast_path: set("QUICK_UI_NO_SCROLL_OPT"),
@@ -150,7 +152,7 @@ pub fn attach_display(handle: &impl winit::raw_window_handle::HasDisplayHandle) 
     let native = native_clipboard();
     if !std::ptr::addr_eq(
         Arc::as_ptr(&native),
-        Arc::as_ptr(&super::current().clipboard),
+        Arc::as_ptr(&crate::host::current().clipboard),
     ) {
         return false;
     }
@@ -377,7 +379,7 @@ fn notifier(app_id: Option<&str>) -> Arc<dyn Notifier> {
         });
     }
     let _ = app_id;
-    Arc::new(super::UnavailableNotifier)
+    Arc::new(crate::host::UnavailableNotifier)
 }
 
 /// Windows toast notifications under the app's registered id. Each call
@@ -391,21 +393,21 @@ struct ToastNotifier {
 #[cfg(all(windows, feature = "notifications"))]
 impl Notifier for ToastNotifier {
     fn show(&self, notification: &Notification) -> Result<(), NotifyError> {
-        crate::host_notifications::HostNotifications::new(&self.app_id)
+        super::host_notifications::HostNotifications::new(&self.app_id)
             .and_then(|host| host.show(&notification.tag, &notification.title, &notification.body))
             .map_err(|error| NotifyError::Failed(error.to_string()))
     }
 
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError> {
-        crate::host_notifications::HostNotifications::new(&self.app_id)
+        super::host_notifications::HostNotifications::new(&self.app_id)
             .and_then(|host| host.remove(tag))
             .map_err(|error| NotifyError::Failed(error.to_string()))
     }
 }
 
-impl MediaSessionFactory for crate::mpris::DesktopMediaSessions {
+impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
     fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
-        crate::mpris::start_desktop_session(config, initial)
+        super::mpris::start_desktop_session(config, initial)
     }
 }
 

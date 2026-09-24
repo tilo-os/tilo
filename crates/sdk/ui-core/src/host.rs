@@ -34,7 +34,9 @@ use crate::portal::{
 };
 
 pub mod environment;
-pub mod native;
+/// The native desktop implementation; see [`crate::native::services`].
+#[cfg(feature = "native")]
+pub use crate::native::services as native;
 #[cfg(any(test, feature = "test-support"))]
 mod recording;
 
@@ -233,7 +235,7 @@ impl SpeechFactory for SilentSpeech {
     }
 }
 
-struct UnavailableNotifier;
+pub(crate) struct UnavailableNotifier;
 
 impl Notifier for UnavailableNotifier {
     fn show(&self, _notification: &Notification) -> Result<(), NotifyError> {

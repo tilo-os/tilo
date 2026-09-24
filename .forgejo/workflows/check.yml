@@ -359,6 +359,16 @@ jobs:
           python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
           check --locked --all-targets ${{ matrix.packages }}
 
+      # Without its default `native` feature, tilo-ui is the portable toolkit
+      # that another host embeds with its own services. Keep that build
+      # compiling whenever the toolkit is affected.
+      - name: Check the portable toolkit build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-ui ')
+        run: >-
+          bash tools/ci/measure.sh "check portable tilo-ui" --
+          bash scripts/ci-run.sh "cargo check (tilo-ui without native)" --
+          cargo check --locked -p tilo-ui --no-default-features --lib
+
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true

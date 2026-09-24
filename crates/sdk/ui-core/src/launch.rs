@@ -750,6 +750,7 @@ impl LaunchError {
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
+#[cfg(feature = "native")]
 pub fn run_or_exit(spec: &LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
@@ -766,6 +767,7 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 /// `--headless-drive`, a shots-only flag used outside `--shots`, or an
 /// undeclared `--scenario`), or if the app's root factory, shot factory, or
 /// shot handler returns one.
+#[cfg(feature = "native")]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
@@ -775,6 +777,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
+#[cfg(feature = "native")]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
@@ -790,6 +793,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     clippy::too_many_lines,
     reason = "one ordered dispatch preserves legacy and prepared mode delivery"
 )]
+#[cfg(feature = "native")]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
     raw_args: &[String],
@@ -1286,6 +1290,7 @@ fn build_native_app_with_constructor(
     Ok(app)
 }
 
+#[cfg(feature = "native")]
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
     crate::host::native::install_default_if_unset(Some(spec.app_id));
     #[cfg(windows)]

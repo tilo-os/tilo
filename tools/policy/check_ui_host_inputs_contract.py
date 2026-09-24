@@ -10,7 +10,7 @@ there is no process environment to read.
 This check fails on a process-environment read (`env::var`, `env::var_os`,
 `env::vars`, `env::args`) in `crates/sdk/ui-core/src` outside:
 
-* the native modules (`src/host/native.rs`, `src/native/`);
+* the native modules (`src/native/`);
 * test code (`*tests.rs` files and each file's trailing test module);
 * the files in ``NATIVE_RUNNER_FILES`` below, which are the native runner and
   its capture tools, and the files in ``PENDING`` which still read the
@@ -29,11 +29,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "crates/sdk/ui-core/src"
 
-NATIVE_PREFIXES = ("host/native.rs", "native/")
+NATIVE_PREFIXES = ("native/",)
 
 # The native runner and the tools that drive it.
 NATIVE_RUNNER_FILES = {
-    "app/host.rs",
+    "app/native_runner.rs",
     "application/host.rs",
     "dx12_shader_cache.rs",
     "headless.rs",
@@ -43,7 +43,6 @@ NATIVE_RUNNER_FILES = {
     "presentation_feedback.rs",
     "profiling/resource_trace.rs",
     "render_thread.rs",
-    "warmup.rs",
     "webview/chromium/mod.rs",
     "webview/frame_trace.rs",
     "webview/profile.rs",
