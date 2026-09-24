@@ -33,6 +33,7 @@ live-media = [
 ]
 
 [dependencies]
+hex.workspace = true
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

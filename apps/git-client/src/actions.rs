@@ -206,12 +206,7 @@ pub const MAX_CONTEXT_STASHES: usize = 24;
 pub const MAX_CONTEXT_REMOTES: usize = 16;
 
 fn stable_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.as_bytes() {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(value)
 }
 
 fn change_area_name(area: ChangeArea) -> &'static str {

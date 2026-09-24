@@ -159,14 +159,7 @@ pub fn draw_avatar(
 /// Hex-encoded MD5 of `input`. Small self-contained implementation — the only
 /// use is deriving the Gravatar path from an email address.
 pub fn md5_hex(input: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let digest = md5(input);
-    let mut s = String::with_capacity(32);
-    for b in digest {
-        // Writing to a `String` is infallible.
-        let _ = write!(s, "{b:02x}");
-    }
-    s
+    hex::encode(md5(input))
 }
 
 /// Per-round left-rotate amounts (RFC 1321 §3.4).

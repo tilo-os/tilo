@@ -11,7 +11,6 @@
 use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1108,12 +1107,7 @@ fn vm_app_id(published_id: &str) -> String {
 
 fn vm_identity_digest(published_id: &str) -> String {
     let digest = Sha256::digest(published_id.as_bytes());
-    let mut encoded = String::with_capacity(32);
-    for byte in digest.iter().take(16) {
-        // Writing into a String cannot fail.
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
 fn vm_candidate_entry_id(

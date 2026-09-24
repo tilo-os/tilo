@@ -10,7 +10,6 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use std::fmt::Write as _;
 use std::rc::Rc;
 use tilo_clock::unix_now;
 
@@ -906,13 +905,7 @@ impl Action {
                     .certificates
                     .iter()
                     .map(|cert| {
-                        let fingerprint = cert.device_public_key.iter().fold(
-                            String::new(),
-                            |mut fingerprint, byte| {
-                                let _ = write!(fingerprint, "{byte:02x}");
-                                fingerprint
-                            },
-                        );
+                        let fingerprint = hex::encode(cert.device_public_key);
                         format!(
                             "{}  {}  {}",
                             cert.device_label,

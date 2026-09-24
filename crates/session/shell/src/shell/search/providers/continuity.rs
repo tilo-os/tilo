@@ -47,12 +47,7 @@ struct CallAction {
 
 fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     let digest = blake3::derive_key(domain, bytes);
-    let mut encoded = String::with_capacity(32);
-    for byte in digest.iter().take(16) {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
