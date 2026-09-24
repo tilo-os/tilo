@@ -110,6 +110,18 @@ jobs:
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
           -E "not ($GOLDEN_FILTER)"
 
+      # Both nextest runs below write target/nextest/ci/junit.xml; keep each
+      # run's report and list flaky (passed only on retry) and retried tests.
+      - name: Report retried workspace tests
+        if: always()
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/workspace.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "nightly workspace (${{ matrix.arch }})" target/ci/junit/workspace.xml
+
       # This reuses the artifacts compiled above and executes the same number
       # of tests as before. A separate job would duplicate the workspace build;
       # running at the tail makes llvmpipe/lavapipe idle without extra CPU.
@@ -119,6 +131,16 @@ jobs:
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
           -E "$GOLDEN_FILTER"
+
+      - name: Report retried visual goldens
+        if: always()
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/visual-goldens.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "nightly visual goldens (${{ matrix.arch }})" target/ci/junit/visual-goldens.xml
 
       # The fast and complete workspace suites stay deterministic. This one
       # intentionally queries third-party music services; retain its coverage
@@ -156,6 +178,16 @@ jobs:
           bash tools/ci/measure.sh "nightly workspace examples" --
           bash scripts/ci-run.sh "cargo test --workspace --examples" --
           cargo test --workspace --examples --locked
+
+      - name: Save test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: nextest-junit-nightly-${{ matrix.arch }}
+          path: target/ci/junit
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Report remote compiler-cache effectiveness
         if: always()

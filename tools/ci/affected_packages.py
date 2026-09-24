@@ -67,6 +67,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
     "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
     "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
