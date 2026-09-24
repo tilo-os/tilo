@@ -1290,7 +1290,7 @@ fn clicking_the_website_opens_it_through_the_link_widget() {
     );
     assert_eq!(
         recorder.opened_uris(),
-        [url.clone()],
+        [url],
         "the click opened the contact's website via the Link widget",
     );
     assert_eq!(

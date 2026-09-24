@@ -11745,7 +11745,7 @@ mod local_layout_tests {
         );
         assert_eq!(
             recorder.opened_uris(),
-            [url.clone()],
+            [url],
             "the click opened the contact's website via the Link widget",
         );
         assert_eq!(
