@@ -48,7 +48,9 @@ fn app_id(tile: &TileContent) -> Option<&str> {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
         | TileContent::PeerWindow { app_id, .. } => Some(app_id),
-        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. } => None,
+        TileContent::AppPlaceholder { .. }
+        | TileContent::Stub { .. }
+        | TileContent::WorkspaceActivity => None,
     }
 }
 
@@ -57,6 +59,7 @@ fn close_tab(chrome: &Chrome, expected_group: GroupId, tab_id: TabId) -> Result<
     let surface = {
         let tree = state.tree();
         let Some(group) = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -94,7 +97,8 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
     let tabs = {
         let state = chrome.borrow();
         let tree = state.tree();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
             .flat_map(|strip| strip.window_groups.iter())
@@ -158,7 +162,7 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -181,6 +185,7 @@ impl SearchProvider for DesktopWindowsProvider {
                 ) {
                     rows.push(SearchResult {
                         kind: ResourceKind::Custom("Window groups".into()),
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
                         id: group_id_string,
                         title: format!("Close window group “{group_title}”"),
@@ -217,6 +222,7 @@ impl SearchProvider for DesktopWindowsProvider {
                     };
                     rows.push(SearchResult {
                         kind: ResourceKind::Custom("Tabs".into()),
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
                         id,
                         title: format!("Close tab “{title}”"),
@@ -242,7 +248,7 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let tree = ctx.chrome.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return "desktop-windows:empty".into();
         };
         let mut revision = format!("desktop-windows:{}", workspace.id.raw());
@@ -269,7 +275,7 @@ mod tests {
 
     fn fixture() -> (Chrome, AutoCommit) {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].strips[0].window_groups = vec![
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![
             WindowGroup {
                 id: 100,
                 tabs: vec![
@@ -377,7 +383,7 @@ mod tests {
 
         let mut state = chrome.borrow_mut();
         let tree = state.tree();
-        let ids = tree.workspaces[0].strips[0]
+        let ids = tree.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
@@ -410,7 +416,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            chrome.borrow().tree().workspaces[0].strips[0]
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
                 .window_groups
                 .len(),
             2

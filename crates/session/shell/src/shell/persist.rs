@@ -951,7 +951,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("state directory");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(WindowGroup {
                 id: 90_100,
@@ -960,7 +960,7 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 90_101,
             title: "Rygel Preferences".into(),

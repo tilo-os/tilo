@@ -400,7 +400,7 @@ fn shift_resize_handle_redistributes_width_between_neighbours() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let groups = &tree.workspaces[0].strips[0].window_groups;
+    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(left.width.resolve(usable), start_px + 40.0);
