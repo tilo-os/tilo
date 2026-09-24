@@ -89,6 +89,36 @@ pub enum Action {
         semantic_target: Option<String>,
         action: crate::a11y::Action,
     },
+    /// Invoke one published action by address, through the same resolution,
+    /// availability, confirmation and strict binding the live host applies.
+    Invoke(Invocation),
+}
+
+/// A scenario step that performs a published action. See
+/// [`Driver::invoke_action`].
+#[derive(Clone)]
+pub struct Invocation {
+    pub address: tilo_actions::ActionAddress,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Explicit confirmation, for a `Confirm` contract.
+    pub confirm: bool,
+    /// The exact phrase, for a `Phrase` contract.
+    pub confirmation_phrase: Option<String>,
+    /// Pass only if the door refuses with this code.
+    pub expect_error: Option<String>,
+}
+
+impl std::fmt::Debug for Invocation {
+    /// Arguments can carry secrets; debug output names only their keys.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invocation")
+            .field("address", &self.address)
+            .field("arguments", &self.arguments.keys().collect::<Vec<_>>())
+            .field("confirm", &self.confirm)
+            .field("confirmation_phrase", &self.confirmation_phrase.is_some())
+            .field("expect_error", &self.expect_error)
+            .finish()
+    }
 }
 
 fn action_description(action: &Action) -> String {
@@ -119,6 +149,10 @@ fn action_description(action: &Action) -> String {
             );
             format!("perform {} on {target}", semantic_action_name(action))
         }
+        Action::Invoke(invocation) => format!(
+            "invoke {} on {:?}",
+            invocation.address.action, invocation.address.resource
+        ),
     }
 }
 
@@ -3050,87 +3084,92 @@ impl FrameHarness {
                 self.dispatch_bound_control(target, &intent);
                 continue;
             }
-            // The legacy executor may only consume declarations belonging to
-            // the outer document; bound targets were selected or refused above.
-            let mut resources = Vec::new();
-            crate::bound_dispatch::collect_unbound_resources(
-                self.root.as_ref(),
-                &self.state.doc,
-                &mut resources,
-            );
-            if tilo_actions::door::resolve(&resources, &intent.address).is_none()
-                && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
-                    self.root.as_ref(),
-                    &self.state.doc,
-                    &intent.address.resource,
-                )
-            {
-                resources.push(resource);
-            }
-            let invocation = tilo_actions::InvocationId::new();
-            let result = (|| {
-                let (arguments, resource, spec) =
-                    crate::bound_dispatch::resolve_resource_invocation(
-                        &resources,
-                        &intent.address,
-                        None,
-                        Some(&intent.arguments),
-                        false,
-                    )?;
-                if !crate::bound_dispatch::permits_local_action(
-                    &self.permissions,
-                    &crate::collaboration::local_app_id(),
-                    spec,
-                ) {
-                    return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
-                }
-                let encoded = crate::bound_dispatch::encode_resource_action(
-                    &resources,
-                    &intent.address,
-                    arguments.as_ref(),
-                    None,
-                )?;
-                let before = (spec.kind == tilo_actions::OperationKind::Document)
-                    .then(|| self.state.doc.get_heads());
-                let started = crate::bound_dispatch::execute_resource_operation(
-                    self.root.as_mut(),
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &self.action_registry,
-                    self.action_transport.as_mut(),
-                    &intent.address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation,
-                    None,
-                )?;
-                if let Some(before) = before {
-                    self.state.record_committed_action_authored(
-                        before,
-                        None,
-                        None,
-                        Some(self.author.clone()),
-                    );
-                }
-                Ok::<_, tilo_actions::DoorError>(started)
-            })();
+            let result = self.invoke_unbound(&intent.address, &intent.arguments, false);
             self.root
                 .on_control_invocation_result(&intent.address, &result);
-            match result {
-                Ok(crate::widget::ResourceOperationStart::Accepted) => {
-                    self.pending_control_invocations.insert(invocation);
-                }
-                Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(error) => {
-                    tracing::warn!(code = error.code(), %error, "headless: control action refused");
-                    self.control_failures.push(error.to_string());
-                }
+            if let Err(error) = result {
+                tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                self.control_failures.push(error.to_string());
             }
         }
+    }
+
+    /// The legacy executor for declarations belonging to the outer document;
+    /// bound targets are selected (or refused) before this is reached.
+    /// `confirmed` is true only when the caller already completed the
+    /// action's confirmation contract.
+    fn invoke_unbound(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let mut resources = Vec::new();
+        crate::bound_dispatch::collect_unbound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        if tilo_actions::door::resolve(&resources, address).is_none()
+            && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
+                self.root.as_ref(),
+                &self.state.doc,
+                &address.resource,
+            )
+        {
+            resources.push(resource);
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let (arguments, resource, spec) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources,
+            address,
+            None,
+            Some(supplied),
+            confirmed,
+        )?;
+        if !crate::bound_dispatch::permits_local_action(
+            &self.permissions,
+            &crate::collaboration::local_app_id(),
+            spec,
+        ) {
+            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+        }
+        let encoded = crate::bound_dispatch::encode_resource_action(
+            &resources,
+            address,
+            arguments.as_ref(),
+            None,
+        )?;
+        let before = (spec.kind == tilo_actions::OperationKind::Document)
+            .then(|| self.state.doc.get_heads());
+        let started = crate::bound_dispatch::execute_resource_operation(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &self.state.root,
+            &self.action_registry,
+            self.action_transport.as_mut(),
+            address,
+            resource,
+            spec,
+            encoded,
+            &self.author.0,
+            &self.author.0,
+            false,
+            invocation,
+            None,
+        )?;
+        if let Some(before) = before {
+            self.state.record_committed_action_authored(
+                before,
+                None,
+                None,
+                Some(self.author.clone()),
+            );
+        }
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.pending_control_invocations.insert(invocation);
+        }
+        Ok(started)
     }
 
     fn poll_control_invocations(&mut self) {
@@ -3483,7 +3522,123 @@ impl FrameHarness {
                 semantic_target,
                 action,
             } => self.perform_semantic_named(target, semantic_target.as_deref(), action),
+            Action::Invoke(invocation) => self.perform_invocation(invocation),
         }
+    }
+
+    fn perform_invocation(&mut self, invocation: &Invocation) -> Result<(), String> {
+        let result = self.invoke_action(
+            &invocation.address,
+            &invocation.arguments,
+            invocation.confirm,
+            invocation.confirmation_phrase.as_deref(),
+        );
+        match (result, invocation.expect_error.as_deref()) {
+            (Ok(_), None) => Ok(()),
+            (Ok(_), Some(code)) => Err(format!(
+                "expected the door to refuse with {code}, but the action ran"
+            )),
+            (Err(error), Some(code)) if error.code() == code => Ok(()),
+            (Err(error), _) => Err(format!("{}: {error}", error.code())),
+        }
+    }
+
+    /// Invoke one published action by address, the way an agent, a script
+    /// or a screen reader does: resolve it against the tree the app
+    /// publishes now, refuse it when unavailable, require the confirmation
+    /// its contract names (`confirm` for `Confirm`, the exact phrase for
+    /// `Phrase`), bind the arguments strictly, and run it through the host's
+    /// own executor. Then run the same host tick a real input event gets.
+    ///
+    /// # Errors
+    ///
+    /// Returns the door's refusal: unknown or hidden address, unavailable
+    /// action, missing confirmation, invalid arguments, or a failed run.
+    pub fn invoke_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+        confirmation_phrase: Option<&str>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.pump_component_wakes();
+        let resources = self.resources();
+        let spec = tilo_actions::door::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        if let tilo_actions::Availability::Unavailable { code, reason } =
+            &spec.contract.availability
+        {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: code.clone(),
+                reason: reason.clone(),
+            });
+        }
+        let confirmed = match &spec.contract.confirmation {
+            tilo_actions::ConfirmationPolicy::None => false,
+            tilo_actions::ConfirmationPolicy::Confirm if confirm => true,
+            tilo_actions::ConfirmationPolicy::Phrase { phrase }
+                if confirmation_phrase == Some(phrase.as_str()) =>
+            {
+                true
+            }
+            tilo_actions::ConfirmationPolicy::Confirm
+            | tilo_actions::ConfirmationPolicy::Phrase { .. } => {
+                return Err(tilo_actions::DoorError::ConfirmationRequired);
+            }
+        };
+        let result = self.invoke_address(address, arguments, confirmed);
+        self.host_tick();
+        self.relayout();
+        result
+    }
+
+    /// Deliver an out-of-band payload the way the live host delivers a
+    /// [`crate::app::UserEvent::External`] — a worker's progress line, or a
+    /// wake-up for requests the app queued itself — then run the host tick.
+    pub fn deliver_external(&mut self, payload: &str) {
+        self.pump_component_wakes();
+        self.root
+            .on_external_event(payload, &mut self.state.doc, &self.state.root);
+        self.host_tick();
+        self.relayout();
+    }
+
+    fn invoke_address(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let selected = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            Some(address),
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
+        .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
+        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        let Some(target) = selected else {
+            return self.invoke_unbound(address, arguments, confirmed);
+        };
+        let invocation = tilo_actions::InvocationId::new();
+        let started = crate::bound_dispatch::invoke_resource_action(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &target,
+            self.action_transport.as_mut(),
+            None,
+            Some(arguments),
+            &self.author.0,
+            confirmed,
+            false,
+            invocation,
+            None,
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.bound_invocations.insert(invocation, target);
+        }
+        Ok(started)
     }
 
     /// The document rendered as JSON, for a harness to diff across a
@@ -4140,6 +4295,13 @@ fn action_from_wire(action: tilo_headless_schema::Action) -> Action {
             semantic_target,
             action: semantic_action_from_wire(action),
         },
+        Wire::Invoke(invocation) => Action::Invoke(Invocation {
+            address: tilo_actions::ActionAddress::new(invocation.resource, invocation.action),
+            arguments: invocation.args,
+            confirm: invocation.confirm,
+            confirmation_phrase: invocation.confirmation_phrase,
+            expect_error: invocation.expect_error,
+        }),
     }
 }
 
