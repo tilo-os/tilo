@@ -12879,6 +12879,7 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-net",
  "tilo-relay",
+ "tilo-test-env",
  "tilo-user-identity",
  "tracing",
  "uuid",

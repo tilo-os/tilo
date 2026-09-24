@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn changing_currency_key_updates_settings() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("region_currency");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = RegionPane::with_settings(RegionSettings::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn changing_date_and_time_and_units_updates_settings() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("region_dtu");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = RegionPane::with_settings(RegionSettings::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -519,6 +519,8 @@ mod tests {
 
     #[test]
     fn unknown_dropdown_value_is_ignored() {
+        // The pane persists through the per-user settings file.
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = RegionPane::with_settings(RegionSettings::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;

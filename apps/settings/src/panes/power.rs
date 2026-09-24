@@ -1396,7 +1396,7 @@ mod tests {
 
     #[test]
     fn replicated_power_latches_never_reach_device_or_persistence() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("power-replay-safety");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Running {
             token: crate::actions::local_operation_token_for(
@@ -1440,7 +1440,7 @@ mod tests {
     /// the shared store, asserted against disk in the persistence test).
     #[test]
     fn idle_prefs_are_adopted_on_change() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("power_idle");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = PowerPane::with_parts(
             rec as Arc<dyn Dispatcher + Send + Sync>,
@@ -1470,7 +1470,7 @@ mod tests {
     /// settings file — the real persist path the compositor reads.
     #[test]
     fn power_behaviour_prefs_persist_to_disk() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("power_behaviour");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = PowerPane::with_parts(
             rec as Arc<dyn Dispatcher + Send + Sync>,

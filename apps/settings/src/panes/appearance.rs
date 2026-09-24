@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn changing_ui_scale_updates_prefs_and_resolves() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_uiscale");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn changing_theme_key_updates_and_resolves() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_theme");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn changing_text_size_and_toggles_updates_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_textsize");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -644,6 +644,8 @@ mod tests {
 
     #[test]
     fn unknown_theme_value_is_ignored() {
+        // The pane persists through the per-user settings file.
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
