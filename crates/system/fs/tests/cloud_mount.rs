@@ -157,12 +157,12 @@ fn cold_and_ranged_reads_hydrate_only_what_is_read() {
     );
 
     // Cached ranges are served locally.
-    let served = server.stats().bytes_served;
+    let fetched_before = server.stats().bytes_served;
     assert_eq!(
         mount.volume.read_ino(ino, offset + 100, 100).unwrap(),
         &big[(5 << 20) + 100..(5 << 20) + 200]
     );
-    assert_eq!(server.stats().bytes_served, served);
+    assert_eq!(server.stats().bytes_served, fetched_before);
 
     // A sequential reader through a handle gets the whole file right.
     let fh = mount.volume.open_file(ino, false, false).unwrap();
