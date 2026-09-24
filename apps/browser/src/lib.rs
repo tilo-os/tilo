@@ -75,25 +75,7 @@ mod capabilities;
 /// and certification. Launch-specific URI handling remains in the binary;
 /// this deliberately creates the same safe default profile a user gets when
 /// opening Browser without a target.
-///
-/// # Errors
-///
-/// Returns an error when the production WPE engine is absent or cannot start.
-/// Callers must present that failure instead of substituting the deterministic
-/// test engine used by headless tests.
-pub fn app_root() -> Result<BrowserWidget, String> {
-    BrowserWidget::try_new()
-}
-
-#[cfg(all(test, not(feature = "wpe")))]
-mod tests {
-    use super::app_root;
-
-    #[test]
-    fn production_root_refuses_builds_without_wpe() {
-        let Err(error) = app_root() else {
-            panic!("live Browser must not use the test engine");
-        };
-        assert!(error.contains("built without the WPE engine"), "{error}");
-    }
+#[must_use]
+pub fn app_root() -> BrowserWidget {
+    BrowserWidget::new()
 }

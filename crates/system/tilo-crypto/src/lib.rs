@@ -4,7 +4,6 @@
 //! pipes and prevents general-purpose OpenSSL parsing from becoming part of an
 //! application's privilege boundary.
 
-use rand::{RngCore, rngs::OsRng};
 use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -117,7 +116,7 @@ pub fn hash_account_password(password: &mut [u8]) -> Result<String, String> {
     // salts to 16 characters. Twelve random bytes encode to exactly that limit
     // while retaining 96 bits of entropy.
     let mut salt = [0_u8; 12];
-    if let Err(error) = OsRng.try_fill_bytes(&mut salt) {
+    if let Err(error) = getrandom::fill(&mut salt) {
         salt.zeroize();
         password.zeroize();
         return Err(format!("cannot generate account password salt: {error}"));
