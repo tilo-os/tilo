@@ -1,7 +1,8 @@
 name: CI / affected packages
 
 # Pull requests and pushes check affected reverse dependencies on native x86,
-# and test changed packages plus contract suites. Full native coverage remains
+# and test changed packages, their direct dependants (up to one shard's cost;
+# see REVERSE_TEST_COST_BUDGET) and contract suites. Full native coverage remains
 # mandatory in nightly.yml; this job is the short feedback path.
 # Manual dispatch validates the complete workspace on both native architectures.
 on:
