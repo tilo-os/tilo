@@ -236,6 +236,10 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# Mesh placement, home-peer registrations and relay shard ids.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The authenticated relay client and co-edit session (`RelayClient`,
+# `RelayCoeditSession`) still live in the daemon crate.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their

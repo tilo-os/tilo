@@ -38,18 +38,19 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Live CalDAV sync (discovery, REPORT, and ETag-guarded PUT) is optional and
-# gated by `live`; the default build uses the offline path.
-reqwest = { workspace = true, optional = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
-roxmltree.workspace = true
+# Multistatus parsing and REPORT bodies are always built; the blocking HTTP
+# client behind live CalDAV sync (REPORT and ETag-guarded PUT/DELETE) is gated
+# by `live`, so the default headless build stays off the TLS stack.
+tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false }
+# RFC 5545 content lines: folding, parameter quoting and TEXT escaping.
+pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
 # The CalDAV transport runs on a background thread and is a no-op without a
 # configured account.
 default = ["live"]
-live = ["dep:reqwest", "dep:tilo-net"]
+live = ["tilo-dav/client"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -59,6 +60,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # so they never race each other under cargo's default parallel runner.
 serial_test.workspace = true
 mail = { path = "../mail" }
+test-http = { path = "../../crates/dev/test-http" }
 
 [lints]
 workspace = true
