@@ -113,17 +113,33 @@ npm --prefix "$work/site" run build
 # The manifest is the release-origin contract. Refuse to publish a manifest a
 # site build ignores: that would turn every attractive download action into an
 # authentication-gated or dead link even though its own tests passed.
-expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
-grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
-  || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
-for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable; do
+# Verify the actual rendered release surface independently of the site's own
+# tests. A simultaneous site-test regression must not let promotion silently
+# drop one supported architecture, format, trust anchor, or package-manager
+# route while still publishing an attractive partial page.
+for asset_key in \
+  windowsX64Setup windowsX64Standalone windowsX64Portable \
+  macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable \
+  linuxX64Flatpak linuxArm64Flatpak linuxX64AppImage linuxArm64AppImage \
+  linuxX64Portable linuxArm64Portable releaseKey releaseFingerprint installerCatalog; do
   asset="$(jq -r --arg key "$asset_key" '.assets[$key] // empty' "$manifest")"
   [ -n "$asset" ] \
-    || { printf 'landing page manifest is missing required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+    || { printf 'landing page manifest is missing required release asset %s\n' "$asset_key" >&2; exit 1; }
   expected_download="$release_root/download/$GITHUB_REF_NAME/$asset"
   grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
-    || { printf 'landing page does not expose required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+    || { printf 'landing page does not expose required release asset %s\n' "$asset_key" >&2; exit 1; }
 done
+for command in 'brew install --cask tilo-imager' 'brew install tilo-imager'; do
+  grep -R -Fq -- "$command" "$work/site/dist" \
+    || { printf 'landing page does not expose package-manager command: %s\n' "$command" >&2; exit 1; }
+done
+if [ "$winget_state" = available ]; then
+  grep -R -Fq -- 'winget install Tilo.Imager' "$work/site/dist" \
+    || { printf 'landing page hides an accepted WinGet release\n' >&2; exit 1; }
+else
+  grep -R -Fq -- 'WinGet submission in review.' "$work/site/dist" \
+    || { printf 'landing page does not explain the pending WinGet route\n' >&2; exit 1; }
+fi
 if grep -R -Fq -- 'https://code.podesta.ai/qos/qos/releases/download/' "$work/site/dist" \
    || grep -R -Fq -- 'https://code.podesta.ai/qos/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
