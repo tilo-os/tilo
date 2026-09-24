@@ -9,6 +9,10 @@
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: Windows toasts (with the `notifications` feature);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature).
+//!
+//! It is also the one place the toolkit reads the process environment:
+//! [`process_environment`] turns launcher variables, XDG paths and
+//! accessibility flags into a [`super::HostEnvironment`].
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -42,6 +46,94 @@ fn native_clipboard() -> Arc<dyn ClipboardBackend> {
     CLIPBOARD
         .get_or_init(|| Arc::new(NativeClipboard::default()))
         .clone()
+}
+
+/// The host inputs a native launcher passes through the process environment.
+pub fn process_environment() -> super::HostEnvironment {
+    /// Empty is unset — an explicit `""` is the shape an unset forwarded
+    /// shell variable produces, and taking it literally would put every such
+    /// app in the same (empty-id) room.
+    fn text(name: &str) -> Option<String> {
+        std::env::var(name).ok().filter(|value| !value.is_empty())
+    }
+    fn path(name: &str) -> Option<std::path::PathBuf> {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+    /// Non-empty, and not `"0"`/`"false"` (case-insensitive).
+    fn flag(names: &[&str]) -> bool {
+        names.iter().any(|name| {
+            std::env::var(name).is_ok_and(|value| {
+                let value = value.trim();
+                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+            })
+        })
+    }
+    /// A finite, positive factor; a bad value is ignored rather than
+    /// crashing the app at startup.
+    fn factor(names: &[&str]) -> Option<f32> {
+        names.iter().find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .filter(|factor| factor.is_finite() && *factor > 0.0)
+        })
+    }
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX").and_then(|hex| {
+        crate::collaboration::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
+    });
+    super::HostEnvironment {
+        identity: super::HostIdentity {
+            package_id: text("TILO_PACKAGE_ID"),
+            development_app_id: text("QUICK_APP_ID"),
+            app_name: text("TILO_APP_NAME"),
+            workspace_id: text("TILO_WORKSPACE_ID"),
+            cluster_id: text("QUICK_CLUSTER_ID"),
+            user_id: text("TILO_USER_ID"),
+            presence_handle: text("TILO_PRESENCE_HANDLE"),
+            account_name: text("USER"),
+            continuity_resume,
+            continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
+        },
+        paths: super::HostPaths {
+            user_home: path("TILO_USER_HOME"),
+            home: path("HOME"),
+            config_home: path("XDG_CONFIG_HOME"),
+        },
+        accessibility: super::AccessibilityInputs {
+            screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),
+            high_contrast: flag(&["TILO_A11Y_HIGH_CONTRAST", "TILO_HIGH_CONTRAST"]),
+            reduce_motion: flag(&["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]),
+            text_scale: factor(&["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"]),
+            // The shell mirrors the user's UI-scale preference into spawned
+            // sandboxes so an app comes up already scaled.
+            ui_scale: factor(&["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"]),
+        },
+        locale: ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find(|value| crate::i18n::is_usable_locale(value)),
+        diagnostics: super::RunnerDiagnostics {
+            debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
+            perf_log: set("QUICK_UI_PERF"),
+            disable_scroll_fast_path: set("QUICK_UI_NO_SCROLL_OPT"),
+            disable_split_cache: set("QUICK_UI_NO_SPLIT_CACHE"),
+            gpu_timestamps: std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|v| v == "1"),
+            gpu_dispatch_timestamps: std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS")
+                .is_ok_and(|v| v == "1"),
+            profile_hud: set("TILO_PROFILE"),
+            profile_out: path("TILO_PROFILE_OUT"),
+            presentation_profile: crate::render_thread::timing::gate(
+                true,
+                std::env::var("QOS_PROFILE_PRESENTATION").ok().as_deref(),
+                std::env::var_os("QOS_NATIVE_SCENARIO").as_deref(),
+            ),
+            window_no_activate: std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
+                == Ok("1"),
+        },
+    }
 }
 
 /// Attach the native clipboard to the runner's Wayland display, so copies go
