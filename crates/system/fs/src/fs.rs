@@ -28,10 +28,10 @@
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
 use fuser::{
-    BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr, Request,
-    TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+    INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
@@ -203,6 +203,48 @@ impl BufferState {
     }
 }
 
+/// Kernel passthrough for read-only opens of fully local files: the kernel
+/// reads a real backing file directly and the daemon only answers `open`.
+///
+/// Backing files are materialised once per content hash under `dir` (never
+/// on this FUSE mount) and registered per open; the kernel keeps using them
+/// until `release`. Access is decided at `open` like on a native file system:
+/// reads through a passthrough handle are not re-checked against the ACL.
+/// Registering a backing file needs `CAP_SYS_ADMIN` in the initial user
+/// namespace; the first refusal disables passthrough for the mount.
+struct Passthrough {
+    dir: std::path::PathBuf,
+    kernel_ready: std::sync::atomic::AtomicBool,
+    disabled: std::sync::atomic::AtomicBool,
+    backing: Mutex<HashMap<u64, (BackingId, std::fs::File)>>,
+}
+
+impl Passthrough {
+    fn usable(&self) -> bool {
+        self.kernel_ready.load(Ordering::Acquire) && !self.disabled.load(Ordering::Acquire)
+    }
+
+    fn hold(&self, handle: u64, id: BackingId, file: std::fs::File) {
+        self.backing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(handle, (id, file));
+    }
+
+    fn release(&self, handle: u64) {
+        self.backing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&handle);
+    }
+
+    fn disable(&self, error: &io::Error) {
+        if !self.disabled.swap(true, Ordering::AcqRel) {
+            eprintln!("FUSE passthrough unavailable ({error}); serving reads through the daemon");
+        }
+    }
+}
+
 /// What a caller of [`QuickFS::persist_buffer`] needs from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistIntent {
@@ -320,6 +362,11 @@ pub struct QuickFS {
     /// Durable staging for `fsync`ed and not-yet-committed bytes. `None`
     /// (tests, memory stores) makes `fsync` commit a version directly.
     unsaved: Option<Arc<crate::unsaved::UnsavedStore>>,
+    /// The content each inode's kernel page cache was filled from, so an
+    /// `open` of unchanged content keeps the cache (`FOPEN_KEEP_CACHE`) and
+    /// an open after any change drops it.
+    kernel_cached: Mutex<HashMap<u64, Option<Hash>>>,
+    passthrough: Option<Passthrough>,
     open_file_handles: Mutex<HashMap<u64, OpenFileHandleState>>,
     next_file_handle: AtomicU64,
     /// Cached serialized form of each document inode, keyed by the doc's heads,
@@ -409,6 +456,8 @@ impl QuickFS {
             buffer_states: Mutex::new(HashMap::new()),
             commit_locks: Mutex::new(HashMap::new()),
             unsaved: None,
+            kernel_cached: Mutex::new(HashMap::new()),
+            passthrough: None,
             open_file_handles: Mutex::new(HashMap::new()),
             next_file_handle: AtomicU64::new(1),
             doc_exports: Mutex::new(HashMap::new()),
@@ -877,6 +926,108 @@ impl QuickFS {
             self.settle_last_close(ino, live);
         }
         result
+    }
+
+    /// Offer kernel passthrough for read-only opens of fully local files,
+    /// with backing files materialised under `dir`. Takes effect only when
+    /// the kernel negotiates it at `init`.
+    #[must_use]
+    pub fn with_passthrough(mut self, dir: std::path::PathBuf) -> Self {
+        self.passthrough = Some(Passthrough {
+            dir,
+            kernel_ready: std::sync::atomic::AtomicBool::new(false),
+            disabled: std::sync::atomic::AtomicBool::new(false),
+            backing: Mutex::new(HashMap::new()),
+        });
+        self
+    }
+
+    /// The attributes `lookup`/`getattr` report for a live inode: in-flight
+    /// buffer or document export size, and the view-filtered link count.
+    fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
+        let buf_len = self.buffers().get(&ino).map(|b| b.len() as u64);
+        let is_doc = self.is_document(ino);
+        let doc_len = if buf_len.is_none() && is_doc {
+            self.document_export(ino).map(|b| b.len() as u64)
+        } else {
+            None
+        };
+        let mut attr = self.ns().getattr(ino)?;
+        if let Some(len) = buf_len.or(doc_len) {
+            attr.size = len;
+            attr.blocks = len.div_ceil(512);
+        }
+        if attr.kind == FileType::Directory {
+            attr.nlink = self.visible_dir_nlink(ino);
+        }
+        Some((attr, Self::ttl_for(is_doc)))
+    }
+
+    /// Whether the availability registry records `ino`'s payload as not
+    /// fully resident (never fetched, partially fetched, or evicted).
+    fn payload_not_resident(&self, ino: u64) -> bool {
+        let Some(registry) = &self.availability else {
+            return false;
+        };
+        let Some(record_id) = self.ns().record_id_for(ino) else {
+            return false;
+        };
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(record_id)
+            .is_some_and(|record| !matches!(record.residency, Residency::Resident { .. }))
+    }
+
+    /// `FOPEN_KEEP_CACHE` when the kernel's page cache for `ino` was filled
+    /// from the content the file still has; otherwise no flag, which makes
+    /// the kernel drop the cache. Buffered and document inodes never keep it,
+    /// and neither do files whose payload is not (or no longer) resident, so
+    /// "Free Local Space" also frees the kernel's copy.
+    fn open_cache_flags(&self, ino: u64) -> FopenFlags {
+        let volatile = self.payload_not_resident(ino)
+            || self.buffers().contains_key(&ino)
+            || self.is_document(ino);
+        let hash = self.ns().hash_for(ino);
+        let mut cached = self
+            .kernel_cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if volatile {
+            cached.remove(&ino);
+            return FopenFlags::empty();
+        }
+        match cached.insert(ino, hash) {
+            Some(previous) if previous == hash => FopenFlags::FOPEN_KEEP_CACHE,
+            _ => FopenFlags::empty(),
+        }
+    }
+
+    /// A read-only backing file holding exactly the current content of
+    /// `ino`, when passthrough is usable and every chunk is local.
+    fn passthrough_backing(&self, ino: u64) -> Option<std::fs::File> {
+        let passthrough = self.passthrough.as_ref().filter(|p| p.usable())?;
+        if self.payload_not_resident(ino)
+            || self.buffers().contains_key(&ino)
+            || self.is_document(ino)
+        {
+            return None;
+        }
+        let hash = self.ns().hash_for(ino)?;
+        let path = passthrough.dir.join(hash.to_hex());
+        if !path.exists() {
+            let hydrator = Arc::clone(&self.hydrator);
+            let rt = hydrator.runtime_handle.clone();
+            match tokio::task::block_in_place(|| rt.block_on(hydrator.export_local(hash, &path))) {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => {
+                    eprintln!("could not materialise a passthrough file for {hash}: {error:#}");
+                    return None;
+                }
+            }
+        }
+        std::fs::File::open(&path).ok()
     }
 
     fn doc_export_cache(&self) -> std::sync::MutexGuard<'_, DocExports> {
@@ -4906,6 +5057,26 @@ fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
 impl Filesystem for QuickFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), io::Error> {
         let _ = config.set_max_readahead(1024 * 1024);
+        // Every directory operation takes the namespace lock, so the kernel
+        // need not serialise lookups/creates per directory for us.
+        let _ = config.add_capabilities(InitFlags::FUSE_PARALLEL_DIROPS);
+        // `readdirplus` answers a listing and its attributes in one round
+        // trip (`ls -l`, file managers); the kernel picks it adaptively.
+        let _ = config
+            .add_capabilities(InitFlags::FUSE_DO_READDIRPLUS | InitFlags::FUSE_READDIRPLUS_AUTO);
+        // Writeback caching stays off: with it the kernel owns `i_size` and
+        // mtime and ignores the sizes this daemon reports, so a remote edit
+        // that changes a file's length would not become visible without
+        // explicit invalidation.
+        if let Some(passthrough) = &self.passthrough {
+            match (
+                config.add_capabilities(InitFlags::FUSE_PASSTHROUGH),
+                config.set_max_stack_depth(1),
+            ) {
+                (Ok(()), Ok(_)) => passthrough.kernel_ready.store(true, Ordering::Release),
+                _ => eprintln!("FUSE passthrough is not offered by this kernel; serving reads"),
+            }
+        }
         Ok(())
     }
 
@@ -5027,6 +5198,45 @@ impl Filesystem for QuickFS {
         self.heuristics.on_readdir(ino.0);
     }
 
+    /// `readdir` plus each entry's attributes, exactly as `lookup` would
+    /// report them, for the same filtered view.
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        let Some(entries) = self.visible_entries(ino.0) else {
+            reply.error(to_errno(ENOTDIR));
+            return;
+        };
+        let skip = usize::try_from(offset).unwrap_or(usize::MAX);
+        for (i, (e_ino, _, name)) in entries.into_iter().enumerate().skip(skip) {
+            let Some((attr, ttl)) = self.presented_attr(e_ino) else {
+                continue;
+            };
+            let next_offset = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
+            if reply.add(
+                INodeNo(e_ino),
+                next_offset,
+                OsStr::from_bytes(name.as_bytes()),
+                &ttl,
+                &attr,
+                Generation(0),
+            ) {
+                break;
+            }
+        }
+        reply.ok();
+        self.heuristics.on_readdir(ino.0);
+    }
+
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let opened_path = {
             let ns = self.ns();
@@ -5060,7 +5270,28 @@ impl Filesystem for QuickFS {
                     ),
                 },
             );
-        reply.opened(FileHandle(handle), FopenFlags::empty());
+        let cache = self.open_cache_flags(ino.0);
+        if flags.acc_mode() == OpenAccMode::O_RDONLY
+            && let Some(backing) = self.passthrough_backing(ino.0)
+        {
+            match reply.open_backing(&backing) {
+                Ok(id) => {
+                    reply.opened_passthrough(FileHandle(handle), cache, &id);
+                    if let Some(passthrough) = &self.passthrough {
+                        passthrough.hold(handle, id, backing);
+                    }
+                    let candidates = self.predictive_candidates(ino.0);
+                    self.heuristics.on_open(ino.0, candidates);
+                    return;
+                }
+                Err(error) => {
+                    if let Some(passthrough) = &self.passthrough {
+                        passthrough.disable(&error);
+                    }
+                }
+            }
+        }
+        reply.opened(FileHandle(handle), cache);
         let candidates = self.predictive_candidates(ino.0);
         self.heuristics.on_open(ino.0, candidates);
     }
@@ -5072,7 +5303,7 @@ impl Filesystem for QuickFS {
         fh: FileHandle,
         offset: u64,
         size: u32,
-        _flags: OpenFlags,
+        flags: OpenFlags,
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
@@ -5138,16 +5369,39 @@ impl Filesystem for QuickFS {
 
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
-        let res = tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, u64::from(size)).await })
-        });
-        match res {
-            Ok(data) => reply.data(&data),
-            Err(error) => {
-                eprintln!("content hydration failed for {hash}: {error:#}");
-                reply.error(to_errno(EIO));
-            }
+        let size = u64::from(size);
+        // Local bytes are answered inline. Bytes that must come from a peer
+        // are hydrated on the runtime and answered from there: the read
+        // still blocks its caller as POSIX expects, but no FUSE worker waits
+        // on the network, so a slow peer stalls only the readers of that file.
+        let local = {
+            let hydrator = Arc::clone(&hydrator);
+            tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size)))
+        };
+        if let Some(data) = local {
+            reply.data(&data);
+            return;
         }
+        if flags.0 & libc::O_NONBLOCK != 0 {
+            // A non-blocking reader gets EAGAIN at once; the range keeps
+            // hydrating so a retry finds it local.
+            rt.spawn(async move {
+                if let Err(error) = hydrator.read(hash, offset, size).await {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                }
+            });
+            reply.error(to_errno(libc::EAGAIN));
+            return;
+        }
+        rt.spawn(async move {
+            match hydrator.read(hash, offset, size).await {
+                Ok(data) => reply.data(&data),
+                Err(error) => {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                    reply.error(to_errno(EIO));
+                }
+            }
+        });
     }
 
     #[allow(
@@ -5296,6 +5550,9 @@ impl Filesystem for QuickFS {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        if let Some(passthrough) = &self.passthrough {
+            passthrough.release(fh.0);
+        }
         // The kernel ignores release errors (close already returned flush's
         // result); the error is still reported for tracing.
         match self.release_handle(ino.0, fh.0) {

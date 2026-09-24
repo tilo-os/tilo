@@ -2907,6 +2907,20 @@ async fn open_namespace_mount(
     }
 }
 
+/// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU
+/// between 2 and 16.
+fn fuse_worker_threads() -> usize {
+    std::env::var("TILO_FS_FUSE_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(4, std::num::NonZeroUsize::get)
+                .clamp(2, 16)
+        })
+}
+
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
 #[allow(
     clippy::too_many_arguments,
@@ -3071,8 +3085,23 @@ async fn run_mount(
             }
         });
 
+    // Kernel passthrough for fully local read-only opens is opt-in while the
+    // backing files are a per-open materialisation of the chunk store.
+    let fs = match predictive_cache_root
+        .as_ref()
+        .filter(|_| std::env::var_os("TILO_FS_PASSTHROUGH").is_some())
+    {
+        Some(root) => fs.with_passthrough(root.join("passthrough")),
+        None => fs,
+    };
+
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
+    // Several workers, each with its own /dev/fuse descriptor, so one slow
+    // request (a first write seeding a large file, a commit) does not stall
+    // every other process using the mount.
+    config.n_threads = Some(fuse_worker_threads());
+    config.clone_fd = true;
     if read_only {
         config.mount_options.push(MountOption::RO);
     }
