@@ -234,8 +234,8 @@ mod tests {
         );
         let av = a.get(&ROOT, "score").unwrap().unwrap().0;
         let bv = b.get(&ROOT, "score").unwrap().unwrap().0;
-        assert_eq!(av.to_i64(), Some(42));
-        assert_eq!(bv.to_i64(), av.to_i64());
+        assert_eq!(av.as_i64(), Some(42));
+        assert_eq!(bv.as_i64(), av.as_i64());
     }
 
     /// Two peers can author from the same base and receive each other's
@@ -273,9 +273,9 @@ mod tests {
 
         assert_eq!(a.get_heads(), b.get_heads());
         for doc in [&a, &b] {
-            assert_eq!(doc.get(&ROOT, "left").unwrap().unwrap().0.to_i64(), Some(1));
+            assert_eq!(doc.get(&ROOT, "left").unwrap().unwrap().0.as_i64(), Some(1));
             assert_eq!(
-                doc.get(&ROOT, "right").unwrap().unwrap().0.to_i64(),
+                doc.get(&ROOT, "right").unwrap().unwrap().0.as_i64(),
                 Some(2)
             );
         }
@@ -332,7 +332,7 @@ mod tests {
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert!(d.mutated_local());
         assert_eq!(tx.replicated.len(), 1, "replicated exactly once");
-        assert_eq!(a.get(&ROOT, "likes").unwrap().unwrap().0.to_i64(), Some(1));
+        assert_eq!(a.get(&ROOT, "likes").unwrap().unwrap().0.as_i64(), Some(1));
     }
 
     /// A transport that speaks for a reachable host, proving the

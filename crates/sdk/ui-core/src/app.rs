@@ -2711,7 +2711,7 @@ mod legacy_owner_routing_tests {
                             .unwrap()
                             .unwrap()
                             .0
-                            .to_str()
+                            .as_str()
                             .unwrap()
                             .to_owned()
                     })
@@ -2741,7 +2741,7 @@ mod legacy_owner_routing_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str()
+                        .as_str()
                         .unwrap()
                         .to_owned()
                 })

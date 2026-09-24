@@ -111,7 +111,7 @@ fn assert_reference_content(doc: &AutoCommit) {
         2,
         "conflict kept"
     );
-    assert_eq!(scalar(doc, "count").to_i64(), Some(7));
+    assert_eq!(scalar(doc, "count").as_i64(), Some(7));
     assert_eq!(scalar(doc, "int"), ScalarValue::Int(-42));
     assert_eq!(scalar(doc, "uint"), ScalarValue::Uint(7));
     assert_eq!(scalar(doc, "float"), ScalarValue::F64(1.5));
@@ -130,7 +130,7 @@ fn assert_reference_content(doc: &AutoCommit) {
     let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
     assert_eq!(doc.length(&items), 2);
     assert_eq!(
-        doc.get(&items, 1).unwrap().unwrap().0.to_i64(),
+        doc.get(&items, 1).unwrap().unwrap().0.as_i64(),
         Some(3),
         "the concurrent delete removed the middle element"
     );

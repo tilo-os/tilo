@@ -585,7 +585,7 @@ mod replay_regressions {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_string()
             })

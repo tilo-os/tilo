@@ -115,7 +115,7 @@ impl AuthDoc {
         };
         matches!(
             doc.get(&tombstones, id.to_string().as_str()),
-            Ok(Some((Value::Scalar(value), _))) if value.to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_bool() == Some(true)
         )
     }
 

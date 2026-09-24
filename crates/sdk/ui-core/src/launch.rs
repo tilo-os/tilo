@@ -1792,7 +1792,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("original-index")
         );
         assert!(
@@ -1838,7 +1838,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("native-file-content")
             );
             App::from_scoped_parts_with_controlled_inputs(scope, state, root)
@@ -2286,7 +2286,7 @@ mod tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some(args.value("--open").unwrap_or("saved-state"))
                 );
                 App::from_scoped_parts_with_controlled_inputs(scope, state, root)
@@ -2322,7 +2322,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some(args.value("--open").unwrap_or("saved-state"))
             );
             for rejected in [

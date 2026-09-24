@@ -622,7 +622,7 @@ impl SheetsDoc {
                         .ok()
                         .flatten()
                         .and_then(|(v, _)| match v {
-                            Value::Scalar(v) => v.to_i64(),
+                            Value::Scalar(v) => v.as_i64(),
                             Value::Object(_) => None,
                         })
                         .and_then(|v| u32::try_from(v).ok())
@@ -745,7 +745,7 @@ impl SheetsDoc {
                         .ok()
                         .flatten()
                         .and_then(|(v, _)| match v {
-                            Value::Scalar(v) => v.to_i64(),
+                            Value::Scalar(v) => v.as_i64(),
                             Value::Object(_) => None,
                         })
                         .and_then(|v| u32::try_from(v).ok())

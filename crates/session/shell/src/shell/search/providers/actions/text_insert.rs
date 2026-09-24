@@ -337,7 +337,7 @@ mod tests {
                     .iter()
                     .filter(|hash| !entry.before.contains(hash))
                     .filter_map(|hash| doc.get_change_by_hash(hash))
-                    .find_map(|change| change.message().cloned())
+                    .find_map(|change| change.message().map(str::to_owned))
                     .and_then(|message| tilo_actions::ActionContext::from_change_message(&message))
                     .expect("semantic action provenance");
                 assert_eq!(context.action_label, "Insert text");

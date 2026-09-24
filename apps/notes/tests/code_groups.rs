@@ -179,7 +179,7 @@ fn nested_content_indents_semantically_and_exits_code_into_the_same_list_item() 
             let empty = &NotesDoc::ordered_block_objects(doc, &list)[4];
             doc.get(empty, "nesting")
                 .unwrap()
-                .and_then(|(value, _)| value.to_u64())
+                .and_then(|(value, _)| value.as_u64())
                 .unwrap_or(0)
         })
         .unwrap();
@@ -263,7 +263,7 @@ fn deleting_first_fence_row_and_duplicating_keep_boundaries_and_new_group_ids() 
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned()
             })

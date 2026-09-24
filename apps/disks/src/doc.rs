@@ -66,7 +66,7 @@ impl DisksDoc {
 
     pub fn selected(doc: &AutoCommit) -> usize {
         match doc.get(&ROOT, "selected") {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0).max(0) as usize,
+            Ok(Some((Value::Scalar(v), _))) => v.as_i64().unwrap_or(0).max(0) as usize,
             _ => 0,
         }
     }
@@ -80,7 +80,7 @@ impl DisksDoc {
     pub fn selected_part(doc: &AutoCommit) -> Option<usize> {
         match doc.get(&ROOT, "selected_part") {
             Ok(Some((Value::Scalar(v), _))) => {
-                let n = v.to_i64().unwrap_or(-1);
+                let n = v.as_i64().unwrap_or(-1);
                 if n < 0 { None } else { Some(n as usize) }
             }
             _ => None,

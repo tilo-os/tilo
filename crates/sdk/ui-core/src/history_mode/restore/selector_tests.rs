@@ -68,7 +68,7 @@ fn sheets_shorter_list_preserves_mixed_parent_and_current_active() {
     let sheets = object(&doc, &wb, "sheets");
     assert_eq!(doc.length(&sheets), 1);
     assert_eq!(
-        doc.get(&sheets, 0).unwrap().unwrap().0.to_str(),
+        doc.get(&sheets, 0).unwrap().unwrap().0.as_str(),
         Some("sheet-a")
     );
     assert!(doc.pending_ops() > 0);
@@ -80,7 +80,7 @@ fn absent_structural_parent_deletes_only_optional_selected_child() {
     assert_eq!(restore(&mut doc, &SHEETS, &[]), RestoreOutcome::Changed);
     assert_eq!(object(&doc, &ROOT, "wb"), wb);
     assert!(doc.get(&wb, "sheets").unwrap().is_none());
-    assert_eq!(doc.get(&wb, "active").unwrap().unwrap().0.to_i64(), Some(1));
+    assert_eq!(doc.get(&wb, "active").unwrap().unwrap().0.as_i64(), Some(1));
 }
 
 #[test]
@@ -201,22 +201,22 @@ fn remote_retains_operational_identity_deletes_entities_and_resurrects_content_o
     assert_eq!(object(&doc, &ROOT, "connections"), connections);
     assert_eq!(object(&doc, &connections, "retained"), retained);
     assert_eq!(
-        doc.get(&retained, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&retained, "name").unwrap().unwrap().0.as_str(),
         Some("old-name")
     );
     assert_eq!(
-        doc.get(&retained, "last_used").unwrap().unwrap().0.to_i64(),
+        doc.get(&retained, "last_used").unwrap().unwrap().0.as_i64(),
         Some(999)
     );
     assert_eq!(object(&doc, &retained, "presence"), presence);
     assert_eq!(
-        doc.get(&presence, "status").unwrap().unwrap().0.to_str(),
+        doc.get(&presence, "status").unwrap().unwrap().0.as_str(),
         Some("live-online")
     );
     assert!(doc.get(&connections, "delete").unwrap().is_none());
     let resurrect = object(&doc, &connections, "resurrect");
     assert_eq!(
-        doc.get(&resurrect, "name").unwrap().unwrap().0.to_str(),
+        doc.get(&resurrect, "name").unwrap().unwrap().0.as_str(),
         Some("old-resurrect")
     );
     assert!(doc.get(&resurrect, "presence").unwrap().is_none());
@@ -299,7 +299,7 @@ fn browser_add_remove_membership_and_tombstone_resurrection() {
     );
     let add = object(&doc, &ROOT, "browser.bookmarks.v2.add:tag-a");
     assert_eq!(
-        doc.get(&add, "url").unwrap().unwrap().0.to_str(),
+        doc.get(&add, "url").unwrap().unwrap().0.as_str(),
         Some("https://example.test")
     );
     assert_eq!(
@@ -307,7 +307,7 @@ fn browser_add_remove_membership_and_tombstone_resurrection() {
             .unwrap()
             .unwrap()
             .0
-            .to_bool(),
+            .as_bool(),
         Some(true)
     );
     assert_eq!(
@@ -315,7 +315,7 @@ fn browser_add_remove_membership_and_tombstone_resurrection() {
             .unwrap()
             .unwrap()
             .0
-            .to_bool(),
+            .as_bool(),
         Some(true)
     );
 }
@@ -618,13 +618,13 @@ fn recursive_overlays_keep_every_mixed_ancestor_and_protected_object() {
     assert_eq!(object(&doc, &document, "view"), view);
     assert_eq!(object(&doc, &view, "selection"), selection);
     assert_eq!(
-        doc.get(&selection, 0).unwrap().unwrap().0.to_str(),
+        doc.get(&selection, 0).unwrap().unwrap().0.as_str(),
         Some("protected-id")
     );
-    assert_eq!(doc.get(&wb, "active").unwrap().unwrap().0.to_i64(), Some(7));
+    assert_eq!(doc.get(&wb, "active").unwrap().unwrap().0.as_i64(), Some(7));
     let sheets = object(&doc, &wb, "sheets");
     assert_eq!(
-        doc.get(&sheets, 0).unwrap().unwrap().0.to_str(),
+        doc.get(&sheets, 0).unwrap().unwrap().0.as_str(),
         Some("original")
     );
 }
@@ -683,7 +683,7 @@ fn optional_selected_child_absence_preserves_present_parent_and_unknown_children
     assert_eq!(object(&doc, &ROOT, "wb"), wb);
     assert!(doc.get(&wb, "sheets").unwrap().is_none());
     assert_eq!(
-        doc.get(&wb, "future-view").unwrap().unwrap().0.to_str(),
+        doc.get(&wb, "future-view").unwrap().unwrap().0.as_str(),
         Some("current")
     );
 }
@@ -724,7 +724,7 @@ fn real_browser_tags_and_unicode_family_identities_restore() {
     doc.put(ROOT, "draft.é.text", "edited").unwrap();
     assert_eq!(restore(&mut doc, unicode, &target), RestoreOutcome::Changed);
     assert_eq!(
-        doc.get(ROOT, "draft.é.text").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "draft.é.text").unwrap().unwrap().0.as_str(),
         Some("original")
     );
     let overlap = schema(vec![

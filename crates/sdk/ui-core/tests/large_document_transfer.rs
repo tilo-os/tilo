@@ -105,7 +105,7 @@ fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
     let onboarded = |app: &mut App| {
         automerge::ReadDoc::get(&app.state_mut_for_test().doc, automerge::ROOT, "body")
             .unwrap()
-            .and_then(|(value, _)| value.to_bytes().map(<[u8]>::to_vec))
+            .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec))
     };
     let started = Instant::now();
     while onboarded(&mut joiner).is_none() && started.elapsed() < Duration::from_secs(60) {

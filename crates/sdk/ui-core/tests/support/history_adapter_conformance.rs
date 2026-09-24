@@ -99,7 +99,7 @@ fn selected_content_is_immutable_navigable_and_restorable() {
     );
     verify_restored(&doc);
     assert_eq!(
-        doc.get(ROOT, "view_only").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "view_only").unwrap().unwrap().0.as_str(),
         Some("current")
     );
     let restored = doc.get_heads().pop().unwrap();
@@ -276,7 +276,7 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("current")
             );
         }
@@ -333,7 +333,7 @@ fn pending_live_edits_survive_preview_and_refuse_restore() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("not committed")
     );
 }
