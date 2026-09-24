@@ -90,18 +90,6 @@ fn remote_dav_availability(health: crate::remote_accounts::RemoteAccountHealth) 
     }
 }
 
-fn format_duration(duration_ms: u64) -> String {
-    let seconds = duration_ms / 1_000;
-    let hours = seconds / 3_600;
-    let minutes = (seconds / 60) % 60;
-    let seconds = seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
 /// Build the file manager's thumbnail service. The content-addressed cache
 /// lives under the app's persistence dir (a tempdir in tests, so they stay
 /// isolated) so previews survive across launches; it falls back to a temp dir
@@ -2183,7 +2171,7 @@ impl FileExplorerWidget {
                         if let Some(duration_ms) = properties.duration_ms {
                             lines.push(t_args(
                                 "files-property-duration",
-                                &[arg("duration", format_duration(duration_ms))],
+                                &[arg("duration", ui::format::timecode(duration_ms / 1_000))],
                             ));
                         }
                         if let Some(page_count) = properties.page_count {

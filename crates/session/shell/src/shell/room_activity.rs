@@ -550,12 +550,7 @@ fn humanize_app_id(app_id: &str) -> String {
         .unwrap_or(app_id)
         .split(['-', '_'])
         .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
+        .map(ui::format::capitalize_first)
         .collect::<Vec<_>>()
         .join(" ")
 }
