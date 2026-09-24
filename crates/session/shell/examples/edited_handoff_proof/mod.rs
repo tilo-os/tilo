@@ -372,9 +372,8 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     )?)?;
     // Inspect the actual broker-persisted workspace, not a local reduction of
     // the live output. The producer invocation links the two observations.
-    let persisted = shell::shell::persist::load_tree_from(&root.join("workspace.json"))?;
+    let persisted = shell::shell::persist::load_tree_from(&root.join("workspace.json"))?.desktop;
     let workspace = persisted
-        .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == session.room)

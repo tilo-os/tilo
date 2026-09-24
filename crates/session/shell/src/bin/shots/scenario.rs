@@ -1368,23 +1368,14 @@ fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::Sh
 pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let st = driver.chrome();
     let host = driver.host();
-    let tree = st.tree();
-    let active = tree.desktop.active.raw();
-    let active_idx = tree
-        .desktop
-        .workspaces
-        .iter()
-        .position(|w| w.id == tree.desktop.active)
-        .unwrap_or(0);
-    let workspace_names: Vec<String> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .map(|w| w.name.clone())
-        .collect();
+    let guard = st.tree();
+    let tree = &guard.desktop;
+    let active = tree.active.raw();
+    let active_idx = tree.workspaces.iter().position(|w| w.id == tree.active);
+    let workspace_names: Vec<String> = tree.workspaces.iter().map(|w| w.name.clone()).collect();
     // Nothing past this point reads the tree; `st` (a separate guard) is
     // still needed below.
-    drop(tree);
+    drop(guard);
     let qs_level = match st.quick_settings.current_level() {
         QsLevel::Root => "root",
         QsLevel::Wifi => "wifi",
@@ -1414,7 +1405,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_u64(&mut out, "active_workspace_id", active);
     out.push(',');
-    push_kv_usize(&mut out, "active_workspace_idx", active_idx);
+    push_kv_usize(&mut out, "active_workspace_idx", active_idx.unwrap_or(0));
     out.push(',');
     push_kv_array(&mut out, "workspace_names", &workspace_names);
     out.push(',');
