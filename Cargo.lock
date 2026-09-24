@@ -12908,6 +12908,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-rt",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",

@@ -85,6 +85,7 @@ desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
 tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

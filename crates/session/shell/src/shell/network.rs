@@ -1371,9 +1371,9 @@ impl ShellNetwork {
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
     ) -> std::io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
+        // Peer sync owns its runtime so that dropping the network ends every
+        // task it started. Two workers: the actor waits on sockets.
+        let runtime = tilo_rt::daemon("tilo-net").workers(2).build()?;
         let _enter = runtime.enter();
 
         let keypair = load_or_create_keypair(keypair_path)?;

@@ -203,25 +203,25 @@ pub fn run_with_full_options(opts: HostedOptions) {
         install_presence_pump(&mut app, net, tree_handle.clone());
     }
 
-    // Bring up the xdg-desktop-portal D-Bus backend if `--enable-portals` was passed; needs a tokio
-    // runtime for zbus's async dispatch, reusing the peer-sync runtime when present or minting a dedicated one.
+    // Bring up the xdg-desktop-portal D-Bus backend if `--enable-portals` was passed; zbus's async
+    // dispatch runs on the session runtime.
     //
     // The portal must NOT bypass the existing sandbox / grant enforcement — `flow::resolve` is the
     // only entry point that mutates the workspace's `grants` map, consulting the same store the
     // chrome's permission-prompt pump uses. Failures downgrade to a warning so a broken session bus never wedges the shell.
-    let (_portal_runtime, _portal_handle) = match bring_up_portal(
+    let _portal_handle = match bring_up_portal(
         enable_portals,
         tree_handle.clone(),
         portal_prompts,
         portal_pickers,
         notification_bridge,
     ) {
-        PortalBringup::Disabled => (None, None),
+        PortalBringup::Disabled => None,
         PortalBringup::RuntimeUnavailable => {
             app.run();
             return;
         }
-        PortalBringup::Started { runtime, handle } => (runtime, handle),
+        PortalBringup::Started { handle } => handle,
     };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
@@ -517,11 +517,10 @@ fn install_presence_pump(
 enum PortalBringup {
     /// `--enable-portals` was not passed.
     Disabled,
-    /// A tokio runtime could not be built; the caller runs the app immediately without the
+    /// The session runtime could not be started; the caller runs the app immediately without the
     /// remaining hosted-mode setup, matching legacy behaviour when the portal has nowhere to run.
     RuntimeUnavailable,
     Started {
-        runtime: Option<tokio::runtime::Runtime>,
         handle: Option<crate::portal::ServerHandle>,
     },
 }
@@ -540,19 +539,12 @@ fn bring_up_portal(
     if !enable_portals {
         return PortalBringup::Disabled;
     }
-    let (rt_handle, runtime_owned) = if let Ok(h) = tokio::runtime::Handle::try_current() {
-        (h, None)
-    } else {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("tilo-portal")
-            .build()
-            .ok();
-        let Some(rt) = rt else {
-            tracing::warn!("portal: tokio runtime build failed; portal stays off");
+    let runtime = match crate::session_runtime::runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::warn!("portal: session runtime unavailable ({error}); portal stays off");
             return PortalBringup::RuntimeUnavailable;
-        };
-        (rt.handle().clone(), Some(rt))
+        }
     };
     // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
     // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
@@ -581,7 +573,7 @@ fn bring_up_portal(
         authenticator: None,
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
-        rt_handle.block_on(async move {
+        runtime.block_on(async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
             crate::portal::serve(conn, ctx).await
         });
@@ -598,10 +590,7 @@ fn bring_up_portal(
             None
         }
     };
-    PortalBringup::Started {
-        runtime: runtime_owned,
-        handle,
-    }
+    PortalBringup::Started { handle }
 }
 
 /// Binds the local typed collaboration broker socket when `QUICK_COLLAB_CAPNP_SOCK` is set. When
