@@ -253,7 +253,10 @@ mod tests {
 
     #[test]
     fn host_builds_prefer_an_explicit_cargo_then_rcargo() {
-        assert_eq!(cargo_program_from(Some("my-cargo".into()), true), "my-cargo");
+        assert_eq!(
+            cargo_program_from(Some("my-cargo".into()), true),
+            "my-cargo"
+        );
         assert_eq!(cargo_program_from(Some(" ".into()), true), "rcargo");
         assert_eq!(cargo_program_from(None, true), "rcargo");
         assert_eq!(cargo_program_from(None, false), "cargo");
