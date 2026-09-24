@@ -317,6 +317,17 @@ impl CloudVolume {
         };
         inner.ino_by_id.insert(root.clone(), ROOT_INO);
         inner.id_by_ino.insert(ROOT_INO, root);
+        // An edit whose writer was still open when the process stopped has
+        // no queued upload yet; nobody will close it now.
+        let unsent: Vec<ItemId> = inner
+            .local
+            .iter()
+            .filter(|(_, local)| local.dirty && local.staged.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in unsent {
+            inner.queue(Op::Upload(id));
+        }
         Ok(Arc::new(Self {
             source,
             dir: config.dir,
