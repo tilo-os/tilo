@@ -823,6 +823,9 @@ async fn peer_may_read_blob_with_records(
     reachable.is_ok_and(|records| records.into_iter().any(|record| readable.contains(&record)))
 }
 
+/// Closed connections whose caller the blob guard still recognises.
+const RETAINED_CLOSED_CALLERS: usize = 256;
+
 /// Build the request interceptor iroh-blobs consults before serving
 /// anything, or `None` for an unenforced mount. `BlobsProtocol::new(store,
 /// None)` serves every blob to anyone who knows its hash, and
@@ -864,6 +867,12 @@ fn blob_guard(
     tokio::spawn(async move {
         let mut callers: std::collections::HashMap<u64, (IdentityKey, Option<IdentityKey>)> =
             std::collections::HashMap::new();
+        // A connection's close can be reported before the requests it
+        // already carried, and its id can be reused by a later connection.
+        // A caller therefore stays registered after its last connection of
+        // that id closed, until a bounded number of later closes has passed.
+        let mut open: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut closed: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
         // Re-resolve both the live namespace and live ACL for every request:
         // revocation, rename, and deleting the last readable reference all
         // take effect without ending the connection.
@@ -896,11 +905,27 @@ fn blob_guard(
                     }
                     if let Ok(peer) = verdict {
                         callers.insert(msg.inner.connection_id, (peer, person));
+                        let n = open.entry(msg.inner.connection_id).or_default();
+                        *n = n.saturating_add(1);
                     }
                     msg.tx.send(verdict.map(|_| ())).await.ok();
                 }
                 ProviderMessage::ConnectionClosed(msg) => {
-                    callers.remove(&msg.inner.connection_id);
+                    let id = msg.inner.connection_id;
+                    let last = open.get_mut(&id).is_none_or(|n| {
+                        *n = n.saturating_sub(1);
+                        *n == 0
+                    });
+                    if last {
+                        closed.push_back(id);
+                    }
+                    while closed.len() > RETAINED_CLOSED_CALLERS {
+                        let Some(old) = closed.pop_front() else { break };
+                        if open.get(&old).is_none_or(|n| *n == 0) {
+                            open.remove(&old);
+                            callers.remove(&old);
+                        }
+                    }
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
                     let ok = match callers.get(&msg.inner.connection_id) {
