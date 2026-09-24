@@ -448,6 +448,89 @@ fn invoke(
 }
 
 #[test]
+fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
+    use crate::permissions::{Actor, CapOverride, Scope, Subject, Verb};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    let time = Arc::new(AtomicU64::new(expiry - 1));
+    let clock = time.clone();
+    let authority = PermissionContext::from_capabilities(
+        Actor::person(None, "fixture-user"),
+        vec![
+            CapOverride::grant(
+                Subject::person("fixture-user"),
+                Scope::App("dev.qos.controlled".into()),
+                Verb::Write,
+            )
+            .with_expiry(expiry),
+        ],
+    )
+    .with_policy_time_sampler(Arc::new(move || Ok(clock.load(Ordering::Acquire))));
+    let mut fixture = Fixture::new(811);
+    assert!(
+        authorize_legacy_owner(
+            &fixture.target.owner,
+            &authority,
+            &UserId("fixture-user".into())
+        )
+        .is_ok()
+    );
+    let before = fixture.snapshot();
+    time.store(expiry, Ordering::Release);
+    assert!(
+        invoke(
+            &mut fixture.tile,
+            &fixture.target,
+            &registry(),
+            &mut LocalTransport::new(),
+            &authority
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        before,
+        "denial must precede document and history effects"
+    );
+}
+
+#[test]
+fn retained_policy_time_document_door_rejects_clock_failure_before_effects() {
+    let authority =
+        PermissionContext::permissive().with_policy_time_sampler(std::sync::Arc::new(|| {
+            Err("retired owner clock origin".into())
+        }));
+    let mut fixture = Fixture::new(812);
+    let before = fixture.snapshot();
+    assert!(
+        authorize_legacy_owner(
+            &fixture.target.owner,
+            &authority,
+            &UserId("fixture-user".into())
+        )
+        .is_err()
+    );
+    assert!(
+        invoke(
+            &mut fixture.tile,
+            &fixture.target,
+            &registry(),
+            &mut LocalTransport::new(),
+            &authority
+        )
+        .is_err()
+    );
+    assert_eq!(fixture.snapshot(), before);
+}
+
+#[test]
 fn sealed_qos_notes_admission_executes_a_local_document_action() {
     let mut fixture = Fixture::qos_notes_v1();
     assert!(fixture.target.owner.broker_route().is_none());

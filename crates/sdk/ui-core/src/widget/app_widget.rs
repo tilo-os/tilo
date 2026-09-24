@@ -1383,6 +1383,22 @@ mod component_adapter {
                 })
                 .unwrap_or(None)
         }
+
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| root.action_directory_invocation_domain(document))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
         fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
             let binding = self.component.callback_binding();
             binding

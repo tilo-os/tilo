@@ -30,6 +30,7 @@ pub mod history;
 pub mod model;
 pub mod order;
 pub mod schema;
+pub mod semantic_read;
 pub mod sheet;
 pub mod snapshot;
 

@@ -69,6 +69,7 @@ pub struct HostContext {
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
+    retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -98,6 +99,26 @@ pub struct PreparedComponentInputs {
 }
 
 impl HostContext {
+    fn retire_semantic_mount(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+    pub(crate) fn bind_retirement(
+        &mut self,
+        retirement: crate::semantic_document_read::retirement::MountRetirement,
+    ) -> Result<(), LaunchError> {
+        if self.retirement.is_some() || self.closing.get() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.retirement = Some(retirement);
+        Ok(())
+    }
+    pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
+        self.records
+            .require_invocation_provenance(&self.record)
+            .map_err(crate::launch::LaunchError::Operation)
+    }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
     /// # Errors
@@ -258,6 +279,7 @@ impl HostContext {
             queued_controls: Rc::default(),
             control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
+            retirement: None,
         })
     }
     /// Explicit owner-bound producer capability, available before factory work.
@@ -672,6 +694,7 @@ pub fn lookup_compatible_first_party_app_ids(left: &str, right: &str) -> bool {
 }
 impl Drop for HostContext {
     fn drop(&mut self) {
+        self.retire_semantic_mount();
         self.control_domain.close();
         self.wake_scope.close();
     }
@@ -792,6 +815,14 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    pub(crate) fn take_root_retirement(
+        &mut self,
+    ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
+        self.context
+            .retirement
+            .as_mut()
+            .and_then(|retirement| retirement.take_app())
+    }
     /// Register presentation for this component's actual document custody. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata carries no new authority and follows native/headless/tile mounts.
@@ -902,12 +933,19 @@ impl AppComponent {
         mut root: Box<dyn AppWidget>,
         registry: tilo_actions::ActionRegistry,
     ) -> Self {
+        // The actual root already exists. Retire before its destructor if its
+        // first SDK control-install callback unwinds, even before Self exists.
+        let construction =
+            crate::semantic_document_read::retirement::MountConstructionRetirement::new(
+                context.retirement.as_ref(),
+            );
         root.install_control_custody(
             &context.control_domain(),
             crate::control_custody::CustodyAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
         let registry_owner = context.construction.clone();
+        construction.disarm();
         Self {
             history: None,
             context,
@@ -1150,6 +1188,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
         }
@@ -1192,6 +1231,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
             view_error: None,
@@ -1265,6 +1305,7 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        self.context.retire_semantic_mount();
         self.context.control_domain.close();
         self.context.closing.set(true);
         self.context.wake_scope.close();
@@ -1338,6 +1379,11 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         self.invoke(|provider| provider.action_directory_generation())
             .flatten()
+    }
+
+    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+        self.invoke(|provider| provider.action_directory_invocation_domain())
+            .unwrap_or_default()
     }
     fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
         self.invoke(|provider| provider.action_directory_cursor_is_current(cursor))

@@ -34,10 +34,56 @@ pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 /// through [`crate::shell::tab_documents::tab_body`], which knows which
 /// document a tab is.
 pub fn read_body(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
-        _ => None,
+    let values = body_values(doc, root, key);
+    (!values.is_empty()).then(|| project(doc, &values))
+}
+
+/// One text-bearing value stored under a body's key.
+enum BodyValue {
+    Text(ObjId),
+    Legacy(String),
+}
+
+/// Every text-bearing value stored under `<root>/<key>`, in Automerge's
+/// deterministic conflict order (identical on every replica).
+///
+/// The body is created on first sync, so two replicas that open the same
+/// empty record before syncing each create their own `Text`: a key
+/// conflict where a plain `get` shows one winner and the other replica's
+/// typing vanishes from view. Reads therefore project every value.
+fn body_values(doc: &AutoCommit, root: &ObjId, key: &str) -> Vec<BodyValue> {
+    doc.get_all(root, key)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| match value {
+                    Value::Object(ObjType::Text) => Some(BodyValue::Text(id)),
+                    Value::Scalar(scalar) => scalar
+                        .to_str()
+                        .map(|text| BodyValue::Legacy(text.to_string())),
+                    Value::Object(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The characters a body shows: its `Text`, or every conflicting value
+/// joined in conflict order. A value identical to an earlier one (two
+/// replicas that each wrote the same seed and nothing else) is shown once;
+/// dropping an exact duplicate loses no characters.
+fn project(doc: &AutoCommit, values: &[BodyValue]) -> String {
+    let mut seen: Vec<String> = Vec::with_capacity(values.len());
+    for value in values {
+        let text = match value {
+            BodyValue::Text(id) => doc.text(id).unwrap_or_default(),
+            BodyValue::Legacy(text) => text.clone(),
+        };
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
     }
+    seen.concat()
 }
 
 /// A single Automerge `Text` object plus the mirror and caret arithmetic
@@ -105,29 +151,37 @@ impl CrdtTextBody {
 
     /// Resolve (or create) the `Text` object backing this body. `None`
     /// only on a corrupt document; callers treat it as "skip this edit".
+    ///
+    /// A body left with several values (see [`body_values`]) or a legacy
+    /// string is upgraded in place to one `Text` holding exactly the
+    /// projection the mirror shows, so the caller's offsets stay valid.
     fn resolve(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, self.key) {
-            return Some(id);
+        let values = body_values(state, root, self.key);
+        if let [BodyValue::Text(id)] = values.as_slice() {
+            return Some(id.clone());
         }
-        state.put_object(root, self.key, ObjType::Text).ok()
+        let projected = project(state, &values);
+        let id = state.put_object(root, self.key, ObjType::Text).ok()?;
+        if !projected.is_empty() {
+            state.splice_text(&id, 0, 0, &projected).ok()?;
+        }
+        Some(id)
     }
 
     /// `Widget::sync` body: reads the CRDT into the mirror, seeding it from
     /// the constructor's text only if no body exists yet.
     pub fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        match state.get(root, self.key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                if let Ok(t) = state.text(&id) {
-                    self.text = t;
-                }
+        let values = body_values(state, root, self.key);
+        if let [BodyValue::Text(id)] = values.as_slice() {
+            if let Ok(t) = state.text(id) {
+                self.text = t;
             }
-            _ => {
-                if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
-                    && !self.text.is_empty()
-                {
-                    let _ = state.splice_text(&id, 0, 0, &self.text);
-                }
-            }
+        } else if !values.is_empty() {
+            self.text = project(state, &values);
+        } else if let Ok(id) = state.put_object(root, self.key, ObjType::Text)
+            && !self.text.is_empty()
+        {
+            let _ = state.splice_text(&id, 0, 0, &self.text);
         }
     }
 
@@ -287,6 +341,54 @@ mod tests {
         b.sync(&mut doc, &tile);
         assert_eq!(b.text, "hello");
         assert_eq!(doc.text(&id).unwrap(), "hello");
+    }
+
+    /// Two replicas open the same empty record and each type first: each
+    /// sync created its own body `Text`, and a plain read showed only one.
+    #[test]
+    fn concurrent_first_edits_on_two_replicas_both_survive() {
+        for _ in 0..16 {
+            let (mut base, tile) = bind();
+            base.commit();
+            let mut left_doc = base.fork();
+            let mut right_doc = base.fork();
+            let mut left = CrdtTextBody::new(KEY);
+            let mut right = CrdtTextBody::new(KEY);
+            left.sync(&mut left_doc, &tile);
+            right.sync(&mut right_doc, &tile);
+            left.splice(&mut left_doc, &tile, 0..0, "left");
+            right.splice(&mut right_doc, &tile, 0..0, "right");
+            left_doc.merge(&mut right_doc).unwrap();
+            left.sync(&mut left_doc, &tile);
+            assert!(
+                left.text.contains("left") && left.text.contains("right"),
+                "both first edits survive; got {:?}",
+                left.text
+            );
+            let shown = read_body(&left_doc, &tile, KEY).unwrap();
+            assert_eq!(shown, left.text);
+            // The next edit upgrades to one Text holding exactly what was shown.
+            let end = left.text.len();
+            left.splice(&mut left_doc, &tile, end..end, "!");
+            assert_eq!(
+                read_body(&left_doc, &tile, KEY).unwrap(),
+                format!("{shown}!")
+            );
+            assert_eq!(left_doc.get_all(&tile, KEY).unwrap().len(), 1);
+        }
+    }
+
+    /// Two replicas that each seeded the same welcome text show it once.
+    #[test]
+    fn concurrent_identical_seeds_are_shown_once() {
+        let (mut base, tile) = bind();
+        base.commit();
+        let mut left_doc = base.fork();
+        let mut right_doc = base.fork();
+        CrdtTextBody::with_seed(KEY, "hello").sync(&mut left_doc, &tile);
+        CrdtTextBody::with_seed(KEY, "hello").sync(&mut right_doc, &tile);
+        left_doc.merge(&mut right_doc).unwrap();
+        assert_eq!(read_body(&left_doc, &tile, KEY).unwrap(), "hello");
     }
 
     #[test]

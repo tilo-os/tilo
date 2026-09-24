@@ -2,7 +2,7 @@
 //!
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
-//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
+//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL-GATEWAY_FD`).
 
 #[cfg(unix)]
 use std::io::{Read, Write};
@@ -18,7 +18,8 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
-pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
+// Launcher and runtime-portal uppercase the service name without replacing '-'.
+pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL-GATEWAY_FD";
 pub const RPC_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 /// The only encoded-preview media types accepted by the local vision RPC.
@@ -51,6 +52,15 @@ pub struct FaceImage {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
+    /// Read-only Agent check of the exact selection's local Plan prerequisites.
+    /// A positive `configured` response does not establish provider reachability,
+    /// accepted credentials, or live local-model availability. Older RPC3
+    /// servers reject this additive verb; callers must treat that as unavailable.
+    SelectionConfigured {
+        profile_id: String,
+        model_id: String,
+        protocol: agent_provider_config::ProviderProtocol,
+    },
     Plan {
         profile_id: String,
         model_id: String,

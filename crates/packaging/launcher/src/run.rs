@@ -1458,6 +1458,7 @@ fn spawn_and_wait(
         Option<UnixStream>,
         Option<std::thread::JoinHandle<()>>,
     ),
+    observer: Option<&dyn crate::managed::EnrolledProcessObserver>,
 ) -> Result<ExitStatus, RunError> {
     const SECCOMP_CHILD_FD: i32 = 16;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
@@ -1480,6 +1481,11 @@ fn spawn_and_wait(
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
     clear_bwrap_environment(&mut cmd);
+    if observer.is_some() {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
 
     // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
     // each service socket on the fd number the app was told to read.
@@ -1549,6 +1555,10 @@ fn spawn_and_wait(
         });
     }
 
+    // Last parent-side policy/custody check after preparation, immediately before spawn.
+    if let Some(observer) = observer {
+        observer.before_spawn().map_err(RunError::Spawn)?;
+    }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     // Important: keep `seccomp_fd` alive until after `spawn` returns,
@@ -1558,7 +1568,12 @@ fn spawn_and_wait(
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
     drop(identity_broker_app);
-    let status = child.wait()?;
+    let status = if let Some(observer) = observer {
+        observer.child_created();
+        observer.supervise(child)?
+    } else {
+        child.wait()?
+    };
     stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(status)
 }
@@ -1735,6 +1750,28 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, None)
+}
+
+pub(crate) fn run_enrolled(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    services: &mut crate::services::EnrolledServiceContext,
+    observer: &dyn crate::managed::EnrolledProcessObserver,
+) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, Some((services, observer)))
+}
+
+fn run_with_context(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    mut enrolled: Option<(
+        &mut crate::services::EnrolledServiceContext,
+        &dyn crate::managed::EnrolledProcessObserver,
+    )>,
+) -> Result<ExitStatus, RunError> {
     validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
@@ -1749,22 +1786,30 @@ pub fn run_with(
 
     // 1. Service sockets.
     let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
-    let mut resolved = resolve_service_binds_for_launch(
-        &manifest.sandbox.services,
-        opts.no_services,
-        ServiceLaunchContext {
-            app_id: launch_app_id,
-            workspace_id: opts.workspace_id.as_deref(),
-        },
-    )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
-    if let Some(identity) = resolve_identity_bind(
-        launch_app_id,
-        opts.workspace_id.as_deref(),
-        opts.no_services,
-    )? {
-        resolved.push(identity);
-    }
+    let resolved = if let Some((services, _)) = enrolled.as_mut() {
+        let binding = services.binding().clone();
+        services
+            .take_for_launch(&binding, &manifest.sandbox.services)
+            .map_err(RunError::InvalidServiceLaunch)?
+    } else {
+        let mut resolved = resolve_service_binds_for_launch(
+            &manifest.sandbox.services,
+            opts.no_services,
+            ServiceLaunchContext {
+                app_id: launch_app_id,
+                workspace_id: opts.workspace_id.as_deref(),
+            },
+        )?;
+        crate::services::authenticate_shell_ui_bind(&resolved, launch_app_id)?;
+        if let Some(identity) = resolve_identity_bind(
+            launch_app_id,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+        )? {
+            resolved.push(identity);
+        }
+        resolved
+    };
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd.
@@ -1777,24 +1822,46 @@ pub fn run_with(
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
-    let resolved_runtime = resolve_runtime(manifest, opts)?;
+    let resolved_runtime = if enrolled.is_some() {
+        Some(
+            crate::managed::verify_runtime(manifest, opts)
+                .map_err(RunError::InvalidServiceLaunch)?,
+        )
+    } else {
+        resolve_runtime(manifest, opts)?
+    };
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
-    let app_dir = resolve_app_dir(manifest, opts)?;
+    let app_dir = if let Some((services, _)) = enrolled.as_ref() {
+        crate::appdir::prepare_host_app_dir(
+            services.data_home(),
+            Some(&services.binding().room),
+            &services.binding().app,
+        )?
+    } else {
+        resolve_app_dir(manifest, opts)?
+    };
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
-    let capabilities = resolve_capabilities(manifest, opts);
+    let mut capabilities = resolve_capabilities(manifest, opts);
+    if enrolled.is_some() {
+        capabilities.participation = crate::capabilities::Participation::Author;
+    }
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
     // marker for the argv builder; it is never mounted.
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
-        resolve_identity_broker(&capabilities, opts)?;
+        if enrolled.is_some() {
+            (None, None, None, None)
+        } else {
+            resolve_identity_broker(&capabilities, opts)?
+        };
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     if identity_broker_app.is_some() {
@@ -1821,10 +1888,23 @@ pub fn run_with(
     splice_durable_app_id(&mut argv, launch_app_id)?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    if let Some((services, _)) = enrolled.as_ref() {
+        splice_cli_setenv(
+            &mut argv,
+            Some((
+                "TILO_MANAGED_AGENT_CONTEXT".into(),
+                services
+                    .agent_context_json()
+                    .map_err(RunError::InvalidServiceLaunch)?,
+            )),
+        )?;
+    }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
-    splice_tool_context(&mut argv)?;
+    if enrolled.is_none() {
+        splice_tool_context(&mut argv)?;
+    }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -1861,6 +1941,7 @@ pub fn run_with(
             identity_broker_control,
             identity_broker_thread,
         ),
+        enrolled.map(|(_, observer)| observer),
     )
 }
 
@@ -2892,5 +2973,79 @@ mod app_dir_tests {
             !victim.exists(),
             "the launcher must not create a path a package named"
         );
+    }
+}
+
+#[cfg(test)]
+mod managed_spawn_policy_tests {
+    use super::*;
+    struct CurrentPolicy {
+        allowed: bool,
+        checked: AtomicUsize,
+        spawned: AtomicUsize,
+    }
+    impl crate::managed::EnrolledProcessObserver for CurrentPolicy {
+        fn before_spawn(&self) -> std::io::Result<()> {
+            self.checked.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.allowed {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "revoked current policy",
+                ))
+            }
+        }
+        fn child_created(&self) {
+            self.spawned.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
+            child.wait()
+        }
+    }
+    #[test]
+    fn managed_prepared_spawn_checks_current_policy_before_child_creation() {
+        // This exercises the real prepared-command spawn boundary, not a package,
+        // sandbox or live managed process proof. The permit's policy check is
+        // covered separately by the consuming-authority unit test.
+        for allowed in [false, true] {
+            let policy = CurrentPolicy {
+                allowed,
+                checked: AtomicUsize::new(0),
+                spawned: AtomicUsize::new(0),
+            };
+            let options = RunOptions {
+                bwrap_bin: Some("/usr/bin/true".into()),
+                ..Default::default()
+            };
+            let result = spawn_and_wait(
+                vec![],
+                vec![],
+                &options,
+                false,
+                tempfile::tempfile().unwrap().into(),
+                vec![],
+                &crate::netgate::EgressDecision::Blocked,
+                None,
+                (None, None, None),
+                Some(&policy),
+            );
+            assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(
+                policy.spawned.load(AtomicOrdering::SeqCst),
+                usize::from(allowed)
+            );
+            if allowed {
+                assert!(
+                    result
+                        .expect("real Linux prepared-command spawn required")
+                        .success()
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                );
+            }
+        }
     }
 }

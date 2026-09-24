@@ -243,10 +243,16 @@ interface ChannelHandle {
   # Invoke a published action while carrying the leased task's ActionContext.
   # The broker derives both agent identity and context; no caller-supplied
   # attribution/context crosses this method.
+  # `stepIndex` (when `hasStep`) names the task's durable parent step: the
+  # host maps it to exactly one child before execution and returns that
+  # child again on retry. `continuation` is the parent's committed next-step
+  # continuation, present only once the step's exact result is committed.
+  # Older peers omit both; the broker then keeps the legacy non-step path.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
-                        hasArgument :Bool, confirmationJson :Text)
-      -> (id :UInt64, updateJson :Text);
+                        hasArgument :Bool, confirmationJson :Text,
+                        stepIndex :UInt32, hasStep :Bool)
+      -> (id :UInt64, updateJson :Text, continuation :Data);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
   taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
@@ -277,7 +283,8 @@ interface ChannelHandle {
   # returns a non-ok status and is never invoked from cached catalogue data.
   resolvePublishedAction @35 (peerId :UInt64, revision :Text,
                               resource :Text, action :Text)
-      -> (resolution :ActionDirectoryResolution);
+      -> (resolution :ActionDirectoryResolution,
+          invocationBinding :PublishedInvocationBinding);
 
   # Level-triggered private media handoff descriptors. The broker binds appId,
   # workspace and process instance to this channel and keeps source locators
@@ -311,6 +318,63 @@ interface ChannelHandle {
   # semantics only; NetworkManager UUIDs are accepted solely as local lookup
   # capabilities and never enter personal-fabric state.
   wifiContinuityCommand @41 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+  # Private enrolled tasks; old peers without these methods are unavailable.
+  subscribeEnrolledTasks @42 () -> (stream :EnrolledTaskStream);
+  # Exact recipient acceptance; successful RPC reply precedes all task work.
+  acceptEnrolledTask @43 (acceptanceJson :Text) -> ();
+  reportEnrolledTask @44 (acceptanceJson :Text, sequence :UInt64, updateJson :Text) -> ();
+
+  # Local governed call controls. The broker retains genuine kernel/launcher
+  # process evidence and derives the exact app/workspace/record from this
+  # channel. Closed versioned runtime-collab JSON is bounded to 8 KiB.
+  nativeMediaCommand @45 (commandJson :Data) -> (replyJson :Data);
+
+  # Disposable committed history read; exact caller and route come from channel.
+  committedDocument @46 (request :Data) -> (reply :Data);
+
+  # Invoke one exact lazy row at its required, nonempty directory revision.
+  # A separate ordinal makes older brokers reject before any effect. Clients
+  # must never fall back to invokePublishedAction when this is unavailable.
+  invokeResolvedPublishedAction @47 (
+      peerId :UInt64, revision :Text, resource :Text, action :Text,
+      argument :Text, hasArgument :Bool, confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
+
+  # Caller-owned UUID and immutable original target. Unsupported methods must
+  # never fall back to @47 or @21. A binding is inert, never caller authority.
+  invokeResolvedPublishedActionDurable @48 (
+      invocation :Data, binding :PublishedInvocationBinding,
+      revision :Text, resource :Text, action :Text,
+      argument :Text, hasArgument :Bool, confirmationJson :Text)
+      -> (observation :PublishedInvocationObservation);
+  publishedInvocationObservation @49 (host :Data, invocation :Data)
+      -> (observation :PublishedInvocationObservation);
+  cancelDurablePublishedInvocation @50 (host :Data, invocation :Data)
+      -> (observation :PublishedInvocationObservation);
+
+}
+
+# Optional result on @35, minted from the same captured directory and worker.
+# An absent pointer means reliable invocation is unavailable on this result.
+struct PublishedInvocationBinding {
+  host @0 :Data;
+  peerId @1 :UInt64;
+  appId @2 :Text;
+  recordId @3 :Text;
+  root @4 :Data;
+  device @5 :Data;
+  targetBinding @6 :Data;
+}
+
+struct PublishedInvocationObservation {
+  host @0 :Data;
+  invocation @1 :Data;
+  found @2 :Bool;
+  id @3 :UInt64;
+  updateJson @4 :Text;
+  uncertain @5 :Bool;
+  cancellationRequested @6 :Bool;
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -731,4 +795,9 @@ struct ScrollbackBatch {
   earliestSeq @1 :UInt64;
   latestSeq   @2 :UInt64;
   done        @3 :Bool;
+}
+
+# Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
+interface EnrolledTaskStream {
+  read @0 () -> (taskJson :Text);
 }

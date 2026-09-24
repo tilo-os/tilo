@@ -1,3 +1,6 @@
+mod action_directory_identity;
+pub use action_directory_identity::ActionDirectoryInvocationDomain;
+
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -1152,6 +1155,13 @@ pub trait Widget {
             .iter()
             .map(|handler| (*handler).to_string())
             .collect::<HashSet<_>>();
+        // The actual widget's registered readers also declare their selectors.
+        // Descriptor availability and qualified owner admission remain separate.
+        handlers.extend(
+            self.semantic_readers()
+                .iter()
+                .map(|reader| reader.operation_type().to_string()),
+        );
         self.for_each_child(&mut |child| handlers.extend(child.resource_operation_handlers()));
         handlers
     }
@@ -1729,6 +1739,16 @@ pub trait Widget {
         None
     }
 
+    /// Continuity coverage for this owning subtree's effective invocation domain.
+    /// Independent component/provider owners are checked separately. Returning a
+    /// value is a semantic promise, not authority; unknown coverage stays closed.
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ActionDirectoryInvocationDomain {
+        ActionDirectoryInvocationDomain::Unsupported
+    }
+
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
     fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
@@ -1941,6 +1961,43 @@ pub trait Widget {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+    }
+
+    /// Inert immutable-reader registrations owned by this actual widget.
+    /// Registration alone supplies no qualified owner frame or disclosure.
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        &[]
+    }
+
+    /// Required hosted operations enter here with immutable original-caller
+    /// custody. Async implementations must retain `scope` with their own job
+    /// and use its checked callbacks at each later effect or document mutation.
+    /// The default never calls an unscoped handler, even speculatively.
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        scope.check()?;
+        for child in self.children_mut() {
+            // A nested canonical owner is an independent destination. Its
+            // handler must be selected by that owner's checked dispatch frame.
+            if child.has_separate_document_owner() {
+                continue;
+            }
+            if let Some(started) =
+                child.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
     }
 
     /// Poll one admitted operation without blocking the UI thread.

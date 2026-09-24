@@ -64,6 +64,7 @@ pub mod chrome;
 pub mod clipboard;
 pub mod clock;
 pub mod collaboration;
+pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub mod color_compat;
 pub mod content_layout;
@@ -354,7 +355,11 @@ pub use permissions::{
 pub mod application;
 pub mod application_view;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod host_worker;
+pub mod invocation_scope;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
+pub mod semantic_document_read;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;

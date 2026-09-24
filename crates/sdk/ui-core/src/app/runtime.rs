@@ -76,8 +76,11 @@ impl InputRuntime {
 /// centralizes their lifecycle rather than separating them from UI
 /// capabilities.
 pub(super) struct ActionRuntime {
+    pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
+    // Independent from scheduling invalidation: mutable unbound decoder access.
+    pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
     /// The local transport is usable only until an authoritative host transport
     /// has been installed. Legacy document controls use this to avoid treating
@@ -90,10 +93,12 @@ pub(super) struct ActionRuntime {
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    pub(super) action_directory_stamp:
-        Option<(super::action_directory_snapshot::DirectoryWitness, String)>,
+    pub(super) action_directory_stamp: Option<(
+        std::rc::Rc<super::action_directory_snapshot::DirectoryWitness>,
+        String,
+    )>,
     pub(super) action_directory_snapshot:
-        Option<super::action_directory_snapshot::ActionDirectorySnapshot>,
+        Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
     pub(super) bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -120,13 +125,17 @@ pub(super) struct ActionRuntime {
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
+    /// Dirty tracking for the hosted worker pump (no window event loop).
+    pub(super) hosted: super::model_lifecycle::HostedPumpState,
 }
 
 impl ActionRuntime {
     pub(super) fn new() -> Self {
         Self {
+            published_invocations: Default::default(),
             action_palette: None,
             action_registry: tilo_actions::ActionRegistry::new(),
+            action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             legacy_local_transport: true,
             resource_cache: RefCell::new(None),
@@ -152,6 +161,7 @@ impl ActionRuntime {
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
+            hosted: super::model_lifecycle::HostedPumpState::default(),
         }
     }
 }

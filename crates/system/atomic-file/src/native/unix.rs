@@ -12,6 +12,30 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_os = "macos")]
+pub(crate) mod bounded_acl;
+#[cfg(target_os = "linux")]
+mod bounded_linux;
+
+#[derive(Clone, Copy)]
+pub(crate) enum FilePolicy {
+    Ordinary(Privacy),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    BoundedOwner,
+}
+impl FilePolicy {
+    fn is_private(self) -> bool {
+        !matches!(self, Self::Ordinary(Privacy::Inherit))
+    }
+    pub(crate) fn error(self, kind: io::ErrorKind, message: &'static str) -> io::Error {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if matches!(self, Self::BoundedOwner) {
+            return kind.into();
+        }
+        io::Error::new(kind, message)
+    }
+}
+
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,6 +112,22 @@ impl Directory {
         validate_private_security(&self.file, &metadata)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn validate_bounded(&self) -> io::Result<()> {
+        let metadata = self.file.metadata()?;
+        if !metadata.is_dir() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            bounded_acl::validate_private(&self.file, &metadata)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            bounded_linux::validate_private(&self.file, &metadata)
+        }
+    }
+
     pub(crate) fn validate_namespace_control(&self) -> io::Result<()> {
         self.validate_permission_profile()?;
         let metadata = self.file.metadata()?;
@@ -141,6 +181,23 @@ impl Directory {
         Ok(())
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn mkdir_fresh_private(&self, name: &OsStr) -> io::Result<()> {
+        unix_fs::mkdirat(&self.file, name, Mode::from_raw_mode(0o700))?;
+        Ok(())
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn normalize_fresh_empty(&self) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            bounded_acl::normalize_fresh_empty(&self.file)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            bounded_linux::normalize_fresh_empty(&self.file)
+        }
+    }
+
     pub(crate) fn open_directory(&self, name: &OsStr) -> io::Result<Self> {
         validate_component(name)?;
         let fd = unix_fs::openat(
@@ -187,6 +244,9 @@ impl Directory {
     }
 
     pub(crate) fn open_read(&self, name: &OsStr, privacy: Privacy) -> io::Result<File> {
+        self.open_read_policy(name, FilePolicy::Ordinary(privacy))
+    }
+    pub(crate) fn open_read_policy(&self, name: &OsStr, privacy: FilePolicy) -> io::Result<File> {
         validate_component(name)?;
         let fd = unix_fs::openat(
             &self.file,
@@ -197,7 +257,7 @@ impl Directory {
         let file = File::from(fd);
         let metadata = file.metadata()?;
         if !metadata.file_type().is_file() {
-            return Err(io::Error::new(
+            return Err(privacy.error(
                 io::ErrorKind::InvalidData,
                 "storage child is not a regular file",
             ));
@@ -218,6 +278,15 @@ impl Directory {
         create: bool,
         append: bool,
     ) -> io::Result<File> {
+        self.open_writable_policy(name, FilePolicy::Ordinary(privacy), create, append)
+    }
+    pub(crate) fn open_writable_policy(
+        &self,
+        name: &OsStr,
+        privacy: FilePolicy,
+        create: bool,
+        append: bool,
+    ) -> io::Result<File> {
         validate_component(name)?;
         let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
         if create {
@@ -234,7 +303,7 @@ impl Directory {
         )?);
         let metadata = file.metadata()?;
         if !metadata.is_file() {
-            return Err(io::Error::new(
+            return Err(privacy.error(
                 io::ErrorKind::InvalidData,
                 "storage child is not a regular file",
             ));
@@ -278,15 +347,19 @@ impl Stage {
     fn create(
         parent: Directory,
         target: &OsStr,
-        privacy: Privacy,
+        privacy: FilePolicy,
         exact_mode: Option<u32>,
     ) -> io::Result<Self> {
         validate_component(target)?;
-        let final_mode = exact_mode.or_else(|| (privacy == Privacy::OwnerOnly).then_some(0o600));
+        let final_mode = exact_mode.or_else(|| (privacy.is_private()).then_some(0o600));
         let create_mode = final_mode.map_or(0o666, |mode| mode & 0o600);
         for _ in 0..32 {
             let sequence = STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let name = stage_name(target, sequence);
+            let name = match privacy {
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                FilePolicy::BoundedOwner => bounded_stage_name(target, sequence),
+                _ => stage_name(target, sequence),
+            };
             match unix_fs::openat(
                 &parent.file,
                 &name,
@@ -317,7 +390,7 @@ impl Stage {
                 Err(error) => return Err(error.into()),
             }
         }
-        Err(io::Error::new(
+        Err(privacy.error(
             io::ErrorKind::AlreadyExists,
             "could not allocate a unique atomic-write staging file",
         ))
@@ -389,6 +462,23 @@ pub(crate) fn publish(
     bytes: &[u8],
     mode: PublishMode,
     privacy: Privacy,
+    exact_mode: Option<u32>,
+) -> Result<(), PublicationError> {
+    publish_policy(
+        directory,
+        target,
+        bytes,
+        mode,
+        FilePolicy::Ordinary(privacy),
+        exact_mode,
+    )
+}
+pub(crate) fn publish_policy(
+    directory: &Directory,
+    target: &OsStr,
+    bytes: &[u8],
+    mode: PublishMode,
+    privacy: FilePolicy,
     exact_mode: Option<u32>,
 ) -> Result<(), PublicationError> {
     validate_component(target).map_err(not_published)?;
@@ -486,12 +576,21 @@ pub(crate) fn validate_component(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_privacy(file: &File, metadata: &Metadata, privacy: Privacy) -> io::Result<()> {
-    if privacy == Privacy::OwnerOnly {
-        validate_private_security(file, metadata)?;
+fn validate_privacy(file: &File, metadata: &Metadata, privacy: FilePolicy) -> io::Result<()> {
+    if privacy.is_private() {
+        match privacy {
+            FilePolicy::Ordinary(_) => validate_private_security(file, metadata)?,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            FilePolicy::BoundedOwner => {
+                #[cfg(target_os = "macos")]
+                bounded_acl::validate_private(file, metadata)?;
+                #[cfg(target_os = "linux")]
+                bounded_linux::validate_private(file, metadata)?;
+            }
+        }
         // Files must have exactly one name. Directories have a separate policy.
         if metadata.nlink() != 1 {
-            return Err(io::Error::new(
+            return Err(privacy.error(
                 io::ErrorKind::PermissionDenied,
                 "owner-only file has additional hard links",
             ));
@@ -501,6 +600,12 @@ fn validate_privacy(file: &File, metadata: &Metadata, privacy: Privacy) -> io::R
 }
 
 fn validate_private_security(_file: &File, metadata: &Metadata) -> io::Result<()> {
+    validate_owner_mode(metadata)?;
+    #[cfg(target_os = "macos")]
+    macos_acl::validate(_file)?;
+    Ok(())
+}
+fn validate_owner_mode(metadata: &Metadata) -> io::Result<()> {
     if metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -513,8 +618,6 @@ fn validate_private_security(_file: &File, metadata: &Metadata) -> io::Result<()
             "owner-only object grants group or other permissions",
         ));
     }
-    #[cfg(target_os = "macos")]
-    macos_acl::validate(_file)?;
     Ok(())
 }
 
@@ -706,4 +809,31 @@ mod tests {
         let target = OsStr::new("state.automerge");
         assert_ne!(stage_name(target, 1), stage_name(target, 2));
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn bounded_stage_name(target: &OsStr, sequence: u64) -> OsString {
+    fn decimal(mut n: u64, target: &mut Vec<u8>) {
+        let mut digits = [0u8; 20];
+        let mut first = 20;
+        loop {
+            first -= 1;
+            digits[first] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        target.extend_from_slice(&digits[first..]);
+    }
+    // '.', target, '.', pid<=10, '.', sequence<=20, '.tmp': target+37.
+    let mut bytes = Vec::with_capacity(target.as_bytes().len() + 37);
+    bytes.push(b'.');
+    bytes.extend_from_slice(target.as_bytes());
+    bytes.push(b'.');
+    decimal(u64::from(std::process::id()), &mut bytes);
+    bytes.push(b'.');
+    decimal(sequence, &mut bytes);
+    bytes.extend_from_slice(b".tmp");
+    OsString::from_vec(bytes)
 }

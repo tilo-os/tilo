@@ -110,7 +110,97 @@ type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist
 type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
+/// Prepared native construction owns its one admitted SDK worker.
+/// No caller-supplied mode or authority can construct this value.
+pub struct PreparedNativeLaunch<'a> {
+    spec: LaunchSpec,
+    args: &'a LaunchArgs,
+    scope: crate::wake::WakeScope,
+    construction: crate::collaboration::native_initial::NativeConstruction,
+    _wake_entry: crate::wake::WakeScopeGuard,
+}
+impl<'a> PreparedNativeLaunch<'a> {
+    #[cfg(test)]
+    fn with_manager(
+        spec: &LaunchSpec,
+        args: &'a LaunchArgs,
+        manager: crate::collaboration::CollaborationManager,
+    ) -> Result<Self, LaunchError> {
+        Self::with_scope_manager(spec, args, crate::wake::WakeScope::new(), manager)
+    }
+    fn with_scope_manager(
+        spec: &LaunchSpec,
+        args: &'a LaunchArgs,
+        scope: crate::wake::WakeScope,
+        manager: crate::collaboration::CollaborationManager,
+    ) -> Result<Self, LaunchError> {
+        let wake_entry = scope.enter();
+        let construction = crate::collaboration::native_initial::NativeConstruction::enter(manager)
+            .map_err(LaunchError::Operation)?;
+        Ok(Self {
+            spec: spec.clone(),
+            args,
+            scope,
+            construction,
+            _wake_entry: wake_entry,
+        })
+    }
+    pub fn build_root(
+        self,
+        factory: impl FnOnce() -> Result<Box<dyn Widget>, LaunchError>,
+    ) -> Result<App, LaunchError> {
+        self.build_root_inner(|| factory().map(|root| (root, None)))
+    }
+    /// Select the immutable History declaration derived from this exact root.
+    /// The factory still runs only after the actual initial history is ready.
+    pub fn build_root_with_history(
+        self,
+        factory: impl FnOnce() -> Result<
+            (
+                Box<dyn Widget>,
+                &'static crate::history_mode::HistoryDefinition,
+            ),
+            LaunchError,
+        >,
+    ) -> Result<App, LaunchError> {
+        self.build_root_inner(|| factory().map(|(root, history)| (root, Some(history))))
+    }
+    fn build_root_inner(
+        mut self,
+        factory: impl FnOnce() -> Result<
+            (
+                Box<dyn Widget>,
+                Option<&'static crate::history_mode::HistoryDefinition>,
+            ),
+            LaunchError,
+        >,
+    ) -> Result<App, LaunchError> {
+        self.construction.check().map_err(LaunchError::Operation)?;
+        let (state, autosave) = self.spec.open_state_with_args.map_or_else(
+            || (self.spec.open_state)(self.spec.app_id),
+            |open| open(self.spec.app_id, self.args),
+        );
+        self.construction
+            .state_opened()
+            .map_err(LaunchError::Operation)?;
+        let (root, history) = factory()?;
+        self.construction.check().map_err(LaunchError::Operation)?;
+        if let Some(history) = history {
+            self.spec.history_definition = Some(history);
+        }
+        finalize_native_app_with_constructor(
+            &self.spec,
+            self.args,
+            self.scope,
+            LegacyLaunchInputs::new(state, root, autosave),
+            crate::ControlDomain::outer(),
+            App::from_scoped_parts_with_custody,
+        )
+    }
+}
+
 /// Configuration for an app using the standard lifecycle.
+#[derive(Clone)]
 pub struct LaunchSpec {
     history_definition: Option<&'static crate::history_mode::HistoryDefinition>,
     history_app_global_storage: bool,
@@ -144,6 +234,18 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
+    /// Establish the actual SDK mode before a native root or state opener runs.
+    pub fn prepare_native<'a>(
+        &self,
+        args: &'a LaunchArgs,
+    ) -> Result<PreparedNativeLaunch<'a>, LaunchError> {
+        validate_spec_args(args, self)?;
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let manager = native_launch_manager(self, args)?;
+        PreparedNativeLaunch::with_scope_manager(self, args, scope, manager)
+    }
+
     /// Managed runners require an explicit History policy, including external
     /// reasons. Canonical components retain their actual record custody.
     #[must_use]
@@ -690,12 +792,20 @@ fn run_with_args_with_attachment(
         == Some(std::ffi::OsStr::new(spec.app_id))
         && runtime_portal::service_fd("collab").is_some()
         && runtime_portal::service_fd("identity").is_some();
-    if !resumed_live
-        && let Some(handler) = spec.command_handler
-        && handler(&args)?
-    {
-        return Ok(());
+    if !resumed_live && let Some(handler) = spec.command_handler {
+        // The parsed command entrypoint selects local construction only for
+        // this invocation; a handler falling through cannot qualify live launch.
+        let selected_local = selected_local_construction()?;
+        let handled = handler(&args)?;
+        drop(selected_local);
+        if handled {
+            return Ok(());
+        }
     }
+    let _selected_local =
+        (args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit)
+            .then(selected_local_construction)
+            .transpose()?;
 
     if let Some(out) = &args.shots {
         if let Some(handler) = spec.shot_handler {
@@ -852,10 +962,45 @@ fn dispatch_definition_with_native(
         bool,
     ) -> Result<App, LaunchError>,
 ) -> Result<DefinitionDispatch, LaunchError> {
+    dispatch_definition_with_manager(spec, args, native, || native_launch_manager(spec, args))
+}
+
+fn dispatch_definition_with_manager(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    native: impl FnOnce(
+        crate::application::AppComponent,
+        crate::application::ComponentRunnerInputs,
+        bool,
+    ) -> Result<App, LaunchError>,
+    manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+) -> Result<DefinitionDispatch, LaunchError> {
     validate_spec_args(args, spec)?;
     if spec.legacy_setup_override {
         return Err(LaunchError::IncompatibleComponentSetup);
     }
+    let _selected_local = (args.headless.is_some()
+        || args.shots.is_some()
+        || args.responsive_matrix.is_some()
+        || args.native_audit)
+        .then(selected_local_construction)
+        .transpose()?;
+    let live_native = spec.component_native_services
+        && args.headless.is_none()
+        && args.shots.is_none()
+        && args.responsive_matrix.is_none()
+        && !args.native_audit;
+    let scope = live_native.then(crate::wake::WakeScope::new);
+    let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
+    let construction = scope
+        .map(|scope| {
+            crate::collaboration::native_initial::NativeConstruction::enter_component(
+                manager()?,
+                scope,
+            )
+            .map_err(LaunchError::Operation)
+        })
+        .transpose()?;
     let definition = spec
         .definition
         .ok_or(LaunchError::IncompatibleComponentSetup)?;
@@ -872,6 +1017,11 @@ fn dispatch_definition_with_native(
     };
     if let Some(scale) = args.text_scale {
         prepared.runner_inputs.text_renderer.set_text_scale(scale);
+    }
+    if let Some(construction) = &construction {
+        construction
+            .bind_component(&prepared.context.callback_binding())
+            .map_err(LaunchError::Operation)?;
     }
     let component =
         spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)?;
@@ -906,11 +1056,15 @@ fn dispatch_definition_with_native(
             DefinitionDispatch::Rendered(driver)
         });
     }
-    let app = native(
-        component,
-        prepared.runner_inputs,
-        spec.component_native_services,
-    )?;
+    let app = crate::collaboration::native_initial::transfer_to_app(|| {
+        native(
+            component,
+            prepared.runner_inputs,
+            spec.component_native_services,
+        )
+    })
+    .map_err(LaunchError::Operation)??;
+    crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
@@ -958,7 +1112,14 @@ fn prepare_legacy_launch(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<PreparedLegacyLaunch, LaunchError> {
-    let scope = crate::wake::WakeScope::new();
+    prepare_legacy_launch_in_scope(spec, args, crate::wake::WakeScope::new())
+}
+
+fn prepare_legacy_launch_in_scope(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    scope: crate::wake::WakeScope,
+) -> Result<PreparedLegacyLaunch, LaunchError> {
     let _entry = scope.enter();
     let inputs = if let Some(prepare) = spec.legacy_preparer {
         prepare(args)?
@@ -973,6 +1134,7 @@ fn prepare_legacy_launch(
             || (spec.open_state)(spec.app_id),
             |open| open(spec.app_id, args),
         );
+        crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
         let index = state.doc.clone();
         let root = if args.headless.is_some() && args.scenario.is_some() {
             spec.screenshot_root(args)?
@@ -993,6 +1155,14 @@ fn prepare_legacy_launch(
     Ok(PreparedLegacyLaunch { scope, inputs })
 }
 
+fn selected_local_construction()
+-> Result<crate::collaboration::native_initial::NativeConstruction, LaunchError> {
+    crate::collaboration::native_initial::NativeConstruction::enter(
+        crate::collaboration::CollaborationManager::disabled(),
+    )
+    .map_err(LaunchError::Operation)
+}
+
 /// Exact production branch, testable without process::exit or a native window.
 fn dispatch_legacy_headless(
     spec: &LaunchSpec,
@@ -1000,6 +1170,7 @@ fn dispatch_legacy_headless(
     headless: &headless::Spec,
 ) -> Result<i32, LaunchError> {
     validate_spec_args(args, spec)?;
+    let _selected_local = selected_local_construction()?;
     tilo_startup_metrics::mark("headless-setup-start");
     let prepared = prepare_legacy_launch(spec, args).inspect_err(|_| {
         tilo_startup_metrics::mark("headless-setup-failed");
@@ -1051,12 +1222,41 @@ fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchE
     build_native_app_with_constructor(spec, args, App::from_scoped_parts_with_custody)
 }
 
+fn native_launch_manager(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
+    crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
+    if !(spec.runtime_attachment)(args) {
+        return Ok(crate::collaboration::CollaborationManager::disabled());
+    }
+    crate::collaboration::CollaborationManager::for_native_launch().map_err(LaunchError::Operation)
+}
+
 fn build_native_app_with_constructor(
     spec: &LaunchSpec,
     args: &LaunchArgs,
     construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
 ) -> Result<App, LaunchError> {
-    let prepared = prepare_legacy_launch(spec, args)?;
+    let scope = crate::wake::WakeScope::new();
+    let _entry = scope.enter();
+    let manager = native_launch_manager(spec, args)?;
+    build_native_app_with_manager(spec, args, scope, manager, construct)
+}
+
+fn build_native_app_with_manager(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    scope: crate::wake::WakeScope,
+    manager: crate::collaboration::CollaborationManager,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
+) -> Result<App, LaunchError> {
+    let construction = crate::collaboration::native_initial::NativeConstruction::enter(manager)
+        .map_err(LaunchError::Operation)?;
+    let prepared = prepare_legacy_launch_in_scope(spec, args, scope)?;
+    construction
+        .state_opened()
+        .map_err(LaunchError::Operation)?;
     finalize_native_app_with_constructor(
         spec,
         args,
@@ -1075,16 +1275,34 @@ fn build_prepared_root_with_constructor(
     construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
 ) -> Result<App, LaunchError> {
     let _entry = scope.enter();
+    let manager = native_launch_manager(spec, args)?;
+    build_prepared_root_with_manager(spec, args, scope, root, manager, construct)
+}
+
+fn build_prepared_root_with_manager(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    scope: crate::wake::WakeScope,
+    root: Box<dyn Widget>,
+    manager: crate::collaboration::CollaborationManager,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
+) -> Result<App, LaunchError> {
+    let _entry = scope.enter();
+    let construction =
+        crate::collaboration::native_initial::NativeConstruction::enter_prebuilt(manager)
+            .map_err(LaunchError::Operation)?;
     let (state, autosave) = spec.open_state_with_args.map_or_else(
         || (spec.open_state)(spec.app_id),
         |open| open(spec.app_id, args),
     );
-    let inputs = LegacyLaunchInputs::new(state, root, autosave);
+    construction
+        .state_opened()
+        .map_err(LaunchError::Operation)?;
     finalize_native_app_with_constructor(
         spec,
         args,
         scope,
-        inputs,
+        LegacyLaunchInputs::new(state, root, autosave),
         crate::ControlDomain::outer(),
         construct,
     )
@@ -1112,9 +1330,12 @@ fn finalize_native_app_with_constructor(
     let root_history = root
         .history_registration()
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let mut app = construct(scope, state, root, domain)
-        .with_autosave(autosave)
-        .with_legacy_persistence(persistence);
+    let mut app = crate::collaboration::native_initial::transfer_to_app(|| {
+        construct(scope, state, root, domain)
+    })
+    .map_err(LaunchError::Operation)?
+    .with_autosave(autosave)
+    .with_legacy_persistence(persistence);
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }
@@ -1148,6 +1369,7 @@ fn finalize_native_app_with_constructor(
         app.install_app_state_history(history)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
+    crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(app)
 }
 
@@ -1486,6 +1708,980 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_reads_before_custom_opener_and_factory_on_one_worker() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let mut history = automerge::AutoCommit::new();
+        history
+            .put(automerge::ROOT, "initial_history", "real committed content")
+            .unwrap();
+        history.commit();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        fn custom_open(app: &'static str) -> (State, crate::persist::Autosave) {
+            let (mut state, saver) = crate::persist::open(app);
+            assert_eq!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "initial_history")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("real committed content"),
+                "custom default initializer must receive actual history first"
+            );
+            state
+                .doc
+                .put(automerge::ROOT, "custom_default", "after history")
+                .unwrap();
+            state.doc.commit();
+            (state, saver)
+        }
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(custom_open);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut factory_called = false;
+        let app = PreparedNativeLaunch::with_manager(&spec, &args, manager)
+            .unwrap()
+            .build_root(|| {
+                factory_called = true;
+                Ok(dummy_root())
+            })
+            .unwrap();
+        assert!(factory_called);
+        assert!(
+            app.collaboration_is_connected(),
+            "App must own the prepared worker"
+        );
+        assert_eq!(
+            joined(),
+            1,
+            "prepare and App must transfer the same inherited transport"
+        );
+        drop(app);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_retains_record_bridge_before_record_defaults() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("note"),
+        );
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &want.id,
+            &want.kind,
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history
+            .put(automerge::ROOT, "initial_record", "original graph")
+            .unwrap();
+        history.commit();
+        let expected = history.get_heads();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut retained = None;
+        let app = PreparedNativeLaunch::with_manager(&spec, &args, manager)
+            .unwrap()
+            .build_root(|| {
+                retained = Some(crate::record::RecordStore::open("so.tilo.launch-fixture"));
+                Ok(dummy_root())
+            })
+            .unwrap();
+        let records = retained.unwrap();
+        // The construction TLS has ended. The actual retained store still
+        // borrows the App's one worker, before record initialization can run.
+        assert!(records.open_record(&want));
+        records
+            .read_checked(&want.id, |doc| {
+                assert_eq!(
+                    doc.get(automerge::ROOT, "initial_record")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_str(),
+                    Some("original graph")
+                );
+                for head in &expected {
+                    assert!(doc.get_change_by_hash(head).is_some());
+                }
+            })
+            .unwrap();
+        assert_eq!(joined(), 2, "primary and exact record share one worker");
+        drop(app);
+        let other = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            want.kind.clone(),
+        );
+        assert!(
+            !records.open_record(&other),
+            "closed actual worker cannot fall back to empty record defaults"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_persists_merged_history_without_a_local_edit() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let mut history = automerge::AutoCommit::new();
+        history
+            .put(
+                automerge::ROOT,
+                "initial_only",
+                "must survive local restart",
+            )
+            .unwrap();
+        history.commit();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let (mut state, mut saver) = crate::persist::open("so.tilo.launch-fixture");
+        saver.request(&mut state.doc);
+        saver.flush();
+        assert!(saver.last_error().is_none());
+        drop(saver);
+        drop(construction);
+        let mut store =
+            crate::persist::DocStore::open_room("so.tilo.launch-fixture", &room.to_string())
+                .unwrap();
+        let doc = store
+            .load_complete()
+            .unwrap()
+            .expect("initial capture must reach local persistence");
+        assert_eq!(
+            doc.get(automerge::ROOT, "initial_only")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("must survive local restart")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_standard_builder_reads_before_legacy_callbacks() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let mut history = automerge::AutoCommit::new();
+        history
+            .put(automerge::ROOT, "standard_initial", "before callback")
+            .unwrap();
+        history.commit();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        fn prepare(_: &LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError> {
+            let records = crate::record::RecordSet::open("so.tilo.launch-fixture");
+            let (state, saver) =
+                crate::persist::open_room("so.tilo.launch-fixture", records.home());
+            assert_eq!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "standard_initial")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("before callback")
+            );
+            Ok(LegacyLaunchInputs::new(state, dummy_root(), saver))
+        }
+        let spec =
+            LaunchSpec::new("so.tilo.launch-fixture", dummy_root).prepare_legacy_with_args(prepare);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let app = build_native_app_with_manager(
+            &spec,
+            &args,
+            crate::wake::WakeScope::new(),
+            manager,
+            App::from_scoped_parts_with_custody,
+        )
+        .unwrap();
+        assert!(app.collaboration_is_connected());
+        assert_eq!(joined(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_canonical_cache_reads_existing_history_before_defaults() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("note"),
+        );
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &want.id,
+            &want.kind,
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history
+            .put(
+                automerge::ROOT,
+                "canonical_history",
+                "already admitted graph",
+            )
+            .unwrap();
+        history.commit();
+        let heads = history.get_heads();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let mut owners = crate::record::RecordOwners::new(
+            environment._directory.path().join("native-canonical"),
+        );
+        let records = owners
+            .open("so.tilo.launch-fixture", &room.to_string())
+            .unwrap();
+        records
+            .open_existing_record_checked(&want)
+            .expect("admitted remote history may populate missing local cache");
+        records
+            .read_checked(&want.id, |doc| {
+                assert_eq!(
+                    doc.get(automerge::ROOT, "canonical_history")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_str(),
+                    Some("already admitted graph")
+                );
+                for head in &heads {
+                    assert!(doc.get_change_by_hash(head).is_some());
+                }
+            })
+            .unwrap();
+        assert_eq!(joined(), 2);
+        drop(construction);
+        let other = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            want.kind.clone(),
+        );
+        assert!(records.open_existing_record_checked(&other).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_rejects_opener_that_bypasses_required_read() {
+        use automerge::transaction::Transactable;
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        let mut history = automerge::AutoCommit::new();
+        history.put(automerge::ROOT, "existing", "history").unwrap();
+        history.commit();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(|_| {
+            (
+                State::new(),
+                crate::persist::Autosave::disabled("bypassing custom opener"),
+            )
+        });
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut factory_called = false;
+        let result = PreparedNativeLaunch::with_manager(&spec, &args, manager)
+            .unwrap()
+            .build_root(|| {
+                factory_called = true;
+                Ok(dummy_root())
+            });
+        assert!(
+            result.is_err(),
+            "actual Required read cannot be bypassed by a custom empty opener"
+        );
+        assert!(
+            !factory_called,
+            "defaults must not be constructed after bypass"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_rejects_standard_bypass_before_factory() {
+        use automerge::transaction::Transactable;
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        fn root() -> Box<dyn Widget> {
+            CALLED.store(true, Ordering::SeqCst);
+            dummy_root()
+        }
+        let _environment = LaunchFixtureEnv::new();
+        CALLED.store(false, Ordering::SeqCst);
+        let room = uuid::Uuid::new_v4();
+        let mut history = automerge::AutoCommit::new();
+        history.put(automerge::ROOT, "existing", "history").unwrap();
+        history.commit();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", root)
+            .open_state(|_| (State::new(), crate::persist::Autosave::disabled("bypass")));
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let result = build_native_app_with_manager(
+            &spec,
+            &args,
+            crate::wake::WakeScope::new(),
+            manager,
+            App::from_scoped_parts_with_custody,
+        );
+        assert!(result.is_err());
+        assert!(
+            !CALLED.load(Ordering::SeqCst),
+            "standard live root must not run after an unhydrated custom opener"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_rejects_already_built_root_before_storage() {
+        use automerge::transaction::Transactable;
+        static OPENED: AtomicBool = AtomicBool::new(false);
+        fn open(_: &'static str) -> (State, crate::persist::Autosave) {
+            OPENED.store(true, Ordering::SeqCst);
+            (
+                State::new(),
+                crate::persist::Autosave::disabled("already constructed root"),
+            )
+        }
+        let _environment = LaunchFixtureEnv::new();
+        OPENED.store(false, Ordering::SeqCst);
+        let room = uuid::Uuid::new_v4();
+        let mut history = automerge::AutoCommit::new();
+        history.put(automerge::ROOT, "existing", "history").unwrap();
+        history.commit();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(open);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let result = build_prepared_root_with_manager(
+            &spec,
+            &args,
+            crate::wake::WakeScope::new(),
+            dummy_root(),
+            manager,
+            App::from_scoped_parts_with_custody,
+        );
+        assert!(
+            result.is_err(),
+            "already-built roots cannot be retrospectively authorized as hydrated construction"
+        );
+        assert!(!OPENED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_nested_app_cannot_take_prepared_worker() {
+        use automerge::transaction::Transactable;
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let mut history = automerge::AutoCommit::new();
+        history.put(automerge::ROOT, "existing", "history").unwrap();
+        history.commit();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut child = None;
+        let result = PreparedNativeLaunch::with_manager(&spec, &args, manager)
+            .unwrap()
+            .build_root(|| {
+                let nested = App::from_scoped_parts_with_custody(
+                    crate::wake::WakeScope::new(),
+                    State::new(),
+                    dummy_root(),
+                    crate::ControlDomain::outer(),
+                );
+                assert!(
+                    !nested.collaboration_is_connected(),
+                    "factory-created child must not acquire the prepared primary worker"
+                );
+                child = Some(nested);
+                Ok(dummy_root())
+            });
+        assert!(
+            result.is_err(),
+            "illegal transfer must prevent outer launch instead of creating another worker"
+        );
+        assert_eq!(joined(), 1);
+        drop(child);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_record_entry_legacy_cache_uses_actual_history() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let _environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("note"),
+        );
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &want.id,
+            &want.kind,
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history
+            .put(automerge::ROOT, "retained", "original history")
+            .unwrap();
+        history.commit();
+        let heads = history.get_heads();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let _construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let records = crate::record::RecordStore::open("so.tilo.launch-fixture");
+        records
+            .open_existing_record_checked(&want)
+            .expect("missing local cache is populated from the actual Existing read");
+        records
+            .read_checked(&want.id, |doc| {
+                assert_eq!(
+                    doc.get(automerge::ROOT, "retained")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_str(),
+                    Some("original history")
+                );
+                for head in heads {
+                    assert!(doc.get_change_by_hash(&head).is_some());
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_record_entry_primary_keeps_admitted_route() {
+        use automerge::transaction::Transactable;
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let want = crate::record::RecordCheckout::package_primary(crate::record::RecordKind::new(
+            "primary",
+        ));
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &want.id,
+            &want.kind,
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history.put(automerge::ROOT, "retained", "primary").unwrap();
+        history.commit();
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let mut owners =
+            crate::record::RecordOwners::new(environment._directory.path().join("primary"));
+        let records = owners
+            .open("so.tilo.launch-fixture", &room.to_string())
+            .unwrap();
+        records.open_existing_record_checked(&want).unwrap();
+        assert_eq!(
+            joined(),
+            1,
+            "package-primary is a local custody key, never a second wire route"
+        );
+        construction
+            .state_opened()
+            .expect("canonical primary consumed the initial read");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_component_host_reads_before_factory_on_same_worker() {
+        use crate::application::{
+            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        };
+        use crate::application_test_support as probe;
+        static RECHECK: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
+            std::sync::Mutex::new(None);
+        use automerge::{ReadDoc, transaction::Transactable};
+        fn prepare(
+            definition: &crate::application::ApplicationDefinition,
+            args: &LaunchArgs,
+        ) -> Result<PreparedComponentInputs, LaunchError> {
+            let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
+            let room = args.value("--fixture-room").unwrap();
+            let id =
+                crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
+            let want = crate::record::RecordCheckout::new(id, definition.record_kind.clone());
+            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let records = owners
+                .open(definition.app_id, room)
+                .map_err(LaunchError::Record)?;
+            let views = std::rc::Rc::new(
+                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
+                    .map_err(LaunchError::Restore)?,
+            );
+            let target = LaunchTarget::Record {
+                checkout: want,
+                reveal: None,
+            };
+            let context = HostContext::prepare(
+                definition,
+                records,
+                views,
+                probe::DEVICE.into(),
+                11,
+                probe::runner_permissions(),
+                probe::author(),
+                probe::provenance(),
+                &target,
+            )?;
+            context
+                .read_record(|doc| {
+                    assert_eq!(
+                        doc.get(automerge::ROOT, "body")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .to_str(),
+                        Some("existing before component factory")
+                    )
+                })
+                .unwrap();
+            let runner_inputs = probe::runner_inputs();
+            if let Some(release) = RECHECK.lock().unwrap().take() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let _ = release.send(());
+                });
+            }
+            Ok(PreparedComponentInputs {
+                context,
+                target,
+                restore: RestoreInput::None,
+                runner_inputs,
+            })
+        }
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        let id = crate::record::RecordId::minted();
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &id,
+            &crate::record::RecordKind::new("probe"),
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history
+            .put(automerge::ROOT, "body", "existing before component factory")
+            .unwrap();
+        history.commit();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *RECHECK.lock().unwrap() = Some(release);
+        let (manager, joined) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_gated_for_test(
+                probe::APP,
+                room,
+                history.save(),
+                gate,
+            );
+        let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
+            .component_host(prepare)
+            .native_services()
+            .allowed_live_options(&["--fixture-root", "--fixture-room", "--fixture-record"]);
+        let raw = vec![
+            "app".into(),
+            "--fixture-root".into(),
+            environment
+                ._directory
+                .path()
+                .join("component")
+                .display()
+                .to_string(),
+            "--fixture-room".into(),
+            room.to_string(),
+            "--fixture-record".into(),
+            id.as_str().into(),
+        ];
+        let args = parse_args_extended(
+            &raw,
+            &[],
+            &[],
+            &[],
+            &["--fixture-root", "--fixture-room", "--fixture-record"],
+            0,
+        )
+        .unwrap();
+        let mut wake = None;
+        let result = dispatch_definition_with_manager(
+            &spec,
+            &args,
+            |component, inputs, native| {
+                assert!(native);
+                App::from_component_with_native_services(component, inputs)
+            },
+            || {
+                wake = Some(crate::wake::WakeHandle::new());
+                Ok(manager)
+            },
+        )
+        .unwrap();
+        let DefinitionDispatch::Native(app) = result else {
+            panic!("native component expected")
+        };
+        assert!(app.collaboration_is_connected());
+        assert_eq!(
+            joined(),
+            2,
+            "primary discovery and exact record share one worker"
+        );
+        assert!(
+            wake.as_ref().unwrap().is_active(),
+            "same worker wake scope transfers into App"
+        );
+        drop(app);
+        assert!(!wake.as_ref().unwrap().is_active());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_creation_requires_governor_before_reservation() {
+        use automerge::transaction::Transactable;
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("note"),
+        );
+        let mut history = automerge::AutoCommit::new();
+        history.put(automerge::ROOT, "primary", "existing").unwrap();
+        history.commit();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let _construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let root = environment._directory.path().join("native-new");
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners
+            .open("so.tilo.launch-fixture", &room.to_string())
+            .unwrap();
+        let directory = app_state::DocStore::room_record_dir_at(
+            &root,
+            "so.tilo.launch-fixture",
+            &room.to_string(),
+            &want.id.storage_key(),
+        )
+        .unwrap();
+        assert!(!directory.exists());
+        assert!(
+            records.reserve_record(&want).is_err(),
+            "Required native cannot mint a canonical writer from local absence"
+        );
+        assert!(
+            !directory.exists(),
+            "no default graph, writer, or custody file before governor creation admission"
+        );
+        assert!(!records.is_ready(&want.id));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_file_record_retains_required_bridge_without_writer() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let environment = LaunchFixtureEnv::new();
+        let room = uuid::Uuid::new_v4();
+        unsafe {
+            std::env::set_var("TILO_WORKSPACE_ID", room.to_string());
+        }
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::for_file(&environment._directory.path().join("selected.md")),
+            crate::record::RecordKind::new("document"),
+        );
+        let mut history = automerge::AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut history,
+            &want.id,
+            &want.kind,
+            &room.to_string(),
+            Some(&room.to_string())
+        ));
+        history
+            .put(automerge::ROOT, "retained", "file history")
+            .unwrap();
+        history.commit();
+        let heads = history.get_heads();
+        let (manager, _) =
+            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
+                "so.tilo.launch-fixture",
+                room,
+                history.save(),
+            );
+        let construction =
+            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
+        let reader = records.file_history_reader().unwrap();
+        assert!(
+            reader.require_local_creation().is_err(),
+            "Required file creation needs governor admission"
+        );
+        let capture = reader
+            .read(&want)
+            .unwrap()
+            .expect("actual Required Existing history");
+        let mut installed = automerge::AutoCommit::new();
+        capture.install_into(&mut installed).unwrap();
+        assert_eq!(
+            installed
+                .get(automerge::ROOT, "retained")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("file history")
+        );
+        for head in heads {
+            assert!(installed.get_change_by_hash(&head).is_some());
+        }
+        let local_cache = app_state::DocStore::legacy_record_document_path(
+            "so.tilo.launch-fixture",
+            &want.id.storage_key(),
+        )
+        .unwrap();
+        assert!(
+            !local_cache.exists(),
+            "file-owned history must not create a second canonical writer"
+        );
+        drop(construction);
+        assert!(
+            reader.read(&want).is_err(),
+            "closed Required worker must never become local None"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_file_record_local_mode_is_explicit() {
+        let environment = LaunchFixtureEnv::new();
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::for_file(&environment._directory.path().join("local.md")),
+            crate::record::RecordKind::new("document"),
+        );
+        let records = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").unwrap();
+        assert!(records.initial_file_history(&want).unwrap().is_none());
+        records
+            .file_history_reader()
+            .unwrap()
+            .require_local_creation()
+            .unwrap();
+    }
+
+    #[test]
+    fn native_initial_launch_file_record_unresolved_set_is_not_local() {
+        let want = crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            crate::record::RecordKind::new("document"),
+        );
+        assert!(
+            crate::record::RecordSet::in_memory()
+                .initial_file_history(&want)
+                .is_err(),
+            "missing private mode selection cannot authorize local genesis"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_explicit_headless_selects_local_despite_inherited_fd() {
+        use std::os::fd::AsRawFd;
+        let fixture = LaunchFixtureEnv::new();
+        let (socket, _other) = std::os::unix::net::UnixStream::pair().unwrap();
+        unsafe {
+            std::env::set_var("TILO_SVC_COLLAB_FD", socket.as_raw_fd().to_string());
+        }
+        fn open(app: &'static str) -> (State, crate::persist::Autosave) {
+            let files = crate::record::RecordSet::for_local_files(app)
+                .expect("parser-selected local headless scope");
+            files
+                .file_history_reader()
+                .unwrap()
+                .require_local_creation()
+                .unwrap();
+            crate::persist::open(app)
+        }
+        assert!(crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").is_err());
+        let args =
+            headless_fixture_args(None, &fixture._directory.path().join("headless-local.json"));
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(open);
+        assert_eq!(
+            dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
+            0
+        );
+        assert!(
+            crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").is_err(),
+            "headless choice cannot leak into a later native launch"
+        );
+    }
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_explicit_command_selects_local_despite_inherited_fd() {
+        use std::os::fd::AsRawFd;
+        let _fixture = LaunchFixtureEnv::new();
+        let (socket, _other) = std::os::unix::net::UnixStream::pair().unwrap();
+        unsafe {
+            std::env::set_var("TILO_SVC_COLLAB_FD", socket.as_raw_fd().to_string());
+        }
+        fn command(_: &LaunchArgs) -> Result<bool, LaunchError> {
+            let files = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture")
+                .map_err(LaunchError::Operation)?;
+            files
+                .file_history_reader()
+                .unwrap()
+                .require_local_creation()
+                .unwrap();
+            Ok(true)
+        }
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).command_handler(command);
+        run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
+            panic!("command must not attach")
+        })
+        .unwrap();
+        assert!(crate::record::RecordSet::for_local_files("so.tilo.launch-fixture").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn native_initial_launch_missing_configured_service_never_selects_local() {
+        let _environment = LaunchFixtureEnv::new();
+        let old = std::env::var_os("TILO_SVC_COLLAB_FD");
+        unsafe {
+            std::env::set_var("TILO_SVC_COLLAB_FD", "-1");
+        }
+        let manager = crate::collaboration::CollaborationManager::for_native_launch();
+        let files = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture");
+        unsafe {
+            match old {
+                Some(value) => std::env::set_var("TILO_SVC_COLLAB_FD", value),
+                None => std::env::remove_var("TILO_SVC_COLLAB_FD"),
+            }
+        }
+        assert!(
+            manager.is_err(),
+            "configured but missing native service is unavailable, not a local launch"
+        );
+        assert!(
+            files.is_err(),
+            "missing native bridge cannot silently authorize a local file genesis"
+        );
+    }
 
     #[test]
     fn legacy_preparer_and_live_handler_are_rejected_before_either_runs() {
@@ -2946,6 +4142,7 @@ mod tests {
                 COMMANDS.load(Ordering::SeqCst),
                 usize::from(mode != "resumed")
             );
+            println!("reexec child assertions completed: {mode}");
             return;
         }
         for mode in ["initial", "resumed", "local", "descendant"] {
@@ -2956,12 +4153,12 @@ mod tests {
             child
                 .args([
                     "--exact",
-                    "launch::tests::automatic_reexec_skips_only_the_already_run_command_handler",
+                    "launch::native::tests::automatic_reexec_skips_only_the_already_run_command_handler",
                     "--nocapture",
                 ])
                 .env("QOS_LAUNCH_REEXEC_TEST", mode)
-                .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-                .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+                .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+                .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
                 .env_remove("QOS_RUNTIME_RESUME_LIVE");
             if mode == "resumed" || mode == "descendant" {
                 child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test");

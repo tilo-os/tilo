@@ -1,0 +1,483 @@
+//! Inner ownership during callback-bearing App assembly. No gate is held here.
+use super::*;
+use crate::semantic_document_read::retirement::RootRetirementPrelude;
+
+pub(super) struct ComponentAssemblyCustody {
+    pub component: Option<crate::application::AppComponent>,
+    pub scope: Option<crate::wake::WakeScope>,
+    pub retirement: Option<RootRetirementPrelude>,
+}
+impl Drop for ComponentAssemblyCustody {
+    fn drop(&mut self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+}
+
+pub(super) struct AppAssemblyCustody {
+    pub retirement: Option<RootRetirementPrelude>,
+    pub root: Option<Box<dyn Widget>>,
+    pub wake: Option<crate::wake::WakeScope>,
+    pub state: Option<State>,
+    pub control: Option<crate::ControlDomain>,
+    pub inputs: Option<AppConstructionInputs>,
+    pub configured_theme: Option<Theme>,
+    pub screen_reader: Option<Option<crate::screen_reader::ScreenReader>>,
+    pub values: AppAssemblyValues,
+}
+impl AppAssemblyCustody {
+    pub fn retire(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+}
+impl Drop for AppAssemblyCustody {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
+// Each evaluated value enters this owned staging area immediately. A later
+// initializer panic cannot drop these values before AppAssemblyCustody::drop.
+#[derive(Default)]
+pub(super) struct AppAssemblyValues {
+    #[cfg(windows)]
+    pub startup_renderer: Option<Option<RendererPreparation>>,
+    pub history: Option<Option<Box<crate::history_mode::host::HistoryHost>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub controlled_installed_history_definition:
+        Option<Option<&'static crate::history_mode::HistoryDefinition>>,
+    pub framework_input: Option<std::rc::Rc<Cell<bool>>>,
+    pub history_key_release: Option<bool>,
+    pub history_focus: Option<Option<crate::widget::layout::CompositionFocus>>,
+    pub text_renderer: Option<TextRenderer>,
+    pub palette_source: Option<PaletteSource>,
+    pub watch_system_settings: Option<bool>,
+    pub layout: Option<LayoutRuntime>,
+    pub bindings: Option<crate::bound_dispatch::BoundNodeMap>,
+    pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
+    pub close_admission: Option<crate::close_admission::Admission>,
+    pub needs_sync: Option<bool>,
+    pub theme: Option<Theme>,
+    pub debug_mode: Option<bool>,
+    pub focused_node: Option<Option<NodeId>>,
+    pub focusable_order: Option<Vec<NodeId>>,
+    pub autofocus_first: Option<bool>,
+    pub autofocus_on_structure_change: Option<bool>,
+    pub appearance_reconcile: Option<bool>,
+    pub theme_store_stamp: Option<Option<std::time::SystemTime>>,
+    pub last_theme_store_check: Option<Instant>,
+    pub input: Option<InputRuntime>,
+    pub history_runtime: Option<HistoryRuntime>,
+    pub collaboration: Option<CollaborationRuntime>,
+    pub native_room_route: Option<Option<crate::collaboration::RouteSpec>>,
+    pub action_publication_failure: Option<Option<String>>,
+    pub presence_ctx: Option<PresenceCtx>,
+    pub permission_ctx: Option<PermissionContext>,
+    pub presence: Option<PresenceRuntime>,
+    pub accessibility: Option<AccessibilityRuntime>,
+    pub window: Option<WindowRuntime>,
+    pub document_routes: Option<crate::history_mode::routes::OwnerDocumentRoutes>,
+    pub committed_documents: Option<
+        Vec<(
+            crate::collaboration::RouteSpec,
+            crate::collaboration::CommittedDocument,
+        )>,
+    >,
+    pub legacy_persistence: Option<crate::launch::LegacyPersistencePolicy>,
+    pub persistence: Option<PersistenceRuntime>,
+    pub actions: Option<ActionRuntime>,
+    pub document_history: Option<Box<crate::standalone_history_host::StandaloneHistoryHost>>,
+    pub history_chrome_enabled: Option<bool>,
+    pub history_layout: Option<Option<crate::standalone_history_host::HostHistoryLayout>>,
+    pub history_viewport_width: Option<f64>,
+    pub history_focus_pending: Option<bool>,
+    pub last_published_playback: Option<Option<Vec<media::handoff::PlaybackReport>>>,
+    pub last_playback_publish: Option<Option<Instant>>,
+    pub continuation: Option<ContinuationRuntime>,
+    pub profiler: Option<Option<crate::profiling::FrameProfiler>>,
+    pub native_input_probe: Option<Option<Box<dyn Fn() -> serde_json::Value>>>,
+    pub floating_surface_client:
+        Option<Option<crate::floating_surface::FloatingSurfaceServiceClient>>,
+    pub last_floating_presentations: Option<
+        std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
+    >,
+    pub last_active_floating_ids: Option<std::collections::HashSet<String>>,
+    pub prepared_floating_presentations: Option<std::collections::HashSet<String>>,
+    pub floating_coordinate_offsets: Option<std::collections::HashMap<String, vello::kurbo::Vec2>>,
+    pub suspended_floating_presentations: Option<std::collections::HashSet<String>>,
+    pub floating_host_messages: Option<Vec<crate::floating_surface::FloatingSurfaceHostMessage>>,
+}
+
+pub(super) struct ValidationRetirement<'a>(pub &'a Option<RootRetirementPrelude>, pub bool);
+impl ValidationRetirement<'_> {
+    pub fn disarm(mut self) {
+        self.1 = false;
+    }
+}
+impl Drop for ValidationRetirement<'_> {
+    fn drop(&mut self) {
+        if self.1 {
+            if let Some(retirement) = self.0 {
+                retirement.retire();
+            }
+        }
+    }
+}
+
+pub(super) fn assemble(mut assembly: retirement_assembly::AppAssemblyCustody) -> App {
+    let _entry = assembly.wake.as_ref().map_or_else(
+        crate::wake::WakeScope::enter_detached,
+        crate::wake::WakeScope::enter,
+    );
+    assembly.configured_theme = Some(
+        assembly
+            .inputs
+            .as_mut()
+            .expect("assembly inputs")
+            .configured_theme
+            .resolve_in_place(),
+    );
+    assembly.control = Some(
+        assembly
+            .inputs
+            .as_ref()
+            .expect("assembly inputs")
+            .control_domain
+            .clone()
+            .unwrap_or_else(crate::control_custody::ControlDomain::outer),
+    );
+    assembly
+        .root
+        .as_mut()
+        .expect("assembly root")
+        .install_control_custody(
+            assembly.control.as_ref().expect("assembly control"),
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+    assembly
+        .control
+        .as_ref()
+        .expect("assembly control")
+        .finish_initial_installation();
+    #[cfg(windows)]
+    {
+        assembly.values.startup_renderer = Some(None);
+    }
+    assembly.values.history = Some(None);
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        assembly.values.controlled_installed_history_definition = Some(None);
+    }
+    assembly.values.framework_input = Some(std::rc::Rc::new(Cell::new(false)));
+    assembly.values.history_key_release = Some(false);
+    assembly.values.history_focus = Some(None);
+    assembly.values.text_renderer = Some(
+        assembly
+            .inputs
+            .as_mut()
+            .expect("assembly inputs")
+            .text_renderer
+            .resolve_in_place(),
+    );
+    assembly.values.palette_source = Some(
+        assembly
+            .inputs
+            .as_ref()
+            .expect("assembly inputs")
+            .palette_source,
+    );
+    assembly.values.watch_system_settings = Some(
+        assembly
+            .inputs
+            .as_ref()
+            .expect("assembly inputs")
+            .watch_system_settings,
+    );
+    assembly.values.layout = Some(LayoutRuntime::new());
+    assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
+    assembly.values.component_close_reports = Some(vec![]);
+    assembly.values.close_admission = Some(crate::close_admission::Admission::default());
+    assembly.values.needs_sync = Some(true);
+    assembly.values.theme = Some(
+        assembly
+            .configured_theme
+            .as_ref()
+            .expect("assembly theme")
+            .clone(),
+    );
+    assembly.values.debug_mode = Some((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .debug_mode)());
+    assembly.values.focused_node = Some(None);
+    assembly.values.focusable_order = Some(Vec::new());
+    assembly.values.autofocus_first = Some(false);
+    assembly.values.autofocus_on_structure_change = Some(false);
+    assembly.values.appearance_reconcile = Some(false);
+    assembly.values.theme_store_stamp = Some((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .theme_store_stamp)());
+    assembly.values.last_theme_store_check = Some(Instant::now());
+    assembly.values.input = Some(InputRuntime::new());
+    assembly.values.history_runtime = Some(HistoryRuntime::new());
+    let local_author = assembly
+        .inputs
+        .as_mut()
+        .expect("assembly inputs")
+        .local_author
+        .resolve_in_place();
+    assembly.values.collaboration = Some(CollaborationRuntime::new(
+        std::mem::replace(
+            &mut assembly
+                .inputs
+                .as_mut()
+                .expect("assembly inputs")
+                .collab_manager,
+            CollaborationManager::disabled(),
+        ),
+        local_author,
+    ));
+    assembly.values.native_room_route = Some(None);
+    assembly.values.action_publication_failure = Some(None);
+    assembly.values.presence_ctx = Some(
+        assembly
+            .inputs
+            .as_mut()
+            .expect("assembly inputs")
+            .presence_ctx
+            .resolve_in_place(),
+    );
+    assembly.values.permission_ctx = Some(PermissionContext::permissive());
+    assembly.values.presence = Some(PresenceRuntime::new());
+    assembly.screen_reader = Some((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .screen_reader)());
+    assembly.values.accessibility = Some(AccessibilityRuntime::new(
+        assembly.configured_theme.take().expect("assembly theme"),
+        assembly
+            .screen_reader
+            .take()
+            .expect("assembly screen reader"),
+    ));
+    assembly.values.window = Some(WindowRuntime::new());
+    assembly.values.document_routes =
+        Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
+    assembly.values.committed_documents = Some(Vec::new());
+    assembly.values.legacy_persistence = Some(crate::launch::LegacyPersistencePolicy::Host);
+    assembly.values.persistence = Some(PersistenceRuntime::new());
+    assembly.values.actions = Some(ActionRuntime::new());
+    assembly.values.document_history = Some(Box::new(
+        crate::standalone_history_host::StandaloneHistoryHost::new(),
+    ));
+    assembly.values.history_chrome_enabled = Some(false);
+    assembly.values.history_layout = Some(None);
+    assembly.values.history_viewport_width = Some(1000.0);
+    assembly.values.history_focus_pending = Some(false);
+    assembly.values.last_published_playback = Some(None);
+    assembly.values.last_playback_publish = Some(None);
+    assembly.values.continuation = Some(ContinuationRuntime::new((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .pending_continuation_restore)(
+    )));
+    assembly.values.profiler = Some((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .profiler)());
+    assembly.values.native_input_probe = Some(None);
+    assembly.values.floating_surface_client = Some((assembly
+        .inputs
+        .as_ref()
+        .expect("assembly inputs")
+        .floating_surface_client)());
+    assembly.values.last_floating_presentations = Some(std::collections::HashMap::new());
+    assembly.values.last_active_floating_ids = Some(std::collections::HashSet::new());
+    assembly.values.prepared_floating_presentations = Some(std::collections::HashSet::new());
+    assembly.values.floating_coordinate_offsets = Some(std::collections::HashMap::new());
+    assembly.values.suspended_floating_presentations = Some(std::collections::HashSet::new());
+    assembly.values.floating_host_messages = Some(Vec::new());
+    // No callbacks or allocation remain in the transfer. Missing internal
+    // slots retire before any extracted value can be dropped.
+    let retirement_assembly::AppAssemblyValues {
+        #[cfg(windows)]
+            startup_renderer: Some(startup_renderer),
+        history: Some(history),
+        #[cfg(any(test, feature = "test-support"))]
+            controlled_installed_history_definition: Some(controlled_installed_history_definition),
+        framework_input: Some(framework_input),
+        history_key_release: Some(history_key_release),
+        history_focus: Some(history_focus),
+        text_renderer: Some(text_renderer),
+        palette_source: Some(palette_source),
+        watch_system_settings: Some(watch_system_settings),
+        layout: Some(layout),
+        bindings: Some(bindings),
+        component_close_reports: Some(component_close_reports),
+        close_admission: Some(close_admission),
+        needs_sync: Some(needs_sync),
+        theme: Some(theme),
+        debug_mode: Some(debug_mode),
+        focused_node: Some(focused_node),
+        focusable_order: Some(focusable_order),
+        autofocus_first: Some(autofocus_first),
+        autofocus_on_structure_change: Some(autofocus_on_structure_change),
+        appearance_reconcile: Some(appearance_reconcile),
+        theme_store_stamp: Some(theme_store_stamp),
+        last_theme_store_check: Some(last_theme_store_check),
+        input: Some(input),
+        history_runtime: Some(history_runtime),
+        collaboration: Some(collaboration),
+        native_room_route: Some(native_room_route),
+        action_publication_failure: Some(action_publication_failure),
+        presence_ctx: Some(presence_ctx),
+        permission_ctx: Some(permission_ctx),
+        presence: Some(presence),
+        accessibility: Some(accessibility),
+        window: Some(window),
+        document_routes: Some(document_routes),
+        committed_documents: Some(committed_documents),
+        legacy_persistence: Some(legacy_persistence),
+        persistence: Some(persistence),
+        actions: Some(actions),
+        document_history: Some(document_history),
+        history_chrome_enabled: Some(history_chrome_enabled),
+        history_layout: Some(history_layout),
+        history_viewport_width: Some(history_viewport_width),
+        history_focus_pending: Some(history_focus_pending),
+        last_published_playback: Some(last_published_playback),
+        last_playback_publish: Some(last_playback_publish),
+        continuation: Some(continuation),
+        profiler: Some(profiler),
+        native_input_probe: Some(native_input_probe),
+        floating_surface_client: Some(floating_surface_client),
+        last_floating_presentations: Some(last_floating_presentations),
+        last_active_floating_ids: Some(last_active_floating_ids),
+        prepared_floating_presentations: Some(prepared_floating_presentations),
+        floating_coordinate_offsets: Some(floating_coordinate_offsets),
+        suspended_floating_presentations: Some(suspended_floating_presentations),
+        floating_host_messages: Some(floating_host_messages),
+    } = std::mem::take(&mut assembly.values)
+    else {
+        assembly.retire();
+        unreachable!("all App construction values are staged");
+    };
+    let (Some(root_widget), Some(state), Some(control_domain), Some(inputs)) = (
+        assembly.root.take(),
+        assembly.state.take(),
+        assembly.control.take(),
+        assembly.inputs.take(),
+    ) else {
+        assembly.retire();
+        unreachable!("App assembly owns all inputs");
+    };
+    let wake_scope = assembly.wake.take();
+    let retirement = assembly.retirement.take();
+    let mut app = App {
+        retirement,
+        #[cfg(windows)]
+        startup_renderer,
+        control_domain,
+        wake_scope,
+        state,
+        root_widget,
+        history,
+        #[cfg(any(test, feature = "test-support"))]
+        controlled_installed_history_definition,
+        framework_input,
+        history_key_release,
+        history_focus,
+        text_renderer,
+        palette_source,
+        watch_system_settings,
+        layout,
+        bindings,
+        component_close_reports,
+        close_admission,
+        needs_sync,
+        theme,
+        debug_mode,
+        focused_node,
+        focusable_order,
+        autofocus_first,
+        autofocus_on_structure_change,
+        appearance_reconcile,
+        theme_store_stamp,
+        last_theme_store_check,
+        input,
+        history_runtime,
+        collaboration,
+        native_room_route,
+        action_publication_failure,
+        presence_ctx,
+        permission_ctx,
+        presence,
+        accessibility,
+        window,
+        document_routes,
+        committed_documents,
+        legacy_persistence,
+        persistence,
+        actions,
+        document_history,
+        history_chrome_enabled,
+        history_layout,
+        history_viewport_width,
+        history_focus_pending,
+        last_published_playback,
+        last_playback_publish,
+        continuation,
+        profiler,
+        native_input_probe,
+        floating_surface_client,
+        last_floating_presentations,
+        last_active_floating_ids,
+        prepared_floating_presentations,
+        floating_coordinate_offsets,
+        suspended_floating_presentations,
+        floating_host_messages,
+    };
+
+    app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+    app.accessibility.a11y.reduce_motion = match app.palette_source {
+        PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
+        PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
+    };
+    app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+    app.accessibility.text_scale = match app.palette_source {
+        PaletteSource::Host => app.text_renderer.text_scale(),
+        PaletteSource::Owned { .. } => (inputs.text_scale)(),
+    };
+    app.accessibility.ui_scale = match app.palette_source {
+        PaletteSource::Host => app.accessibility.base_theme.ui_scale,
+        PaletteSource::Owned { .. } => (inputs.ui_scale)(),
+    };
+    app.rebuild_theme();
+
+    // The scope is also what sends `Arrived`, so an app that never set
+    // one would never catch up on anything written before it opened.
+    // No room means no scope.
+    if let Some(scope) = (inputs.startup_presence_scope)() {
+        app.set_presence_broadcast_scope(Some(scope));
+    }
+    app.presence_ctx.set_surface_id(inputs.surface_id.resolve());
+    // Apply launcher-provided continuation before the first widget sync or
+    // redraw.  Waiting for an input event left a restored app blank on a
+    // quiet freshly-created window.
+    app.apply_pending_continuation_restore();
+    // The first report is level-triggered.  Sending it here makes a
+    // launched app visible to continuity capture even if it receives no
+    // input events before the next peer asks for a checkpoint.
+    app.publish_continuation_metadata();
+    app.publish_playback_handoff();
+    app
+}

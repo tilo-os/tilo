@@ -1273,6 +1273,11 @@ impl WorkspaceOwnershipExt for Workspace {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeWorkspaceTree {
+    /// Native authority is never re-derived from desktop caches.
+    #[serde(default)]
+    pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
+    #[serde(skip)]
+    pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
     /// The only desktop topology and local view storage, shared with portable hosts.
     #[serde(flatten)]
     pub desktop: qos_desktop::WorkspaceTree,
@@ -1371,6 +1376,8 @@ impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
             desktop: qos_desktop::WorkspaceTree::default(),
+            native_authority: Default::default(),
+            native_runtime: Default::default(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -1448,6 +1455,47 @@ impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
 }
 
 impl WorkspaceTree {
+    pub(crate) fn installed_native_owner(
+        &self,
+    ) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.native_runtime.owner()
+    }
+    pub(crate) fn requires_native_owner(&self, room: RoomId) -> bool {
+        self.native_authority.requires(room) || self.native_runtime.requires_uncertain(room)
+    }
+    /// Presentation projection from the actual admitted owner, never a second admission.
+    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &qos_peer_state::StatePeer) {
+        let Some(document) = peer.admitted_room() else {
+            return;
+        };
+        if let Ok(endpoint) = iroh::EndpointId::from_bytes(&peer.authority().device_public_key) {
+            self.room_authority
+                .insert(room, RoomAuthority::Peer(PeerOrigin::peer(&endpoint)));
+        }
+        let (name, owner, caps) = Self::extract_governed_fields(document);
+        let tasks = Self::workspace_tasks_of(document);
+        let receipts = Self::workspace_effect_receipts_of(document);
+        self.room_docs.insert(room, document.clone());
+        self.queue_inbound_records(room, document);
+        self.merge_room_contents(room);
+        if let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+        {
+            if let Some(name) = name {
+                ws.name = name;
+            }
+            if let Some(owner) = owner {
+                ws.owner = Some(owner);
+            }
+            ws.capabilities = caps;
+            ws.tasks = tasks;
+            ws.effect_receipts = receipts;
+        }
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+    }
     pub fn set_process_peer_salt(salt: u16) {
         qos_desktop::WorkspaceTree::set_process_peer_salt(salt);
     }
@@ -1934,15 +1982,24 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
+    pub fn sync_room_doc(&mut self, room: RoomId) {
+        self.try_sync_room_doc(room);
+    }
+
+    /// Projection must not partly install governance when a policy fence fails.
     #[allow(
         clippy::too_many_lines,
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
-    pub fn sync_room_doc(&mut self, room: RoomId) {
+    fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
+        if self.requires_native_owner(room) {
+            return false;
+        }
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use qos_peer_state::room::media;
 
         let Some(ws) = self.workspace_in_room(room) else {
-            return;
+            return false;
         };
         let name = ws.name.clone();
         let owner = ws.owner.clone();
@@ -1970,7 +2027,11 @@ impl WorkspaceTree {
         // the wire that `apply_room_changes` would only refuse anyway.
         let governs = self.governs_room(room);
 
-        let doc = self.room_docs.entry(room).or_default();
+        // The cache contains no media definitions. Preserve the admitted field
+        // on a candidate; only the committed native owner may supply it anew.
+        let before = self.room_docs.get(&room).cloned().unwrap_or_default();
+        let mut candidate = before.clone();
+        let doc = &mut candidate;
 
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
@@ -2023,7 +2084,13 @@ impl WorkspaceTree {
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
             doc.reset_diff_cursor();
-            return;
+            if media::validate_transition(Some(&before), doc, media::TransitionMode::Authoring)
+                .is_err()
+            {
+                return false;
+            }
+            self.room_docs.insert(room, candidate);
+            return true;
         }
 
         let caps_id = match doc.get(&ROOT, "capabilities").ok().flatten() {
@@ -2032,7 +2099,7 @@ impl WorkspaceTree {
                 Ok(id) => id,
                 Err(err) => {
                     tracing::error!(?err, room = %room_str, "room doc: capabilities map");
-                    return;
+                    return false;
                 }
             },
         };
@@ -2063,6 +2130,13 @@ impl WorkspaceTree {
         // overhead — worse, `PatchLog::migrate_actors` panics when a
         // peer's actor can't be spliced into it in sort order.
         doc.reset_diff_cursor();
+        if let Err(error) = media::refresh_authorization(&before, doc) {
+            tracing::warn!(?error, room = %room, "room projection refused: invalid media policy");
+            return false;
+        }
+        doc.reset_diff_cursor();
+        self.room_docs.insert(room, candidate);
+        true
     }
 
     /// Key the room document stores its peers' names under.
@@ -2224,7 +2298,10 @@ impl WorkspaceTree {
             let unchanged = matches!(
                 doc.get(&object, peer).ok().flatten(),
                 Some((Value::Scalar(value), _))
-                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &bytes)
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current)
+                        if current == &bytes
+                            || serde_json::from_slice::<GovernedPeerIdentity>(current)
+                                .is_ok_and(|admitted| admitted == *identity))
             );
             if !unchanged {
                 let _ = doc.put(&object, peer, ScalarValue::Bytes(bytes));
@@ -2416,14 +2493,37 @@ impl WorkspaceTree {
     fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
-        let Some((_, records_id)) = doc.get(&ROOT, Self::ROOM_RECORDS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
+        // `records` is created on first projection, so two peers whose room
+        // documents started empty may each have minted one: a key conflict
+        // where a plain `get` hides one peer's index. Join every candidate
+        // map (the `get` winner first; the first copy of a record wins).
+        let mut candidates: Vec<automerge::ObjId> = Vec::new();
+        if let Ok(Some((Value::Object(automerge::ObjType::Map), winner))) =
+            doc.get(&ROOT, Self::ROOM_RECORDS_KEY)
+        {
+            candidates.push(winner);
+        }
+        if let Ok(values) = doc.get_all(&ROOT, Self::ROOM_RECORDS_KEY) {
+            for (value, id) in values {
+                if matches!(value, Value::Object(automerge::ObjType::Map))
+                    && !candidates.contains(&id)
+                {
+                    candidates.push(id);
+                }
+            }
+        }
         let mut out: Vec<(String, String)> = Vec::new();
-        for key in doc.keys(&records_id) {
-            let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
+        for (key, entry) in candidates.iter().flat_map(|records_id| {
+            doc.keys(records_id)
+                .filter_map(|key| {
+                    let (_, entry) = doc.get(records_id, key.as_str()).ok().flatten()?;
+                    Some((key, entry))
+                })
+                .collect::<Vec<_>>()
+        }) {
+            if out.iter().any(|(seen, _)| *seen == key) {
                 continue;
-            };
+            }
             let kind = match doc.get(&entry, "kind").ok().flatten() {
                 Some((Value::Scalar(v), _)) => match v.as_ref() {
                     ScalarValue::Str(k) => k.to_string(),
@@ -2450,8 +2550,17 @@ impl WorkspaceTree {
     /// for a room this machine is not in.
     pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
         match self.room_docs.get_mut(&room) {
-            Some(doc) => doc.get_heads(),
-            None => Vec::new(),
+            Some(doc)
+                if qos_peer_state::room::media::validate_transition(
+                    None,
+                    doc,
+                    qos_peer_state::room::media::TransitionMode::Restore,
+                )
+                .is_ok() =>
+            {
+                doc.get_heads()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2464,8 +2573,16 @@ impl WorkspaceTree {
         since: &[ChangeHash],
     ) -> Option<Vec<Vec<u8>>> {
         self.workspace_in_room(room)?;
-        self.sync_room_doc(room);
+        if !self.try_sync_room_doc(room) {
+            return None;
+        }
         let doc = self.room_docs.get_mut(&room)?;
+        qos_peer_state::room::media::validate_transition(
+            None,
+            doc,
+            qos_peer_state::room::media::TransitionMode::Restore,
+        )
+        .ok()?;
         Some(
             doc.get_changes(since)
                 .into_iter()
@@ -2483,11 +2600,11 @@ impl WorkspaceTree {
         )
     }
 
-    /// True (and logs a warning, or pins an unpinned authority) if
+    /// True (and logs a warning) if
     /// `from` is not entitled to write the governance changes
     /// `candidate` carries relative to what's currently held for `room`.
     fn governance_write_refused(
-        &mut self,
+        &self,
         room: RoomId,
         candidate: &AutoCommit,
         from: &PeerOrigin,
@@ -2526,23 +2643,91 @@ impl WorkspaceTree {
                 true
             }
             RoomAuthority::Peer(_) => false,
-            // Joined without an invite naming an administrator —
-            // the first peer to supply governance becomes it, and
-            // is pinned so the second is refused above.
-            RoomAuthority::Unpinned => {
-                tracing::info!(
-                    target: "shell::state",
-                    room = %room,
-                    from = %from,
-                    "room sync: pinning this peer as the room's \
-                     governance authority (joined without an invite \
-                     naming one)",
-                );
-                self.room_authority
-                    .insert(room, RoomAuthority::Peer(from.clone()));
-                false
+            // Legacy TOFU is installed only after every candidate check passes.
+            RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// A media snapshot cannot bootstrap its own authority. The invite path
+    /// verifies the device signature before persisting the exact endpoint pin;
+    /// transport authenticates `from` independently of the incoming document.
+    /// Room documents are not durable, so that pin also authorizes rehydration.
+    /// Network certificate checks and native media authorization remain mandatory.
+    fn media_authority_admitted(
+        &self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
+        let RoomAuthority::Peer(pinned) = self.room_authority(room) else {
+            // Local rooms refuse any remote governance change separately. An
+            // unchanged echo can preserve an already admitted local policy.
+            return self.governs_room(room)
+                && self.room_docs.get(&room).is_some_and(|before| {
+                    qos_peer_state::room::media::parse(before).is_ok_and(|policy| policy.is_some())
+                });
+        };
+        let Some(endpoint) = pinned.as_str().strip_prefix("iroh:") else {
+            return false;
+        };
+        let Ok(endpoint_key) = endpoint.parse::<iroh::EndpointId>() else {
+            return false;
+        };
+        let before = Self::governance_of(self.room_docs.get(&room));
+        let after = Self::governance_of(Some(candidate));
+        let Some(proposed) = after
+            .3
+            .get(endpoint)
+            .and_then(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes).ok())
+        else {
+            return false;
+        };
+        let admitted = match before
+            .3
+            .get(endpoint)
+            .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
+            .transpose()
+        {
+            Ok(admitted) => admitted,
+            Err(_) => return false,
+        };
+        // A first snapshot must arrive from the preexisting invite-pinned
+        // endpoint. An existing certificate cannot be replaced by the snapshot.
+        if admitted.is_none() && from != &pinned {
+            return false;
+        }
+        let certificate = &proposed.device_cert;
+        let now = now_unix_nanos();
+        let prior_owner = before.0.as_deref().or_else(|| {
+            self.workspace_in_room(room)
+                .and_then(|workspace| workspace.owner.as_deref())
+        });
+        if admitted
+            .as_ref()
+            .is_some_and(|admitted| admitted.device_cert != *certificate)
+            || certificate.device_public_key != *endpoint_key.as_bytes()
+            || certificate.is_expired_at(now)
+            || certificate.issued_at_ns > now
+            || tilo_user_identity::verify_device_cert(certificate).is_err()
+            || after.0.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
+            || prior_owner.is_some_and(|owner| after.0.as_deref() != Some(owner))
+        {
+            return false;
+        }
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for bytes in before.3.values().chain(after.3.values()) {
+            let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
+                return false;
+            };
+            for entry in identity.revocations {
+                if entry.user_public_key != identity.device_cert.user_public_key
+                    || revocations.insert(entry).is_err()
+                {
+                    return false;
+                }
             }
         }
+        !revocations.is_revoked_at(&certificate.device_public_key, now)
     }
 
     /// True (and logs a warning) if `candidate` would rewrite windows
@@ -2644,14 +2829,41 @@ impl WorkspaceTree {
         changes: &[Vec<u8>],
         from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
+        if self.requires_native_owner(room) {
+            return Ok(false);
+        }
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        let candidate = qos_peer_state::room::candidate(self.room_docs.get(&room), changes)?;
+        // `candidate` now reports a checked-admission refusal as text; keep
+        // this API's error type and the detail in the log.
+        let candidate = qos_peer_state::room::candidate(self.room_docs.get(&room), changes)
+            .map_err(|error| {
+                tracing::warn!(%error, room = %room, "room changes refused");
+                automerge::AutomergeError::Fail
+            })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);
         }
+        // Parsing and consistency are independent of the writer check, including
+        // equal-value echoes. Never let a bad first snapshot establish TOFU.
+        let media = match qos_peer_state::room::media::validate_transition(
+            self.room_docs.get(&room),
+            &candidate,
+            qos_peer_state::room::media::TransitionMode::Admission,
+        ) {
+            Ok(media) => media,
+            Err(error) => {
+                tracing::warn!(?error, room = %room, "room sync refused: invalid media policy");
+                return Ok(false);
+            }
+        };
+        if media.is_some() && !self.media_authority_admitted(room, &candidate, from) {
+            return Ok(false);
+        }
+        let media_changed = qos_peer_state::room::media::governed_value(self.room_docs.get(&room))
+            != qos_peer_state::room::media::governed_value(Some(&candidate));
         if self.governance_write_refused(room, &candidate, from) {
             return Ok(false);
         }
@@ -2683,6 +2895,13 @@ impl WorkspaceTree {
                     None => effect_receipts.push(existing.clone()),
                 }
             }
+        }
+        if self.room_authority(room) == RoomAuthority::Unpinned
+            && Self::governance_of(self.room_docs.get(&room))
+                != Self::governance_of(Some(&candidate))
+        {
+            self.room_authority
+                .insert(room, RoomAuthority::Peer(from.clone()));
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
@@ -2740,7 +2959,7 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
-        let landed = fields_changed || records_changed;
+        let landed = fields_changed || records_changed || media_changed;
         if landed {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
@@ -3261,6 +3480,7 @@ impl WorkspaceTree {
             && let Err(e) = crate::shell::persist::save_tree_to(self, path)
         {
             tracing::warn!("capability persistence failed: {e}");
+            return;
         }
         self.export_fs_capabilities();
     }
@@ -3489,6 +3709,16 @@ impl WorkspaceTree {
     /// ([`Workspace::surrender_governance`]), since the joined room
     /// already has an administrator.
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
+        let changed = self.set_room_in_memory(workspace_id, room);
+        if changed {
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Existing join semantics for an unpublished owner candidate. No state,
+    /// filesystem authority, relay export or publisher side effects occur here.
+    pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() {
             return false;
         }
@@ -3529,7 +3759,6 @@ impl WorkspaceTree {
             // owner back out of it.
             self.seed_doc_from_cache();
         }
-        self.flush_to_disk();
         true
     }
 
@@ -6360,6 +6589,26 @@ mod automerge_foundation_tests {
             )],
             "a guest's reference must reach the room's owner",
         );
+    }
+
+    /// Two room documents that start empty (the legacy path) each mint the
+    /// `records` map on first projection; the merge must show both indexes.
+    #[test]
+    fn concurrently_created_record_indexes_both_survive() {
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            WorkspaceTree::project_room_records(&mut a, &held(("file:/a.md", "document")));
+            WorkspaceTree::project_room_records(&mut b, &held(("file:/b.md", "document")));
+            a.merge(&mut b).unwrap();
+            let ids: Vec<String> = WorkspaceTree::room_records_of(&a)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
+        }
     }
 
     /// Two people bringing something at the same moment — keyed by
@@ -10078,3 +10327,7 @@ mod canonical_model_tests {
         assert_eq!(restored.desktop.active, second);
     }
 }
+
+#[cfg(test)]
+#[path = "state/media_policy_tests.rs"]
+mod shell_media_policy;

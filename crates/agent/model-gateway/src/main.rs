@@ -5,7 +5,9 @@
 
 use std::fs;
 use std::io::Read;
-use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -208,6 +210,18 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
 
 fn handle(app_id: &str, request: Request) -> Response {
     let result = match request {
+        Request::SelectionConfigured {
+            profile_id,
+            model_id,
+            protocol,
+        } if app_id == AGENT_APP => {
+            selection_configured(&profile_id, &model_id, protocol).map(|()| Response {
+                ok: true,
+                output: None,
+                configured: Some(true),
+                error: None,
+            })
+        }
         Request::Plan {
             profile_id,
             model_id,
@@ -326,6 +340,45 @@ fn secret_status(profile_id: &str) -> Result<bool, String> {
         .is_some_and(|secret| !secret.password.is_empty()))
 }
 
+/// Check only prerequisites available locally. No HTTP client is created and
+/// no request is sent; local models retain Plan's existing credential rule.
+fn selection_configured(
+    profile_id: &str,
+    model_id: &str,
+    protocol: ProviderProtocol,
+) -> Result<(), String> {
+    let account = vault_id(profile_id)?;
+    if model_id.is_empty() || model_id.len() > 256 || model_id.chars().any(char::is_control) {
+        return Err("invalid selected model id".into());
+    }
+    let profile = configured_profile(profile_id)?;
+    if profile.protocol != protocol {
+        return Err("provider protocol does not match the selected protocol".into());
+    }
+    if !profile.models.iter().any(|model| model.id == model_id) {
+        return Err("model is not configured for this provider".into());
+    }
+    let endpoint = url::Url::parse(&provider_url(&profile))
+        .map_err(|_| "provider endpoint is invalid".to_string())?;
+    if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
+        return Err("provider endpoint is invalid".into());
+    }
+    let secret = SecretVault::open()
+        .get(&account)
+        .map(|secret| Zeroizing::new(secret.password))
+        .filter(|secret| !secret.is_empty())
+        .ok_or_else(|| "API key is not configured".to_string())?;
+    // Match provider_attempt's x-api-key / bearer_auth header representation.
+    // Header parsing is local and its error never includes credential bytes.
+    let header = match protocol {
+        ProviderProtocol::Anthropic => secret,
+        ProviderProtocol::OpenAiCompatible => Zeroizing::new(format!("Bearer {}", secret.as_str())),
+    };
+    reqwest::header::HeaderValue::from_str(header.as_str())
+        .map_err(|_| "API key cannot form a provider request".to_string())?;
+    Ok(())
+}
+
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
     let mut key = Zeroizing::new(api_key);
@@ -348,6 +401,8 @@ fn remove_key(profile_id: &str) -> Result<(), String> {
 }
 
 const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
+// Retry policy remains scoped to the separate Photos operations. Plan must
+// never infer permission to replay paid work from an HTTP or transport error.
 const RETRY_ATTEMPTS: u32 = 4;
 const FIRST_RETRY_WAIT: Duration = Duration::from_millis(500);
 const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(4);
@@ -362,6 +417,8 @@ enum Again {
 struct ProviderFailure {
     why: String,
     again: Again,
+    /// False only when request construction proves no dispatch occurred.
+    outcome_unknown: bool,
 }
 
 fn plan(
@@ -383,23 +440,37 @@ fn plan(
     let timeout = requested_timeout.min(MAX_PROVIDER_TIMEOUT);
     let began = Instant::now();
     let client = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(8))
+        .connect_timeout(Duration::from_secs(8))
+        // Neither redirects nor protocol-nack retries establish provider
+        // idempotency. One Plan authorizes at most one provider POST.
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
         .build()
         .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
-    let result = while_busy(
-        || timeout.checked_sub(began.elapsed()),
-        std::thread::sleep,
-        |budget| {
-            provider_attempt(
-                &client,
-                &profile,
-                &endpoint,
-                Some(secret.as_str()),
-                body,
-                budget,
+    let budget = timeout
+        .checked_sub(began.elapsed())
+        .filter(|budget| !budget.is_zero())
+        .ok_or_else(|| "provider request timed out".to_string())?;
+    let result = provider_attempt(
+        &client,
+        &profile,
+        &endpoint,
+        Some(secret.as_str()),
+        body,
+        budget,
+    )
+    .map_err(|failure| {
+        if failure.outcome_unknown {
+            // There is no provider acceptance/status or idempotency authority.
+            // Keep the error bounded and free of provider bodies or credentials.
+            format!(
+                "provider outcome is unknown; request was not retried ({})",
+                failure.why
             )
-        },
-    );
+        } else {
+            failure.why
+        }
+    });
     secret.zeroize();
     result
 }
@@ -628,6 +699,7 @@ fn provider_attempt(
                 return Err(ProviderFailure {
                     why: "Anthropic requests require a configured credential".into(),
                     again: Again::Never,
+                    outcome_unknown: false,
                 });
             };
             request = request
@@ -641,6 +713,9 @@ fn provider_attempt(
         }
     }
     let response = request.json(body).send().map_err(|error| ProviderFailure {
+        // A builder error occurs before any network send. Once dispatch starts,
+        // even connect/timeout errors cannot grant permission to replay Plan.
+        outcome_unknown: !error.is_builder(),
         why: if error.is_timeout() {
             "provider request timed out".into()
         } else {
@@ -661,11 +736,13 @@ fn provider_attempt(
         return Err(ProviderFailure {
             why: format!("provider returned HTTP {}", status.as_u16()),
             again: again_after(status.as_u16(), retry_after),
+            outcome_unknown: true,
         });
     }
     response.text().map_err(|_| ProviderFailure {
         why: "provider response was unreadable".into(),
         again: Again::Never,
+        outcome_unknown: true,
     })
 }
 
@@ -712,7 +789,7 @@ where
             return Err("provider request timed out".into());
         };
         made = made.saturating_add(1);
-        let ProviderFailure { why, again } = match attempt(budget) {
+        let ProviderFailure { why, again, .. } = match attempt(budget) {
             Ok(output) => return Ok(output),
             Err(failure) => failure,
         };
@@ -750,6 +827,7 @@ fn provider_url(profile: &ProviderProfile) -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn same_user(stream: &UnixStream) -> bool {
     let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
     let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
@@ -768,6 +846,13 @@ fn same_user(stream: &UnixStream) -> bool {
     result == 0
         && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
         && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+}
+
+// Peer authentication is implemented only for the native Linux gateway.
+// Other hosts may exercise provider logic but must not accept service clients.
+#[cfg(not(target_os = "linux"))]
+fn same_user(_stream: &UnixStream) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -881,6 +966,7 @@ mod tests {
                     Err((status, retry_after)) => Err(ProviderFailure {
                         why: format!("provider returned HTTP {status}"),
                         again: again_after(status, retry_after),
+                        outcome_unknown: true,
                     }),
                 }
             },
@@ -889,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn transient_provider_failures_are_retried_at_the_gateway() {
+    fn photos_retry_policy_retries_transient_provider_failures() {
         let (result, fake) = run_retries(
             Duration::from_secs(20),
             &[Err((529, None)), Err((503, None)), Ok("answer")],
@@ -932,3 +1018,9 @@ mod tests {
         assert!(fake.waits.is_empty());
     }
 }
+
+#[cfg(test)]
+mod plan_tests;
+
+#[cfg(test)]
+mod selection_tests;

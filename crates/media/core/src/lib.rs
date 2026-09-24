@@ -71,6 +71,7 @@ pub mod ring;
 pub mod session;
 pub mod source;
 pub mod transport;
+pub mod voice;
 
 /// The GStreamer decode pipeline. Only compiled with `--features decode`;
 /// consumers drive it through [`MediaEngine`].

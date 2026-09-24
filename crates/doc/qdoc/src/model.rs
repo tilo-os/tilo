@@ -545,23 +545,98 @@ fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId>
     }
 }
 
+// ---- conflicting region containers ------------------------------------------
+//
+// The genesis creates `root.header` / `root.footer`, but documents written
+// before it created them lazily on the first write. Two replicas that each add
+// the first header of such a document concurrently each `put_object` their own
+// map: a key conflict where Automerge shows one winner and the other replica's
+// header blocks vanish from view. Reads therefore join the blocks of *every*
+// candidate container (ordered by their fractional keys, like one container),
+// edits resolve a block in whichever candidate holds it, and new blocks go to
+// the container [`region_obj`] names. Block ids come from per-replica
+// generators, so candidates never share an id. No history is rewritten.
+
+/// Every block container of `region`: the one [`region_obj`] names first,
+/// then any concurrently created candidate in Automerge's deterministic order.
+fn region_objs(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<ObjId> {
+    let key = match region {
+        Region::Body => return vec![c.blocks.clone()],
+        Region::Header => KEY_HEADER,
+        Region::Footer => KEY_FOOTER,
+    };
+    let mut out: Vec<ObjId> = region_obj(doc, c, region).into_iter().collect();
+    if let Ok(values) = doc.get_all(&c.root, key) {
+        for (value, id) in values {
+            if matches!(value, Value::Object(ObjType::Map)) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// A region block's `(container, block)` objects, wherever the block lives.
+fn region_block(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: Region,
+    id: &str,
+) -> Option<(ObjId, ObjId)> {
+    region_objs(doc, c, region)
+        .into_iter()
+        .find_map(|container| block_obj(doc, &container, id).map(|obj| (container, obj)))
+}
+
+/// The block object of `id` in `region`, in whichever candidate container
+/// holds it (see "conflicting region containers").
+pub fn region_block_obj(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: Region,
+    id: &str,
+) -> Option<ObjId> {
+    region_block(doc, c, region, id).map(|(_, obj)| obj)
+}
+
+/// A region's ordered `(block id, container)` pairs across every candidate.
+fn region_entries(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<(String, ObjId)> {
+    let containers = region_objs(doc, c, region);
+    if let [only] = containers.as_slice() {
+        return ordered_keys(doc, only)
+            .into_iter()
+            .map(|id| (id, only.clone()))
+            .collect();
+    }
+    ORDERED_KEYS_SCANS.with(|n| n.set(n.get().saturating_add(1)));
+    let mut v: Vec<(Vec<u8>, String, ObjId)> = containers
+        .iter()
+        .flat_map(|container| {
+            doc.keys(container).filter_map(|id| {
+                block_order(doc, container, &id).map(|ord| (ord, id, container.clone()))
+            })
+        })
+        .collect();
+    v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    v.into_iter()
+        .map(|(_, id, container)| (id, container))
+        .collect()
+}
+
 /// The ordered block ids of a region (empty when the region is absent).
 pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<String> {
-    match region_obj(doc, c, region) {
-        Some(obj) => ordered_keys(doc, &obj),
-        None => Vec::new(),
-    }
+    region_entries(doc, c, region)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// Materialize a region's blocks into [`BlockView`]s (empty when absent).
 pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<BlockView> {
-    match region_obj(doc, c, region) {
-        Some(obj) => ordered_keys(doc, &obj)
-            .into_iter()
-            .map(|id| materialize_block(doc, &obj, &id))
-            .collect(),
-        None => Vec::new(),
-    }
+    region_entries(doc, c, region)
+        .into_iter()
+        .map(|(id, container)| materialize_block(doc, &container, &id))
+        .collect()
 }
 
 /// Resolve the notes container object, preferring the cached id and falling back to a fresh root lookup.
@@ -1298,31 +1373,187 @@ pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
 
 pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
-    match doc.get(&obj, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
+    block_text_on(doc, &obj)
+}
+
+// ---- paragraph text storage ------------------------------------------------
+//
+// A block's `text` is one Automerge `Text` object: a character-level sequence
+// CRDT whose inline formatting lives as marks on it, so concurrent edits in one
+// paragraph merge per character. Every block constructor below creates that
+// object in the same change as the block itself.
+//
+// Documents written before that rule created the object lazily on the first
+// write. Two replicas typing into the same (never-written) paragraph therefore
+// each `put_object`ed their own `text`: a map-key conflict, where Automerge
+// shows only one winner and the loser's whole paragraph vanished from view.
+// A `text` value may also be a plain `Str` scalar (a register, not a CRDT).
+// The read path below projects *every* value stored under `text` — all
+// conflicting Text objects and legacy strings, concatenated in Automerge's
+// deterministic value order — so such documents open without hiding content;
+// the first write through [`ensure_block_text`] upgrades them in place to one
+// Text object holding exactly that projection (history is kept, never
+// rewritten), so offsets computed against a read stay valid for the write.
+
+/// One value stored under a block's `text` key.
+enum TextValue {
+    Text(ObjId),
+    Legacy(String),
+}
+
+/// Every text-bearing value under `block_obj`'s `text` key, in Automerge's
+/// deterministic conflict order (identical on every replica). Non-text values
+/// (a map, a number) carry no characters and are skipped.
+fn text_values(doc: &AutoCommit, block_obj: &ObjId) -> Vec<TextValue> {
+    doc.get_all(block_obj, BLOCK_TEXT)
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|(value, id)| match value {
+                    Value::Object(ObjType::Text) => Some(TextValue::Text(id)),
+                    Value::Scalar(scalar) => match scalar.as_ref() {
+                        ScalarValue::Str(text) => Some(TextValue::Legacy(text.to_string())),
+                        _ => None,
+                    },
+                    Value::Object(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The single canonical Text object of a block, when the block is already in
+/// canonical shape (exactly one value under `text`, and it is a Text object).
+fn canonical_text(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
+    match text_values(doc, block_obj).as_slice() {
+        [TextValue::Text(id)] => Some(id.clone()),
         _ => None,
     }
+}
+
+/// The characters a block shows: its Text object, or — for a legacy block —
+/// the deterministic concatenation of every value stored under `text`.
+/// `None` when the block stores no text at all.
+pub fn block_text_on(doc: &AutoCommit, block_obj: &ObjId) -> Option<String> {
+    let values = text_values(doc, block_obj);
+    if let [TextValue::Text(id)] = values.as_slice() {
+        return doc.text(id).ok();
+    }
+    if values.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    for value in &values {
+        match value {
+            TextValue::Text(id) => text.push_str(&doc.text(id).unwrap_or_default()),
+            TextValue::Legacy(legacy) => text.push_str(legacy),
+        }
+    }
+    Some(text)
+}
+
+/// Raw marks over the block's projected text, offsets shifted into the
+/// concatenated projection for a legacy multi-valued block.
+fn raw_marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<Mark> {
+    let values = text_values(doc, block_obj);
+    let projected = values.len() > 1;
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for value in values {
+        match value {
+            TextValue::Text(id) => {
+                if let Ok(marks) = doc.marks(&id) {
+                    out.extend(marks.into_iter().map(|m| {
+                        Mark::new(
+                            m.name().to_string(),
+                            m.value().clone(),
+                            m.start.saturating_add(offset),
+                            m.end.saturating_add(offset),
+                        )
+                    }));
+                }
+                offset = offset.saturating_add(doc.length(&id));
+            }
+            TextValue::Legacy(legacy) => {
+                offset = offset.saturating_add(legacy.chars().count());
+            }
+        }
+    }
+    if projected {
+        // One Text reports touching equal marks as one span; report the
+        // projection the same way so the upgrade in `ensure_block_text` does
+        // not change what a reader sees.
+        out.sort_by(|a, b| {
+            (a.name.as_str(), a.start)
+                .cmp(&(b.name.as_str(), b.start))
+                .then_with(|| a.end.cmp(&b.end))
+        });
+        let mut merged: Vec<Mark> = Vec::with_capacity(out.len());
+        for mark in out {
+            if let Some(last) = merged.last_mut()
+                && last.name == mark.name
+                && last.value == mark.value
+                && spans_touch(last.end, mark.start)
+            {
+                last.end = last.end.max(mark.end);
+            } else {
+                merged.push(mark);
+            }
+        }
+        out = merged;
+    }
+    out
+}
+
+/// Whether a span starting at `next_start` touches or overlaps one ending at `last_end`.
+fn spans_touch(last_end: usize, next_start: usize) -> bool {
+    next_start <= last_end
+}
+
+/// Resolve the block's canonical Text object for a write, creating or
+/// upgrading it when needed:
+///
+/// * canonical block (one Text) — returned as is, no write;
+/// * no `text` (a legacy block that was never written) — a new empty Text;
+/// * a legacy `Str` scalar, or several conflicting values left by the old
+///   lazy creation — a new Text holding the exact [`block_text_on`]
+///   projection, with every mark re-applied at its projected offset.
+///
+/// The upgrade is an ordinary later change, so no history is rewritten.
+pub fn ensure_block_text(doc: &mut AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
+    if let Some(id) = canonical_text(doc, block_obj) {
+        return Some(id);
+    }
+    let text = block_text_on(doc, block_obj).unwrap_or_default();
+    let marks = raw_marks_on(doc, block_obj);
+    let id = doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text).ok()?;
+    if !text.is_empty() {
+        doc.splice_text(&id, 0, 0, &text).ok()?;
+    }
+    for mark in marks {
+        let _ = doc.mark(&id, mark, ExpandMark::After);
+    }
+    Some(id)
+}
+
+/// Create a new block's (empty) Text object in the same change as the block,
+/// so concurrent first edits on other replicas address one shared sequence.
+fn create_block_text(doc: &mut AutoCommit, block_obj: &ObjId) {
+    let _ = doc.put_object(block_obj, BLOCK_TEXT, ObjType::Text);
 }
 
 fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
     #[cfg(test)]
     MARK_READS.with(|count| count.set(count.get() + 1));
-    let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(block_obj, BLOCK_TEXT) else {
-        return vec![];
-    };
-    let mut spans: Vec<MarkSpan> = doc
-        .marks(&tid)
-        .map(|ms| {
-            ms.into_iter()
-                .map(|m| MarkSpan {
-                    start: m.start,
-                    end: m.end,
-                    name: m.name().to_string(),
-                    value: m.value().into(),
-                })
-                .collect()
+    let mut spans: Vec<MarkSpan> = raw_marks_on(doc, block_obj)
+        .into_iter()
+        .map(|m| MarkSpan {
+            start: m.start,
+            end: m.end,
+            name: m.name().to_string(),
+            value: m.value().into(),
         })
-        .unwrap_or_default();
+        .collect();
     // Canonical order so replicas that merged in different orders produce byte-identical materializations
     // (mark *set* is order-independent); value is part of the key so concurrent valued marks sort deterministically.
     spans.sort_by(|a, b| {
@@ -1813,10 +2044,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
         Ok(Some((v, _))) => v.to_str().unwrap_or("").to_string(),
         _ => String::new(),
     };
-    let text = match doc.get(&obj, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
-        _ => String::new(),
-    };
+    let text = block_text_on(doc, &obj).unwrap_or_default();
     let marks = marks_on(doc, &obj);
     let attrs = read_attrs(doc, &obj);
     let children = match doc.get(&obj, BLOCK_CHILDREN) {
@@ -1931,6 +2159,26 @@ impl DocMut<'_> {
         self.order_after_in(&container, after)
     }
 
+    /// Build the order index of a header/footer `container` over every candidate
+    /// container of `region`, so a block inserted after one that lives in a
+    /// concurrently created candidate is ordered against it. Identical to
+    /// [`Self::ensure_order_cache`] when the region has one container.
+    fn ensure_region_order_cache(&mut self, container: &ObjId, region: Region) {
+        if region == Region::Body || self.ids.order.by_container.contains_key(container) {
+            return;
+        }
+        let mut co = ContainerOrder::default();
+        for candidate in region_objs(self.doc, self.c, region) {
+            for id in ordered_keys(self.doc, &candidate) {
+                if let Some(key) = block_order(self.doc, &candidate, &id) {
+                    co.by_id.insert(id.clone(), key.clone());
+                    co.entries.insert(OrderKey { key, id });
+                }
+            }
+        }
+        self.ids.order.by_container.insert(container.clone(), co);
+    }
+
     /// Build the order index for `container` on first use (one O(n log n) scan), then keep it incrementally.
     fn ensure_order_cache(&mut self, container: &ObjId) {
         if self.ids.order.by_container.contains_key(container) {
@@ -1991,6 +2239,7 @@ impl DocMut<'_> {
     /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
         let container = self.region_container(region);
+        self.ensure_region_order_cache(&container, region);
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self
@@ -2004,6 +2253,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         id
     }
@@ -2046,10 +2296,7 @@ impl DocMut<'_> {
         key: &str,
         value: impl Into<ScalarValue>,
     ) {
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
-        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+        let Some((_, obj)) = region_block(self.doc, self.c, region, block_id) else {
             return;
         };
         let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
@@ -2160,6 +2407,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2168,14 +2416,7 @@ impl DocMut<'_> {
     fn note_text_obj(&mut self, note_id: &str, block_id: &str) -> Option<ObjId> {
         let container = self.note_blocks_container(note_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into a note's block.
@@ -2344,6 +2585,7 @@ impl DocMut<'_> {
             .ok()?;
         self.doc.put(&obj, BLOCK_KIND, kind).ok()?;
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).ok()?;
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2356,10 +2598,7 @@ impl DocMut<'_> {
     ) -> Option<ObjId> {
         let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
-            _ => self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok(),
-        }
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into one reply block.
@@ -2428,6 +2667,7 @@ impl DocMut<'_> {
         self.doc
             .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
             .unwrap();
+        create_block_text(self.doc, &obj);
         self.record_order(&container, &id, &key);
         Some(id)
     }
@@ -2436,14 +2676,7 @@ impl DocMut<'_> {
     fn comment_text_obj(&mut self, comment_id: &str, block_id: &str) -> Option<ObjId> {
         let container = self.comment_blocks_container(comment_id)?;
         let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     /// Splice text into a comment's block.
@@ -2659,28 +2892,21 @@ impl DocMut<'_> {
 
     /// Remove every block from a region (clearing a header/footer).
     pub fn clear_region(&mut self, region: Region) {
-        let Some(container) = region_obj(self.doc, self.c, region) else {
-            return;
-        };
-        for id in ordered_keys(self.doc, &container) {
-            let _ = self.doc.delete(&container, &id);
+        // Every candidate container, so a concurrently created header's blocks
+        // (see "conflicting region containers") are cleared too.
+        for container in region_objs(self.doc, self.c, region) {
+            for id in ordered_keys(self.doc, &container) {
+                let _ = self.doc.delete(&container, &id);
+            }
+            // Drop the (now-empty) container's cached order; it rebuilds lazily.
+            self.ids.order.by_container.remove(&container);
         }
-        // Drop the (now-empty) container's cached order; it rebuilds lazily.
-        self.ids.order.by_container.remove(&container);
     }
 
     /// Resolve-or-create the Text object of a region block.
     fn region_text_obj(&mut self, region: Region, block_id: &str) -> Option<ObjId> {
-        let container = region_obj(self.doc, self.c, region)?;
-        let obj = block_obj(self.doc, &container, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        let (_, obj) = region_block(self.doc, self.c, region, block_id)?;
+        ensure_block_text(self.doc, &obj)
     }
 
     pub fn remove_block(&mut self, id: &str) {
@@ -2693,13 +2919,20 @@ impl DocMut<'_> {
     /// the same region container. Action replay uses this for delete-wins
     /// behavior against divergent edits of the removed object.
     pub fn tombstone_block_in(&mut self, region: Region, id: &str) {
-        let Some(container) = region_obj(self.doc, self.c, region) else {
+        let Some(target) = region_obj(self.doc, self.c, region) else {
             return;
         };
+        // The block's own container, which differs from `target` only for a
+        // concurrently created header/footer (see "conflicting region containers").
+        let container = region_block(self.doc, self.c, region, id)
+            .map_or_else(|| target.clone(), |(container, _)| container);
         let key = format!("{BLOCK_TOMBSTONE_PREFIX}{id}");
         let _ = self.doc.put(&container, key, true);
         let _ = self.doc.delete(&container, id);
         self.forget_order(&container, id);
+        if container != target {
+            self.forget_order(&target, id);
+        }
     }
 
     /// Move block `id` to a new position, ordered directly after `after` (or first, when `after` is `None`).
@@ -2720,14 +2953,7 @@ impl DocMut<'_> {
 
     fn text_obj(&mut self, block_id: &str) -> Option<ObjId> {
         let obj = block_obj(self.doc, &self.c.blocks, block_id)?;
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        ensure_block_text(self.doc, &obj)
     }
 
     pub fn splice_text(&mut self, block_id: &str, idx: usize, del: isize, ins: &str) {

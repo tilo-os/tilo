@@ -134,10 +134,17 @@ impl FrameHarness {
             }
         }
         if let Some(pending) = local_pending {
+            let encoded = match pending.encode_at_local_owner(&local) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    tracing::warn!(%error, "caller local request refused");
+                    return;
+                }
+            };
             if let Err(error) = self.root.invoke_resource_operation_v2(
                 pending.kind,
-                &pending.encoded.type_id,
-                &pending.encoded.payload,
+                &encoded.type_id,
+                &encoded.payload,
                 &self.state.doc,
                 &self.state.root,
             ) {

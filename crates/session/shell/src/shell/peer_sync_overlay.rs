@@ -25,6 +25,8 @@ pub enum PeerSyncRequest {
         recipient_user_public_key: [u8; 32],
     },
     AcceptInvite(String),
+    PollEnrollment(u64),
+    CancelEnrollment(u64),
     ListPendingInvitations,
     ResendInvitation([u8; 32]),
     CancelInvitation([u8; 32]),
@@ -69,6 +71,8 @@ pub enum InviteRecipientPath {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncResponse {
+    EnrollmentPending { id: u64 },
+    EnrollmentJoined { id: u64, room: String },
     Message(String),
     PendingInvitations(Vec<PendingInvitationSummary>),
 }
@@ -161,9 +165,33 @@ pub struct PeerSyncOverlay {
     rect: Rect,
     button_rects: Vec<(Button, Rect)>,
     pending_offset: usize,
+    enrollment: Option<u64>,
+    enrollment_poll_at: Option<std::time::Instant>,
+    retired_enrollments: std::collections::VecDeque<u64>,
 }
 
 impl PeerSyncOverlay {
+    pub fn pending_enrollment_request(&mut self) -> Option<PeerSyncRequest> {
+        if let Some(id) = self.retired_enrollments.pop_front() {
+            return Some(PeerSyncRequest::CancelEnrollment(id));
+        }
+        let id = self.enrollment?;
+        let now = std::time::Instant::now();
+        if self.enrollment_poll_at.is_some_and(|previous| {
+            now.duration_since(previous) < std::time::Duration::from_millis(200)
+        }) {
+            return None;
+        }
+        self.enrollment_poll_at = Some(now);
+        Some(PeerSyncRequest::PollEnrollment(id))
+    }
+    fn retire_enrollment(&mut self) {
+        if let Some(id) = self.enrollment.take() {
+            self.retired_enrollments.push_back(id);
+        }
+        self.enrollment_poll_at = None;
+    }
+
     pub fn snapshot(&self) -> PeerSyncSnapshot {
         self.state.clone()
     }
@@ -205,6 +233,7 @@ impl PeerSyncOverlay {
     }
 
     pub fn prompt_invite(&mut self) {
+        self.retire_enrollment();
         self.state.invite_name = Some(String::new());
         self.state.connect_input = None;
         self.state.invite_token = None;
@@ -222,6 +251,7 @@ impl PeerSyncOverlay {
     }
 
     pub fn prompt_connect(&mut self) {
+        self.retire_enrollment();
         self.state.invite_name = None;
         self.state.connect_input = Some(String::new());
         self.state.status = Some("Paste or type the invite token".to_string());
@@ -250,6 +280,31 @@ impl PeerSyncOverlay {
         copy_result: bool,
     ) {
         match (request, outcome) {
+            (PeerSyncRequest::AcceptInvite(_), Ok(PeerSyncResponse::EnrollmentPending { id })) => {
+                self.enrollment = Some(id);
+                self.enrollment_poll_at = None;
+                self.state.status = Some("Joining…".into());
+            }
+            (
+                PeerSyncRequest::PollEnrollment(requested),
+                Ok(PeerSyncResponse::EnrollmentPending { id }),
+            ) if *requested == id && self.enrollment == Some(id) => {}
+            (
+                PeerSyncRequest::PollEnrollment(requested),
+                Ok(PeerSyncResponse::EnrollmentJoined { id, room }),
+            ) if *requested == id && self.enrollment == Some(id) => {
+                self.enrollment = None;
+                self.enrollment_poll_at = None;
+                self.state.connect_input = None;
+                self.state.status = Some(format!("Joined room {room}"));
+            }
+            (PeerSyncRequest::PollEnrollment(id), Err(error)) if self.enrollment == Some(*id) => {
+                self.enrollment = None;
+                self.enrollment_poll_at = None;
+                self.state.status = Some(format!("Join incomplete: {error}"));
+            }
+            (PeerSyncRequest::PollEnrollment(_) | PeerSyncRequest::CancelEnrollment(_), _) => {}
+
             (PeerSyncRequest::IssueInvite, Ok(PeerSyncResponse::Message(token))) => {
                 self.finish_invite(token, None, copy_result);
             }
@@ -494,6 +549,7 @@ impl PeerSyncOverlay {
             }
             Button::Join => self.submit_connect(),
             Button::Cancel => {
+                self.retire_enrollment();
                 self.state.connect_input = None;
                 self.state.invite_name = None;
                 self.state.status = None;
@@ -578,6 +634,9 @@ impl PeerSyncOverlay {
     }
 
     fn submit_connect(&self) -> EventOutcome {
+        if self.enrollment.is_some() {
+            return EventOutcome::consumed();
+        }
         let Some(token) = self.state.connect_input.as_deref() else {
             return EventOutcome::ignored();
         };
@@ -633,6 +692,7 @@ impl PeerSyncOverlay {
     }
 
     fn dismiss(&mut self) {
+        self.retire_enrollment();
         self.state = PeerSyncSnapshot::default();
     }
 
@@ -2008,5 +2068,65 @@ mod tests {
         assert!(shown.chars().count() < 20);
         assert!(shown.contains('…'));
         assert_eq!(elide_token("short-one"), "short-one");
+    }
+}
+
+#[cfg(test)]
+mod native_enrollment_ui_tests {
+    use super::*;
+    #[test]
+    fn native_pending_join_is_polled_and_never_reported_joined_early() {
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_connect();
+        overlay.finish_typed_request(
+            &PeerSyncRequest::AcceptInvite("signed".into()),
+            Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
+            false,
+        );
+        assert_eq!(overlay.enrollment, Some(7));
+        assert!(!overlay.snapshot().status.unwrap().contains("Joined"));
+        assert_eq!(
+            overlay.pending_enrollment_request(),
+            Some(PeerSyncRequest::PollEnrollment(7))
+        );
+        assert_eq!(overlay.pending_enrollment_request(), None);
+        overlay.finish_typed_request(
+            &PeerSyncRequest::PollEnrollment(7),
+            Ok(PeerSyncResponse::EnrollmentJoined {
+                id: 7,
+                room: "actual".into(),
+            }),
+            false,
+        );
+        assert_eq!(
+            overlay.snapshot().status.as_deref(),
+            Some("Joined room actual")
+        );
+        assert_eq!(overlay.enrollment, None);
+    }
+    #[test]
+    fn native_overlay_close_cancels_once_and_ignores_late_join() {
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_connect();
+        overlay.finish_typed_request(
+            &PeerSyncRequest::AcceptInvite("signed".into()),
+            Ok(PeerSyncResponse::EnrollmentPending { id: 7 }),
+            false,
+        );
+        overlay.dismiss();
+        assert_eq!(
+            overlay.pending_enrollment_request(),
+            Some(PeerSyncRequest::CancelEnrollment(7))
+        );
+        assert_eq!(overlay.pending_enrollment_request(), None);
+        overlay.finish_typed_request(
+            &PeerSyncRequest::PollEnrollment(7),
+            Ok(PeerSyncResponse::EnrollmentJoined {
+                id: 7,
+                room: "late".into(),
+            }),
+            false,
+        );
+        assert!(overlay.snapshot().status.is_none());
     }
 }

@@ -13,7 +13,7 @@ struct Custody {
     file: File,
     name: OsString,
     expected: FileIdentity,
-    privacy: Privacy,
+    privacy: native::FilePolicy,
 }
 
 /// Failure committing an already existing object. Drop never removes anything.
@@ -73,26 +73,39 @@ fn observed(error: io::Error) -> (io::Error, bool) {
     );
     (error, changed)
 }
-fn unchanged(actual: FileIdentity, expected: &FileIdentity) -> Result<(), (io::Error, bool)> {
+fn unchanged(
+    actual: FileIdentity,
+    expected: &FileIdentity,
+    privacy: native::FilePolicy,
+) -> Result<(), (io::Error, bool)> {
     if &actual == expected {
         Ok(())
     } else {
-        Err((io::Error::other("existing file binding changed"), true))
+        Err((
+            privacy.error(io::ErrorKind::Other, "existing file binding changed"),
+            true,
+        ))
     }
 }
 impl Custody {
     fn validate(&self) -> Result<(), (io::Error, bool)> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if matches!(self.privacy, native::FilePolicy::BoundedOwner) {
+            self.parent.validate_bounded().map_err(|e| (e, false))?;
+        }
         unchanged(
             FileIdentity::of(&self.file).map_err(|e| (e, false))?,
             &self.expected,
+            self.privacy,
         )?;
         let named = self
             .parent
-            .open_read(&self.name, self.privacy)
+            .open_read_policy(&self.name, self.privacy)
             .map_err(observed)?;
         unchanged(
             FileIdentity::of(&named).map_err(|e| (e, false))?,
             &self.expected,
+            self.privacy,
         )
     }
     fn commit(&self) -> Result<(), (io::Error, bool)> {
@@ -111,9 +124,27 @@ pub(crate) fn commit(
     expected: &FileIdentity,
     privacy: Privacy,
 ) -> Result<(), ExistingCommitError> {
+    commit_policy(
+        parent,
+        name,
+        expected,
+        native::FilePolicy::Ordinary(privacy),
+    )
+}
+pub(crate) fn commit_policy(
+    parent: &StorageDirectory,
+    name: &OsStr,
+    expected: &FileIdentity,
+    privacy: native::FilePolicy,
+) -> Result<(), ExistingCommitError> {
     let prepared = (|| {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if matches!(privacy, native::FilePolicy::BoundedOwner) {
+            crate::bounded::name_check(name)?;
+            parent.inner.validate_bounded()?;
+        }
         let parent = parent.inner.try_clone()?;
-        let file = parent.open_writable(name, privacy, false, false)?;
+        let file = parent.open_writable_policy(name, privacy, false, false)?;
         Ok::<_, io::Error>(Custody {
             parent,
             file,

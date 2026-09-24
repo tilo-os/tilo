@@ -3,6 +3,9 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
+mod native_enrollment;
+mod native_ingress;
+
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -1084,6 +1087,7 @@ pub struct PendingInviteSummary {
 /// runtime hosting the [`Actor`], the per-workspace
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
+    native_enrollment: native_enrollment::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1559,6 +1563,7 @@ impl ShellNetwork {
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
+            native_enrollment: Default::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -1865,6 +1870,23 @@ impl ShellNetwork {
             *invite_id = Some(redemption);
         }
         let ws = self.topic_for_message(&msg);
+        if self.native_topic_required(ws)
+            && matches!(
+                &msg,
+                NeighbourMsg::SyncReq { .. }
+                    | NeighbourMsg::SyncResp { .. }
+                    | NeighbourMsg::IdentityAnnouncement { .. }
+                    | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            )
+        {
+            return false;
+        }
+        if self.native_topic_required(ws)
+            && matches!(&msg, NeighbourMsg::AppDocument { .. })
+            && !self.native_document_committed(&msg)
+        {
+            return false;
+        }
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
 
@@ -2098,6 +2120,14 @@ impl ShellNetwork {
         record_id: String,
         envelope: collab_types::SignedOp,
     ) {
+        if let Some(room) = RoomId::parse(&cluster_id)
+            && self.native_topic_required(room_topic_id(room))
+        {
+            let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+                ws: room_topic_id(room),
+            });
+            return;
+        }
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -4076,6 +4106,7 @@ impl ShellNetwork {
     /// `event_rx` lock.
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
+            NetEvent::NativeInput(input) => self.dispatch_native_input(input),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
@@ -4646,6 +4677,9 @@ impl ShellNetwork {
     /// `ws` — see [`NetEvent::HostReady`]. Unlike `SyncReq`, this does
     /// not need another device online to answer it.
     fn handle_host_ready(&self, ws: u64, peer: iroh::EndpointId) {
+        if self.native_topic_required(ws) {
+            return;
+        }
         if self
             .personal_continuity_user
             .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
@@ -4741,6 +4775,22 @@ impl ShellNetwork {
                 ws,
                 expected,
                 "dropping collaboration message on the wrong room topic"
+            );
+            return;
+        }
+        if self.native_topic_required(ws)
+            && matches!(
+                &msg,
+                NeighbourMsg::SyncReq { .. }
+                    | NeighbourMsg::SyncResp { .. }
+                    | NeighbourMsg::AppDocument { .. }
+                    | NeighbourMsg::IdentityAnnouncement { .. }
+                    | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            )
+        {
+            tracing::warn!(
+                ws,
+                "enrolled room state requires authenticated native relay admission"
             );
             return;
         }
@@ -5731,6 +5781,7 @@ pub(crate) fn shell_network_for_test(
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
+        native_enrollment: Default::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),

@@ -45,6 +45,9 @@
     )
 )]
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod bounded;
+
 #[cfg(unix)]
 mod existing;
 pub mod lease;

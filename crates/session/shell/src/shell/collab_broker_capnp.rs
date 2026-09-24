@@ -7,6 +7,7 @@ mod local_consent_tests;
 mod realtime_host;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use local_consent::LocalSessionLiveness;
+pub(crate) use local_consent::LocalSessionPermit;
 pub(crate) use local_consent::{LocalSessionAuthority, LocalSessionLifecycle};
 pub(crate) use realtime_host::NativeRealtimeServices;
 pub use realtime_host::{

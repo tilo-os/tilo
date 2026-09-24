@@ -1791,6 +1791,56 @@ impl Widget for TileHost {
         }
     }
 
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        scope.check()?;
+        if !matches!(&self.content, TileContent::App(_)) {
+            return Ok(None);
+        }
+        if !self.history_lifetime.active.get() {
+            return Err("The current document owner is closed".into());
+        }
+        let live = self.resolve_record()?;
+        let owner = self.history_owner();
+        let TileContent::App(app) = &mut self.content else {
+            return Ok(None);
+        };
+        let started = if let (Some(live), Some(binding)) = (live, &self.binding) {
+            binding
+                .store
+                .with_checked(&live, |document| {
+                    scope.with_document_mutation(document, |document| {
+                        app.start_resource_operation_scoped(
+                            scope, kind, type_id, payload, document, &ROOT,
+                        )
+                    })
+                })
+                .map_err(|error| error.to_string())??
+        } else {
+            scope.with_document_mutation(doc, |doc| {
+                app.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
+            })?
+        };
+        if matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ) && let Some(owner) = owner
+        {
+            self.retained_invocations
+                .insert(scope.invocation(), owner.clone());
+            self.owner_bound_work = true;
+            self.owner_bound_custody.get_or_insert(owner);
+        }
+        Ok(started)
+    }
+
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,

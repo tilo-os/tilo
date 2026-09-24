@@ -27,6 +27,8 @@
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
+use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -91,8 +93,8 @@ enum RowResolution {
 #[derive(Clone)]
 enum ActionKind {
     /// Fires immediately with this pre-encoded action.
-    Immediate {
-        encoded: EncodedAction,
+    NoArgument {
+        intent: PreparedActionIntent,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -149,7 +151,7 @@ pub struct PendingOperation {
     pub(crate) bound: Option<crate::bound_dispatch::BoundActionTarget>,
     /// The address whose current authority must still be present at dispatch.
     pub address: tilo_actions::ActionAddress,
-    pub encoded: EncodedAction,
+    intent: PreparedActionIntent,
     pub context: ActionContext,
     pub kind: OperationKind,
     input: PendingInput,
@@ -163,6 +165,32 @@ pub struct PendingOperation {
 }
 
 impl PendingOperation {
+    /// A fixed/prepared value, when this intent already has one. Deferred
+    /// creation deliberately has no encoding until final owner execution.
+    pub fn encoded(&self) -> Option<&EncodedAction> {
+        self.intent.encoded()
+    }
+
+    pub(crate) fn encode_at_local_owner(
+        &self,
+        resources: &[Resource],
+    ) -> Result<EncodedAction, tilo_actions::DoorError> {
+        let spec = tilo_actions::door::resolve(resources, &self.address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(self.address.clone()))?;
+        match &self.intent {
+            PreparedActionIntent::Encoded(encoded) => Ok(encoded.clone()),
+            PreparedActionIntent::Deferred(intent) => {
+                intent.validate(spec)?;
+                if spec.locus != tilo_actions::ExecutionLocus::ClientLocal {
+                    return Err(tilo_actions::DoorError::Failed(
+                        "Deferred server execution must use the address-based broker door".into(),
+                    ));
+                }
+                tilo_actions::door::encode(resources, &self.address, None)
+            }
+        }
+    }
+
     /// Reconstruct the door argument collected by the palette. Keeping the
     /// typed JSON prefix makes palette, semantic, button, and agent calls use
     /// the same strict binder in the application host.
@@ -488,7 +516,7 @@ impl ActionPalette {
         };
         let pending = PendingOperation {
             address: request.address.clone(),
-            encoded: request.encoded().clone(),
+            intent: request.intent().clone(),
             context: request.context.clone(),
             kind: request.kind(),
             input,
@@ -1306,9 +1334,24 @@ impl ActionPalette {
                 pending.kind.as_str()
             ))));
         }
+        let resources = self.authority_for(&pending.address, pending.bound.as_ref())?;
+        let encoded = match pending.encode_at_local_owner(&resources) {
+            Ok(encoded) => encoded,
+            Err(error) => return Some(Err(tilo_actions::ActionError::Refused(error.to_string()))),
+        };
+        if let PreparedActionIntent::Deferred(_) = &pending.intent {
+            match registry.decode(&encoded) {
+                Ok(action) if action.locus() == tilo_actions::ExecutionLocus::ClientLocal => (),
+                _ => {
+                    return Some(Err(tilo_actions::ActionError::Refused(
+                        "Deferred action declaration does not match the local registry".into(),
+                    )));
+                }
+            }
+        }
         Some(Self::dispatch_encoded(
             doc,
-            &pending.encoded,
+            &encoded,
             registry,
             transport,
             pending.context,
@@ -1341,6 +1384,15 @@ impl ActionPalette {
         {
             return None;
         }
+        if let PreparedActionIntent::Deferred(intent) = &pending.intent {
+            if intent.validate(spec).is_err() {
+                self.pending_dispatch = None;
+                return None;
+            }
+            self.pending_dispatch = None;
+            return Some(pending);
+        }
+        let encoded = pending.encoded()?;
         let current = match &pending.input {
             PendingInput::Immediate => {
                 tilo_actions::door::encode(&authority, &pending.address, None).ok()?
@@ -1354,9 +1406,9 @@ impl ActionPalette {
                         .ok()?;
                 tilo_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
             }
-            PendingInput::Invalid => pending.encoded.clone(),
+            PendingInput::Invalid => encoded.clone(),
         };
-        if current != pending.encoded {
+        if current != *encoded {
             self.pending_dispatch = None;
             return None;
         }
@@ -1461,8 +1513,8 @@ impl ActionPalette {
                     return;
                 };
                 match kind {
-                    ActionKind::Immediate {
-                        encoded,
+                    ActionKind::NoArgument {
+                        intent,
                         context,
                         kind,
                         confirmation,
@@ -1473,7 +1525,7 @@ impl ActionPalette {
                                 ordinary: None,
                                 bound,
                                 address,
-                                encoded,
+                                intent,
                                 context,
                                 kind,
                                 input: PendingInput::Immediate,
@@ -1553,8 +1605,14 @@ impl ActionPalette {
                 .first()
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
-            ActionInput::Immediate(enc) => ActionKind::Immediate {
-                encoded: enc.clone(),
+            ActionInput::Immediate(enc) => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Encoded(enc.clone()),
+                context,
+                kind: fa.action.kind,
+                confirmation: fa.action.contract.confirmation.clone(),
+            },
+            ActionInput::Deferred { .. } => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Deferred(DeferredIntent::capture(fa.action).ok()?),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -2062,7 +2120,7 @@ impl ActionPalette {
                 let value = self.field.value().to_string();
                 let state = self.arg.as_ref().expect("argument stage checked above");
                 let fresh = self.action_kind_for_address(&state.address, state.bound.as_ref());
-                if fresh.is_none() || matches!(fresh, Some(ActionKind::Immediate { .. })) {
+                if fresh.is_none() || matches!(fresh, Some(ActionKind::NoArgument { .. })) {
                     if self.history_has_custody() {
                         self.search_announcement = Some(
                             "The retained action was removed, changed, or is currently unavailable"
@@ -2125,7 +2183,7 @@ impl ActionPalette {
                             };
                             (encoded, context, kind, confirmation, input)
                         }
-                        ActionKind::Immediate { .. } => {
+                        ActionKind::NoArgument { .. } => {
                             self.exit_argument_mode();
                             return true;
                         }
@@ -2135,7 +2193,7 @@ impl ActionPalette {
                             ordinary: None,
                             bound,
                             address,
-                            encoded,
+                            intent: PreparedActionIntent::Encoded(encoded),
                             context,
                             kind,
                             input,
@@ -2204,7 +2262,10 @@ impl ActionPalette {
         if !pending.has_valid_input() {
             let message = format!(
                 "Invalid arguments: {}",
-                String::from_utf8_lossy(&pending.encoded.payload)
+                pending
+                    .encoded()
+                    .map(|encoded| String::from_utf8_lossy(&encoded.payload).into_owned())
+                    .unwrap_or_else(|| "invalid deferred intent".into())
             );
             self.arg = Some(ArgState {
                 bound: pending.bound,
@@ -2521,6 +2582,7 @@ pub(crate) fn observed_history_editor(
 
 #[cfg(test)]
 mod tests {
+    include!("action_palette/deferred_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -3108,7 +3170,10 @@ mod tests {
             pending.address,
             tilo_actions::ActionAddress::new("test.thing:1", "mark")
         );
-        assert_eq!(pending.encoded.type_id, NOTE_TYPE);
+        assert_eq!(
+            pending.encoded().expect("fixed encoding").type_id,
+            NOTE_TYPE
+        );
         assert_eq!(pending.kind, OperationKind::Document);
         assert_eq!(
             pending
@@ -3294,10 +3359,10 @@ mod tests {
         );
         ActionPalette::dispatch_encoded(
             &mut doc,
-            &pending.encoded,
+            pending.encoded().expect("fixed encoding"),
             &registry(),
             &mut transport,
-            pending.context,
+            pending.context.clone(),
         )
         .expect("confirmed dispatch succeeds");
         assert_eq!(

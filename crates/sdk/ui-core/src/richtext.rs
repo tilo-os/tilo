@@ -234,7 +234,11 @@ impl RichTextLayout {
     ) -> Self {
         let line_height = style.line_height_px();
         let offset_map = if max_width.is_some() {
-            style.hyphenation.offset_map(text)
+            let mut map = style.hyphenation.offset_map(text);
+            if text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
+                map.add_paragraph_chunks(text);
+            }
+            map
         } else {
             OffsetMap::default()
         };
@@ -328,6 +332,63 @@ impl RichTextLayout {
         )
     }
 
+    /// [`Self::shape`] reusing the unchanged paragraphs (cosmic-text lines,
+    /// including the chunks of a huge paragraph) of `previous`, this block's
+    /// last layout from the same font system. Any configuration change makes
+    /// it shape from scratch, exactly like [`Self::shape`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Same shaping inputs as `shape` plus the previous layout to reuse."
+    )]
+    pub fn shape_reusing(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        base_bold: bool,
+        size: f32,
+        width: f32,
+        align: TextAlign,
+        family: FontFamily,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+        line_height_mult: f32,
+        previous: Option<Self>,
+    ) -> Self {
+        let style = Self::block_style(base_bold, size, family, line_height_mult);
+        Self::shape_styled_reusing_browser(
+            fs,
+            spans,
+            &style,
+            Some(width),
+            align,
+            underlines,
+            strikes,
+            previous,
+            false,
+        )
+    }
+
+    fn block_style(
+        base_bold: bool,
+        size: f32,
+        family: FontFamily,
+        line_height_mult: f32,
+    ) -> crate::text_render::TextStyle {
+        use crate::text_render::{FontChoice, TextStyle, TextWeight};
+        let family = match family {
+            FontFamily::Sans => FontChoice::SansSerif,
+            FontFamily::Serif => FontChoice::Serif,
+            FontFamily::Mono => FontChoice::Monospace,
+        };
+        TextStyle::new(size)
+            .with_line_height(1.4 * line_height_mult)
+            .with_weight(if base_bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            })
+            .with_family(family)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "The compatibility shaping entry point preserves block metrics and decorations while selecting installed browser emoji."
@@ -345,21 +406,7 @@ impl RichTextLayout {
         line_height_mult: f32,
         browser_emoji: bool,
     ) -> Self {
-        use crate::text_render::{FontChoice, TextStyle, TextWeight};
-
-        let family = match family {
-            FontFamily::Sans => FontChoice::SansSerif,
-            FontFamily::Serif => FontChoice::Serif,
-            FontFamily::Mono => FontChoice::Monospace,
-        };
-        let style = TextStyle::new(size)
-            .with_line_height(1.4 * line_height_mult)
-            .with_weight(if base_bold {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            })
-            .with_family(family);
+        let style = Self::block_style(base_bold, size, family, line_height_mult);
         Self::shape_styled_browser(
             fs,
             spans,
@@ -455,7 +502,13 @@ impl RichTextLayout {
     ) -> Self {
         let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let offset_map = if max_width.is_some() {
-            style.hyphenation.offset_map(&full_text)
+            let mut map = style.hyphenation.offset_map(&full_text);
+            // Wrapped paragraphs beyond the huge-paragraph bound shape in
+            // content-defined chunks, so an edit reshapes one chunk.
+            if full_text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES {
+                map.add_paragraph_chunks(&full_text);
+            }
+            map
         } else {
             OffsetMap::default()
         };
@@ -1046,11 +1099,284 @@ impl RichTextLayout {
         }
         rects
     }
+
+    /// [`Self::selection_rects`] for several byte ranges in one pass over the
+    /// layout runs, in input order. A long paragraph is one logical line with
+    /// many visual runs; the per-range form walks every run and every glyph
+    /// of it once per range, so decorating every span of a pasted page
+    /// (spell-check squiggles, find matches) was quadratic in the paragraph
+    /// length. Here each run looks up only the ranges that can touch its byte
+    /// extent (sorted starts plus a running maximum of ends), which yields
+    /// exactly the same rectangles.
+    pub fn selection_rects_many(
+        &self,
+        ranges: &[(usize, usize)],
+    ) -> Vec<Vec<(f32, f32, f32, f32)>> {
+        self.selection_rects_many_within(ranges, f32::NEG_INFINITY, f32::INFINITY)
+    }
+
+    /// [`Self::selection_rects_many`] restricted to visual lines that overlap
+    /// the vertical band `[top, bottom]` (layout coordinates). Rectangles of
+    /// lines entirely outside the band are omitted; a caller passing its clip
+    /// paints exactly what the unrestricted form would have shown.
+    pub fn selection_rects_many_within(
+        &self,
+        ranges: &[(usize, usize)],
+        top: f32,
+        bottom: f32,
+    ) -> Vec<Vec<(f32, f32, f32, f32)>> {
+        let mut out = vec![Vec::new(); ranges.len()];
+        // (global shaped start, global shaped end, start cursor, end cursor, input index)
+        let mut index: Vec<(usize, usize, Cursor, Cursor, usize)> = ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, (start, end))| start < end)
+            .map(|(i, &(start, end))| {
+                let (cursor_start, cursor_end) = (self.cursor_at(start), self.cursor_at(end));
+                (
+                    self.shaped_global(cursor_start),
+                    self.shaped_global(cursor_end),
+                    cursor_start,
+                    cursor_end,
+                    i,
+                )
+            })
+            .collect();
+        if index.is_empty() {
+            return out;
+        }
+        index.sort_by_key(|entry| entry.0);
+        let mut running_end = 0;
+        let running: Vec<usize> = index
+            .iter()
+            .map(|entry| {
+                running_end = running_end.max(entry.1);
+                running_end
+            })
+            .collect();
+        for run in self.buffer.layout_runs() {
+            if run.line_top + run.line_height < top || run.line_top > bottom {
+                continue;
+            }
+            let (mut low, mut high) = (usize::MAX, 0);
+            for glyph in run.glyphs {
+                low = low.min(glyph.start);
+                high = high.max(glyph.end);
+            }
+            if low == usize::MAX {
+                continue;
+            }
+            let line_start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
+            let (global_low, global_high) = (line_start + low, line_start + high);
+            // Every range touching this run ends after `global_low`; ranges are
+            // sorted by start, and the running maximum of ends is monotonic.
+            let first = running.partition_point(|&end| end <= global_low);
+            for &(global_start, global_end, cursor_start, cursor_end, i) in &index[first..] {
+                if global_start >= global_high {
+                    break;
+                }
+                if global_end <= global_low
+                    || run.line_i < cursor_start.line
+                    || run.line_i > cursor_end.line
+                {
+                    continue;
+                }
+                // `highlight` selects a grapheme only when it ends after the
+                // start cursor and begins before the end cursor on their lines.
+                if (run.line_i == cursor_start.line && high <= cursor_start.index)
+                    || (run.line_i == cursor_end.line && low >= cursor_end.index)
+                {
+                    continue;
+                }
+                for (x, width) in run.highlight(cursor_start, cursor_end) {
+                    out[i].push((x, run.line_top, x + width, run.line_top + run.line_height));
+                }
+            }
+        }
+        out
+    }
+
+    /// Source byte range `[start, end)` covered by the visual lines that
+    /// overlap the vertical band `[top, bottom]`, or `None` when no line does.
+    /// Callers with many decorated spans use it to skip spans that cannot
+    /// reach the band before asking for their geometry.
+    pub fn source_range_within(&self, top: f32, bottom: f32) -> Option<(usize, usize)> {
+        let mut range: Option<(usize, usize)> = None;
+        for run in self.buffer.layout_runs() {
+            if run.line_top + run.line_height < top || run.line_top > bottom {
+                continue;
+            }
+            for glyph in run.glyphs {
+                let start = self.glyph_global_byte(run.line_i, glyph.start);
+                let end = self.glyph_global_byte(run.line_i, glyph.end);
+                range = Some(range.map_or((start, end), |(a, b)| (a.min(start), b.max(end))));
+            }
+        }
+        range
+    }
+
+    /// Position of a cursor in the paragraph-global shaped byte space (the
+    /// space of `line_starts` and of cosmic-text glyph offsets within a line).
+    fn shaped_global(&self, cursor: Cursor) -> usize {
+        self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_paragraph_chunks_keep_source_offsets_and_reuse_shaping() {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        let text = (0..7000)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(&text)],
+            &style,
+            Some(400.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        assert!(layout.buffer.lines.len() > 3, "shaped in chunks");
+        let mut last_y = f32::MIN;
+        for byte in (0..=text.len()).step_by(211) {
+            let (x, y, h) = layout.caret_geometry(byte);
+            assert!(y >= last_y && h > 0.0, "caret order at {byte}");
+            last_y = y;
+            // Hitting the caret position lands on the same source byte.
+            let hit = layout.hit(x + 0.01, y + h / 2.0);
+            assert!(hit.abs_diff(byte) <= 12, "hit {hit} for {byte}");
+        }
+        assert_eq!(
+            layout.caret_geometry(text.len()).1,
+            last_y.max(layout.caret_geometry(text.len()).1)
+        );
+        // An edit near the end retains the shaped allocation of the first chunk.
+        let retained = layout.buffer.lines[0].layout_opt().unwrap().as_ptr();
+        let edited = format!("{text} tail");
+        let reused = RichTextLayout::shape_styled_reusing(
+            &mut fs,
+            &[RichSpan::new(&edited)],
+            &style,
+            Some(400.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+            Some(layout),
+        );
+        assert_eq!(
+            retained,
+            reused.buffer.lines[0].layout_opt().unwrap().as_ptr()
+        );
+    }
+
+    #[test]
+    fn offscreen_visual_lines_are_culled_only_by_vertical_extent() {
+        use vello::kurbo::{Affine, Rect};
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        let text = "word ".repeat(200);
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(&text)],
+            &style,
+            Some(100.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let runs: Vec<_> = layout.buffer.layout_runs().collect();
+        assert!(runs.len() > 10);
+        let clip = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let outside = crate::text_render::rich_run_outside_clip;
+        assert!(!outside(&runs[0], Affine::IDENTITY, clip));
+        let last = runs.last().unwrap();
+        assert!(outside(last, Affine::IDENTITY, clip));
+        assert!(!outside(
+            last,
+            Affine::translate((0.0, -f64::from(last.line_top))),
+            clip
+        ));
+        assert!(
+            !outside(last, Affine::rotate(0.1), clip),
+            "rotation is never culled"
+        );
+        assert!(!outside(
+            last,
+            Affine::IDENTITY,
+            Rect::new(0.0, f64::NAN, 1.0, 1.0)
+        ));
+    }
+
+    #[test]
+    fn batched_selection_rects_match_per_range_geometry() {
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let style = crate::text_render::TextStyle::new(16.0);
+        let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau\nשלום mixed עברית text wraps here too\nemoji 👩‍💻 é end";
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(text)],
+            &style,
+            Some(120.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let bytes: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect();
+        let mut ranges = vec![(5, 5), (text.len(), 0), (0, text.len())];
+        for (i, &a) in bytes.iter().enumerate().step_by(3) {
+            for &b in bytes.iter().skip(i).step_by(7) {
+                ranges.push((a, b));
+            }
+        }
+        let batched = layout.selection_rects_many(&ranges);
+        assert_eq!(batched.len(), ranges.len());
+        for (range, rects) in ranges.iter().zip(&batched) {
+            assert_eq!(
+                rects,
+                &layout.selection_rects(range.0, range.1),
+                "range {range:?}"
+            );
+        }
+        // The band's source range covers every range that has a rectangle in it.
+        let (lo, hi) = layout.source_range_within(0.0, 20.0).unwrap();
+        for (range, rects) in ranges
+            .iter()
+            .zip(&layout.selection_rects_many_within(&ranges, 0.0, 20.0))
+        {
+            if !rects.is_empty() {
+                assert!(range.1 > lo && range.0 < hi, "{range:?} outside {lo}..{hi}");
+            }
+        }
+        assert_eq!(layout.source_range_within(1.0e6, 2.0e6), None);
+        // A band keeps exactly the unrestricted rectangles of the lines it overlaps.
+        let bottom = 20.0;
+        let banded = layout.selection_rects_many_within(&ranges, 0.0, bottom);
+        for (all, within) in batched.iter().zip(&banded) {
+            let expected: Vec<_> = all
+                .iter()
+                .copied()
+                .filter(|r| r.1 <= bottom && r.3 >= 0.0)
+                .collect();
+            assert_eq!(within, &expected);
+        }
+        assert!(banded.iter().any(|rects| !rects.is_empty()));
+        assert!(
+            batched.iter().map(Vec::len).sum::<usize>()
+                > banded.iter().map(Vec::len).sum::<usize>()
+        );
+    }
 
     #[test]
     fn reused_paragraphs_keep_allocations_and_match_fresh_geometry() {

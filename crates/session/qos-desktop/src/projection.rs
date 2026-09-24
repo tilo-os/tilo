@@ -63,6 +63,94 @@ fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, 
     }
 }
 
+// ---- concurrently created containers ---------------------------------------
+//
+// `contents` and every map beneath it are created on first projection. On the
+// legacy (unadmitted) room path two peers whose room documents start empty
+// each mint their own root `contents` map (and a guest may mint a strip's
+// `groups` / a group's `tabs` before the owner does): a map-key conflict where
+// Automerge shows one winner and the other peer's windows vanish. Reads join
+// every candidate map at every level; writes go to the winner; each peer's
+// sweep removes its stale entries from every candidate, so a strip removed
+// while it sat in a losing map cannot come back as a ghost.
+
+/// Every map stored under `obj[key]`: the `get` winner first, then the
+/// concurrent losers in Automerge's deterministic order.
+fn map_candidates(doc: &AutoCommit, obj: &automerge::ObjId, key: &str) -> Vec<automerge::ObjId> {
+    use automerge::{ObjType, ReadDoc, Value};
+    let mut out: Vec<automerge::ObjId> = Vec::new();
+    if let Ok(Some((Value::Object(ObjType::Map), winner))) = doc.get(obj, key) {
+        out.push(winner);
+    }
+    if let Ok(values) = doc.get_all(obj, key) {
+        for (value, id) in values {
+            if matches!(value, Value::Object(ObjType::Map)) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// [`map_candidates`] of `key` under each of `parents`, in order.
+fn child_candidates(
+    doc: &AutoCommit,
+    parents: &[automerge::ObjId],
+    key: &str,
+) -> Vec<automerge::ObjId> {
+    let mut out: Vec<automerge::ObjId> = Vec::new();
+    for parent in parents {
+        for id in map_candidates(doc, parent, key) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// The winning candidate, or a new map at `parent[key]` when there is none.
+fn winner_or_create(
+    doc: &mut AutoCommit,
+    candidates: &[automerge::ObjId],
+    parent: &automerge::ObjId,
+    key: &str,
+) -> Option<automerge::ObjId> {
+    use automerge::{ObjType, transaction::Transactable};
+    if let Some(first) = candidates.first() {
+        return Some(first.clone());
+    }
+    match doc.put_object(parent, key, ObjType::Map) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            tracing::error!(?err, key, "room doc: map");
+            None
+        }
+    }
+}
+
+/// Delete, from every candidate container, the keys this machine owns that
+/// are not in `live`.
+fn sweep_stale(
+    doc: &mut AutoCommit,
+    containers: &[automerge::ObjId],
+    live: &std::collections::HashSet<String>,
+    mine: &impl Fn(u64) -> bool,
+) {
+    use automerge::{ReadDoc, transaction::Transactable};
+    for container in containers {
+        let stale: Vec<String> = doc
+            .keys(container)
+            .filter(|k| {
+                !live.contains(k.as_str()) && RoomProjection::contents_key_id(k).is_some_and(mine)
+            })
+            .collect();
+        for key in stale {
+            let _ = doc.delete(container, key.as_str());
+        }
+    }
+}
+
 pub struct RoomProjection;
 impl RoomProjection {
     /// Key the room document stores the room's window contents under.
@@ -128,29 +216,32 @@ impl RoomProjection {
                 && share_floor.is_none_or(|floor| counter_of(id) >= floor)
         };
 
-        let contents_id = match doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(&ROOT, Self::ROOM_CONTENTS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: contents map");
-                    return;
-                }
-            },
+        let contents_all = map_candidates(doc, &ROOT, Self::ROOM_CONTENTS_KEY);
+        let Some(contents_id) =
+            winner_or_create(doc, &contents_all, &ROOT, Self::ROOM_CONTENTS_KEY)
+        else {
+            return;
+        };
+        let contents_all = if contents_all.is_empty() {
+            vec![contents_id.clone()]
+        } else {
+            contents_all
         };
 
         let mut live_strips: HashSet<String> = HashSet::new();
         for (si, strip) in strips.iter().enumerate() {
+            let skey = Self::contents_key(strip.id.raw());
+            let strip_all = child_candidates(doc, &contents_all, skey.as_str());
             // Unmarked empty native rows keep their historical local-only
             // policy. An admitted explicit strip has durable lifecycle state:
             // later ordinary projections preserve it until the strip is removed.
-            let retained = doc
-                .get(&contents_id, Self::contents_key(strip.id.raw()))
-                .ok()
-                .flatten()
-                .and_then(|(_, entry)| doc.get(&entry, "retained_empty_v1").ok().flatten())
-                .and_then(|(value, _)| value.to_u64())
-                == Some(1);
+            let retained = strip_all.first().is_some_and(|entry| {
+                doc.get(entry, "retained_empty_v1")
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.to_u64())
+                    == Some(1)
+            });
             if strip.window_groups.is_empty() && !retain_empty && !retained {
                 continue;
             }
@@ -165,16 +256,9 @@ impl RoomProjection {
                 continue;
             }
 
-            let skey = Self::contents_key(strip.id.raw());
-            let strip_entry = match doc.get(&contents_id, skey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&contents_id, skey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: strip entry");
-                        continue;
-                    }
-                },
+            let Some(strip_entry) = winner_or_create(doc, &strip_all, &contents_id, skey.as_str())
+            else {
+                continue;
             };
             if owns_strip {
                 live_strips.insert(skey.clone());
@@ -185,17 +269,14 @@ impl RoomProjection {
                 put_uint_if_changed(doc, &strip_entry, "order", si as u64);
             }
 
-            Self::project_owned_groups(doc, &strip_entry, strip, &mine);
+            let strip_all = if strip_all.is_empty() {
+                vec![strip_entry]
+            } else {
+                strip_all
+            };
+            Self::project_owned_groups_in(doc, &strip_all, strip, &mine);
         }
-        let stale: Vec<String> = doc
-            .keys(&contents_id)
-            .filter(|k| {
-                !live_strips.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(&mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&contents_id, key.as_str());
-        }
+        sweep_stale(doc, &contents_all, &live_strips, &mine);
     }
 
     /// [`Self::project_owned_contents`]'s per-strip pass: get-or-create
@@ -208,18 +289,30 @@ impl RoomProjection {
         strip: &Strip,
         mine: &impl Fn(u64) -> bool,
     ) {
-        use automerge::{ObjType, ReadDoc, transaction::Transactable};
+        Self::project_owned_groups_in(doc, std::slice::from_ref(strip_entry), strip, mine);
+    }
+
+    /// [`Self::project_owned_groups`] over every candidate entry of one strip
+    /// (the first is the one written to).
+    fn project_owned_groups_in(
+        doc: &mut AutoCommit,
+        strip_entries: &[automerge::ObjId],
+        strip: &Strip,
+        mine: &impl Fn(u64) -> bool,
+    ) {
         use std::collections::HashSet;
 
-        let groups_id = match doc.get(strip_entry, "groups").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(strip_entry, "groups", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: groups map");
-                    return;
-                }
-            },
+        let Some(strip_entry) = strip_entries.first() else {
+            return;
+        };
+        let groups_all = child_candidates(doc, strip_entries, "groups");
+        let Some(groups_id) = winner_or_create(doc, &groups_all, strip_entry, "groups") else {
+            return;
+        };
+        let groups_all = if groups_all.is_empty() {
+            vec![groups_id.clone()]
+        } else {
+            groups_all
         };
         let mut live_groups: HashSet<String> = HashSet::new();
         for (gi, group) in strip.window_groups.iter().enumerate() {
@@ -229,15 +322,10 @@ impl RoomProjection {
                 continue;
             }
             let gkey = Self::contents_key(group.id);
-            let group_entry = match doc.get(&groups_id, gkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&groups_id, gkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: group entry");
-                        continue;
-                    }
-                },
+            let group_all = child_candidates(doc, &groups_all, gkey.as_str());
+            let Some(group_entry) = winner_or_create(doc, &group_all, &groups_id, gkey.as_str())
+            else {
+                continue;
             };
             if owns_group {
                 live_groups.insert(gkey.clone());
@@ -248,17 +336,14 @@ impl RoomProjection {
                 // or reads them.
             }
 
-            Self::project_owned_tabs(doc, &group_entry, group, mine);
+            let group_all = if group_all.is_empty() {
+                vec![group_entry]
+            } else {
+                group_all
+            };
+            Self::project_owned_tabs_in(doc, &group_all, group, mine);
         }
-        let stale: Vec<String> = doc
-            .keys(&groups_id)
-            .filter(|k| {
-                !live_groups.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&groups_id, key.as_str());
-        }
+        sweep_stale(doc, &groups_all, &live_groups, mine);
     }
 
     /// [`Self::project_owned_groups`]'s per-group pass: get-or-create
@@ -271,18 +356,31 @@ impl RoomProjection {
         group: &WindowGroup,
         mine: &impl Fn(u64) -> bool,
     ) {
-        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        Self::project_owned_tabs_in(doc, std::slice::from_ref(group_entry), group, mine);
+    }
+
+    /// [`Self::project_owned_tabs`] over every candidate entry of one group
+    /// (the first is the one written to).
+    fn project_owned_tabs_in(
+        doc: &mut AutoCommit,
+        group_entries: &[automerge::ObjId],
+        group: &WindowGroup,
+        mine: &impl Fn(u64) -> bool,
+    ) {
+        use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
         use std::collections::HashSet;
 
-        let tabs_id = match doc.get(group_entry, "tabs").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(group_entry, "tabs", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: tabs map");
-                    return;
-                }
-            },
+        let Some(group_entry) = group_entries.first() else {
+            return;
+        };
+        let tabs_all = child_candidates(doc, group_entries, "tabs");
+        let Some(tabs_id) = winner_or_create(doc, &tabs_all, group_entry, "tabs") else {
+            return;
+        };
+        let tabs_all = if tabs_all.is_empty() {
+            vec![tabs_id.clone()]
+        } else {
+            tabs_all
         };
         let mut live_tabs: HashSet<String> = HashSet::new();
         for (ti, tab) in group.tabs.iter().enumerate() {
@@ -291,15 +389,9 @@ impl RoomProjection {
             }
             let tkey = Self::contents_key(tab.id);
             live_tabs.insert(tkey.clone());
-            let tab_entry = match doc.get(&tabs_id, tkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&tabs_id, tkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: tab entry");
-                        continue;
-                    }
-                },
+            let tab_all = child_candidates(doc, &tabs_all, tkey.as_str());
+            let Some(tab_entry) = winner_or_create(doc, &tab_all, &tabs_id, tkey.as_str()) else {
+                continue;
             };
             put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
             put_str_if_changed(doc, &tab_entry, "title", &tab.title);
@@ -314,15 +406,7 @@ impl RoomProjection {
                 }
             }
         }
-        let stale: Vec<String> = doc
-            .keys(&tabs_id)
-            .filter(|k| {
-                !live_tabs.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&tabs_id, key.as_str());
-        }
+        sweep_stale(doc, &tabs_all, &live_tabs, mine);
     }
 
     /// Read a room document's `contents` back into plain values. Every
@@ -354,66 +438,61 @@ impl RoomProjection {
             }
         };
 
-        let Some((_, contents_id)) = doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut strips: Vec<ReplicatedStrip> = Vec::new();
-        for skey in doc.keys(&contents_id) {
-            let Some(sid) = Self::contents_key_id(&skey) else {
-                continue;
-            };
-            let Some((_, strip_entry)) = doc.get(&contents_id, skey.as_str()).ok().flatten() else {
-                continue;
-            };
-            let mut groups: Vec<ReplicatedGroup> = Vec::new();
-            if let Some((_, groups_id)) = doc.get(&strip_entry, "groups").ok().flatten() {
-                for gkey in doc.keys(&groups_id) {
-                    let Some(gid) = Self::contents_key_id(&gkey) else {
+        // Join every candidate map at every level (see "concurrently created
+        // containers"); for an entry present in several candidates the first
+        // (winning) copy supplies its fields.
+        let entries = |containers: &[automerge::ObjId]| -> Vec<(u64, Vec<automerge::ObjId>)> {
+            let mut out: Vec<(u64, Vec<automerge::ObjId>)> = Vec::new();
+            for container in containers {
+                for key in doc.keys(container) {
+                    let Some(id) = Self::contents_key_id(&key) else {
                         continue;
                     };
-                    let Some((_, group_entry)) = doc.get(&groups_id, gkey.as_str()).ok().flatten()
-                    else {
+                    if out.iter().any(|(seen, _)| *seen == id) {
                         continue;
-                    };
-                    let mut tabs: Vec<ReplicatedTab> = Vec::new();
-                    if let Some((_, tabs_id)) = doc.get(&group_entry, "tabs").ok().flatten() {
-                        for tkey in doc.keys(&tabs_id) {
-                            let Some(tid) = Self::contents_key_id(&tkey) else {
-                                continue;
-                            };
-                            let Some((_, tab_entry)) =
-                                doc.get(&tabs_id, tkey.as_str()).ok().flatten()
-                            else {
-                                continue;
-                            };
-                            let tile = match doc.get(&tab_entry, "tile_json").ok().flatten() {
-                                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                                    ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
-                                    _ => None,
-                                },
-                                _ => None,
-                            };
-                            tabs.push(ReplicatedTab {
-                                id: tid,
-                                order: uint(&tab_entry, "order").unwrap_or(u64::MAX),
-                                title: text(&tab_entry, "title").unwrap_or_default(),
-                                tile,
-                            });
-                        }
                     }
-                    tabs.sort_by_key(|t| (t.order, t.id));
-                    groups.push(ReplicatedGroup {
-                        id: gid,
-                        order: uint(&group_entry, "order").unwrap_or(u64::MAX),
-                        tabs,
+                    out.push((id, child_candidates(doc, containers, key.as_str())));
+                }
+            }
+            out.retain(|(_, copies)| !copies.is_empty());
+            out
+        };
+        let contents_all = map_candidates(doc, &ROOT, Self::ROOM_CONTENTS_KEY);
+        let mut strips: Vec<ReplicatedStrip> = Vec::new();
+        for (sid, strip_copies) in entries(&contents_all) {
+            let strip_entry = &strip_copies[0];
+            let mut groups: Vec<ReplicatedGroup> = Vec::new();
+            for (gid, group_copies) in entries(&child_candidates(doc, &strip_copies, "groups")) {
+                let group_entry = &group_copies[0];
+                let mut tabs: Vec<ReplicatedTab> = Vec::new();
+                for (tid, tab_copies) in entries(&child_candidates(doc, &group_copies, "tabs")) {
+                    let tab_entry = &tab_copies[0];
+                    let tile = match doc.get(tab_entry, "tile_json").ok().flatten() {
+                        Some((Value::Scalar(v), _)) => match v.as_ref() {
+                            ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    tabs.push(ReplicatedTab {
+                        id: tid,
+                        order: uint(tab_entry, "order").unwrap_or(u64::MAX),
+                        title: text(tab_entry, "title").unwrap_or_default(),
+                        tile,
                     });
                 }
+                tabs.sort_by_key(|t| (t.order, t.id));
+                groups.push(ReplicatedGroup {
+                    id: gid,
+                    order: uint(group_entry, "order").unwrap_or(u64::MAX),
+                    tabs,
+                });
             }
             groups.sort_by_key(|g| (g.order, g.id));
             strips.push(ReplicatedStrip {
                 id: sid,
-                order: uint(&strip_entry, "order").unwrap_or(u64::MAX),
-                name: text(&strip_entry, "name"),
+                order: uint(strip_entry, "order").unwrap_or(u64::MAX),
+                name: text(strip_entry, "name"),
                 groups,
             });
         }

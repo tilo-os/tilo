@@ -1,0 +1,22 @@
+[package]
+name = "qos-agent-control-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+qos-agent-control-protocol = { path = "../control-protocol" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-action-broker = { path = "../../collab/qos-action-broker" }
+qos-desktop = { path = "../../session/qos-desktop" }
+collab-types = { path = "../../collab/collab-types" }
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+futures = { workspace = true, default-features = true }
+
+[lints]
+workspace = true

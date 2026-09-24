@@ -1,8 +1,67 @@
 #![allow(refining_impl_trait)]
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::{WorkspaceTaskStatus, WorkspaceTreeHandle};
+mod committed_document;
 use qos_action_broker::services::*;
 use std::sync::Arc;
+
+/// The same state.json owner used by canonical enrollment and ingress. Network
+/// availability never supplies or removes this durable admission boundary.
+pub(crate) struct NativeOwnerCommitService {
+    tree: WorkspaceTreeHandle,
+    owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
+    network: Option<Arc<super::network::ShellNetwork>>,
+}
+impl NativeOwnerCommitService {
+    pub(crate) fn new(
+        tree: WorkspaceTreeHandle,
+        network: Option<Arc<super::network::ShellNetwork>>,
+    ) -> Self {
+        let opened = match network.as_ref() {
+            Some(network) => network.native_owner(),
+            None => super::native_workspace_owner::NativeWorkspaceOwner::open(tree.clone()),
+        };
+        let owner = match opened {
+            Ok(owner) => Some(owner),
+            Err(error) => {
+                tracing::warn!(%error,"native durable owner unavailable");
+                None
+            }
+        };
+        Self {
+            tree,
+            owner,
+            network,
+        }
+    }
+}
+impl qos_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+    fn requires_room(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room)
+            .is_some_and(|room| self.tree.read().requires_native_owner(room))
+    }
+    fn health(&self) -> Result<(), String> {
+        self.owner
+            .as_ref()
+            .ok_or("native durable owner unavailable")?
+            .health()
+    }
+    fn commit(
+        &self,
+        request: qos_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> qos_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native durable owner unavailable")?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
+            if let Some(network) = network {
+                network.check_native_custody(&owner, room)?;
+            }
+            owner.commit_document(request, std::time::SystemTime::now())
+        })
+    }
+}
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
@@ -27,6 +86,9 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {
         let mut tree = self.0.write();
+        if super::state::RoomId::parse(room).is_some_and(|room| tree.requires_native_owner(room)) {
+            return Err("native enrolled mutation requires its typed durable owner".into());
+        }
         let id = tree
             .workspaces
             .iter()
@@ -46,6 +108,9 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
         summary: String,
     ) -> Result<(), String> {
         let mut tree = self.0.write();
+        if super::state::RoomId::parse(room).is_some_and(|room| tree.requires_native_owner(room)) {
+            return Err("native enrolled mutation requires its typed durable owner".into());
+        }
         let id = tree
             .workspaces
             .iter()
@@ -163,7 +228,12 @@ pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
 ) -> HostServices {
+    let committed_documents = membership.as_ref().map(|tree| {
+        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
+            as Arc<dyn NativeDocumentReads>
+    });
     HostServices {
+        committed_documents,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates)),
         legacy_workspace: membership.map(|tree| {
@@ -472,3 +542,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "broker_services/native_owner_tests.rs"]
+mod native_owner_tests;

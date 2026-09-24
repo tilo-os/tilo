@@ -38,6 +38,7 @@ impl App {
             &std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
             Option<taffy::NodeId>,
             &taffy::TaffyTree<()>,
+            &crate::a11y_tree::AdmittedNodeNames,
         ) -> R,
     ) -> Result<R, String> {
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
@@ -46,6 +47,7 @@ impl App {
                 &self.layout.node_map,
                 self.focused_node,
                 &self.layout.taffy,
+                &self.bindings.semantic_node_names(&self.layout.node_map),
             ));
         }
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
@@ -68,6 +70,7 @@ impl App {
                 &exported.nodes,
                 exported.focus(self.focused_node),
                 &self.layout.taffy,
+                &exported.names,
             ));
         }
         let Some(layout) = self.history_layout else {
@@ -76,6 +79,7 @@ impl App {
                 &exported.nodes,
                 exported.focus(self.focused_node),
                 &self.layout.taffy,
+                &exported.names,
             ));
         };
         let _ = self.history_local_resources();
@@ -114,6 +118,7 @@ impl App {
                     &exported.nodes,
                     exported.focus(self.focused_node),
                     &self.layout.taffy,
+                    &exported.names,
                 )
             })
             .map_err(|error| format!("History is unavailable: {error:?}"))

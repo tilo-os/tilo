@@ -817,7 +817,8 @@ fn append_resource_nodes(
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
             match &action.input {
-                tilo_actions::ActionInput::Immediate(_) => {
+                tilo_actions::ActionInput::Immediate(_)
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     action_node.add_action(AkAction::Click);
                     if let Some(description) = &action.description {
                         action_node.set_description(format!("{description} ({operation})"));

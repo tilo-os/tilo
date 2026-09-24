@@ -2493,6 +2493,11 @@ impl TextRenderer {
     ) {
         draw_rich_backgrounds(scene, layout, transform);
         for run in layout.buffer.layout_runs() {
+            // A long block repeats this for every page slice it spans; skip
+            // whole visual lines before any per-glyph work or glyph encoding.
+            if rich_run_outside_clip(&run, transform, clip) {
+                continue;
+            }
             self.draw_rich_run(scene, &run, layout, transform, color, Some(clip));
         }
         draw_rich_underlines(scene, layout, transform, color);
@@ -2844,6 +2849,40 @@ impl TextRenderer {
         hyphen.glyph_id = glyph_id;
         Some(hyphen)
     }
+}
+
+/// Whether a visual line cannot put ink inside `clip` (final scene space),
+/// judged on its vertical extent only (alignment moves runs horizontally).
+/// The line box is widened by two line heights above and below, which covers
+/// ascenders, descenders and stacked marks; non-finite geometry and
+/// transforms that rotate or shear are never culled.
+pub(crate) fn rich_run_outside_clip(
+    run: &cosmic_text::LayoutRun<'_>,
+    transform: Affine,
+    clip: Rect,
+) -> bool {
+    let [_, shear_y, shear_x, _, _, _] = transform.as_coeffs();
+    if shear_x != 0.0 || shear_y != 0.0 {
+        return false;
+    }
+    let margin = f64::from(run.line_height.max(1.0)) * 2.0;
+    let local = Rect::new(
+        0.0,
+        f64::from(run.line_top) - margin,
+        0.0,
+        f64::from(run.line_top + run.line_height) + margin,
+    );
+    let screen = transform.transform_rect_bbox(local);
+    // An invalid clip draws everything, as the per-glyph cull does.
+    if ![screen.y0, screen.y1, clip.x0, clip.y0, clip.x1, clip.y1]
+        .iter()
+        .all(|value| value.is_finite())
+        || clip.x0 > clip.x1
+        || clip.y0 > clip.y1
+    {
+        return false;
+    }
+    screen.y1 < clip.y0 || screen.y0 > clip.y1
 }
 
 #[cfg(test)]

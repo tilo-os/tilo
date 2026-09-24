@@ -810,6 +810,11 @@ impl WindowGroup {
         self.bar.drag_in_flight()
     }
 
+    /// Whether this group's own edge is being dragged to resize it.
+    pub fn edge_resize_in_flight(&self) -> bool {
+        self.resize_origin.is_some()
+    }
+
     /// A no-op while the bar has its own `pending_drag` in flight, so the
     /// source bar's own indicator stays put.
     pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {

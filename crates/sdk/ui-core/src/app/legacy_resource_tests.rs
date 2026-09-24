@@ -94,7 +94,8 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     assert!(matches!(
         app.document_routes.sent[0].1,
         CollabRequest::Document {
-            mutation: collab_types::DocumentMutation::Incremental(_)
+            mutation: collab_types::DocumentMutation::Incremental(_),
+            ..
         }
     ));
     assert!(!app.controlled_local_idle_for_test());

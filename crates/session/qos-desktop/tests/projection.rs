@@ -119,3 +119,38 @@ fn explicitly_admitted_empty_strip_survives_normal_projection_but_default_empty_
         "explicit removal still sweeps owned strip"
     );
 }
+
+/// Two peers whose room documents start empty (the legacy, unadmitted room
+/// path) each project first: each minted its own root `contents` map, and a
+/// merge showed only one peer's strips. Reads join every candidate, and a
+/// later projection still sweeps a peer's removed strip wherever it lives.
+#[test]
+fn concurrent_first_projections_on_two_peers_both_survive() {
+    for _ in 0..8 {
+        let mut base = AutoCommit::new();
+        base.commit();
+        let mut a = base.fork();
+        let mut b = base.fork();
+        RoomProjection::project_owned_contents(&mut a, &[strip(1, 10, "A")], 1, None);
+        RoomProjection::project_owned_contents(&mut b, &[strip(2, 10, "B")], 2, None);
+        a.merge(&mut b).unwrap();
+        let mut names: Vec<_> = RoomProjection::contents_of(&a)
+            .into_iter()
+            .filter_map(|s| s.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["A", "B"], "both peers' strips survive the merge");
+        let tabs: usize = RoomProjection::contents_of(&a)
+            .iter()
+            .flat_map(|s| &s.groups)
+            .map(|g| g.tabs.len())
+            .sum();
+        assert_eq!(tabs, 2);
+
+        // Each peer removes its strip; neither leaves a ghost behind.
+        RoomProjection::project_owned_contents(&mut a, &[], 1, None);
+        let mut b2 = a.fork();
+        RoomProjection::project_owned_contents(&mut b2, &[], 2, None);
+        assert!(RoomProjection::contents_of(&b2).is_empty());
+    }
+}

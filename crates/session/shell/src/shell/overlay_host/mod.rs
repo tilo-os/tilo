@@ -3824,6 +3824,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
+        if let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
+            self.run_peer_sync_request(&request, false);
+        }
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
@@ -25778,7 +25781,9 @@ mod palette_dispatch_tests {
                 "tilo-identity:{}",
                 "42".repeat(32)
             ))),
-            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::PollEnrollment(_)
+            | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }
