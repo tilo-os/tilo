@@ -194,6 +194,81 @@ test('forwarded signed changes are admitted once through the runtime and snap pr
   b.live.close();
 });
 
+test('own signed publications are forwarded in order behind the previews of the keys they contain', async () => {
+  const fake = relay();
+  const runtimeA = fakeRuntime('b'.repeat(64));
+  const listeners = [];
+  runtimeA.peer_live_author_listen = (id, listener) => listeners.push({id, listener});
+  const a = client(fake, 'b'.repeat(64), {runtime: runtimeA});
+  const b = client(fake, 'c'.repeat(64));
+  assert.equal(listeners.length, 1, 'registered with the runtime at creation');
+  const authored = listeners[0].listener;
+  const record = {app: 'so.tilo.word-processor', record: 'doc-1'};
+  // Before live: nothing to forward (the durable path delivers it).
+  authored(signedChange(record, '0'.repeat(64)), record.app, record.record);
+  const order = [];
+  b.api.onPreview(value => order.push(...value.ops.map(op => op.text)));
+  b.api.onSignedChange(value => order.push(`#${value.digest.slice(0, 1)}`));
+  a.live.start();
+  b.live.start();
+  await until(() => a.api.state === 'live' && b.api.state === 'live' && b.api.stats().remotes === 1, 'live');
+  assert.equal(a.api.memberCount, 1);
+  b.api.watchRecord(record);
+  await tick();
+  // Keys h, i are previewed; the runtime publishes the change containing them
+  // (synchronously, before the queued previews are flushed); key j follows.
+  a.api.publishPreview(record, [{kind: 'insert', at: '01', text: 'h'}]);
+  a.api.publishPreview(record, [{kind: 'insert', at: '01', text: 'i'}]);
+  authored(signedChange(record, '1'.repeat(64)), record.app, record.record);
+  a.api.publishPreview(record, [{kind: 'insert', at: '01', text: 'j'}]);
+  authored(signedChange(record, '2'.repeat(64)), record.app, record.record);
+  await until(() => order.length === 5, 'frames');
+  assert.deepEqual(order, ['h', 'i', '#1', 'j', '#2'], 'one ordered track: every preview before a change is in it');
+  assert.deepEqual(b.runtime.calls.admits, ['1'.repeat(64), '2'.repeat(64)], 'the pre-live change was not forwarded');
+  assert.equal(a.api.stats().signedPublished, 2);
+  // Invalid input is ignored without throwing.
+  authored('not bytes', record.app, record.record);
+  authored(signedChange(record, '3'.repeat(64)), '', record.record);
+  a.live.close();
+  assert.deepEqual(listeners.at(-1), {id: 1, listener: null}, 'unregistered on close');
+  b.live.close();
+});
+
+test('a deferred signed change is retried in order until the runtime admits it', async () => {
+  const fake = relay();
+  const runtime = fakeRuntime('c'.repeat(64));
+  const admit = runtime.peer_live_admit.bind(runtime);
+  let busy = 3; // a durable cut is being persisted for the first three attempts
+  const attempts = [];
+  runtime.peer_live_admit = (id, bytes) => {
+    const digest = JSON.parse(decoder.decode(bytes)).digest;
+    attempts.push(digest.slice(0, 1));
+    if (busy > 0) { busy--; return JSON.stringify({kind: 'deferred', digest}); }
+    return admit(id, bytes);
+  };
+  const b = client(fake, 'c'.repeat(64), {runtime});
+  const changes = [];
+  b.api.onSignedChange(value => changes.push(`${value.digest.slice(0, 1)}:${value.result}`));
+  b.live.start();
+  await until(() => b.api.state === 'live', 'live');
+  const record = {app: 'so.tilo.word-processor', record: 'doc-1'};
+  b.api.watchRecord(record);
+  const author = await createLiveTransport({library: fake.library}).connect({
+    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
+    namespace: ['tilo-live', ROOM, 'd'.repeat(64)], directions: {publish: true, subscribe: false},
+  });
+  await until(() => b.api.stats().remotes === 1, 'author member');
+  await tick();
+  author.publishOps(codec.opsTrack(record), signedChange(record, '1'.repeat(64)));
+  author.publishOps(codec.opsTrack(record), signedChange(record, '2'.repeat(64)));
+  await until(() => changes.length === 3, 'retried admissions');
+  assert.deepEqual(changes, ['1:deferred', '1:admitted', '2:admitted'], 'the successor waits behind the deferred change');
+  assert.deepEqual(attempts, ['1', '1', '1', '1', '2']);
+  assert.equal(b.api.stats().signedRetryAdmitted, 1);
+  author.close();
+  b.live.close();
+});
+
 test('speculative forwarded changes are reconciled at their confirmation deadline', async () => {
   const fake = relay();
   const runtime = fakeRuntime('c'.repeat(64));

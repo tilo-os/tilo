@@ -39,6 +39,8 @@ export interface LiveV1 {
   readonly state: LiveState;
   readonly available: boolean;
   readonly publisherId: string | undefined;
+  /** Other members currently announced on the live relay (0 unless live). */
+  readonly memberCount: number;
   /** Merge fields (`null` clears); coalesced to one frame per animation frame, <= 120/s. */
   publishPresence(partial: Partial<LivePresence>): boolean;
   /** Ordered ephemeral text previews for a record; false when live is unavailable. */

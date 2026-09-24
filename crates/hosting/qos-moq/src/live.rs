@@ -245,6 +245,8 @@ struct Inner {
     sessions: Arc<tokio::sync::Semaphore>,
     next_session: AtomicU64,
     counters: Counters,
+    /// HTTPS fallback carrier sessions ([`fallback`]).
+    fallback: fallback::Registry,
 }
 
 /// The live relay. Cheap to clone; all clones share one egress origin.
@@ -291,6 +293,7 @@ impl LiveRelay {
             sessions: Arc::new(tokio::sync::Semaphore::new(MAX_LIVE_SESSIONS)),
             next_session: AtomicU64::new(1),
             counters: Counters::default(),
+            fallback: fallback::Registry::default(),
         }))
     }
 
@@ -1181,6 +1184,9 @@ impl Drop for LoopbackLive {
         self.task.abort();
     }
 }
+
+/// HTTPS fallback carrier for clients without a working WebTransport.
+pub mod fallback;
 
 #[cfg(test)]
 mod tests;

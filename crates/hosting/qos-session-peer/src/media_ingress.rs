@@ -793,6 +793,8 @@ async fn serve_h3(
 #[cfg(test)]
 mod data_tests;
 #[cfg(test)]
+mod live_fallback_tests;
+#[cfg(test)]
 mod live_forward_tests;
 #[cfg(test)]
 mod live_tests;

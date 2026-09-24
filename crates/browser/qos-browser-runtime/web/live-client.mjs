@@ -8,12 +8,15 @@
  * client falls back silently: API calls become no-ops and the durable
  * delivery path keeps working unchanged.
  */
-import {createLiveTransport} from './live-transport.mjs';
+import {createLiveCarriers} from './live-fallback.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 
 export const LIVE_GRANT_TARGET = '/peer/v3/live/grant';
 const MAX_GRANT_BYTES = 2048;
 const MAX_PREVIEW_OPS = 32;
+/** Queued frames per record: previews plus this peer's own signed changes. */
+const MAX_QUEUED_OPS = MAX_PREVIEW_OPS * 8;
+const MAX_QUEUED_SIGNED = 64;
 const OPS_RATE = 240;
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 5000;
@@ -29,6 +32,14 @@ const SEEN_DIGESTS = 1024;
 /** A dropped relay session (GOAWAY on revocation or restart) is re-granted at once, at most this often. */
 const IMMEDIATE_REGRANT_MS = 2000;
 const RESUBSCRIBE_BASE_MS = 250;
+/**
+ * A signed change the runtime deferred (a durable cut was being persisted,
+ * or a predecessor was not admitted yet) is retried in order at this cadence
+ * for a bounded time; durable replay delivers it otherwise.
+ */
+const DEFERRED_RETRY_MS = 8;
+const DEFERRED_RETRY_ATTEMPTS = 40;
+const MAX_DEFERRED = 64;
 const RESUBSCRIBE_MAX_MS = 5000;
 
 const failure = (message, code = 'unavailable') => Object.assign(Error(message), {code});
@@ -71,7 +82,8 @@ export function createLiveClient({
   runtime,
   peerId,
   fetch: fetcher = globalThis.fetch,
-  transport = createLiveTransport(),
+  // WebTransport (MoQ) when it works, else the HTTPS fallback carrier.
+  transport = createLiveCarriers({fetch: fetcher}),
   codec = runtimeCodec(runtime),
   clock = {},
   directions = {publish: true, subscribe: true},
@@ -103,13 +115,16 @@ export function createLiveClient({
   const watched = new Map(); // key -> {record, count}
   const trackNames = new Map(); // key -> ops track
   const previewSeqs = new Map(); // key -> seq
-  const previewQueues = new Map(); // key -> {record, ops}
+  // key -> {record, items}: preview ops, and `{signed}` frames of this peer's
+  // own publications, published strictly in queue order on the record's track.
+  const previewQueues = new Map();
   const seen = new Set();
   const seenOrder = [];
   let tokens = OPS_RATE;
   let tokensAt = now();
   let flushTimer;
-  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedWithdrawn: 0};
+  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedPublished: 0, signedPublishDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedRetryAdmitted: 0, signedRetryAbandoned: 0, signedWithdrawn: 0};
+  let deferredTimer;
   let reconcileTimer;
   let reconcileAtMs = Infinity;
 
@@ -357,7 +372,7 @@ export function createLiveClient({
   }
   function addRemote(publisherId) {
     if (!session || remotes.has(publisherId) || publisherId === grant?.namespace[2]) return;
-    const remote = {id: publisherId, presence: createRemotePresence(), ops: new Map(), previewSeq: new Map(), focus: null, cancel: undefined, failures: new Map(), timers: new Set()};
+    const remote = {id: publisherId, presence: createRemotePresence(), ops: new Map(), previewSeq: new Map(), deferred: [], focus: null, cancel: undefined, failures: new Map(), timers: new Set()};
     remotes.set(publisherId, remote);
     subscribePresence(remote);
     syncOps(remote);
@@ -428,15 +443,47 @@ export function createLiveClient({
       return;
     }
     if (frame.kind !== 'signed-change' || !remember(frame.digest)) return;
+    const entry = {bytes, frame, receivedAtMs, receivedWallMs, attempts: 0};
+    // Changes from one publisher are admitted in order: behind a deferred one, wait.
+    if (remote.deferred.length) { deferChange(remote, entry); return; }
+    if (admitChange(remote, entry) === 'deferred') deferChange(remote, entry);
+  }
+  /** One admission attempt; emits the outcome. Returns the result kind. */
+  function admitChange(remote, entry) {
+    const {frame} = entry;
     let result;
-    try { result = JSON.parse(runtime.peer_live_admit(peerId, bytes)); } catch (error) { report(error); return; }
+    try { result = JSON.parse(runtime.peer_live_admit(peerId, entry.bytes)); } catch (error) { report(error); return 'failed'; }
     const admittedAtMs = now();
-    if (result.kind === 'admitted') stats.signedAdmitted++;
+    const retried = entry.attempts > 0;
+    entry.attempts++;
+    if (result.kind === 'admitted') { stats.signedAdmitted++; if (retried) stats.signedRetryAdmitted++; }
     else if (result.kind === 'duplicate') stats.signedDuplicate++;
-    else stats.signedDeferred++;
-    events.signedChange.emit({publisher: remote.id, record: frame.record, digest: frame.digest, result: result.kind, receivedAtMs, receivedWallMs, admittedAtMs});
+    else if (!retried) stats.signedDeferred++;
+    if (!retried || result.kind !== 'deferred') {
+      events.signedChange.emit({publisher: remote.id, record: frame.record, digest: frame.digest, result: result.kind, receivedAtMs: entry.receivedAtMs, receivedWallMs: entry.receivedWallMs, admittedAtMs, retried});
+    }
     if (result.kind === 'admitted' || result.kind === 'duplicate') durableChanged(frame.record);
     if (result.speculative === true) scheduleReconcile(result.confirmByMs);
+    return result.kind;
+  }
+  function deferChange(remote, entry) {
+    if (remote.deferred.length >= MAX_DEFERRED) { stats.signedRetryAbandoned++; return; }
+    remote.deferred.push(entry);
+    if (deferredTimer === undefined) deferredTimer = setTimer(retryDeferred, DEFERRED_RETRY_MS);
+  }
+  function retryDeferred() {
+    deferredTimer = undefined;
+    if (closed) return;
+    for (const remote of remotes.values()) {
+      while (remote.deferred.length) {
+        const entry = remote.deferred[0];
+        const kind = admitChange(remote, entry);
+        if (kind === 'deferred' && entry.attempts <= DEFERRED_RETRY_ATTEMPTS) break;
+        if (kind === 'deferred') stats.signedRetryAbandoned++;
+        remote.deferred.shift();
+      }
+    }
+    if ([...remotes.values()].some(remote => remote.deferred.length)) deferredTimer = setTimer(retryDeferred, DEFERRED_RETRY_MS);
   }
   // Forwarded changes are speculative until durable replay confirms them; the
   // runtime withdraws unconfirmed ones at their deadline (LIVE_V1 lane C).
@@ -475,8 +522,23 @@ export function createLiveClient({
     if (!session || !grant?.directions.publish) return;
     refill();
     for (const [key, queue] of previewQueues) {
-      while (queue.ops.length && tokens >= 1) {
-        const ops = queue.ops.splice(0, MAX_PREVIEW_OPS);
+      while (queue.items.length && tokens >= 1) {
+        // An own signed change goes out exactly where it was queued: after the
+        // previews of the keys it contains, before those of later keys.
+        if (queue.items[0].signed) {
+          const {signed} = queue.items.shift();
+          tokens -= 1;
+          try {
+            if (session.publishOps(trackFor(queue.record), signed)) {
+              stats.signedPublished++;
+              events.publish.emit({kind: 'signed-change', record: queue.record, publishedAtMs: now(), publishedWallMs: wallNow(), bytes: signed.byteLength});
+            } else stats.signedPublishDropped++;
+          } catch (error) { stats.signedPublishDropped++; report(error); }
+          continue;
+        }
+        let count = 0;
+        while (count < queue.items.length && count < MAX_PREVIEW_OPS && !queue.items[count].signed) count++;
+        const ops = queue.items.splice(0, count);
         const seq = (previewSeqs.get(key) ?? 0) + 1;
         let bytes;
         try { bytes = codec.encodePreview({seq, record: queue.record, ops}); }
@@ -490,16 +552,43 @@ export function createLiveClient({
           }
         } catch (error) { report(error); }
       }
-      if (!queue.ops.length) previewQueues.delete(key);
+      if (!queue.items.length) previewQueues.delete(key);
     }
     if (previewQueues.size) flushTimer = setTimer(flushPreviews, Math.ceil(1000 / OPS_RATE));
   }
+  function queueFor(value) {
+    const key = recordKey(value);
+    let queue = previewQueues.get(key);
+    if (!queue) { queue = {record: value, items: []}; previewQueues.set(key, queue); }
+    return queue;
+  }
+  /**
+   * This peer's own signed document publication (from the runtime, right
+   * after the change entered the outbox): forward it on the record's ops
+   * track at once, so members admit the real change one relay hop after the
+   * edit instead of after upload and host admission. Receivers verify and
+   * admit it exactly like the host's forward, which they then de-duplicate.
+   * Without a publishing session it is dropped: the durable path delivers it.
+   */
+  function authored(frame, app, record) {
+    if (closed || !session || !grant?.directions.publish) return;
+    let value;
+    try { value = validRecord({app, record}); } catch (error) { report(error); return; }
+    if (!(frame instanceof Uint8Array) || frame.byteLength === 0) return;
+    const queue = queueFor(value);
+    if (queue.items.length >= MAX_QUEUED_OPS + MAX_QUEUED_SIGNED) { stats.signedPublishDropped++; return; }
+    queue.items.push({signed: frame});
+    if (flushTimer === undefined) queueMicrotask(flushPreviews);
+  }
+  try { runtime.peer_live_author_listen?.(peerId, authored); } catch (error) { report(error); }
 
   const api = Object.freeze({
     /** 'idle'|'authorizing'|'connecting'|'live'|'reconnecting'|'unavailable'|'revoked'|'closed' */
     get state() { return state; },
     get available() { return state === 'live'; },
     get publisherId() { return state === 'live' ? grant?.namespace[2] : undefined; },
+    /** Other members currently announced on the live relay. */
+    get memberCount() { return state === 'live' ? remotes.size : 0; },
     /** Merge local presence; coalesced to one frame per animation frame. */
     publishPresence(partial) {
       const before = publisher.state().focus;
@@ -512,11 +601,13 @@ export function createLiveClient({
       const value = validRecord(record);
       if (!Array.isArray(ops) || ops.length === 0) throw new TypeError('preview ops must be a non-empty array');
       if (!session || !grant?.directions.publish) return false;
-      const key = recordKey(value);
-      const queue = previewQueues.get(key) ?? {record: value, ops: []};
-      if (queue.ops.length + ops.length > MAX_PREVIEW_OPS * 8) { stats.previewsDropped += ops.length; return false; }
-      queue.ops.push(...ops);
-      previewQueues.set(key, queue);
+      const queue = queueFor(value);
+      if (queue.items.length + ops.length > MAX_QUEUED_OPS) {
+        stats.previewsDropped += ops.length;
+        if (!queue.items.length) previewQueues.delete(recordKey(value));
+        return false;
+      }
+      queue.items.push(...ops);
       if (flushTimer === undefined) queueMicrotask(flushPreviews);
       return true;
     },
@@ -579,6 +670,9 @@ export function createLiveClient({
       clearTimers();
       if (flushTimer !== undefined) clearTimer(flushTimer);
       if (reconcileTimer !== undefined) clearTimer(reconcileTimer);
+      if (deferredTimer !== undefined) clearTimer(deferredTimer);
+      try { runtime.peer_live_author_listen?.(peerId, null); } catch {}
+      previewQueues.clear();
       publisher.stop();
       teardown();
       try { runtime.peer_live_reset(peerId); } catch {}

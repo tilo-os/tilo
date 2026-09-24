@@ -543,6 +543,9 @@ pub struct Ingress {
     control_requests: Arc<Semaphore>,
     media_requests: Arc<Semaphore>,
     asset_requests: Arc<Semaphore>,
+    /// LIVE_V1 relay once installed; serves the HTTPS fallback carrier.
+    #[cfg(feature = "media")]
+    pub(crate) live: Arc<std::sync::OnceLock<qos_moq::live::LiveRelay>>,
 }
 #[derive(Clone, Copy)]
 enum Lane {
@@ -581,6 +584,8 @@ pub fn try_ingress_channel() -> anyhow::Result<(Ingress, IngressReceiver)> {
             control_requests: Arc::new(Semaphore::new(8)),
             media_requests: Arc::new(Semaphore::new(32)),
             asset_requests: Arc::new(Semaphore::new(24)),
+            #[cfg(feature = "media")]
+            live: Arc::default(),
         },
         IngressReceiver {
             control: control_rx,
@@ -934,6 +939,10 @@ where
             .serve(parts, body, ingress)
             .await;
     }
+    #[cfg(feature = "media")]
+    if live_fallback::recognizes(path) {
+        return live_fallback::serve(parts, body, ingress).await;
+    }
     if !path.starts_with("/peer/")
         && path != "/peer"
         && !path.starts_with("/qos-peer/")
@@ -1246,6 +1255,12 @@ enum Data {
         pending: Option<AssetRead>,
         remaining: u64,
     },
+    /// LIVE_V1 fallback server frames, streamed until the session or stream ends.
+    #[cfg(feature = "media")]
+    Live {
+        stream: qos_moq::live::fallback::FallbackStream,
+        _credit: crate::host_bytes::ByteCredit,
+    },
 }
 impl ResponseBody {
     fn file(file: AssetFile, remaining: u64, lease: Arc<Lease>) -> Self {
@@ -1275,6 +1290,10 @@ impl Body for ResponseBody {
         let this = self.get_mut();
         match &mut this.data {
             Data::Full(bytes) => Poll::Ready(bytes.take().map(|bytes| Ok(Frame::data(bytes)))),
+            #[cfg(feature = "media")]
+            Data::Live { stream, .. } => stream
+                .poll_next(cx)
+                .map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes)))),
             Data::File {
                 file,
                 pending,
@@ -1327,12 +1346,16 @@ impl Body for ResponseBody {
         match &self.data {
             Data::Full(bytes) => bytes.as_ref().is_none_or(Bytes::is_empty),
             Data::File { remaining, .. } => *remaining == 0,
+            #[cfg(feature = "media")]
+            Data::Live { .. } => false,
         }
     }
     fn size_hint(&self) -> SizeHint {
         SizeHint::with_exact(match &self.data {
             Data::Full(bytes) => bytes.as_ref().map_or(0, |bytes| bytes.len() as u64),
             Data::File { remaining, .. } => *remaining,
+            #[cfg(feature = "media")]
+            Data::Live { .. } => return SizeHint::new(),
         })
     }
 }
@@ -1342,6 +1365,10 @@ pub(crate) mod tests;
 
 mod local_enrollment;
 pub(crate) use local_enrollment::LocalEnrollment;
+
+/// LIVE_V1 HTTPS fallback carrier routes.
+#[cfg(feature = "media")]
+mod live_fallback;
 
 /// Plain HTTP/3 request streams on the shared QUIC endpoint.
 #[cfg(feature = "media")]

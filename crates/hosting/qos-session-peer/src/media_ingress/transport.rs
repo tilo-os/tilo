@@ -67,7 +67,8 @@ impl RunningTransport {
         let serving_origin = origin.clone();
         let udp_registration = registrations.clone();
         let (udp_ready, udp_started) = tokio::sync::oneshot::channel();
-        let live = LiveSlot::default();
+        // The same slot serves the HTTPS fallback carrier (TCP and HTTP/3).
+        let live: LiveSlot = ingress.live.clone();
         let serving_live = live.clone();
         tasks.spawn(async move {
             let _registration = ServiceRegistration::enter(udp_registration, 2);
