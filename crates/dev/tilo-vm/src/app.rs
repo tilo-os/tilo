@@ -4063,6 +4063,9 @@ mod tests {
         use crate::host::tests::{LIBVIRT, linux};
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_empty_registry(dir.path());
+        // The checks under test are the image and the disk path, not this
+        // host's free space (a small /tmp would otherwise fail the floor).
+        std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
         let facts = linux(HostKind::Dnf, LIBVIRT);
 
         let mut args = create_args("dev");
