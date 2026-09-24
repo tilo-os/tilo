@@ -21,7 +21,9 @@
 //! ```
 //!
 //! The VM is taken from `TILO_VM`, then `.tilo-vm` in the worktree
-//! (`vm = "dev"`, or just the name), then `default` above.
+//! (`vm = "dev"`, or just the name), then `default` above. `.tilo-vm` may
+//! also name the worktree's default slot (`slot = "review-a"`), which
+//! `TILO_VM_SLOT` overrides; without either it is named after the branch.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -200,6 +202,20 @@ pub fn parse_worktree_file(text: &str) -> Option<String> {
     (!bare.is_empty() && !bare.contains(['=', '\n', ' '])).then(|| bare.to_owned())
 }
 
+/// The default slot a worktree file names: `slot = "<name>"`.
+pub fn parse_worktree_slot(text: &str) -> Option<String> {
+    let table = text.parse::<toml::Table>().ok()?;
+    let slot = table.get("slot")?.as_str()?.trim();
+    (!slot.is_empty()).then(|| slot.to_owned())
+}
+
+/// The worktree file `old` with its VM set to `vm`, keeping its other keys.
+pub fn with_worktree_vm(old: &str, vm: &str) -> String {
+    let mut table = old.parse::<toml::Table>().unwrap_or_default();
+    table.insert("vm".into(), toml::Value::String(vm.to_owned()));
+    toml::to_string(&table).unwrap_or_else(|_| format!("vm = \"{vm}\"\n"))
+}
+
 /// Pick the VM: `TILO_VM`, then the worktree file, then the registry default.
 pub fn resolve(
     env: Option<&str>,
@@ -277,6 +293,20 @@ mod tests {
         assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
         assert_eq!(parse_worktree_file("").as_deref(), None);
         assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
+    }
+
+    #[test]
+    fn worktree_file_can_name_the_default_slot_and_vm_use_keeps_it() {
+        let text = "vm = \"dev\"\nslot = \"ux1\"\n";
+        assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
+        assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
+        assert_eq!(parse_worktree_slot("dev").as_deref(), None);
+        let rewritten = with_worktree_vm(text, "shared");
+        assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
+        assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
+        // A bare name is replaced by the table form.
+        let bare = with_worktree_vm("dev\n", "shared");
+        assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
     }
 
     #[test]

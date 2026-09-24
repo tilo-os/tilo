@@ -111,6 +111,42 @@ mod tests {
     }
 
     #[test]
+    fn the_quickstart_rule_names_every_command_that_takes_a_slot() {
+        use clap::CommandFactory as _;
+        fn walk(command: &clap::Command, path: &str, out: &mut Vec<String>) {
+            for sub in command.get_subcommands() {
+                let name = format!("{path} {}", sub.get_name()).trim().to_owned();
+                if sub.get_arguments().any(|a| a.get_long() == Some("slot")) {
+                    out.push(name.clone());
+                }
+                walk(sub, &name, out);
+            }
+        }
+        let mut commands = Vec::new();
+        walk(&crate::cli::Cli::command(), "", &mut commands);
+        assert!(commands.len() >= 14, "{commands:?}");
+        let quickstart = topic("quickstart").unwrap();
+        let rule = quickstart
+            .split("accepts `--slot <name>`")
+            .nth(1)
+            .and_then(|rest| rest.split("\n- ").next())
+            .expect("the quickstart states the --slot rule");
+        for command in commands {
+            let leaf = command.rsplit(' ').next().unwrap();
+            assert!(
+                rule.contains(leaf),
+                "the --slot rule omits {command}: {rule}"
+            );
+        }
+        let troubleshooting = topic("troubleshooting").unwrap();
+        assert!(troubleshooting.contains("cargo build -p tilo-vm"));
+        assert!(troubleshooting.contains("rcargo"));
+        let swapping = topic("swapping").unwrap();
+        assert!(swapping.contains("## Verify your swap"));
+        assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));
+    }
+
+    #[test]
     fn guides_use_the_current_command_shapes() {
         for (name, _, text) in TOPICS {
             for stale in [
@@ -118,6 +154,9 @@ mod tests {
                 "swap my-slot",
                 "swap review-a",
                 "Every command takes `--json` and writes a receipt",
+                "`--slot` for `swap`",
+                "cargo install --locked --path crates/dev/tilo-vm",
+                "refusing to deploy",
             ] {
                 assert!(!text.contains(stale), "guide {name} still says `{stale}`");
             }

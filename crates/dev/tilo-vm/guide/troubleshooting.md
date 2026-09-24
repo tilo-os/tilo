@@ -112,8 +112,12 @@ exit 1 from flock means another build of the same worktree is running.
 **Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc`,
 upgrades and `vm stop` take the whole VM; wait and retry.
 
+**A VM that needs a fresh boot.** `tilo-vm vm restart` shuts it down under
+the VM lock, waits until it is off, starts it and waits for tilo-vmd.
+
 **Receipts.** Every command that changes something or runs long leaves
-`target/dev-runs/<id>/run.json` (status, doctor, guide, lists and logs do
-not) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
+`target/dev-runs/<id>/run.json` (status, doctor, guide, lists, logs,
+`slot show`, `slot exec` and `vm ssh` do not; `vm ssh --raw` does, since it
+may change the VM behind tilo-vm) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
 download) and flags phases slower than the goals: warm build < 60s, swap
 plus restart < 10s, cached boot < 30s.
