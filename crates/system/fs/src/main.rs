@@ -2974,10 +2974,34 @@ fn persist_namespace_generation(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let bytes = namespace.save();
+    let digest = *blake3::hash(&bytes).as_bytes();
+    // Bytes this process produced with `save()` (now, or at its last write
+    // of this path) are a valid document by construction; parsing them
+    // again costs a full document load per save, under the namespace lock.
+    // Anything else found on disk is still fully validated.
+    let last = persisted_digests()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .copied();
     fs::durable_backup::write(path, &bytes, |candidate| {
-        Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
+        let candidate_digest = *blake3::hash(candidate).as_bytes();
+        candidate_digest == digest
+            || Some(candidate_digest) == last
+            || Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
     })?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    persisted_digests()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path.to_path_buf(), digest);
+    Ok(digest)
+}
+
+/// The digest of the namespace document this process last wrote per path.
+fn persisted_digests() -> &'static Mutex<std::collections::HashMap<PathBuf, [u8; 32]>> {
+    static DIGESTS: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, [u8; 32]>>> =
+        std::sync::OnceLock::new();
+    DIGESTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
