@@ -208,7 +208,7 @@ qrcode.workspace = true
 # The `tilo://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
-base32.workspace = true
+data-encoding.workspace = true
 # The pairing one-time MAC is derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via

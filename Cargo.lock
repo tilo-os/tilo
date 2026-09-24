@@ -1160,12 +1160,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
 
 [[package]]
-name = "base32"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14649,7 +14643,6 @@ dependencies = [
  "ashpd",
  "atomic-file",
  "automerge",
- "base32",
  "base64",
  "blake3",
  "capnp",
@@ -14659,6 +14652,7 @@ dependencies = [
  "chrono",
  "collab-types",
  "cosmic-text",
+ "data-encoding",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
@@ -14767,8 +14761,9 @@ dependencies = [
  "advisory-lock",
  "atomic-file",
  "automerge",
- "base32",
  "blake3",
+ "data-encoding",
+ "data-encoding-macro",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
@@ -15219,7 +15214,8 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "base32",
+ "data-encoding",
+ "data-encoding-macro",
  "hmac 0.13.0",
  "image",
  "private-fs",
