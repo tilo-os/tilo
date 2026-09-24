@@ -121,6 +121,46 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertIn("docker://code.podesta.ai/qos/tilo:latest", workflow)
         self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
 
+    def test_every_publishing_run_holds_the_generation_series_lock(self):
+        cases = [
+            ("refs/tags/v1.2.3", "push", ""),
+            ("refs/heads/main", "workflow_dispatch", "true"),
+            ("refs/heads/main", "workflow_dispatch", "false"),
+            ("refs/heads/feature", "workflow_dispatch", "true"),
+            ("refs/heads/main", "schedule", ""),
+            ("refs/heads/feature", "schedule", ""),
+            ("refs/heads/main", "push", ""),
+        ]
+        for ref, event, requested in cases:
+            with self.subTest(ref=ref, event=event, requested=requested):
+                # A scheduled main run that skips must still hold the lock, so
+                # judge the lock against the unskipped rule.
+                publish, _, _ = plan(ref, event, requested)
+                group = concurrency_group(ref, event, requested)
+                if publish:
+                    self.assertEqual(group, "tilo-os-image-series")
+                else:
+                    self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+
+
+def concurrency_group(ref: str, event: str, requested: str) -> str:
+    """Evaluate the workflow's concurrency expression for one event."""
+    line = next(
+        line for line in WORKFLOW.read_text().splitlines() if line.startswith("  group: ${{")
+    )
+    expression = line.split("${{", 1)[1].rsplit("}}", 1)[0]
+    for source, target in [
+        ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
+        ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
+        ("github.event.inputs.publish", "requested"),
+        ("github.event_name", "event"),
+        ("github.ref", "ref"),
+        ("&&", " and "),
+        ("||", " or "),
+    ]:
+        expression = expression.replace(source, target)
+    return eval(expression, {}, {"ref": ref, "event": event, "requested": requested})
+
 
 if __name__ == "__main__":
     unittest.main()
