@@ -223,6 +223,12 @@ rand_core.workspace = true
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../../runtime/runtime-collab" }
+# Document media: content an app asks the shell to open in another app is read
+# from the filesystem daemon's content store through that app's scope.
+runtime-fs = { path = "../../runtime/runtime-fs" }
+# The compositor-free runtime host serves its apps' document media from the
+# same content store and capability implementation as the filesystem daemon.
+tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock

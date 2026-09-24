@@ -22,8 +22,8 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, PublishedAction,
-    PublishedInput, PublishedSurface, ResourceRef, Verb, permission_verb,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, LaunchScope, PublishedAction,
+    PublishedInput, PublishedSurface, ResourceRef, SessionContentStore, Verb, permission_verb,
     published_directory_action, validate_directory_target_input,
 };
 use crate::shell::collab_broker::CrdtRoute;
@@ -428,20 +428,22 @@ impl CapnpBrokerState {
 
     /// Admit `request` for `caller`, or report the invocation already
     /// admitted under its id. `own_peer` resolves [`OWN_PROVIDER`] for a
-    /// caller that is itself an application connection. Never blocks: an
+    /// caller that is itself an application connection, and `launch` is the
+    /// application the launcher authenticated for it. Never blocks: an
     /// action published through a live directory is re-resolved by its owner
     /// on the broker's local set, and the admission arrives when it has.
     pub(crate) fn action_invoke(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, request);
         }
-        if let Some(launch) = content_launch_target(request) {
-            return self.invoke_content_launch(caller, launch, request);
+        if let Some(content) = content_launch_target(request) {
+            return self.invoke_content_launch(caller, launch.cloned(), content, request);
         }
         Pending::ready(self.invoke_eager(caller, own_peer, request))
     }
@@ -454,6 +456,7 @@ impl CapnpBrokerState {
     fn invoke_content_launch(
         self: &Arc<Self>,
         caller: &Caller,
+        scope: Option<LaunchScope>,
         launch: ContentLaunch,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
@@ -480,6 +483,15 @@ impl CapnpBrokerState {
                 super::validate_launch_content_hash(&launch.content_hash).map_err(refusal)
             })
             .and_then(|()| {
+                // Content is only ever read through the asking application's
+                // own scope; a caller without one cannot open it by hash.
+                scope.as_ref().map(|_| ()).ok_or_else(|| {
+                    refusal(
+                        "launch content requires an application the launcher authenticated".into(),
+                    )
+                })
+            })
+            .and_then(|()| {
                 crate::session_runtime::runtime()
                     .map_err(|reason| ActionHostError::Unavailable { reason })
             });
@@ -497,7 +509,14 @@ impl CapnpBrokerState {
         let caller = caller.clone();
         let invocation = request.invocation;
         runtime.spawn(async move {
-            let staged = super::stage_launch_content(&launch.content_hash).await;
+            // The content is read through the scope of the application that
+            // asked, never with the shell's own authority.
+            let staged = super::stage_launch_content(
+                &launch.content_hash,
+                scope.as_ref(),
+                Arc::new(SessionContentStore),
+            )
+            .await;
             // A caller that stopped waiting has been told the launch did not
             // start; keep it so.
             let started = if completer.is_abandoned() {
