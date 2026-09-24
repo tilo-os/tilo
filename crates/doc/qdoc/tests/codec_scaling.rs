@@ -18,8 +18,7 @@ use qdoc::export_rtf::render_rtf;
 use qdoc::{Document, DocxCodec, FormatProvider, HtmlCodec, MarkdownCodec, OdtCodec, RtfCodec};
 use std::time::{Duration, Instant};
 
-#[path = "support/synth.rs"]
-mod synth;
+use crate::synth;
 
 const SIZES: [usize; 3] = [10_000, 1_000_000, 20_000_000];
 /// Markdown import plus export of a 1 MB document.
