@@ -270,8 +270,10 @@ struct TargetWriteLock(std::fs::File);
 impl Drop for TargetWriteLock {
     fn drop(&mut self) {
         use std::os::fd::AsRawFd;
-        // Closing also releases flock, but an explicit unlock makes the
-        // lifetime obvious and permits deterministic contention tests.
+        // Closing alone would leave the flock held while a child another
+        // thread is spawning still shares the descriptor; unlocking releases
+        // the open file description's lock at once.
+        // SAFETY: the owned descriptor stays live for this call.
         unsafe {
             libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
         }
