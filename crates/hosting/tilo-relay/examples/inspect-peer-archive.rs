@@ -307,7 +307,8 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
                 "room checkpoint not attributed to pinned governor"
             );
             certificate_at(&b.directory_author, &auth.root_public_key, &revoked, row.at)?;
-            let candidate = room::candidate(room_doc.as_ref(), changes)?;
+            let candidate =
+                room::candidate(room_doc.as_ref(), changes).map_err(anyhow::Error::msg)?;
             complete(&candidate)?;
             ensure!(
                 candidate
