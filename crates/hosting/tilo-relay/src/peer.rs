@@ -5493,8 +5493,28 @@ mod private_transport_tests {
         assert_ne!(std::fs::read(selected).unwrap(), selected_before_advance);
     }
 
-    #[tokio::test]
-    async fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+    // In an unoptimized build, polling this scenario through the persistence
+    // owner nests deeper than the default 2 MiB test-thread stack (it needs
+    // more than 4 MiB when it runs alone). Run it on its own thread with an
+    // explicit stack instead of depending on RUST_MIN_STACK.
+    #[test]
+    fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+        std::thread::Builder::new()
+            .name("thirty-four-route-prefix".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(Box::pin(thirty_four_route_prefix_scenario()));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn thirty_four_route_prefix_scenario() {
         use crate::store::{
             bounded::{Step, WorkLimit},
             shell_selection::{self, SelectedRead, Selection},

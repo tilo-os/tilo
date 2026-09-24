@@ -221,8 +221,27 @@ fn counters(result: &media::MediaCallResultV1) -> serde_json::Value {
     json!({"call_id": hex::encode(result.call_id), "expected_authorization_revision": result.authorization_revision, "expected_epoch": result.epoch})
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn room_media_broker_certified_literals_persist_retry_and_reject() {
+// In an unoptimized build this certified broker scenario nests deeper than
+// the default 2 MiB test-thread stack when it runs alone. Run it on its own
+// thread with an explicit stack instead of depending on RUST_MIN_STACK.
+#[test]
+fn room_media_broker_certified_literals_persist_retry_and_reject() {
+    std::thread::Builder::new()
+        .name("room-media-broker-certified".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(room_media_broker_certified_scenario()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn room_media_broker_certified_scenario() {
     tokio::task::LocalSet::new().run_until(async {
         let directory = tempfile::tempdir().unwrap();
         let owner_root = directory.path().join("owner");
