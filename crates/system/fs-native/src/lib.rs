@@ -28,6 +28,7 @@ pub mod extents;
 pub mod fanotify;
 pub mod hydrate;
 pub mod journal;
+pub mod probe;
 pub mod ranges;
 pub mod store;
 pub mod sys;

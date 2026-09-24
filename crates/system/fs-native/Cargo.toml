@@ -11,6 +11,12 @@ description = "Native local data plane: fanotify change journal, Btrfs capture e
 name = "fs_native"
 path = "src/lib.rs"
 
+# Capability report and the local benchmark suite. Both run against a real
+# store volume; neither is needed by the library.
+[[bin]]
+name = "tilo-fs-native"
+path = "src/bin/tilo-fs-native/main.rs"
+
 [dependencies]
 blake3.workspace = true
 fastcdc.workspace = true
