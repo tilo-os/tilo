@@ -477,18 +477,16 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn host_apps_keep_input_methods_and_select_the_tilo_desktop() {
-        let previous = [
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for key in [
             "XMODIFIERS",
             "GTK_IM_MODULE",
             "QT_IM_MODULE",
             "QT_IM_MODULES",
             "SDL_IM_MODULE",
-        ]
-        .map(|key| {
-            let value = std::env::var_os(key);
-            unsafe { std::env::set_var(key, "ibus-test") };
-            (key, value)
-        });
+        ] {
+            env.set(key, "ibus-test");
+        }
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
         for key in [
             "XMODIFIERS",
@@ -510,12 +508,6 @@ mod tests {
                 .map(String::as_str),
             Some("auto")
         );
-        for (key, value) in previous {
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
     }
 
     #[test]

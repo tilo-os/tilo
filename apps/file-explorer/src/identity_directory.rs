@@ -221,17 +221,7 @@ fn unix_now_ns() -> u64 {
 }
 
 pub fn fingerprint(key: &[u8; 32]) -> String {
-    let mut hex = String::with_capacity(24);
-    for byte in &key[..6] {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex.push('…');
-    for byte in &key[26..] {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    format!("{}…{}", hex::encode(&key[..6]), hex::encode(&key[26..]))
 }
 
 #[cfg(test)]

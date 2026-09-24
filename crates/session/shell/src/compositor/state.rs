@@ -124,7 +124,7 @@ fn output_presentation_owner_is_live(
         return false;
     };
     let client = audience_surface >> 32;
-    tree.workspaces.iter().any(|workspace| {
+    tree.desktop.workspaces.iter().any(|workspace| {
         workspace.strips.iter().any(|strip| {
             strip.window_groups.iter().any(|group| {
                 group.tabs.iter().any(|tab| {
@@ -2834,7 +2834,8 @@ impl CompositorHandler for State {
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
             let tree = self.workspace_tree.read();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .any(|ws| ws.is_surface_shared(surface_id))
                 || self.active_sessions.contains_key(&surface_id)
@@ -4571,6 +4572,7 @@ mod tick_hook_tests {
         let presenter_groups = state
             .workspace_tree
             .read()
+            .desktop
             .active_workspace()
             .unwrap()
             .strips[0]
@@ -4592,6 +4594,7 @@ mod tick_hook_tests {
             state
                 .workspace_tree
                 .read()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .strips[0]

@@ -2,6 +2,10 @@
 use shell::runtime_host::{daemon, mcp_process};
 use std::{ffi::OsString, io, path::Path};
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "called from `run` before tracing or any other thread starts, so no other thread can read the environment concurrently; the profile variables must reach this process and every child it spawns"
+)]
 fn configure_profile(profile: &Path) -> io::Result<()> {
     for (name, path) in mcp_process::prepare_profile_environment(profile)? {
         // SAFETY: this executable has not started any threads. Reusable host

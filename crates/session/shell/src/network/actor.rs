@@ -22,6 +22,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
+use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
@@ -216,6 +217,14 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
         route: WorkspaceControlRoute,
+    },
+    /// Send a remote-action frame to one exact authenticated device of the
+    /// workspace over the direct surface/control plane. Never fanned out:
+    /// action arguments and results are private to the two devices.
+    PublishRemoteAction {
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
     },
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
@@ -492,7 +501,9 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 };
                 if !matches!(
                     frame.message,
-                    NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::RemoteInput { .. }
+                    NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::RemoteInput { .. }
+                        | NeighbourMsg::RemoteAction { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -529,10 +540,12 @@ async fn enqueue_surface_event(
     input_tx: &mpsc::Sender<InternalEvent>,
     event: InternalEvent,
 ) -> bool {
+    // Remote-action frames are requests and answers, not media: they take
+    // the reliable queue with input.
     let is_input = matches!(
         &event,
         InternalEvent::SurfaceFrame {
-            msg: NeighbourMsg::RemoteInput { .. },
+            msg: NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. },
             ..
         }
     );
@@ -632,11 +645,37 @@ impl Actor {
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            HEARTBEAT_INTERVAL,
+        )
+    }
+
+    /// [`Self::spawn_reporting_addrs`] with an explicit liveness and
+    /// host-retry cadence, so a test can observe several heartbeats without
+    /// waiting out the production interval.
+    fn spawn_with_heartbeat(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        heartbeat: Duration,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
         }
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let task = tokio::spawn(run(endpoint, lookup, host_identity, listen_addrs, cmd_rx));
+        let task = tokio::spawn(run(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            cmd_rx,
+            heartbeat,
+        ));
         (cmd_tx, task)
     }
 }
@@ -906,6 +945,9 @@ impl ActorState {
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
+            }
+            Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
+                self.publish_remote_action(ws, target, msg).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
@@ -1398,7 +1440,10 @@ impl ActorState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one resumable transfer is described by its route, identity, resume point and integrity digests together"
+    )]
     fn publish_nearby_transfer(
         &self,
         ws: WorkspaceId,
@@ -1490,50 +1535,7 @@ impl ActorState {
         }
         match route {
             WorkspaceControlRoute::Direct { target } => {
-                if !self.peers_seen.contains_key(&(ws, target)) {
-                    tracing::warn!(ws, peer = %target, "direct workspace-control route is no longer live");
-                    return;
-                }
-                let wire = SurfaceWireFrame {
-                    workspace: ws,
-                    message: msg,
-                };
-                let Ok(bytes) = postcard::to_allocvec(&wire) else {
-                    return;
-                };
-                let addr = self
-                    .peers
-                    .get(&target)
-                    .cloned()
-                    .unwrap_or_else(|| EndpointAddr::new(target));
-                let connection = if let Some(connection) = self.surface_connections.get(&target) {
-                    connection.clone()
-                } else {
-                    let Ok(Ok(connection)) = tokio::time::timeout(
-                        Duration::from_millis(300),
-                        self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
-                    )
-                    .await
-                    else {
-                        tracing::warn!(ws, peer = %target, "direct workspace-control connection failed");
-                        return;
-                    };
-                    self.surface_connections.insert(target, connection.clone());
-                    connection
-                };
-                let send = async {
-                    let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                    stream.write_all(&bytes).await.map_err(|_| ())?;
-                    stream.finish().map_err(|_| ())?;
-                    Ok::<(), ()>(())
-                };
-                if !matches!(
-                    tokio::time::timeout(Duration::from_millis(40), send).await,
-                    Ok(Ok(()))
-                ) {
-                    self.surface_connections.remove(&target);
-                    tracing::warn!(ws, peer = %target, "direct workspace-control publish failed");
-                }
+                self.publish_direct(ws, target, msg).await;
             }
             WorkspaceControlRoute::Relayed { via } => {
                 tracing::warn!(
@@ -1543,6 +1545,111 @@ impl ActorState {
                 );
             }
         }
+    }
+
+    /// Send a remote-action frame to exactly `target`: directly when the
+    /// device is live on this workspace's mesh, otherwise through an
+    /// authenticated workspace host, which routes it to that device alone.
+    async fn publish_remote_action(
+        &mut self,
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
+    ) {
+        let NeighbourMsg::RemoteAction { frame } = msg else {
+            tracing::warn!(
+                ws,
+                "refused a non-action message on the remote-action route"
+            );
+            return;
+        };
+        if self.peers_seen.contains_key(&(ws, target))
+            && self
+                .publish_direct(
+                    ws,
+                    target,
+                    NeighbourMsg::RemoteAction {
+                        frame: frame.clone(),
+                    },
+                )
+                .await
+        {
+            return;
+        }
+        let relayed = self
+            .host_sessions
+            .iter()
+            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .any(|(_, runtime)| {
+                runtime
+                    .session
+                    .publish_remote_action(*target.as_bytes(), frame.clone())
+                    .is_ok()
+            });
+        if !relayed {
+            tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action");
+        }
+    }
+
+    /// Deliver one message to exactly `target` on the authenticated direct
+    /// surface/control plane. The peer must be live on this workspace.
+    /// Returns whether the message was written.
+    async fn publish_direct(
+        &mut self,
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
+    ) -> bool {
+        if !self.peers_seen.contains_key(&(ws, target)) {
+            tracing::warn!(ws, peer = %target, "direct route is no longer live");
+            return false;
+        }
+        // Input must land within an interactive frame budget or not at all;
+        // an action frame (up to a catalogue page) is worth waiting for.
+        let budget = if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_millis(40)
+        };
+        let wire = SurfaceWireFrame {
+            workspace: ws,
+            message: msg,
+        };
+        let Ok(bytes) = postcard::to_allocvec(&wire) else {
+            return false;
+        };
+        let addr = self
+            .peers
+            .get(&target)
+            .cloned()
+            .unwrap_or_else(|| EndpointAddr::new(target));
+        let connection = if let Some(connection) = self.surface_connections.get(&target) {
+            connection.clone()
+        } else {
+            let Ok(Ok(connection)) = tokio::time::timeout(
+                Duration::from_millis(300),
+                self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
+            )
+            .await
+            else {
+                tracing::warn!(ws, peer = %target, "direct connection failed");
+                return false;
+            };
+            self.surface_connections.insert(target, connection.clone());
+            connection
+        };
+        let send = async {
+            let mut stream = connection.open_uni().await.map_err(|_| ())?;
+            stream.write_all(&bytes).await.map_err(|_| ())?;
+            stream.finish().map_err(|_| ())?;
+            Ok::<(), ()>(())
+        };
+        if matches!(tokio::time::timeout(budget, send).await, Ok(Ok(()))) {
+            return true;
+        }
+        self.surface_connections.remove(&target);
+        tracing::warn!(ws, peer = %target, "direct publish failed");
+        false
     }
 
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
@@ -1601,29 +1708,7 @@ impl ActorState {
                 self.handle_topic_event(ws, event).await;
             }
             Some(InternalEvent::Closed { ws }) => {
-                self.topics.remove(&ws);
-                let subscriber = self.subscribers.get(&ws).cloned();
-                let closed = self
-                    .peers_seen
-                    .iter()
-                    .filter_map(|(&(peer_ws, peer), membership)| {
-                        (peer_ws == ws).then_some((peer, membership.epoch))
-                    })
-                    .collect::<Vec<_>>();
-                for (peer, epoch) in closed {
-                    if self.remove_membership_if_epoch(ws, peer, epoch)
-                        && let Some(tx) = subscriber.as_ref()
-                    {
-                        let _ = tx
-                            .send(NetEvent::PeerLeft {
-                                ws,
-                                peer,
-                                cause: PeerDepartureCause::WorkspaceRouteClosed,
-                                membership_epoch: Some(epoch),
-                            })
-                            .await;
-                    }
-                }
+                self.handle_workspace_closed(ws).await;
             }
             Some(InternalEvent::HostConnected {
                 ws,
@@ -1642,29 +1727,7 @@ impl ActorState {
                 fingerprint,
                 msg,
             }) => {
-                // A bare ALPN connection is not workspace admission. Require
-                // the peer to have appeared on this workspace's authenticated
-                // gossip topic first; ShellNetwork performs the capability
-                // and claimed-publisher checks before dispatch.
-                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-                    tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
-                    return true;
-                };
-                // Input has no event id or timestamp, so two deliberate
-                // identical key/button events must not be content-deduped.
-                if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
-                    || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
-                    && let Some(tx) = self.subscribers.get(&ws)
-                {
-                    let _ = tx
-                        .send(NetEvent::Msg {
-                            ws,
-                            peer,
-                            membership_epoch: Some(membership_epoch),
-                            msg,
-                        })
-                        .await;
-                }
+                self.handle_surface_frame(ws, peer, fingerprint, msg).await;
             }
             Some(InternalEvent::SurfaceFanoutComplete {
                 ws,
@@ -1672,46 +1735,8 @@ impl ActorState {
                 outcomes,
                 all_delivered,
             }) => {
-                self.surface_fanout_tasks.remove(&ws);
-                if !self.subscribers.contains_key(&ws) {
-                    self.pending_surface_frames.remove(&ws);
-                    return true;
-                }
-                for outcome in outcomes {
-                    if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
-                        if let Some(connection) = outcome.connection {
-                            self.surface_connections.insert(outcome.peer, connection);
-                        }
-                    } else {
-                        self.surface_connections.remove(&outcome.peer);
-                    }
-                }
-                if !all_delivered {
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        msg,
-                        false,
-                        true,
-                        false,
-                    )
+                self.handle_surface_fanout_complete(ws, msg, outcomes, all_delivered)
                     .await;
-                }
-                if let Some(next) = self.pending_surface_frames.remove(&ws)
-                    && !self.start_surface_fanout(ws, next.clone())
-                {
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        next,
-                        false,
-                        true,
-                        false,
-                    )
-                    .await;
-                }
             }
             Some(InternalEvent::PersonalFabric {
                 ws,
@@ -1720,33 +1745,14 @@ impl ActorState {
                 user_public_key,
                 payload,
             }) => {
-                // Topic membership establishes reachability only. ShellNetwork
-                // still binds the frame to the peer's certified person/device.
-                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-                    tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
-                    return true;
-                };
-                if !bind_personal_fabric_ingress(
-                    &mut self.personal_fabric_ingress,
+                self.handle_personal_fabric(
+                    ws,
                     peer,
                     connection_incarnation,
-                    ws,
-                    membership_epoch,
-                ) {
-                    tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
-                    return true;
-                }
-                if let Some(tx) = self.subscribers.get(&ws) {
-                    let _ = tx
-                        .send(NetEvent::PersonalFabric {
-                            ws,
-                            peer,
-                            membership_epoch,
-                            user_public_key,
-                            payload,
-                        })
-                        .await;
-                }
+                    user_public_key,
+                    payload,
+                )
+                .await;
             }
             Some(InternalEvent::PersonalFabricClosed {
                 peer,
@@ -1784,32 +1790,203 @@ impl ActorState {
                 outcome,
                 sent_bytes,
             }) => {
-                let key = (target, transfer_id);
-                if let Some(active) =
-                    take_personal_media_generation(&mut self.active_personal_media, key, generation)
-                {
-                    let status = match outcome {
-                        PersonalMediaStreamOutcome::Completed => {
-                            PersonalMediaTransferStatus::Completed
-                        }
-                        PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
-                        PersonalMediaStreamOutcome::Cancelled => {
-                            PersonalMediaTransferStatus::Cancelled
-                        }
-                    };
-                    self.report_personal_media(
-                        active.workspace,
-                        target,
-                        transfer_id,
-                        sent_bytes,
-                        active.total_bytes,
-                        status,
-                    );
-                }
+                self.handle_personal_media_finished(
+                    target,
+                    transfer_id,
+                    generation,
+                    outcome,
+                    sent_bytes,
+                );
             }
             None => return false,
         }
         true
+    }
+
+    /// [`InternalEvent::Closed`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_workspace_closed(&mut self, ws: WorkspaceId) {
+        self.topics.remove(&ws);
+        let subscriber = self.subscribers.get(&ws).cloned();
+        let closed = self
+            .peers_seen
+            .iter()
+            .filter_map(|(&(peer_ws, peer), membership)| {
+                (peer_ws == ws).then_some((peer, membership.epoch))
+            })
+            .collect::<Vec<_>>();
+        for (peer, epoch) in closed {
+            if self.remove_membership_if_epoch(ws, peer, epoch)
+                && let Some(tx) = subscriber.as_ref()
+            {
+                let _ = tx
+                    .send(NetEvent::PeerLeft {
+                        ws,
+                        peer,
+                        cause: PeerDepartureCause::WorkspaceRouteClosed,
+                        membership_epoch: Some(epoch),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// [`InternalEvent::SurfaceFrame`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_surface_frame(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        fingerprint: [u8; 32],
+        msg: NeighbourMsg,
+    ) {
+        // A bare ALPN connection is not workspace admission. Require
+        // the peer to have appeared on this workspace's authenticated
+        // gossip topic first; ShellNetwork performs the capability
+        // and claimed-publisher checks before dispatch.
+        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
+            tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
+            return;
+        };
+        // Input has no event id or timestamp, so two deliberate
+        // identical key/button events must not be content-deduped.
+        // A remote-action retry is byte-identical on purpose; the
+        // receiving host deduplicates it by invocation id instead.
+        if (matches!(
+            &msg,
+            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. }
+        ) || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
+            && let Some(tx) = self.subscribers.get(&ws)
+        {
+            let _ = tx
+                .send(NetEvent::Msg {
+                    ws,
+                    peer,
+                    membership_epoch: Some(membership_epoch),
+                    msg,
+                })
+                .await;
+        }
+    }
+
+    /// [`InternalEvent::SurfaceFanoutComplete`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_surface_fanout_complete(
+        &mut self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        outcomes: Vec<SurfaceFanoutOutcome>,
+        all_delivered: bool,
+    ) {
+        self.surface_fanout_tasks.remove(&ws);
+        if !self.subscribers.contains_key(&ws) {
+            self.pending_surface_frames.remove(&ws);
+            return;
+        }
+        for outcome in outcomes {
+            if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
+                if let Some(connection) = outcome.connection {
+                    self.surface_connections.insert(outcome.peer, connection);
+                }
+            } else {
+                self.surface_connections.remove(&outcome.peer);
+            }
+        }
+        if !all_delivered {
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                msg,
+                false,
+                true,
+                false,
+            )
+            .await;
+        }
+        if let Some(next) = self.pending_surface_frames.remove(&ws)
+            && !self.start_surface_fanout(ws, next.clone())
+        {
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                next,
+                false,
+                true,
+                false,
+            )
+            .await;
+        }
+    }
+
+    /// [`InternalEvent::PersonalFabric`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_personal_fabric(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        connection_incarnation: u64,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        // Topic membership establishes reachability only. ShellNetwork
+        // still binds the frame to the peer's certified person/device.
+        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
+            tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
+            return;
+        };
+        if !bind_personal_fabric_ingress(
+            &mut self.personal_fabric_ingress,
+            peer,
+            connection_incarnation,
+            ws,
+            membership_epoch,
+        ) {
+            tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
+            return;
+        }
+        if let Some(tx) = self.subscribers.get(&ws) {
+            let _ = tx
+                .send(NetEvent::PersonalFabric {
+                    ws,
+                    peer,
+                    membership_epoch,
+                    user_public_key,
+                    payload,
+                })
+                .await;
+        }
+    }
+
+    /// [`InternalEvent::PersonalMediaFinished`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    fn handle_personal_media_finished(
+        &mut self,
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        outcome: PersonalMediaStreamOutcome,
+        sent_bytes: u64,
+    ) {
+        let key = (target, transfer_id);
+        if let Some(active) =
+            take_personal_media_generation(&mut self.active_personal_media, key, generation)
+        {
+            let status = match outcome {
+                PersonalMediaStreamOutcome::Completed => PersonalMediaTransferStatus::Completed,
+                PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
+                PersonalMediaStreamOutcome::Cancelled => PersonalMediaTransferStatus::Cancelled,
+            };
+            self.report_personal_media(
+                active.workspace,
+                target,
+                transfer_id,
+                sent_bytes,
+                active.total_bytes,
+                status,
+            );
+        }
     }
 
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
@@ -1924,7 +2101,11 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
-                if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
+                // A remote-action retry is byte-identical on purpose; the
+                // receiving host deduplicates it by invocation id instead.
+                if !matches!(msg, NeighbourMsg::RemoteAction { .. })
+                    && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                {
                     return;
                 }
                 Some(NetEvent::Msg {
@@ -2422,6 +2603,7 @@ async fn run(
     host_identity: Option<HostIdentity>,
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
+    heartbeat_interval: Duration,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -2471,7 +2653,7 @@ async fn run(
         active_personal_media: HashMap::new(),
         next_personal_media_generation: 0,
     };
-    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut heartbeat = tokio::time::interval(heartbeat_interval);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
     let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2584,52 +2766,6 @@ async fn publish(
             );
         }
     }
-}
-
-/// Only replayable state is allowed into the host's durable queue. Everything
-/// else is live session traffic; persisting input, presence, media, permission
-/// prompts or request/response control frames would make them execute late.
-#[derive(Clone, Copy)]
-enum Retention {
-    Checkpoint,
-    Delta,
-}
-
-fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Retention)> {
-    let (route, kind) = match msg {
-        NeighbourMsg::SyncResp { .. } => (
-            b"shell-tree".as_slice(),
-            if shell_checkpoint {
-                Retention::Checkpoint
-            } else {
-                Retention::Delta
-            },
-        ),
-        NeighbourMsg::AppDocument {
-            app_id,
-            record_id,
-            envelope,
-            ..
-        } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
-            let retention = match mutation {
-                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
-                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
-            };
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
-        }
-        NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } => {
-            let mut route = Vec::new();
-            route.extend_from_slice(b"personal-continuity\0");
-            route.extend_from_slice(user_public_key);
-            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
-        }
-        _ => return None,
-    };
-    Some((*blake3::hash(route).as_bytes(), kind))
 }
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
@@ -2959,6 +3095,17 @@ fn spawn_host_pump(
         while let Some(inbound) = session.recv().await {
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
+                HostInbound::RemoteAction { from, frame } => {
+                    let Ok(author) = EndpointId::from_bytes(&from) else {
+                        continue;
+                    };
+                    HostEvent::Message {
+                        author,
+                        // Never deduplicated; see `handle_host_event`.
+                        fingerprint: [0; 32],
+                        msg: NeighbourMsg::RemoteAction { frame },
+                    }
+                }
                 HostInbound::Delta { author, data }
                 | HostInbound::Presence {
                     author,
@@ -3009,6 +3156,7 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
         let (cancel, _receiver) = tokio::sync::watch::channel(false);
@@ -3078,118 +3226,6 @@ mod tests {
         sign_revocation_entry,
     };
     use tokio::time::timeout;
-
-    fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
-        let envelope = collab_types::SignedOp::new_unsigned(
-            mutation.encode().expect("typed mutation"),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-        );
-        NeighbourMsg::AppDocument {
-            peer: 1,
-            app_id: "app".into(),
-            cluster_id: "room".into(),
-            record_id: "doc".into(),
-            envelope: Box::new(envelope),
-        }
-    }
-
-    #[test]
-    fn host_persists_state_but_never_late_session_actions() {
-        assert!(matches!(
-            retention(
-                &NeighbourMsg::SyncResp {
-                    changes: vec![vec![1]],
-                    room: "room".into(),
-                },
-                true,
-            ),
-            Some((_, Retention::Checkpoint))
-        ));
-        assert!(matches!(
-            retention(
-                &NeighbourMsg::SyncResp {
-                    changes: vec![vec![1]],
-                    room: "room".into(),
-                },
-                false,
-            ),
-            Some((_, Retention::Delta))
-        ));
-        assert!(matches!(
-            retention(
-                &document(&collab_types::DocumentMutation::Snapshot(vec![2])),
-                false,
-            ),
-            Some((_, Retention::Checkpoint))
-        ));
-        assert!(matches!(
-            retention(
-                &document(&collab_types::DocumentMutation::Incremental(vec![2])),
-                false,
-            ),
-            Some((_, Retention::Delta))
-        ));
-        let root_a = [0xA1; 32];
-        let root_b = [0xB2; 32];
-        let checkpoint_a = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_a,
-            publisher: 1,
-            snapshot: vec![7],
-        };
-        let checkpoint_b = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_b,
-            publisher: 2,
-            snapshot: vec![8],
-        };
-        let Some((channel_a, Retention::Checkpoint)) = retention(&checkpoint_a, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        let Some((channel_b, Retention::Checkpoint)) = retention(&checkpoint_b, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        assert_ne!(
-            channel_a, channel_b,
-            "each user root has an isolated host channel"
-        );
-        assert!(
-            retention(
-                &NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: root_a,
-                    requester: 1,
-                },
-                false,
-            )
-            .is_none(),
-            "requests are live probes, never retained work"
-        );
-        for live in [
-            NeighbourMsg::RemoteInput {
-                peer: 1,
-                surface: 2,
-                event: vec![3],
-            },
-            NeighbourMsg::PermissionGrant {
-                peer: 1,
-                capability: "remote-input".into(),
-            },
-            NeighbourMsg::AppPresenceV2 {
-                peer: 1,
-                app_id: "app".into(),
-                cluster_id: "room".into(),
-                presence: collab_types::PeerPresence {
-                    key: vec![4],
-                    payload: collab_types::PeerPresencePayload::Arrived,
-                },
-            },
-        ] {
-            assert!(retention(&live, false).is_none());
-        }
-    }
 
     async fn endpoint() -> (Endpoint, MemoryLookup) {
         let lookup = MemoryLookup::new();
@@ -3288,8 +3324,7 @@ mod tests {
         capabilities: DeviceCapabilities,
         label: &str,
     ) -> (ed25519_dalek::SigningKey, DeviceCert) {
-        use rand_core::OsRng;
-        let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
@@ -3883,10 +3918,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn actors_announce_identity_when_a_neighbor_connects() {
-        use rand_core::OsRng;
-
-        let root_a = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let root_b = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root_a = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let root_b = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
         let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
         let expected_a = cert_a.device_public_key;
@@ -4004,9 +4037,8 @@ mod tests {
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let other_root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
         let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
         let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
@@ -4125,6 +4157,10 @@ mod tests {
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
     /// and block until both report `HostReady`. Returns each actor's
     /// command sender and event receiver.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each peer's endpoint, lookup and identity, plus the shared relay and cadence"
+    )]
     async fn join_workspace_and_await_host_ready(
         a: Endpoint,
         lookup_a: MemoryLookup,
@@ -4133,23 +4169,26 @@ mod tests {
         lookup_b: MemoryLookup,
         identity_b: HostIdentity,
         relay: &Relay,
+        heartbeat: Duration,
     ) -> (
         mpsc::Sender<NetCmd>,
         mpsc::Receiver<NetEvent>,
         mpsc::Sender<NetCmd>,
         mpsc::Receiver<NetEvent>,
     ) {
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+        let (cmd_a, _task_a) = Actor::spawn_with_heartbeat(
             a,
             lookup_a,
             Some(identity_a),
             Arc::new(Mutex::new(Vec::new())),
+            heartbeat,
         );
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+        let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
             lookup_b,
             Some(identity_b),
             Arc::new(Mutex::new(Vec::new())),
+            heartbeat,
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
@@ -4197,8 +4236,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_actors_exchange_through_authenticated_workspace_host() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
         let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
@@ -4225,7 +4263,14 @@ mod tests {
             identity_paths: None,
         };
         let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a, lookup_a, identity_a, b, lookup_b, identity_b, &relay,
+            a,
+            lookup_a,
+            identity_a,
+            b,
+            lookup_b,
+            identity_b,
+            &relay,
+            HEARTBEAT_INTERVAL,
         )
         .await;
 
@@ -4257,10 +4302,79 @@ mod tests {
         }
     }
 
+    /// Two devices that share only a workspace host, with no direct route,
+    /// still exchange remote-action frames: the same bytes, delivered to the
+    /// addressed device attributed to the sender the host authenticated, and
+    /// a byte-identical retry is delivered again rather than deduplicated.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remote_action_frames_fall_back_to_the_workspace_host() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+
+        let frame = br#"{"version":1}"#.to_vec();
+        for attempt in 0..2 {
+            cmd_a
+                .send(NetCmd::PublishRemoteAction {
+                    ws: 42,
+                    target: b_id,
+                    msg: NeighbourMsg::RemoteAction {
+                        frame: frame.clone(),
+                    },
+                })
+                .await
+                .unwrap();
+            let (peer, received) = timeout(Duration::from_secs(15), async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        peer,
+                        msg: NeighbourMsg::RemoteAction { frame },
+                        ..
+                    }) = rx_b.recv().await
+                    {
+                        return (peer, frame);
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("relayed attempt {attempt} was not delivered"));
+            assert_eq!(peer, a_id, "attributed to the authenticated sender");
+            assert_eq!(received, frame, "the host carries the frame untouched");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        const TEST_HEARTBEAT: Duration = Duration::from_millis(100);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let a_public = a_key.verifying_key().to_bytes();
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
@@ -4284,6 +4398,7 @@ mod tests {
             lookup_b,
             identity(b_key, b_cert),
             &relay,
+            TEST_HEARTBEAT,
         )
         .await;
 
@@ -4359,7 +4474,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(!relay.is_subscribed(42, &a_public).await);
-        tokio::time::sleep(HEARTBEAT_INTERVAL + Duration::from_millis(250)).await;
+        // Several retry rounds pass; any of them would redial a host it still held.
+        tokio::time::sleep(TEST_HEARTBEAT * 4).await;
         assert!(
             !relay.is_subscribed(42, &a_public).await,
             "a removed host must not be redialled by the heartbeat retry loop"
@@ -4372,8 +4488,7 @@ mod tests {
     )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
-        use rand_core::OsRng;
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
         let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
@@ -4401,6 +4516,7 @@ mod tests {
             lookup_b,
             identity(b_key, b_cert),
             &relay,
+            HEARTBEAT_INTERVAL,
         )
         .await;
         let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {

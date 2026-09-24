@@ -302,6 +302,7 @@ mod tests {
     use super::*;
     use crate::model::Workspace;
     use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     /// A workspace with three titled pages.
     fn populated() -> Workspace {
@@ -442,28 +443,25 @@ mod tests {
 
     #[test]
     fn retained_catalog_pages_adversarial_queries_without_omitting_late_blocks() {
-        let ws = populated();
-        let page = ws.pages()[0].id;
-        let mut blocks = Vec::with_capacity(100_001);
-        for index in 0..100_001 {
-            blocks.push(crate::actions::NoteBlockResource {
-                id: uuid::Uuid::new_v4().to_string(),
-                text: format!("shared ordinary text {index}"),
-            });
-        }
-        blocks.last_mut().unwrap().text = "needle-at-the-end".into();
-        let provider = NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]));
-        assert!(
-            provider
-                .search("needle-at-the-end")
-                .iter()
-                .any(|result| result.title == "needle-at-the-end"),
-            "the final record of a >100k catalogue remains reachable"
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let ws = populated();
+                let page = ws.pages()[0].id;
+                let blocks = corpus
+                    .map(|row| crate::actions::NoteBlockResource {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        text: row.text,
+                    })
+                    .collect();
+                NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]))
+            },
+            3_000,
         );
-        let first = provider.search_page("shared", None, 7, 3);
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let first = provider.search_page("ordinary", None, 7, 3);
         assert!(first.next.is_some(), "broad query exposes a continuation");
         assert!(first.inspected <= 7 && first.results.len() <= 3);
-        let second = provider.search_page("shared", first.next.as_ref(), 7, 3);
+        let second = provider.search_page("ordinary", first.next.as_ref(), 7, 3);
         assert!(second.inspected <= 7 && second.results.len() <= 3);
     }
 

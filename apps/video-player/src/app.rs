@@ -25,6 +25,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
+use ui::paint::fill_rect;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
@@ -451,10 +452,6 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
-fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, transform, color, None, &rect);
-}
-
 /// Shared title/description/tab rhythm for the custom library panel. Text
 /// metrics are expressed in logical pixels and expanded exactly once by the
 /// active accessibility scale, so paint and hit geometry cannot drift.
@@ -855,10 +852,10 @@ impl PlayerApp {
     }
 
     fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
-        // Tests inject picker outcomes while exercising the same request and
-        // completion paths; they must never open a desktop file chooser.
+        // Tests exercise the real request and completion paths; a recording
+        // host answers every picker so no desktop file chooser ever opens.
         #[cfg(test)]
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
         let recent = crate::preferences::load_recent_history()
             .into_iter()
@@ -4197,12 +4194,12 @@ mod tests {
     fn source_for_path_splits_local_vs_workspace() {
         // Point the mount at a scratch root so the classification is testable.
         let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOT", &root);
         let ws = source_for_path(&root.join("media/a.mp4"));
         assert!(matches!(ws, media::Source::Workspace(_)));
         let local = source_for_path(Path::new("/home/u/b.mp4"));
         assert!(matches!(local, media::Source::LocalFile(_)));
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]
@@ -4221,14 +4218,10 @@ mod tests {
     #[test]
     fn portal_outcome_opens_the_chosen_file() {
         let mut app = PlayerApp::new();
-        app.portal_generation = 1;
-        app.portal_open = Some(PendingPortalOpen {
-            channel: ui::portal::inject_for_test(PortalOutcome::Opened(PathBuf::from(
-                "/tmp/Chosen.webm",
-            ))),
-            generation: 1,
-            invocation: None,
-        });
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
+        ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
+        assert_eq!(recorder.pick_requests().len(), 1);
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
         assert!(
@@ -4416,14 +4409,11 @@ mod tests {
     #[test]
     fn stale_portal_outcome_cannot_open_media_in_release_or_debug_builds() {
         let mut app = PlayerApp::new();
-        app.portal_generation = 2;
-        app.portal_open = Some(PendingPortalOpen {
-            channel: ui::portal::inject_for_test(PortalOutcome::Opened(PathBuf::from(
-                "/tmp/Stale.webm",
-            ))),
-            generation: 1,
-            invocation: None,
-        });
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
+        ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
+        // A newer request generation makes the delivered outcome stale.
+        app.portal_generation += 1;
         app.drain_portal();
         assert_eq!(app.title, "No media");
         assert!(app.current_source_id.is_none());
@@ -4448,12 +4438,9 @@ mod tests {
     #[test]
     fn portal_failure_is_retained_for_the_empty_state() {
         let mut app = PlayerApp::new();
-        app.portal_generation = 1;
-        app.portal_open = Some(PendingPortalOpen {
-            channel: ui::portal::inject_for_test(PortalOutcome::Failed("permission denied".into())),
-            generation: 1,
-            invocation: None,
-        });
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Failed("permission denied".into()));
+        ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
         app.drain_portal();
         assert_eq!(app.open_error.as_deref(), Some("permission denied"));
         assert!(app.player.latest_frame().is_none());

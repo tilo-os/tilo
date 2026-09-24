@@ -26,7 +26,7 @@ COPY --from=builder --chown=65532:65532 /out/tilo-registry-server /usr/local/bin
 # rustls-native-certs is intentionally patched to Tilo's single immutable
 # trust path. Populate that path explicitly instead of depending on the
 # runtime base image's distro-specific certificate layout.
-COPY --from=builder --chown=65532:65532 /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+COPY --from=builder --chown=65532:65532 /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 COPY --from=builder --chown=65532:65532 /out/state/ /var/lib/tilo-registry/
 
 USER 65532:65532

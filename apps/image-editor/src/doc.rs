@@ -19,6 +19,7 @@ use crate::model::{Operation, Project};
 use automerge::{
     AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
+use ui::doc::{read_bool, read_number, read_str, read_u64};
 use ui::graph_editor::{Edge, Graph, GraphNode, GraphPoint, Port};
 
 const LEGACY_KEY: &str = "image-editor.project";
@@ -190,7 +191,7 @@ impl ProjectDoc {
         let Some(row) = get_map(doc, &operations, id) else {
             return false;
         };
-        let Some(kind) = get_string(doc, &row, "kind") else {
+        let Some(kind) = read_str(doc, &row, "kind") else {
             return false;
         };
         let valid = match (kind.as_str(), field) {
@@ -330,8 +331,8 @@ impl ProjectDoc {
     fn read_v2(doc: &AutoCommit) -> Option<Project> {
         let root = Self::v2(doc)?;
         let metadata = get_map(doc, &root, METADATA)?;
-        let name = get_string(doc, &metadata, "name").unwrap_or_else(|| "Untitled image".into());
-        let output = get_string(doc, &metadata, "output").unwrap_or_else(|| "output".into());
+        let name = read_str(doc, &metadata, "name").unwrap_or_else(|| "Untitled image".into());
+        let output = read_str(doc, &metadata, "output").unwrap_or_else(|| "output".into());
         let nodes = get_map(doc, &root, NODES)?;
         let operations = get_map(doc, &root, OPERATIONS)?;
         let tombstones = get_map(doc, &root, TOMBSTONES);
@@ -371,7 +372,7 @@ impl ProjectDoc {
         }
         if let Some(connections) = get_map(doc, &root, CONNECTIONS) {
             for key in doc.keys(&connections) {
-                let Some(encoded) = get_string(doc, &connections, &key) else {
+                let Some(encoded) = read_str(doc, &connections, &key) else {
                     continue;
                 };
                 let Ok(edge) = serde_json::from_str::<Edge>(&encoded) else {
@@ -397,7 +398,7 @@ impl ProjectDoc {
             .ok()
             .flatten()
             .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.to_str().map(str::to_owned))
+            .and_then(|value| value.as_str().map(str::to_owned))
             .and_then(|json| serde_json::from_str(&json).ok())
     }
 
@@ -433,12 +434,12 @@ impl ProjectDoc {
         let row = get_map(doc, nodes, id)?;
         Some(GraphNode {
             id: id.into(),
-            title: get_string(doc, &row, "title").unwrap_or_else(|| id.into()),
+            title: read_str(doc, &row, "title").unwrap_or_else(|| id.into()),
             position: GraphPoint {
-                x: get_f64(doc, &row, "x").unwrap_or(40.0),
-                y: get_f64(doc, &row, "y").unwrap_or(120.0),
+                x: read_number(doc, &row, "x").unwrap_or(40.0),
+                y: read_number(doc, &row, "y").unwrap_or(120.0),
             },
-            inputs: get_string(doc, &row, "inputs")
+            inputs: read_str(doc, &row, "inputs")
                 .and_then(|json| serde_json::from_str(&json).ok())
                 .unwrap_or_else(|| {
                     if id == "source" {
@@ -447,10 +448,10 @@ impl ProjectDoc {
                         vec![image_port()]
                     }
                 }),
-            outputs: get_string(doc, &row, "outputs")
+            outputs: read_str(doc, &row, "outputs")
                 .and_then(|json| serde_json::from_str(&json).ok())
                 .unwrap_or_else(|| vec![image_port()]),
-            enabled: get_bool(doc, &row, "enabled").unwrap_or(true),
+            enabled: read_bool(doc, &row, "enabled").unwrap_or(true),
         })
     }
     fn write_operation(doc: &mut AutoCommit, operations: &ObjId, id: &str, operation: &Operation) {
@@ -494,11 +495,11 @@ impl ProjectDoc {
     }
     fn read_operation(doc: &AutoCommit, operations: &ObjId, id: &str) -> Option<Operation> {
         let row = get_map(doc, operations, id)?;
-        let kind = get_string(doc, &row, "kind")?;
-        let float = |key| get_f64(doc, &row, key).unwrap_or_default() as f32;
+        let kind = read_str(doc, &row, "kind")?;
+        let float = |key| read_number(doc, &row, key).unwrap_or_default() as f32;
         match kind.as_str() {
             "source" => Some(Operation::Source {
-                path: get_string(doc, &row, "path").unwrap_or_default(),
+                path: read_str(doc, &row, "path").unwrap_or_default(),
             }),
             "exposure" => Some(Operation::Exposure {
                 stops: float("stops"),
@@ -511,7 +512,7 @@ impl ProjectDoc {
             }),
             "grayscale" => Some(Operation::Grayscale),
             "rotate" => Some(Operation::Rotate {
-                quarter_turns: get_u64(doc, &row, "quarter_turns").unwrap_or_default() as u8,
+                quarter_turns: read_u64(doc, &row, "quarter_turns").unwrap_or_default() as u8,
             }),
             "crop" => Some(Operation::Crop {
                 x: float("x"),
@@ -539,7 +540,7 @@ impl ProjectDoc {
     }
     fn order_ids(doc: &AutoCommit, order: &ObjId) -> Vec<String> {
         (0..doc.length(order))
-            .filter_map(|index| get_list_string(doc, order, index))
+            .filter_map(|index| read_str(doc, order, index))
             .filter(|id| id != "source" && id != "output")
             .collect()
     }
@@ -621,48 +622,6 @@ fn list_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         doc.put_object(parent, key, ObjType::List)
             .expect("image project list lives under a map")
     })
-}
-fn get_string(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_str().map(str::to_owned),
-        _ => None,
-    }
-}
-fn get_list_string(doc: &AutoCommit, obj: &ObjId, index: usize) -> Option<String> {
-    match doc.get(obj, index) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_str().map(str::to_owned),
-        _ => None,
-    }
-}
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-            ScalarValue::Boolean(value) => Some(*value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-fn get_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<u64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-            ScalarValue::Uint(value) => Some(*value),
-            ScalarValue::Int(value) => u64::try_from(*value).ok(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-            ScalarValue::F64(value) => Some(*value),
-            ScalarValue::Int(value) => Some(*value as f64),
-            ScalarValue::Uint(value) => Some(*value as f64),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 fn put_if_changed<V: Into<ScalarValue>>(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: V) {
     let value = value.into();

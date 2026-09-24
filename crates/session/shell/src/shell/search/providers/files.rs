@@ -1869,15 +1869,26 @@ mod tests {
     }
 
     fn eventually_page(mut query: impl FnMut() -> SearchPage) -> SearchPage {
-        for _ in 0..2_000 {
+        // A hang guard, not a latency budget: the work bounds are asserted
+        // on inspected entries, which a loaded machine cannot perturb.
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline within the clock's range");
+        while std::time::Instant::now() < deadline {
             let page = query();
             if !page.results.is_empty() || page.exhausted || page.stale_cursor {
                 return page;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("retained ranked query did not finish within two seconds");
+        panic!("retained ranked query did not finish");
     }
+
+    /// Candidates ahead of the late hit in the corpus tests. Every work
+    /// ceiling asserted there is two orders of magnitude smaller, so a
+    /// linear scan would still exceed it by far; the 100k case itself is
+    /// covered by the shared search provider tests in `ui`.
+    const LARGE_CORPUS: usize = 4_000;
 
     /// The best matches win regardless of where they sit in the index.
     #[test]
@@ -2044,13 +2055,13 @@ mod tests {
         assert_eq!(out[0].title, "alphabet.md");
     }
 
-    /// Paging an enormous retained corpus must not quietly turn the first
+    /// Paging a large retained corpus must not quietly turn the first
     /// (or a late) palette page back into a whole-index scan.  This measures
     /// inspected entries, not elapsed time, so it remains meaningful under
     /// sanitizers and on slow CI workers.
     #[test]
-    fn pages_a_hundred_thousand_retained_entries_with_fixed_work() {
-        let mut paths = (0..100_000)
+    fn pages_a_large_retained_corpus_with_fixed_work() {
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/archive/{i:06}-target-needle.md"))
             .collect::<Vec<_>>();
         // The exact filename is deliberately last: page quality must come
@@ -2083,13 +2094,13 @@ mod tests {
         assert_eq!(
             first.results.first().map(|row| row.title.as_str()),
             Some("target-needle.md"),
-            "an exact filename beyond 100k earlier candidates must lead"
+            "an exact filename behind thousands of earlier candidates must lead"
         );
     }
 
     #[test]
     fn late_non_exact_pages_keep_the_same_work_ceiling() {
-        let paths = (0..100_001)
+        let paths = (0..=LARGE_CORPUS)
             .map(|i| format!("~/archive/{i:06}-needle.md"))
             .collect::<Vec<_>>();
         let entries = paths.iter().map(|path| NameEntry {
@@ -2115,7 +2126,9 @@ mod tests {
             )
         });
         let mut cursor = first.next_cursor;
-        for _ in 0..700 {
+        // 200 pages of 17 stay short of the corpus, so the last one is late
+        // but not the end.
+        for _ in 0..200 {
             let page = p.query_page(
                 ctx_for("needle", &[ResourceKind::File], &st, &doc),
                 cursor.as_ref(),
@@ -2129,8 +2142,8 @@ mod tests {
     }
 
     #[test]
-    fn late_leaf_prefix_outranks_a_hundred_thousand_path_substrings() {
-        let mut paths = (0..100_000)
+    fn late_leaf_prefix_outranks_thousands_of_path_substrings() {
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/report/archive/item-{i:06}.md"))
             .collect::<Vec<_>>();
         paths.push("~/later/report-final.md".into());
@@ -2161,7 +2174,7 @@ mod tests {
 
     #[test]
     fn late_leaf_substring_uses_retained_trigram_postings() {
-        let mut paths = (0..100_000)
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/lunar/archive/item-{i:06}.md"))
             .collect::<Vec<_>>();
         paths.push("~/later/monthlylunarlog.md".into());
@@ -2192,7 +2205,7 @@ mod tests {
 
     #[test]
     fn late_fuzzy_hit_uses_a_retained_character_bucket() {
-        let mut paths = (0..100_000)
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/archive/item-{i:06}.md"))
             .collect::<Vec<_>>();
         paths.push("~/later/monthlylunarlog.md".into());
@@ -2223,7 +2236,7 @@ mod tests {
 
     #[test]
     fn one_character_bucket_is_preranked_before_the_palette_opens() {
-        let mut paths = (0..100_000)
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/archive/another-item-{i:06}.md"))
             .collect::<Vec<_>>();
         paths.push("~/later/zreport.md".into());
@@ -2312,7 +2325,7 @@ mod tests {
 
     #[test]
     fn path_substring_uses_a_retained_path_trigram_without_a_corpus_copy() {
-        let mut paths = (0..100_000)
+        let mut paths = (0..LARGE_CORPUS)
             .map(|i| format!("~/very-long-project-{i:06}/unrelated.md"))
             .collect::<Vec<_>>();
         paths.push("~/later/ordinary.md".into());
@@ -2328,7 +2341,7 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         let page = eventually_page(|| {
             p.query_page(
-                ctx_for("project-099", &[ResourceKind::File], &st, &doc),
+                ctx_for("project-0039", &[ResourceKind::File], &st, &doc),
                 None,
                 SearchBudget {
                     max_results: 8,
@@ -2340,7 +2353,7 @@ mod tests {
         assert!(
             page.results
                 .iter()
-                .all(|row| row.id.contains("project-099"))
+                .all(|row| row.id.contains("project-0039"))
         );
         assert!(p.last_scanned.load(Ordering::Relaxed) <= 32);
     }

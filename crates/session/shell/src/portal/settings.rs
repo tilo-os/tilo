@@ -8,7 +8,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
 pub struct SettingsBackend {
@@ -24,7 +24,7 @@ impl SettingsBackend {
     /// task from outliving the D-Bus connection.
     pub async fn emit_change(
         &self,
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         namespace: &str,
         key: &str,
     ) -> zbus::Result<()> {
@@ -57,7 +57,7 @@ pub fn spawn_signal_emitter(
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
-                    let Ok(context) = SignalContext::new(&task_connection, super::OBJECT_PATH)
+                    let Ok(context) = SignalEmitter::new(&task_connection, super::OBJECT_PATH)
                     else {
                         break;
                     };
@@ -193,7 +193,7 @@ impl SettingsBackend {
     }
     #[zbus(signal)]
     async fn setting_changed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         namespace: String,
         key: String,
         value: OwnedValue,

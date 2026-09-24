@@ -3,8 +3,8 @@
 //! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
+use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -353,7 +353,7 @@ impl Widget for Tooltip {
                 let inside = self.anchor.contains(p);
                 if inside && self.hover_since.is_none() {
                     self.on_hover_enter(Duration::ZERO);
-                    self.hover_since = Some(Instant::now());
+                    self.hover_since = Some(crate::time::now());
                 } else if !inside && self.hover_since.is_some() {
                     self.on_hover_leave();
                     self.hover_since = None;
@@ -533,7 +533,7 @@ mod host_tests {
     #[test]
     fn hovering_past_dwell_reveals_then_leaving_hides() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(
             h.on_pointer(Some(tip("Search")), t0),
             "new target changes state"
@@ -560,7 +560,7 @@ mod host_tests {
     #[test]
     fn click_scroll_or_key_dismisses_a_shown_tooltip() {
         let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         h.on_pointer(Some(tip("Zoom in")), t0);
         assert!(h.visible().is_some(), "zero-dwell shows on hover");
         assert!(h.dismiss(), "dismiss reports it was showing");
@@ -573,7 +573,7 @@ mod host_tests {
     #[test]
     fn moving_between_regions_restarts_the_dwell() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         h.on_pointer(Some(tip("Back")), t0);
         // Almost revealed on the first region…
         h.tick(t0 + Duration::from_millis(450));
@@ -593,7 +593,7 @@ mod host_tests {
     #[test]
     fn jitter_within_one_region_keeps_the_dwell() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         h.on_pointer(Some(tip("Search")), t0);
         // The pointer keeps reporting the same region (a stable rect+label)
         // as it jitters — the accumulated dwell must not reset.

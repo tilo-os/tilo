@@ -138,6 +138,25 @@ fn wait_for_ready_surface(
     captured_surface_id
 }
 
+fn wait_for_first_frame(
+    rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
+    surface: u32,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, WaylandEvent::Frame { surface_id, .. } if surface_id == surface) {
+                return true;
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 fn wait_for_any_surface(
     rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
     timeout: Duration,
@@ -196,6 +215,10 @@ fn send_peer_key(
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end sandbox scenario: spawn, wait for the window, drive input and assert, in order"
+)]
 fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     assert!(
         std::path::Path::new("/usr/bin/gnome-text-editor").exists(),
@@ -211,18 +234,28 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     spawn_wayland_server(tx, started_tx, input_rx);
     let socket = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let container = Container::new(document_dir.path().to_str().unwrap());
-    let tab_id = Uuid::new_v4();
-    let mut child = ChildGuard(
-        container
-            .spawn("gnome-text-editor /project/shared.txt", &socket, tab_id)
-            .unwrap(),
-    );
+    let log_dir = tempfile::tempdir().unwrap();
+    let app = container
+        .spawn_logging_to(
+            log_dir.path(),
+            "gnome-text-editor /project/shared.txt",
+            &socket,
+            Uuid::new_v4(),
+        )
+        .unwrap();
+    let log_path = app.log_path;
+    let mut child = ChildGuard(app.child);
     let (surface, width, height, _app_id) = wait_for_any_surface(&mut rx, Duration::from_secs(12))
         .unwrap_or_else(|| {
-            let log = fs::read_to_string(format!("/tmp/tilo-desktop-app-{tab_id}.log"))
-                .unwrap_or_default();
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
             panic!("GNOME Text Editor did not create a Wayland window; log:\n{log}")
         });
+    // A toplevel exists before its first buffer; input sent to it then is
+    // never delivered. Type only once the editor has presented a frame.
+    assert!(
+        wait_for_first_frame(&mut rx, surface, Duration::from_secs(20)),
+        "GNOME Text Editor created a window but never presented a frame"
+    );
     let x = f64::from(width) * 0.5;
     let y = f64::from(height) * 0.5;
     input_tx
@@ -305,6 +338,10 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end sandbox scenario: spawn, wait for the window, drive input and assert, in order"
+)]
 fn test_click_interaction_in_sandbox() {
     // 1. Build
     let _ = std::process::Command::new("cargo")
@@ -327,7 +364,7 @@ fn test_click_interaction_in_sandbox() {
     // cargo runs an integration test with the *package* root as its cwd, not
     // the workspace root, so a relative "target/debug/..." resolved to
     // shell/target and the sandbox reported the client missing — as "did not
-    // become ready", with the real cause in a log under /tmp. This is the path
+    // become ready", with the real cause only in the app log. This is the path
     // cargo hands us for its own binary, so it survives any layout change.
     let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
     let container = Container::new(
@@ -337,14 +374,19 @@ fn test_click_interaction_in_sandbox() {
             .to_str()
             .expect("a UTF-8 target path"),
     );
-    let tab_id = Uuid::new_v4();
+    let log_dir = tempfile::tempdir().unwrap();
 
     // 3. Spawn Client
-    let mut child = ChildGuard(
-        container
-            .spawn("./click_test_client", &socket_name, tab_id)
-            .expect("Failed to spawn client"),
-    );
+    let app = container
+        .spawn_logging_to(
+            log_dir.path(),
+            "./click_test_client",
+            &socket_name,
+            Uuid::new_v4(),
+        )
+        .expect("Failed to spawn client");
+    let log_path = app.log_path;
+    let mut child = ChildGuard(app.child);
 
     // 4. Wait for Window/Frame
     let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
@@ -424,7 +466,6 @@ fn test_click_interaction_in_sandbox() {
     thread::sleep(Duration::from_secs(2));
 
     // 6. Verify Log
-    let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
     println!("DEBUG: Final Client Log:\n{log_content}");

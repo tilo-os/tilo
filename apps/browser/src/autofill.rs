@@ -2,7 +2,7 @@
 
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 65536;
@@ -175,25 +175,8 @@ impl AutofillStore {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or("Address profile directory is unavailable")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create address profile directory")?;
-        let temporary = parent.join(format!(".autofill-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> std::io::Result<()> {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&temporary, path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-            return Err("Cannot save address profiles".into());
-        }
+        atomic_file::write_with_mode(path, &bytes, 0o600)
+            .map_err(|_| "Cannot save address profiles")?;
         self.saved = next;
         Ok(())
     }

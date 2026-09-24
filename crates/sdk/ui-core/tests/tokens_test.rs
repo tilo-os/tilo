@@ -145,24 +145,11 @@ fn text_growth_follows_larger_text_and_never_shrinks() {
     );
 }
 
-use tilo_ui::dnd::DragPayload;
 use tilo_ui::permissions::{PermissionScope, ResourceRef, Verb};
-use tilo_ui::presence::{PresenceCtx, PresenceKey};
-
-#[test]
-fn presence_ctx_empty_is_constructible() {
-    let _ = PresenceCtx::empty();
-    let _k = PresenceKey::Widget { path: vec![] };
-}
 
 #[test]
 fn permission_scope_constructs() {
     let s = PermissionScope::workspace(Verb::Write);
     assert_eq!(s.op, Verb::Write);
     assert_eq!(s.resource, ResourceRef::Workspace);
-}
-
-#[test]
-fn drag_payload_tab_variant_exists() {
-    let _ = DragPayload::Tab { group: 0, tab: 0 };
 }

@@ -25,7 +25,7 @@ use frost_ed25519::SigningPackage;
 use frost_ed25519::keys::{PublicKeyPackage, VerifyingShare};
 use frost_ed25519::round1::{SigningCommitments, SigningNonces};
 use frost_ed25519::round2::SignatureShare;
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use serde::{Deserialize, Serialize};
 use serde_bytes as serde_bytes_codec;
 
@@ -104,12 +104,13 @@ pub struct SigningRound2Partial {
 ///
 /// Returns an error if the freshly-generated commitments cannot be
 /// serialized (effectively unreachable).
-pub fn sign_round1<R: CryptoRng + RngCore>(
+pub fn sign_round1<R: CryptoRng + ?Sized>(
     share: &SecretShare,
     rng: &mut R,
 ) -> Result<SigningRound1, ThresholdError> {
     let kp = share.key_package();
-    let (nonces, commitments) = frost_ed25519::round1::commit(kp.signing_share(), rng);
+    let (nonces, commitments) =
+        frost_ed25519::round1::commit(kp.signing_share(), &mut crate::rng::FrostRng(rng));
     let commitment_bytes = commitments.serialize()?;
     Ok(SigningRound1 {
         commitment: SigningRound1Commitment {

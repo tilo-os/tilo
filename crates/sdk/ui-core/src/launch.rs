@@ -12,6 +12,9 @@ use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
 use crate::{App, State, Theme};
 
+mod shot_frame;
+pub use shot_frame::{ShotFrame, ShotLayout, render_widget_png};
+
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
@@ -36,7 +39,7 @@ type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>
 pub struct LegacyLaunchInputs {
     pub(crate) state: State,
     pub(crate) root: Box<dyn Widget>,
-    pub(crate) autosave: crate::persist::Autosave,
+    pub(crate) autosave: crate::persist::DocWriter,
     pub(crate) records: LegacyRecordPolicy,
     pub(crate) registry: tilo_actions::ActionRegistry,
     pub(crate) persistence: LegacyPersistencePolicy,
@@ -64,7 +67,7 @@ pub(crate) enum LegacyRecordPolicy {
 }
 
 impl LegacyLaunchInputs {
-    pub fn new(state: State, root: Box<dyn Widget>, autosave: crate::persist::Autosave) -> Self {
+    pub fn new(state: State, root: Box<dyn Widget>, autosave: crate::persist::DocWriter) -> Self {
         Self {
             state,
             root,
@@ -116,8 +119,8 @@ type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
-type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
-type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::Autosave);
+type OpenState = fn(&'static str) -> (State, crate::persist::DocWriter);
+type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::DocWriter);
 type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
@@ -160,6 +163,13 @@ impl LaunchArgs {
 }
 
 /// Configuration for an app using the standard lifecycle.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct LaunchSpec {
     history_definition: Option<&'static crate::history_mode::HistoryDefinition>,
     history_app_global_storage: bool,
@@ -223,7 +233,7 @@ impl LaunchSpec {
     /// installation path are retained; only native window/runtime discovery is
     /// omitted. Downstream app tests enable this with the `test-support`
     /// feature and provide an in-memory state opener on the spec.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn build_controlled_app_for_test(&self) -> Result<App, LaunchError> {
         let args = parse_args_extended(
             &["controlled-launch".to_string()],
@@ -542,6 +552,7 @@ impl LaunchSpec {
         self
     }
 
+    #[cfg(feature = "native")]
     fn live_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if let Some(factory) = self.live_root_with_args {
             return factory(args);
@@ -556,6 +567,7 @@ impl LaunchSpec {
         )
     }
 
+    #[cfg(feature = "native")]
     fn screenshot_root(&self, args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         self.shot_root
             .map_or_else(|| self.live_root(args), |factory| factory(args))
@@ -720,6 +732,7 @@ impl std::error::Error for LaunchError {
 }
 
 impl LaunchError {
+    #[cfg(feature = "native")]
     fn exit_code(&self) -> i32 {
         if matches!(
             self,
@@ -750,6 +763,7 @@ impl LaunchError {
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
+#[cfg(feature = "native")]
 pub fn run_or_exit(spec: &LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
@@ -766,6 +780,7 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 /// `--headless-drive`, a shots-only flag used outside `--shots`, or an
 /// undeclared `--scenario`), or if the app's root factory, shot factory, or
 /// shot handler returns one.
+#[cfg(feature = "native")]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
@@ -775,6 +790,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
+#[cfg(feature = "native")]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
@@ -790,6 +806,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     clippy::too_many_lines,
     reason = "one ordered dispatch preserves legacy and prepared mode delivery"
 )]
+#[cfg(feature = "native")]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
     raw_args: &[String],
@@ -966,6 +983,7 @@ fn run_with_args_with_attachment(
     run_native_app(spec, &args)
 }
 
+#[cfg(feature = "native")]
 fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError> {
     driver.close_components();
     if driver.component_close_reports().iter().any(|report| {
@@ -983,6 +1001,7 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
     Ok(())
 }
 
+#[cfg(feature = "native")]
 fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(), LaunchError> {
     driver.prepare_component_output();
     let audit = driver.native_app_audit();
@@ -1001,6 +1020,7 @@ fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(),
     Ok(())
 }
 
+#[cfg(feature = "native")]
 enum DefinitionDispatch {
     Native(Box<App>),
     Headless(i32),
@@ -1009,6 +1029,7 @@ enum DefinitionDispatch {
 }
 
 /// Construction/selection is testable without a process exit, native loop, or GPU.
+#[cfg(feature = "native")]
 fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1022,6 +1043,7 @@ fn dispatch_definition(
     })
 }
 
+#[cfg(feature = "native")]
 fn dispatch_definition_with_native(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1093,6 +1115,7 @@ fn dispatch_definition_with_native(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
+#[cfg(feature = "native")]
 fn build_history_capture(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1128,11 +1151,13 @@ fn build_history_capture(
     Ok(harness)
 }
 
+#[cfg(feature = "native")]
 struct PreparedLegacyLaunch {
     scope: crate::wake::WakeScope,
     inputs: LegacyLaunchInputs,
 }
 
+#[cfg(feature = "native")]
 fn prepare_legacy_launch(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1173,6 +1198,7 @@ fn prepare_legacy_launch(
 }
 
 /// Exact production branch, testable without `process::exit` or a native window.
+#[cfg(feature = "native")]
 fn dispatch_legacy_headless(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1193,6 +1219,7 @@ fn dispatch_legacy_headless(
     ))
 }
 
+#[cfg(feature = "native")]
 fn legacy_history_registration(
     spec: &LaunchSpec,
     inputs: &LegacyLaunchInputs,
@@ -1226,10 +1253,12 @@ fn legacy_history_registration(
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[cfg(feature = "native")]
 fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
     build_native_app_with_constructor(spec, args, App::from_scoped_parts)
 }
 
+#[cfg(feature = "native")]
 fn build_native_app_with_constructor(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1286,7 +1315,9 @@ fn build_native_app_with_constructor(
     Ok(app)
 }
 
+#[cfg(feature = "native")]
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+    crate::host::native::install_default_if_unset(Some(spec.app_id));
     #[cfg(windows)]
     let renderer = crate::app::prepare_native_renderer();
     let app = build_native_app(spec, args)?;
@@ -1435,6 +1466,7 @@ fn parse_args(
     clippy::too_many_lines,
     reason = "one shared argument scan keeps duplicate checks and cross-mode validation together"
 )]
+#[cfg(feature = "native")]
 fn parse_args_extended(
     args: &[String],
     allowed_flags: &[&str],
@@ -1561,6 +1593,7 @@ fn parse_args_extended(
     Ok(parsed)
 }
 
+#[cfg(feature = "native")]
 fn take_value<'a>(
     args: &'a [String],
     index: &mut usize,
@@ -1579,6 +1612,7 @@ fn take_value<'a>(
         .ok_or_else(|| LaunchError::MissingValue(flag.to_owned()))
 }
 
+#[cfg(feature = "native")]
 fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), LaunchError> {
     if slot.is_some() {
         Err(LaunchError::Duplicate(flag.to_owned()))
@@ -1588,6 +1622,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), LaunchE
     }
 }
 
+#[cfg(feature = "native")]
 fn parse_viewport(value: &str) -> Result<(u32, u32), LaunchError> {
     let invalid = || LaunchError::InvalidViewport(value.to_owned());
     let (width, height) = value.split_once(['x', 'X']).ok_or_else(invalid)?;
@@ -1599,6 +1634,7 @@ fn parse_viewport(value: &str) -> Result<(u32, u32), LaunchError> {
     Ok((width, height))
 }
 
+#[cfg(feature = "native")]
 fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
     let invalid = || LaunchError::InvalidTextScale(value.to_owned());
     let scale: f32 = value.trim().parse().map_err(|_| invalid())?;
@@ -1629,46 +1665,26 @@ mod tests {
         }
     }
 
+    /// The launcher's environment contract, pointed at a scratch data home.
+    /// The variables are restored before the directory is removed.
     struct LaunchFixtureEnv {
+        _env: tilo_test_env::ScopedEnv,
         _directory: tempfile::TempDir,
-        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
     impl LaunchFixtureEnv {
         fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let mut previous = Vec::new();
-            for (key, value) in [
-                ("XDG_DATA_HOME", directory.path().as_os_str().to_os_string()),
-                ("TILO_PACKAGE_ID", "so.tilo.launch-fixture".into()),
-                (
-                    "TILO_WORKSPACE_ID",
-                    "00000000-0000-0000-0000-000000000000".into(),
-                ),
-            ] {
-                previous.push((key, std::env::var_os(key)));
-                unsafe {
-                    std::env::set_var(key, value);
-                }
-            }
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", directory.path())
+                .set("TILO_PACKAGE_ID", "so.tilo.launch-fixture")
+                .set("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000");
             Self {
+                _env: env,
                 _directory: directory,
-                previous,
             }
         }
     }
-    impl Drop for LaunchFixtureEnv {
-        fn drop(&mut self) {
-            for (key, value) in &self.previous {
-                unsafe {
-                    match value {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
-            }
-        }
-    }
-    fn migrated_fixture_open(app_id: &'static str) -> (State, crate::persist::Autosave) {
+    fn migrated_fixture_open(app_id: &'static str) -> (State, crate::persist::DocWriter) {
         use automerge::transaction::Transactable;
         let (mut state, autosave) = crate::persist::open_for(app_id).unwrap();
         state
@@ -1714,7 +1730,6 @@ mod tests {
         parse_args_extended(&raw, &[], &[], &[], &[], 1).unwrap()
     }
     #[test]
-    #[serial_test::serial]
     fn headless_dispatch_uses_configured_migration_loader() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("dump.json");
@@ -1730,7 +1745,6 @@ mod tests {
         assert_eq!(state["migration_marker"], "configured-loader");
     }
     #[test]
-    #[serial_test::serial]
     fn prepared_file_state_and_original_room_index_reach_real_headless_dispatch() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1756,7 +1770,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("original-index")
         );
         assert!(
@@ -1781,7 +1795,6 @@ mod tests {
         assert_eq!(state["file_marker"], "replacement-file-content");
     }
     #[test]
-    #[serial_test::serial]
     fn native_constructor_consumes_the_same_fallible_preparer() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1802,7 +1815,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("native-file-content")
             );
             App::from_scoped_parts_with_controlled_inputs(scope, state, root)
@@ -1810,7 +1823,7 @@ mod tests {
         .unwrap();
         drop(app);
     }
-    fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::Autosave) {
+    fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::DocWriter) {
         crate::persist::open_for("so.tilo.other-fixture").unwrap()
     }
 
@@ -1821,7 +1834,7 @@ mod tests {
                 Ok(LegacyLaunchInputs::new(
                     State::new(),
                     dummy_root(),
-                    crate::persist::Autosave::disabled("owned fixture"),
+                    crate::persist::DocWriter::disabled("owned fixture"),
                 )
                 .with_records(
                     crate::record::RecordSet::in_memory(),
@@ -1838,7 +1851,6 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial]
     fn headless_custom_namespace_and_disabled_writer_fail_without_default_fallback() {
         let fixture = LaunchFixtureEnv::new();
         for open in [
@@ -1863,7 +1875,6 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial]
     fn failed_file_preparer_stops_real_dispatch_before_output_or_fallback() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("must-not-exist.json");
@@ -1899,11 +1910,11 @@ mod tests {
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().push(crate::WakeHandle::new()));
     }
 
-    fn scoped_open_state(_: &'static str) -> (State, crate::persist::Autosave) {
+    fn scoped_open_state(_: &'static str) -> (State, crate::persist::DocWriter) {
         capture_launch_wake();
         (
             State::new(),
-            crate::persist::Autosave::disabled("wake routing test"),
+            crate::persist::DocWriter::disabled("wake routing test"),
         )
     }
 
@@ -2208,7 +2219,7 @@ mod tests {
                     content_schema: None,
                 }],
             };
-        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::Autosave) {
+        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::DocWriter) {
             let mut state = State::new();
             state
                 .doc
@@ -2220,7 +2231,7 @@ mod tests {
                 .unwrap();
             (
                 state,
-                crate::persist::Autosave::disabled("detached argument opener test"),
+                crate::persist::DocWriter::disabled("detached argument opener test"),
             )
         }
         fn replace_storage(app: &mut App) {
@@ -2232,7 +2243,7 @@ mod tests {
                     dummy_root(),
                 ),
             );
-            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+            *app = owned.with_autosave(crate::persist::DocWriter::disabled("replacement"));
         }
         for raw in [
             strings(&["app"]),
@@ -2250,7 +2261,7 @@ mod tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some(args.value("--open").unwrap_or("saved-state"))
                 );
                 App::from_scoped_parts_with_controlled_inputs(scope, state, root)
@@ -2286,7 +2297,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some(args.value("--open").unwrap_or("saved-state"))
             );
             for rejected in [
@@ -2333,7 +2344,7 @@ mod tests {
                     dummy_root(),
                 ),
             );
-            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+            *app = owned.with_autosave(crate::persist::DocWriter::disabled("replacement"));
         }
         let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
         for spec in [
@@ -2724,7 +2735,7 @@ mod tests {
         );
     }
 
-    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
+    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::DocWriter) {
         crate::persist::open(app_id)
     }
 

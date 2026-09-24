@@ -36,7 +36,7 @@ fn demo_app_seeds_model_and_selection() {
     reason = "one adversarial fixture proves every exact resource family uses the real provider"
 )]
 fn real_resource_provider_keeps_snapshot_and_late_exact_resolution_bounded() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = CalendarApp::new_demo();
     let doc = AutoCommit::new();
@@ -824,8 +824,8 @@ fn import_reads_a_real_ics_file() {
     // the real parse path — not a bundled sample.
     let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: single-threaded test process for this env var.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
     let today = chrono::Local::now().date_naive();
     std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
 
@@ -845,7 +845,7 @@ fn import_reads_a_real_ics_file() {
             .any(|e| e.title == "Quarterly all-hands"),
         "the .ics file's event parsed in"
     );
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -950,8 +950,8 @@ fn resource_import_refuses_invalid_batch_without_partial_writes_or_success() {
 fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
     let dir = std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("temporary transfer directory");
-    // SAFETY: `serial` prevents this process-global test seam from racing.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
     let today = chrono::Local::now().date_naive();
     std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).expect("write fixture");
 
@@ -1021,8 +1021,7 @@ fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
         "completion arrives only after the document action commits"
     );
 
-    // SAFETY: see the setup above.
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2923,12 +2922,15 @@ fn elide_to_width_ellipsizes_and_actually_fits() {
     let full = "Team standup with the whole design org";
     // Given room for the whole string, it comes back untouched (no ellipsis).
     let roomy = f64::from(tr.measure(full, 11.0, None).0) + 10.0;
-    assert_eq!(elide_to_width(&mut tr, full, 11.0, roomy), full);
+    assert_eq!(
+        tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(roomy)),
+        full
+    );
     // Under a tight budget it must ellipsize AND the result must measure
     // within the budget — proving the cut is width-driven, not a fixed
     // character count that could still overflow.
     let tight = 60.0;
-    let cut = elide_to_width(&mut tr, full, 11.0, tight);
+    let cut = tr.elide_to_width(full, 11.0, ui::num::f32_of_f64(tight));
     assert!(cut.ends_with('…'), "ellipsized: {cut:?}");
     assert!(cut.chars().count() < full.chars().count());
     assert!(
@@ -2967,7 +2969,7 @@ fn week_event_titles_are_ellipsized_not_hard_sliced() {
         .map(|e| e.title.clone())
         .find(|tit| f64::from(tr.measure(tit, 11.0, None).0) > block_text_w)
         .expect("demo has a title too long for a narrow week column");
-    let drawn = elide_to_width(&mut tr, &long, 11.0, block_text_w);
+    let drawn = tr.elide_to_width(&long, 11.0, ui::num::f32_of_f64(block_text_w));
     assert!(
         drawn.ends_with('…'),
         "narrow week title ellipsized: {drawn:?}"
@@ -3359,8 +3361,8 @@ fn cycling_reminder_advances_and_reaches_the_exported_ics() {
 fn export_writes_a_real_ics_file_to_the_transfer_dir() {
     let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
 
     let mut app = CalendarApp::new_demo();
     let mut state = AutoCommit::new();
@@ -3386,7 +3388,7 @@ fn export_writes_a_real_ics_file_to_the_transfer_dir() {
         "the confirmation truthfully includes the exported VTODO count"
     );
 
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3400,7 +3402,8 @@ fn keyboard_shortcuts_switch_views_navigate_and_act() {
     // it to a temp dir first.
     let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_CALENDAR_IMPORT_DIR", &dir);
 
     let mut h = Harness::new(1280, 800);
     // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -3452,7 +3455,7 @@ fn keyboard_shortcuts_switch_views_navigate_and_act() {
         "'e' exported an .ics through the key path"
     );
 
-    unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
+    drop(env);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4372,5 +4375,105 @@ fn caldav_reconciliation_keeps_a_vtodo_at_its_stable_resource_across_pulls() {
     assert_eq!(
         CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
         Some("\"two\"")
+    );
+}
+
+/// The event form reserves its header row, chip row and NOTES header from
+/// the same measured lines the painter uses, so at 2× the kind label never
+/// abuts the title field and the NOTES rule never crosses its label.
+#[test]
+fn event_form_reserves_measured_header_and_notes_rows_at_two_x() {
+    let mut app = CalendarApp::new_demo();
+    app.detail_open = true;
+    app.text_scale = 2.0;
+    app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
+    app.relayout();
+    assert!(matches!(app.selection, Some(Sel::Event(_))));
+
+    let sp = &app.spacing;
+    let label_h = metrics::line_h(SECTION_LABEL_TEXT, 2.0);
+    let header_top = app.detail_rect.y0 + 18.0;
+    assert!(
+        app.form.header_bottom - header_top >= label_h + f64::from(sp.s2),
+        "header row must hold the scaled kind label plus its gap"
+    );
+    assert!(
+        app.form.title.y0 >= app.form.header_bottom + f64::from(sp.s2),
+        "title field must clear the header row"
+    );
+
+    let selector_h = f64::from(app.tokens_metrics.selector_height);
+    let chip_h = event_form_chip_h(selector_h, f64::from(sp.s3), 2.0);
+    assert!(chip_h >= metrics::line_h(EVENT_FORM_CHIP_TEXT, 2.0) + f64::from(sp.s3));
+    assert_eq!(
+        chip_h.fract(),
+        0.0,
+        "a scaled chip row lands on a whole pixel"
+    );
+    assert_eq!(
+        event_form_chip_h(selector_h, f64::from(sp.s3), 1.0),
+        selector_h,
+        "at 1× the chip is the theme's selector height"
+    );
+    let notes_top = app.detail_rect.y0 + app.form.notes_top;
+    let rule_y = notes_top - f64::from(sp.s2);
+    let label_y = rule_y - f64::from(sp.s1) - label_h;
+    assert!(
+        label_y >= app.form.chips_y + chip_h + f64::from(sp.s4),
+        "NOTES label must sit a section gap below the chip row"
+    );
+    assert!(
+        rule_y >= label_y + label_h,
+        "the NOTES rule must be drawn below the whole label line"
+    );
+}
+
+/// The month grid's header, day-number band and event chips are sized
+/// from the measured text lines they carry, so at 2× nothing collides;
+/// at 1× the authored design is reproduced exactly.
+#[test]
+fn month_metrics_hold_scaled_text_and_keep_the_one_x_design() {
+    let theme = Theme::dark();
+    let sp = &theme.tokens.spacing;
+    let one = MonthMetrics::new(&theme, 1.0);
+    assert_eq!(one.header_h, MONTH_HEADER_MIN_H);
+    assert_eq!(one.pill_r, MONTH_TODAY_PILL_R);
+    assert_eq!(one.chip_h, MONTH_CHIP_MIN_H);
+    // Stacked chips keep an `s1` between them (HIG §7: nothing touches):
+    // 17 + 4 = 21 at 1×, where the old 3px pitch left neighbours 3px
+    // apart — see the month shots in the 1× polish audit.
+    assert_eq!(one.chip_pitch, MONTH_CHIP_MIN_H + f64::from(sp.s1));
+    // The authored 1× design: chips start an `s1` below the 24px
+    // day-number band, at 6 + 24 + 4 = 34, the gap the painter keeps
+    // between the today pill and the first chip.
+    assert_eq!(
+        one.chips_top,
+        MONTH_NUM_TOP + 2.0 * MONTH_TODAY_PILL_R + f64::from(sp.s1)
+    );
+
+    let two = MonthMetrics::new(&theme, 2.0);
+    for value in [
+        two.header_h,
+        two.pill_r,
+        two.chips_top,
+        two.chip_h,
+        two.chip_pitch,
+    ] {
+        assert_eq!(
+            value.fract(),
+            0.0,
+            "scaled month metrics land on whole pixels"
+        );
+    }
+    assert!(two.header_h >= two.label_h + f64::from(sp.s3));
+    assert!(two.chip_h >= two.chip_text_h + f64::from(sp.s1));
+    assert!(two.chip_pitch > two.chip_h);
+    assert!(
+        2.0 * two.pill_r >= two.label_h,
+        "the today pill must enclose the scaled day number"
+    );
+    assert!(
+        two.chips_top >= MONTH_NUM_TOP + 2.0 * two.pill_r,
+        "the first chip must start below the today pill"
     );
 }

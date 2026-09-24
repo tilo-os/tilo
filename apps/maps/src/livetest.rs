@@ -199,16 +199,7 @@ pub fn render_live_to_png<W: Widget>(h: &mut Harness, widget: &mut W, path: &Pat
 /// permissions) must never fail the caller's in-memory pixel assertions, so
 /// this silently gives up rather than panicking.
 fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) {
-    let Ok(file) = std::fs::File::create(path) else {
-        return;
-    };
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let Ok(mut writer) = enc.write_header() else {
-        return;
-    };
-    let _ = writer.write_image_data(rgba);
+    let _ = ui::png::write_rgba8(path, w, h, rgba);
 }
 
 /// A rasterised frame: tight-packed RGBA (`4 * width` bytes per row) plus its

@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 
+use app_host::service::SystemCatalog;
 use app_host::{default_socket_path, default_store_root, gc, store::Store, transport};
 
 #[derive(Debug, Parser)]
@@ -64,6 +65,7 @@ fn main() -> anyhow::Result<()> {
     // Open / create the store + registry; persistent state lives
     // under `root`. The store builds its on-disk layout lazily.
     let store = Arc::new(Store::open(&root)?);
+    let catalog = Arc::new(SystemCatalog::from_env());
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
     // event-loop Vat). Matches `format-host`'s shape.
@@ -93,7 +95,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!(%error, "startup gc sweep failed");
             }
         });
-        transport::serve(listener, store, cli.max_store_bytes).await
+        transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
 }
 
@@ -103,6 +105,10 @@ fn main() -> anyhow::Result<()> {
 /// rather than falling back to a second socket. The bound pathname is checked
 /// before the descriptor becomes Tokio-owned so an unrelated inherited fd can
 /// never become the privileged app-store endpoint.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to app-launch children; cleared in main right after the descriptor is taken, before the Tokio runtime or any other thread starts"
+)]
 fn systemd_listener(
     expected: &std::path::Path,
 ) -> anyhow::Result<Option<std::os::unix::net::UnixListener>> {

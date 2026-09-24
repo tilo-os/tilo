@@ -13,8 +13,8 @@
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 
+use crate::time::SystemTime;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -620,7 +620,7 @@ impl HistoryScrubber {
     }
 
     fn now(&self) -> SystemTime {
-        self.now_override.unwrap_or_else(SystemTime::now)
+        self.now_override.unwrap_or_else(crate::time::wall)
     }
 
     fn invoke_preview(&mut self) {
@@ -1583,11 +1583,11 @@ impl HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
@@ -1803,11 +1803,11 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {

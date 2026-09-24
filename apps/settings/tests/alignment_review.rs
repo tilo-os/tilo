@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 
-use settings::SettingsApp;
 use settings::categories::Category;
 use settings::sidebar::SHELL_FIELD_INSET;
 use settings::widgets::spacing;
@@ -152,8 +151,9 @@ fn same_centre_line(a: f64, b: f64, what: &str) {
 
 #[test]
 fn sidebar_pill_and_section_headers_share_the_shell_search_edge() {
+    let config = crate::support::ScratchConfig::new();
     let sp = spacing();
-    let mut app = SettingsApp::new();
+    let mut app = config.app();
     lay_out(&mut app, WIDE);
     let search = by_test_id(&app, "settings.search");
     let rows = by_widget_name(&app, "SidebarRow");
@@ -185,8 +185,9 @@ fn sidebar_pill_and_section_headers_share_the_shell_search_edge() {
 
 #[test]
 fn sidebar_rhythm_uses_three_spacing_steps() {
+    let config = crate::support::ScratchConfig::new();
     let sp = spacing();
-    let mut app = SettingsApp::new();
+    let mut app = config.app();
     lay_out(&mut app, WIDE);
     let search = by_test_id(&app, "settings.search");
     let connectivity = first_named(&app, "CONNECTIVITY");
@@ -225,8 +226,9 @@ fn sidebar_rhythm_uses_three_spacing_steps() {
 
 #[test]
 fn described_row_caption_hugs_its_label_not_the_next_row() {
+    let config = crate::support::ScratchConfig::new();
     let sp = spacing();
-    let mut app = SettingsApp::with_selected(Category::Appearance);
+    let mut app = config.app().with_category(Category::Appearance);
     lay_out(&mut app, WIDE);
     let label = first_named(&app, "High contrast");
     let caption = first_named(&app, "Maximise contrast for low-vision comfort");
@@ -295,7 +297,8 @@ fn hero_places_title_beside_its_icon_with_a_caption_gap() {
 
 #[test]
 fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
-    let mut app = SettingsApp::with_selected(Category::RegionFormats);
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app().with_category(Category::RegionFormats);
     lay_out(&mut app, WIDE);
     let label = first_named(&app, "Currency");
     let control = by_test_id(&app, "region.currency");
@@ -334,7 +337,9 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
     }
 
     // A narrow window is a maximum, not a fixed width: the card still fills it.
-    let mut narrow = SettingsApp::with_selected(Category::RegionFormats)
+    let mut narrow = config
+        .app()
+        .with_category(Category::RegionFormats)
         .with_width_hint(NARROW.0)
         .with_deterministic_hardware_for_shot();
     lay_out(&mut narrow, NARROW);
@@ -354,9 +359,10 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
 /// pill.
 #[test]
 fn sidebar_rows_seat_the_pointer_target_at_1x_and_grow_with_large_text() {
+    let config = crate::support::ScratchConfig::new();
     let metrics = ui::tokens::Metrics::default();
     let expected = f64::from(metrics.min_pointer_target + 2.0 * spacing().s1);
-    let mut app = SettingsApp::with_selected(Category::Appearance);
+    let mut app = config.app().with_category(Category::Appearance);
     lay_out(&mut app, WIDE);
     let rows = by_widget_name(&app, "SidebarRow");
     assert!(!rows.is_empty(), "the docked sidebar lists its categories");
@@ -365,7 +371,10 @@ fn sidebar_rows_seat_the_pointer_target_at_1x_and_grow_with_large_text() {
     }
 
     // 1600 px is above the scaled breakpoint, so the sidebar stays docked.
-    let mut large = SettingsApp::with_selected(Category::Appearance).with_width_hint(1600.0);
+    let mut large = config
+        .app()
+        .with_category(Category::Appearance)
+        .with_width_hint(1600.0);
     lay_out_scaled(&mut large, (1600.0, 900.0), 2.0);
     let rows = by_widget_name(&large, "SidebarRow");
     assert!(
@@ -394,6 +403,7 @@ fn sidebar_rows_seat_the_pointer_target_at_1x_and_grow_with_large_text() {
 /// one line. No row is left inline while its neighbours wrap.
 #[test]
 fn region_choice_rows_switch_layout_as_one_card() {
+    let config = crate::support::ScratchConfig::new();
     let rows = [
         ("region.currency", "Currency"),
         ("region.date", "Date format"),
@@ -403,7 +413,9 @@ fn region_choice_rows_switch_layout_as_one_card() {
         ("region.first_day", "First day of week"),
     ];
     let phone = (390.0, 844.0);
-    let mut app = SettingsApp::with_selected(Category::RegionFormats)
+    let mut app = config
+        .app()
+        .with_category(Category::RegionFormats)
         .with_width_hint(phone.0)
         .with_deterministic_hardware_for_shot();
     lay_out(&mut app, phone);
@@ -432,7 +444,9 @@ fn region_choice_rows_switch_layout_as_one_card() {
         );
     }
 
-    let mut app = SettingsApp::with_selected(Category::RegionFormats)
+    let mut app = config
+        .app()
+        .with_category(Category::RegionFormats)
         .with_width_hint(NARROW.0)
         .with_deterministic_hardware_for_shot();
     lay_out(&mut app, NARROW);
@@ -456,7 +470,11 @@ fn region_choice_rows_switch_layout_as_one_card() {
 /// where the breakpoint and the sidebar width have grown with the type.
 #[test]
 fn large_text_scales_the_shell_breakpoint_with_the_type() {
-    let mut one_x = SettingsApp::with_selected(Category::Appearance).with_width_hint(800.0);
+    let config = crate::support::ScratchConfig::new();
+    let mut one_x = config
+        .app()
+        .with_category(Category::Appearance)
+        .with_width_hint(800.0);
     lay_out(&mut one_x, (800.0, 900.0));
     assert!(!one_x.is_narrow(), "800 px docks the sidebar at 1×");
     assert!(
@@ -464,7 +482,10 @@ fn large_text_scales_the_shell_breakpoint_with_the_type() {
         "1×: the docked sidebar lists its categories"
     );
 
-    let mut two_x = SettingsApp::with_selected(Category::Appearance).with_width_hint(800.0);
+    let mut two_x = config
+        .app()
+        .with_category(Category::Appearance)
+        .with_width_hint(800.0);
     lay_out_scaled(&mut two_x, (800.0, 900.0), 2.0);
     assert!(
         two_x.is_narrow(),
@@ -481,6 +502,7 @@ fn large_text_scales_the_shell_breakpoint_with_the_type() {
 /// rhythms.
 #[test]
 fn pane_cards_stack_on_the_s6_step_and_never_touch() {
+    let config = crate::support::ScratchConfig::new();
     let sp = spacing();
     assert_eq!(
         settings::widgets::CARD_GAP,
@@ -493,7 +515,9 @@ fn pane_cards_stack_on_the_s6_step_and_never_touch() {
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
-        let mut app = SettingsApp::with_selected(category)
+        let mut app = config
+            .app()
+            .with_category(category)
             .with_width_hint(viewport.0)
             .with_deterministic_hardware_for_shot();
         if viewport == NARROW {

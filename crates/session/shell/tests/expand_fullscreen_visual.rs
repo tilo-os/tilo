@@ -99,7 +99,8 @@ fn render_expand_to_fullscreen() {
     let strip_id = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
-        tree.active_workspace()
+        tree.desktop
+            .active_workspace()
             .and_then(|w| w.strips.first())
             .map(|s| s.id)
             .expect("one strip")

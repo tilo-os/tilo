@@ -16,7 +16,8 @@
 //! ```
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{
     InstallMode, InstallProfile, Source, TargetDrive, sample_recent_sources, sample_source,
@@ -80,7 +81,7 @@ impl ImagerDoc {
     }
     pub fn source(doc: &AutoCommit) -> Option<Source> {
         Self::source_map_read(doc)
-            .and_then(|map| (!Self::read_bool(doc, &map, "deleted")).then_some(map))
+            .and_then(|map| (!read_bool(doc, &map, "deleted").unwrap_or(false)).then_some(map))
             .and_then(|map| Self::read_source_fields(doc, &map))
             .or_else(|| Self::read_json::<Option<Source>>(doc, "source").flatten())
     }
@@ -137,10 +138,15 @@ impl ImagerDoc {
                 let Value::Object(ObjType::Map) = value else {
                     return None;
                 };
-                (!Self::read_bool(doc, &row, "deleted"))
+                (!read_bool(doc, &row, "deleted").unwrap_or(false))
                     .then(|| {
-                        Self::read_source_fields(doc, &row)
-                            .map(|source| (Self::read_i64(doc, &row, "rank"), id, source))
+                        Self::read_source_fields(doc, &row).map(|source| {
+                            (
+                                read_i64_coerced(doc, &row, "rank").unwrap_or_default(),
+                                id,
+                                source,
+                            )
+                        })
                     })
                     .flatten()
             })
@@ -198,8 +204,8 @@ impl ImagerDoc {
                 .filter_map(|(value, row)| {
                     matches!(value, Value::Object(ObjType::Map)).then_some(row)
                 })
-                .filter(|row| !Self::read_bool(doc, row, "deleted"))
-                .map(|row| Self::read_i64(doc, &row, "rank"))
+                .filter(|row| !read_bool(doc, row, "deleted").unwrap_or(false))
+                .map(|row| read_i64_coerced(doc, &row, "rank").unwrap_or_default())
                 .min()
                 .unwrap_or(0)
                 .saturating_sub(1)
@@ -287,21 +293,6 @@ impl ImagerDoc {
         Self::map(doc, &ROOT, "profile_v2")
     }
 
-    fn read_bool(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
-        matches!(doc.get(parent, key), Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
-    }
-
-    fn read_i64(doc: &AutoCommit, parent: &ObjId, key: &str) -> i64 {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(value), _))) => value.to_i64().unwrap_or_default(),
-            _ => 0,
-        }
-    }
-
-    fn map_str(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
-        Self::get_str_at(doc, parent, key).unwrap_or_default()
-    }
-
     fn write_source_fields(doc: &mut AutoCommit, map: &ObjId, source: &Source) {
         ui::doc::put_if_changed(doc, map, "kind", source.kind.tag());
         ui::doc::put_if_changed(doc, map, "path", source.path.as_str());
@@ -332,24 +323,26 @@ impl ImagerDoc {
     }
 
     fn read_source_fields(doc: &AutoCommit, map: &ObjId) -> Option<Source> {
-        let name = Self::map_str(doc, map, "name");
+        let name = read_str(doc, map, "name").unwrap_or_default();
         // A tombstoned or half-created row is not a usable write source.
         if name.is_empty() {
             return None;
         }
-        let volume = Self::read_i64(doc, map, "identity_volume");
-        let file = Self::read_i64(doc, map, "identity_file");
-        let digest = Self::map_str(doc, map, "expected_sha256");
+        let volume = read_i64_coerced(doc, map, "identity_volume").unwrap_or_default();
+        let file = read_i64_coerced(doc, map, "identity_file").unwrap_or_default();
+        let digest = read_str(doc, map, "expected_sha256").unwrap_or_default();
         Some(Source {
-            kind: match Self::map_str(doc, map, "kind").as_str() {
+            kind: match read_str(doc, map, "kind").unwrap_or_default().as_str() {
                 "Tilo" => crate::model::SourceKind::TiloImage,
                 _ => crate::model::SourceKind::IsoFile,
             },
-            path: Self::map_str(doc, map, "path"),
+            path: read_str(doc, map, "path").unwrap_or_default(),
             name,
-            size: Self::read_i64(doc, map, "size").max(0) as u64,
-            label: Self::map_str(doc, map, "label"),
-            installable: Self::read_bool(doc, map, "installable"),
+            size: read_i64_coerced(doc, map, "size")
+                .unwrap_or_default()
+                .max(0) as u64,
+            label: read_str(doc, map, "label").unwrap_or_default(),
+            installable: read_bool(doc, map, "installable").unwrap_or(false),
             identity: (volume >= 0 && file >= 0).then_some(crate::model::SourceIdentity {
                 volume: volume as u64,
                 file: file as u64,
@@ -380,39 +373,40 @@ impl ImagerDoc {
 
     fn read_profile_fields(doc: &AutoCommit, map: &ObjId) -> InstallProfile {
         let mut profile = InstallProfile {
-            mode: InstallMode::from_key(&Self::map_str(doc, map, "mode")),
+            mode: InstallMode::from_key(&read_str(doc, map, "mode").unwrap_or_default()),
             ..InstallProfile::default()
         };
-        if let Some(hostname) = Self::get_str_at(doc, map, "hostname") {
+        if let Some(hostname) = read_str(doc, map, "hostname") {
             profile.hostname = hostname;
         }
-        if let Some(locale) = Self::get_str_at(doc, map, "locale") {
+        if let Some(locale) = read_str(doc, map, "locale") {
             profile.locale = locale;
         }
-        if let Some(keyboard) = Self::get_str_at(doc, map, "keyboard") {
+        if let Some(keyboard) = read_str(doc, map, "keyboard") {
             profile.keyboard = keyboard;
         }
-        if let Some(timezone) = Self::get_str_at(doc, map, "timezone") {
+        if let Some(timezone) = read_str(doc, map, "timezone") {
             profile.timezone = timezone;
         }
-        let filesystem = Self::get_str_at(doc, map, "filesystem")
-            .or_else(|| Self::get_str_at(doc, map, "layout"));
+        let filesystem = read_str(doc, map, "filesystem").or_else(|| read_str(doc, map, "layout"));
         if let Some(filesystem) =
             filesystem.and_then(|value| crate::model::Filesystem::from_key(&value))
         {
             profile.filesystem = filesystem;
         }
-        profile.encrypt = Self::read_bool(doc, map, "encrypt");
-        profile.persist_mb = Self::read_i64(doc, map, "persist_mb").max(0) as u64;
+        profile.encrypt = read_bool(doc, map, "encrypt").unwrap_or(false);
+        profile.persist_mb = read_i64_coerced(doc, map, "persist_mb")
+            .unwrap_or_default()
+            .max(0) as u64;
         if let Some(user) = Self::map_read(doc, map, "user") {
-            if let Some(full_name) = Self::get_str_at(doc, &user, "full_name") {
+            if let Some(full_name) = read_str(doc, &user, "full_name") {
                 profile.user.full_name = full_name;
             }
-            if let Some(username) = Self::get_str_at(doc, &user, "username") {
+            if let Some(username) = read_str(doc, &user, "username") {
                 profile.user.username = username;
             }
-            profile.user.is_admin = Self::read_bool(doc, &user, "is_admin");
-            profile.user.autologin = Self::read_bool(doc, &user, "autologin");
+            profile.user.is_admin = read_bool(doc, &user, "is_admin").unwrap_or(false);
+            profile.user.autologin = read_bool(doc, &user, "autologin").unwrap_or(false);
         }
         profile
     }
@@ -441,20 +435,8 @@ impl ImagerDoc {
         let _ = doc.put(&ROOT, key, json);
     }
     fn read_json<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Option<T> {
-        let raw = Self::get_str(doc, key)?;
+        let raw = read_str(doc, &ROOT, key)?;
         serde_json::from_str(&raw).ok()
-    }
-    fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
-        Self::get_str_at(doc, &ROOT, key)
-    }
-    fn get_str_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 }
 

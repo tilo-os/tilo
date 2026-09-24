@@ -10,7 +10,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, c.surfaces.base, r.preview);
+        fill_rect(scene, tf, r.preview, c.surfaces.base);
         let canvas = r.canvas;
         // A short window crushes the letterboxed canvas to a few pixels. There
         // is nothing to show at that size, and the HUD and safe-area guide
@@ -44,7 +44,7 @@ impl VideoEditorApp {
             &Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0),
         );
         // Canvas backdrop (letterbox black).
-        fill_rect(scene, tf, Color::BLACK, canvas);
+        fill_rect(scene, tf, canvas, Color::BLACK);
         // One picture, produced by the GPU compositor in `crate::gpu` — the
         // *same* renderer the export runs, so the preview is byte-for-byte
         // what the export writes. It resolves every layer, grade, fade,
@@ -71,13 +71,13 @@ impl VideoEditorApp {
             // legible: theme text on a hard-coded black is dark-on-dark in
             // every light theme, which is how "No clip at playhead" came to be
             // near-invisible on a white desktop.
-            fill_rect(scene, tf, c.surfaces.base, canvas);
-            stroke_rrect(
+            fill_rect(scene, tf, canvas, c.surfaces.base);
+            stroke_round(
                 scene,
                 tf,
-                ui::surface::edge_on(c.surfaces.base),
                 canvas.inset(-0.5),
                 1.5,
+                ui::surface::edge_on(c.surfaces.base),
                 1.0,
             );
             // Nothing to composite, or nothing to composite *with*. Both are
@@ -135,7 +135,7 @@ impl VideoEditorApp {
             canvas.y0 + 28.0,
         );
         if tc_chip.x1 < canvas.x1 {
-            fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), tc_chip, 5.0);
+            fill_round(scene, tf, tc_chip, 5.0, with_alpha(Color::BLACK, 0.55));
             let baseline = text_baseline(tc_chip, 13.0, tr);
             text_w(
                 scene,
@@ -169,8 +169,8 @@ impl VideoEditorApp {
                     canvas.x0 + 10.0 + mw as f64 + pad * 2.0,
                     canvas.y1 - 10.0,
                 );
-                fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.62), chip, 5.0);
-                stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.35), chip, 5.0, 1.0);
+                fill_round(scene, tf, chip, 5.0, with_alpha(Color::BLACK, 0.62));
+                stroke_round(scene, tf, chip, 5.0, with_alpha(Color::WHITE, 0.35), 1.0);
                 let baseline = text_baseline(chip, 12.0, tr);
                 text_w(
                     scene,
@@ -193,12 +193,12 @@ impl VideoEditorApp {
         } else {
             ui::surface::edge_on(c.surfaces.base)
         };
-        stroke_rrect(
+        stroke_round(
             scene,
             tf,
-            guide,
             canvas.inset(-canvas.width() * 0.05),
             0.0,
+            guide,
             1.0,
         );
         scene.pop_layer();
@@ -218,7 +218,7 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let chrome_scale = self.chrome_scale();
-        fill_rect(scene, tf, c.surfaces.raised, r.transport);
+        fill_rect(scene, tf, r.transport, c.surfaces.raised);
         stroke_line(
             scene,
             tf,
@@ -402,14 +402,14 @@ impl VideoEditorApp {
                     fill_rect(
                         scene,
                         tf,
-                        col,
                         Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0),
+                        col,
                     );
                     fill_rect(
                         scene,
                         tf,
-                        col,
                         Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0),
+                        col,
                     );
                 } else {
                     let mut p = BezPath::new();
@@ -447,8 +447,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    col,
                     Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 4.5, ctr.y + s),
+                    col,
                 );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x + 7.0, ctr.y - s));
@@ -461,8 +461,8 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    col,
                     Rect::new(ctr.x + 4.5, ctr.y - s, ctr.x + 7.0, ctr.y + s),
+                    col,
                 );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x - 7.0, ctr.y - s));

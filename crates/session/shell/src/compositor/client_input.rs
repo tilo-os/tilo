@@ -695,7 +695,7 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
     let placement = state.client_input.placement(surface_id).or_else(|| {
         let chrome = fb.chrome();
         let tree = chrome.tree();
-        tree.workspaces.iter().find_map(|workspace| {
+        tree.desktop.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
                 strip.window_groups.iter().find_map(|group| {
                     group
@@ -1595,12 +1595,12 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
     fb.with_chrome(|chrome| {
         {
             let mut tree = chrome.tree_mut();
-            let workspace = tree.active;
-            changed = tree.active_strip.get(&workspace).copied() != Some(strip)
-                || tree.active_group_for(strip) != Some(group);
+            let workspace = tree.desktop.active;
+            changed = tree.desktop.active_strip.get(&workspace).copied() != Some(strip)
+                || tree.desktop.active_group_for(strip) != Some(group);
             if changed {
-                tree.active_strip.insert(workspace, strip);
-                tree.set_active_group(strip, group);
+                tree.desktop.active_strip.insert(workspace, strip);
+                tree.desktop.set_active_group(strip, group);
                 // Click-to-focus is local session state, not a transient
                 // pointer decoration. Commit the complete strip/group
                 // address at the same boundary as
@@ -1661,7 +1661,7 @@ mod tests {
             let (_, second_group) =
                 insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
                     .expect("second foreign group");
-            tree.set_active_group(strip_id, first_group);
+            tree.desktop.set_active_group(strip_id, first_group);
             tree.flush_to_disk();
             (strip_id, first_group, second_group)
         };
@@ -1670,17 +1670,21 @@ mod tests {
 
         let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
         assert_eq!(
-            restarted.active_group_for(strip_id),
+            restarted.desktop.active_group_for(strip_id),
             Some(second_group),
             "the window focused by a click must remain selected after restart"
         );
         assert_eq!(
-            restarted.active_strip.get(&restarted.active).copied(),
+            restarted
+                .desktop
+                .active_strip
+                .get(&restarted.desktop.active)
+                .copied(),
             Some(strip_id),
             "the clicked group's strip is part of the durable focus address"
         );
         assert_ne!(
-            restarted.active_group_for(strip_id),
+            restarted.desktop.active_group_for(strip_id),
             Some(first_group),
             "restart must not restore the group focused before the click"
         );
@@ -1702,7 +1706,7 @@ mod tests {
             let (_, second_group) =
                 insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
                     .expect("second foreign group");
-            tree.set_active_group(strip_id, first_group);
+            tree.desktop.set_active_group(strip_id, first_group);
             (strip_id, first_group, second_group, 720_002)
         };
         let event_loop: EventLoop<'static, crate::compositor::state::State> =
@@ -1719,12 +1723,12 @@ mod tests {
 
         let chrome = fb.chrome();
         assert_eq!(
-            chrome.tree().active_group_for(strip_id),
+            chrome.tree().desktop.active_group_for(strip_id),
             Some(second_group),
             "direct touch must focus the tiled group under the finger"
         );
         assert_ne!(
-            chrome.tree().active_group_for(strip_id),
+            chrome.tree().desktop.active_group_for(strip_id),
             Some(first_group),
             "touch must not leave keyboard focus attached to the previous tiled app"
         );

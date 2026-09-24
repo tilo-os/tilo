@@ -32,7 +32,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
@@ -175,7 +175,7 @@ impl Compositor {
         // sample data and migrated to a clean first-boot tree on load. This
         // suite requires the hosted Files tab, so mark the persisted
         // tree as test-owned instead of accidentally exercising that cleanup.
-        fixture_tree.workspaces[0].name = "Clipboard test desktop".into();
+        fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
         let identity_root = Self::seed_identity(&runtime_dir);
@@ -247,7 +247,7 @@ impl Compositor {
     /// identity empty correctly activates OOBE, which must withhold focus.
     fn seed_identity(runtime_dir: &Path) -> PathBuf {
         let identity_dir = runtime_dir.join("config/tilo/identity");
-        let identity = ThresholdIdentity::bootstrap_single_device(&mut OsRng)
+        let identity = ThresholdIdentity::bootstrap_single_device(&mut UnwrapErr(SysRng))
             .expect("create clipboard fixture identity");
         let record = IdentityRecord::from_threshold_identity(
             &identity,
@@ -1146,14 +1146,11 @@ fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
     compositor.chrome_copy_image();
 
     let png = client.read_clipboard_bytes("image/png", None);
-    let decoder = png::Decoder::new(std::io::Cursor::new(png));
-    let mut reader = decoder.read_info().expect("PNG header");
-    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-    let info = reader.next_frame(&mut frame).expect("PNG frame");
-    assert_eq!((info.width, info.height), (2, 1));
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
     assert_eq!(
-        &frame[..info.buffer_size()],
-        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
     );
 
     // One compositor-owned selection advertises both formats, so image copy
@@ -1240,14 +1237,11 @@ fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
     sink.assert_is_tilo_compositor();
     sink.map_window(&compositor);
     let png = sink.read_clipboard_bytes("image/png", None);
-    let decoder = png::Decoder::new(std::io::Cursor::new(png));
-    let mut reader = decoder.read_info().expect("PNG header");
-    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
-    let info = reader.next_frame(&mut frame).expect("PNG frame");
-    assert_eq!((info.width, info.height), (2, 1));
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
     assert_eq!(
-        &frame[..info.buffer_size()],
-        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
     );
     assert_eq!(sink.read_clipboard(None), "app caption");
 }
@@ -3709,34 +3703,30 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
             .expect("the destination client belongs to a durable window group");
     assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
 
-    drag_file_row_onto_client(&compositor, &mut target, &photo, row, target_point);
-    // The client's accept-mime/action requests from `enter` must reach the
-    // compositor before release, or the drop is refused as unaccepted —
-    // matching the protocol and what a real client's event loop avoids by
-    // flushing as it goes.
+    drag_file_row_to_shell_target(&compositor, &mut target, &photo, row, target_point);
+    // The visible body zone belongs to the shell. Flush the foreign client
+    // before release so this assertion would observe an accidental Wayland
+    // handoff rather than merely checking an undrained queue.
     target.roundtrip();
     assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "text/uri-list"),
-        "the offer must carry the path list; offered {:?}",
-        target.state.dnd_offer_mimes
+        !target.state.dnd_entered && target.state.dnd_offer.is_none(),
+        "a shell-owned place-and-open target must not offer the payload to the client"
     );
-    assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "image/png"),
-        "a single image is also offered as its own bytes; offered {:?}",
-        target.state.dnd_offer_mimes
-    );
-
-    release_and_wait_for_drop(&compositor, &mut target);
-
-    let uris = target.read_dnd_bytes("text/uri-list", None);
+    compositor.pointer_button(false);
+    let started = Instant::now();
+    let after = loop {
+        let tree = compositor.workspace_tree();
+        let shape = tree_shape(&tree);
+        if shape.1 == before.1 + 1 && group_for_tab_title(&tree, "photo.png").is_some() {
+            break (shape, tree);
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the shell never opened photo.png at the body target.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
         after.0.0, before.0,
         "an interior body drop joins the existing group rather than creating a new one"

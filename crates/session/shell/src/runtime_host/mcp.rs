@@ -1,12 +1,12 @@
 //! Transport-independent MCP projection of the production action broker.
-use crate::shell::{
-    collab_broker::AppActionBroker,
-    collab_broker_capnp::{
-        ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse as Reply, BrokerActor,
-    },
-};
+use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::remote_actions::BrokerActionHost;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tilo_actions::remote::{
+    ActionHost as _, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
+    InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 
 pub struct McpServer {
     broker: AppActionBroker,
@@ -53,11 +53,19 @@ struct InvokeArgs {
     resource: String,
     action: String,
     arguments: serde_json::Map<String, Value>,
+    /// Caller-chosen id; retrying with the same id never starts twice.
+    #[serde(default)]
+    invocation_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StatusArgs {
-    invocation_id: u64,
+    invocation_id: String,
+}
+fn invocation_id(value: &str) -> Result<tilo_actions::InvocationId, String> {
+    uuid::Uuid::parse_str(value)
+        .map(tilo_actions::InvocationId)
+        .map_err(|_| "invocation_id must be a UUID".to_string())
 }
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
@@ -165,7 +173,7 @@ impl McpServer {
                     Err(e) => Err(e),
                 }
             }
-            "resources/list" => self.resources(params),
+            "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
             _ => return Some(error(id, -32601, "Method not found")),
         };
@@ -174,120 +182,176 @@ impl McpServer {
             Err(e) => error(id, -32602, &e),
         })
     }
-    fn apps(&self, args: ListArgs) -> Value {
-        let page = self.broker.action_directory_root_page(
-            args.after_peer,
-            args.max_results.unwrap_or(128).clamp(1, 128) as usize,
-        );
-        let apps=page.roots.into_iter().filter(|r|r.cluster_id==self.room).map(|r|json!({"peer_id":r.peer_id,"app_id":r.app_id,"record_id":r.record_id,"uri":format!("qos://apps/{}",r.peer_id)})).collect::<Vec<_>>();
-        json!({"apps":apps,"generation":page.generation,"next_after_peer":page.next_after_peer})
+    /// One catalogue page from the action host, as this bridge's caller.
+    async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.host().query(&self.caller(), query),
+        )
+        .await
+        .map_err(|_| "TimedOut".to_string())?
+        .ok_or_else(|| "Unavailable".to_string())?
+        .map_err(|error| error.to_string())
     }
-    fn live_peer(&self, peer: u64) -> bool {
-        peer > 0
-            && self
-                .broker
-                .action_directory_root_page(peer.checked_sub(1), 1)
-                .roots
-                .iter()
-                .any(|r| r.peer_id == peer && r.cluster_id == self.room)
+    /// Live, browsable application instances in this bridge's workspace,
+    /// ordered by instance id.
+    async fn instances(&self) -> Result<(String, Vec<(u64, Value)>), String> {
+        let page = self
+            .ask(CatalogueQuery {
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await?;
+        let mut apps = page
+            .providers
+            .into_iter()
+            .filter(|provider| provider.browsable && provider.room == self.room)
+            .filter_map(|provider| {
+                let peer = provider.provider.parse::<u64>().ok()?;
+                Some((
+                    peer,
+                    json!({"peer_id":peer,"app_id":provider.app_id,"record_id":provider.record_id,"uri":format!("qos://apps/{peer}")}),
+                ))
+            })
+            .collect::<Vec<_>>();
+        apps.sort_by_key(|(peer, _)| *peer);
+        Ok((page.revision, apps))
+    }
+    async fn apps(&self, args: ListArgs) -> Result<Value, String> {
+        let (generation, apps) = self.instances().await?;
+        let limit = usize::try_from(args.max_results.unwrap_or(128).clamp(1, 128)).unwrap_or(128);
+        let mut remaining = apps
+            .into_iter()
+            .filter(|(peer, _)| args.after_peer.is_none_or(|after| *peer > after));
+        let page = remaining.by_ref().take(limit).collect::<Vec<_>>();
+        let next_after_peer = remaining
+            .next()
+            .and_then(|_| page.last().map(|(peer, _)| *peer));
+        let apps = page.into_iter().map(|(_, app)| app).collect::<Vec<_>>();
+        Ok(json!({"apps":apps,"generation":generation,"next_after_peer":next_after_peer}))
+    }
+    async fn live_peer(&self, peer: u64) -> Result<(), String> {
+        if self
+            .instances()
+            .await?
+            .1
+            .iter()
+            .any(|(candidate, _)| *candidate == peer)
+        {
+            Ok(())
+        } else {
+            Err("Unavailable live application instance".into())
+        }
     }
     async fn query(&self, args: QueryArgs) -> Result<Value, String> {
-        if !self.live_peer(args.peer_id) {
-            return Err("Unavailable live application instance".into());
-        }
-        let query = runtime_collab::ActionDirectoryQuery {
-            peer_id: args.peer_id,
-            revision: args.revision,
-            cursor: args.cursor,
-            parent_resource: args.parent_resource,
-            needle: args.needle,
-            max_results: args.max_results.unwrap_or(128).min(128),
-            max_bytes: args.max_bytes.unwrap_or(65536).min(65536),
-            max_work: args.max_work.unwrap_or(512).min(512),
-            max_depth: args.max_depth.unwrap_or(16).min(16),
-        };
-        let rx = self
-            .broker
-            .action_directory_request_queue()
-            .try_query(BrokerActor::person(&self.actor), &self.room, query)
-            .map_err(|e| format!("{e:?}"))?;
-        bridge_reply(rx).await
+        self.live_peer(args.peer_id).await?;
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(args.peer_id.to_string()),
+                parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
+                needle: args.needle,
+                target: None,
+                revision: (!args.revision.is_empty()).then_some(args.revision),
+                cursor: args.cursor,
+                max_results: args.max_results.unwrap_or(128).min(128),
+                limits: Some(CatalogueLimits {
+                    max_bytes: Some(args.max_bytes.unwrap_or(65536).min(65536)),
+                    max_work: Some(args.max_work.unwrap_or(512).min(512)),
+                    max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
+                }),
+            })
+            .await?;
+        Ok(page_json(&page))
     }
     async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
         match name {
-            "qos_list_apps" => Ok(self.apps(parse(args)?)),
+            "qos_list_apps" => self.apps(parse(args)?).await,
             "qos_query" => self.query(parse(args)?).await,
             "qos_resolve" => {
                 let a: TargetArgs = parse(args)?;
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                if !self.live_peer(a.peer_id) {
-                    return Err("Unavailable live application instance".into());
+                self.live_peer(a.peer_id).await?;
+                let target = RemoteActionTarget {
+                    provider: a.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                };
+                let page = self
+                    .ask(CatalogueQuery::resolve(&target, a.revision))
+                    .await?;
+                if page.stale_cursor {
+                    return Err("StaleRevision".into());
                 }
-                let rx = self
-                    .broker
-                    .action_directory_request_queue()
-                    .try_resolve(
-                        BrokerActor::person(&self.actor),
-                        &self.room,
-                        a.peer_id,
-                        a.revision,
-                        a.resource,
-                        a.action,
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
-                bridge_reply(rx).await
+                page.rows
+                    .first()
+                    .map(|row| json!({"row":row_json(row)}))
+                    .ok_or_else(|| "NotFound".into())
             }
             "qos_invoke" => {
                 let a: InvokeArgs = parse(args)?;
                 if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                if !self.live_peer(a.peer_id) {
-                    return Err("Unavailable live application instance".into());
-                }
-                let rx = self
-                    .broker
-                    .action_directory_request_queue()
-                    .try_start_resolved(
-                        BrokerActor::person(&self.actor),
-                        &self.room,
-                        a.peer_id,
-                        a.revision,
-                        a.resource,
-                        a.action,
-                        Some(format!(
-                            "{}{}",
-                            tilo_actions::ARGUMENTS_JSON_PREFIX,
-                            Value::Object(a.arguments)
-                        )),
-                        None,
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
-                bridge_reply(rx).await
+                self.live_peer(a.peer_id).await?;
+                let invocation = a
+                    .invocation_id
+                    .as_deref()
+                    .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
+                let request = InvokeRequest {
+                    invocation,
+                    target: RemoteActionTarget {
+                        provider: a.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                    },
+                    argument: InvokeArgument::Json(a.arguments),
+                    context: None,
+                    confirmation: None,
+                    revision: Some(a.revision),
+                };
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.host().invoke(&self.caller(), request),
+                )
+                .await
+                .map_err(|_| {
+                    "TimedOut; admission may be unknown; retry with the same invocation_id"
+                        .to_string()
+                })?
+                .ok_or_else(|| "Unavailable".to_string())?
+                .map_err(|error| error.to_string())?;
+                self.status(invocation)
             }
             "qos_status" => {
                 let a: StatusArgs = parse(args)?;
-                self.status(a.invocation_id)
+                self.status(invocation_id(&a.invocation_id)?)
             }
             "qos_cancel" => {
                 let a: StatusArgs = parse(args)?;
-                self.broker.cancel(a.invocation_id, &self.actor)?;
-                self.status(a.invocation_id)
+                let invocation = invocation_id(&a.invocation_id)?;
+                self.host()
+                    .cancel(&self.caller(), &invocation)
+                    .map_err(|error| error.to_string())?;
+                self.status(invocation)
             }
             _ => Err("Unknown tool".into()),
         }
     }
-    fn status(&self, id: u64) -> Result<Value, String> {
-        self.broker
-            .statuses(&self.actor)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == id)
-            .map(|(_, update)| json!({"invocation_id":id,"update":update}))
+    /// The action host every caller shares; this bridge is one more caller.
+    fn host(&self) -> BrokerActionHost {
+        BrokerActionHost::new(self.broker.clone())
+    }
+    /// The fixed profile actor, confined to the profile's workspace.
+    fn caller(&self) -> Caller {
+        Caller::local_person(self.actor.clone()).in_room(self.room.clone())
+    }
+    fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
+        self.host()
+            .observe(&self.caller(), &id)
+            .map(|state| json!({"invocation_id":id.0.to_string(),"update":state.update}))
             .ok_or_else(|| "Unknown or unowned invocation".into())
     }
-    fn resources(&self, params: Value) -> Result<Value, String> {
+    async fn resources(&self, params: Value) -> Result<Value, String> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Args {
@@ -301,10 +365,12 @@ impl McpServer {
                     .map_err(|_| "Invalid resource cursor".to_string())
             })
             .transpose()?;
-        let apps = self.apps(ListArgs {
-            after_peer,
-            max_results: None,
-        });
+        let apps = self
+            .apps(ListArgs {
+                after_peer,
+                max_results: None,
+            })
+            .await?;
         let resources=apps["apps"].as_array().into_iter().flatten().map(|a|json!({"uri":a["uri"],"name":format!("{} ({})",a["app_id"].as_str().unwrap_or_default(),a["peer_id"]),"mimeType":"application/json"})).collect::<Vec<_>>();
         let mut result = json!({"resources":resources,"generation":apps["generation"]});
         if let Some(next) = apps["next_after_peer"].as_u64() {
@@ -336,51 +402,44 @@ impl McpServer {
 fn empty_object() -> Value {
     json!({})
 }
-async fn bridge_reply(
-    rx: tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-) -> Result<Value, String> {
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-        .await
-        .map_err(|_| "TimedOut; admission may be unknown; do not replay mutations".to_string())?
-        .map_err(|_| "Unavailable".to_string())?
-        .map_err(|e| format!("{e:?}"))?;
-    match reply {
-        Reply::Page(page) => Ok(
-            json!({"revision":page.revision,"rows":page.rows.iter().map(row_json).collect::<Result<Vec<_>,_>>()?,"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted}),
-        ),
-        Reply::Resolution(runtime_collab::ActionDirectoryResolution::Found(row)) => {
-            Ok(json!({"row":row_json(&row)?}))
-        }
-        Reply::Resolution(other) => Err(format!("{other:?}")),
-        Reply::StartedDirectoryAction(start) => {
-            Ok(json!({"invocation_id":start.invocation_id,"update":start.initial_update}))
-        }
-    }
+fn page_json(page: &CataloguePage) -> Value {
+    json!({"revision":page.revision,"rows":page.rows.iter().map(row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
 }
-fn row_json(row: &runtime_collab::ActionDirectoryRow) -> Result<Value, String> {
-    let descriptor=row.descriptor.as_ref().map(|d|Ok::<Value,String>(json!({"resource":d.resource,"action":d.action,"resource_kind":d.resource_kind,"resource_label":d.resource_label,"action_label":d.action_label,"description":d.description,"operation_kind":d.operation_kind,"params":serde_json::from_str::<Value>(&d.params_json).map_err(|e|e.to_string())?,"contract":serde_json::from_str::<Value>(&d.contract_json).map_err(|e|e.to_string())?}))).transpose()?;
-    let visibility_contract = if row.visibility_contract_json.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_str::<Value>(&row.visibility_contract_json).map_err(|e| e.to_string())?
-    };
-    Ok(
-        json!({"parent_resource":row.parent_resource,"resource":row.resource,"resource_kind":row.resource_kind,"resource_label":row.resource_label,"action":row.action,"descriptor":descriptor,"has_children":row.has_children,"visibility_action":row.visibility_action,"visibility_contract":visibility_contract}),
-    )
+fn row_json(row: &CatalogueRow) -> Value {
+    let descriptor = row.action.as_ref().map(|action| {
+        json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract})
+    });
+    json!({
+        "parent_resource":row.parent_resource,
+        "resource":row.resource.id,
+        "resource_kind":row.resource.kind,
+        "resource_label":row.resource.label,
+        "action":row.action.as_ref().map(|action| &action.address.action),
+        "descriptor":descriptor,
+        "has_children":row.has_children,
+        "visibility_action":row.visibility.as_ref().map(|visibility| &visibility.action),
+        "visibility_contract":row.visibility.as_ref().map(|visibility| &visibility.contract),
+    })
 }
 fn tool_definitions() -> Vec<Value> {
     let integer = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
     let target = json!({"peer_id":integer,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
-    invoke["arguments"] = json!({"type":"object"});
+    if let Some(properties) = invoke.as_object_mut() {
+        properties.insert("arguments".into(), json!({"type":"object"}));
+        properties.insert(
+            "invocation_id".into(),
+            json!({"type":"string","format":"uuid"}),
+        );
+    }
     [
         ("qos_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
         ("qos_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
         ("qos_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
-        ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded",invoke,json!(["peer_id","revision","resource","action","arguments"])),
-        ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":integer}),json!(["invocation_id"])),
-        ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":integer}),json!(["invocation_id"])),
+        ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
+        ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
+        ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
     ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
 }
 #[cfg(test)]

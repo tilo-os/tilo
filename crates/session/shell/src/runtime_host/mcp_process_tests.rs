@@ -386,6 +386,7 @@ fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
             .broker
             .app_action_broker()
             .unwrap()
+            .state()
             .action_directory_root_page(None, 8)
             .roots;
         if roots.len() == 2 || Instant::now() >= deadline {

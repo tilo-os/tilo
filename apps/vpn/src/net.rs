@@ -363,7 +363,8 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
 
         // Gated-refusal: with execution disabled, the mutating command must be
         // refused — the UI can never claim connected without a real success.
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let refused = config::execute(&plan);
         assert!(
             refused.is_err() && refused.unwrap_err().contains("execution disabled"),

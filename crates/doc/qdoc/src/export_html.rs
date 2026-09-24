@@ -1,8 +1,8 @@
-mod base64;
-
+use crate::codecs::xml_escape::{escape_html_attr, escape_text};
 use crate::export::{BlockKind, ExportBlock, TablePlan, detect_image_media};
 use crate::snapshot::AttrVal;
 use crate::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
+use base64::Engine as _;
 use std::fmt::Write as _;
 
 /// Options controlling the shape of the emitted HTML.
@@ -411,7 +411,7 @@ fn render_image(
     } else {
         block.text.clone()
     };
-    let alt_attr = format!(" alt=\"{}\"", escape_attr(&alt));
+    let alt_attr = format!(" alt=\"{}\"", escape_html_attr(&alt));
 
     let hash = match block.attrs.get("blob") {
         Some(AttrVal::Str(s)) => Some(s.clone()),
@@ -420,7 +420,7 @@ fn render_image(
     match hash.as_ref().and_then(|h| snap.blobs.get(h)) {
         Some(bytes) => {
             let mime = detect_image_media(bytes).map_or("image/png", |media| media.mime);
-            let data = base64::encode(bytes);
+            let data = base64::engine::general_purpose::STANDARD.encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
             // base64 alphabet (no `"` in b64).
             let _ = writeln!(
@@ -452,10 +452,10 @@ fn block_attrs(block: &BlockView) -> String {
 
     let mut out = String::new();
     if let Some(c) = class {
-        let _ = write!(out, " class=\"{}\"", escape_attr(&c));
+        let _ = write!(out, " class=\"{}\"", escape_html_attr(&c));
     }
     if !style.is_empty() {
-        let _ = write!(out, " style=\"{}\"", escape_attr(&style));
+        let _ = write!(out, " style=\"{}\"", escape_html_attr(&style));
     }
     out
 }
@@ -498,7 +498,11 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
             None
         }
     }) {
-        let _ = write!(open, "<a href=\"{}\">", escape_attr(&sanitize_href(&href)));
+        let _ = write!(
+            open,
+            "<a href=\"{}\">",
+            escape_html_attr(&sanitize_href(&href))
+        );
         close_stack.push("</a>");
     }
 
@@ -528,7 +532,7 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
         let _ = write!(
             open,
             "<span style=\"{}\">",
-            escape_attr(&format!("{};", decls.join("; ")))
+            escape_html_attr(&format!("{};", decls.join("; ")))
         );
         close_stack.push("</span>");
     }
@@ -654,35 +658,5 @@ fn sanitize_href(href: &str) -> String {
 
 // ---- HTML escaping ----------------------------------------------------------
 
-/// Escape text destined for element content: the characters that can
-/// change parsing in text context, plus quotes for safety.
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Escape a value destined for a double-quoted attribute: the quote and
-/// structural characters, so the value can never terminate the
-/// attribute or the tag.
-fn escape_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
+#[cfg(test)]
+mod tests;

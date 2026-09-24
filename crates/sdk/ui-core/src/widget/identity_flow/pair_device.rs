@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
 use vello::Scene;
@@ -421,6 +421,13 @@ impl PairDeviceScreen {
     /// Returns [`IdentityFlowError`] when the payload cannot be decoded, when
     /// any DKG round fails, when the round-2 reply cannot be encoded, or when
     /// the host never publishes its own round-2 within the poll window.
+    ///
+    /// Blocks for up to the poll window: call it from a worker, never from a
+    /// frame.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
+    )]
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
@@ -429,7 +436,7 @@ impl PairDeviceScreen {
         let nonce = payload.nonce()?;
         let host_round1 = payload.initiator_round1()?;
         // Build the pairer's own DKG session (share index 2 in a 2-of-2 group).
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut my_identity = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let (mut my_session, my_round1) = my_identity.begin_enrolment(2, 2, 2, &mut rng)?;
         // Process the host's round-1 → produce our round-2 reply.
@@ -445,25 +452,25 @@ impl PairDeviceScreen {
         // Publication is one acknowledged, idempotent exchange. A transient
         // TLS timeout must not strand round 1 or round 2 while both screens
         // continue to say they are waiting for the other device.
-        let publish_deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(15))
+        let publish_deadline = crate::time::now()
+            .checked_add(crate::time::Duration::from_secs(15))
             .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
         loop {
             if hs.publish_pairer_exchange(&nonce, my_round1.clone(), reply.clone(), mac) {
                 break;
             }
-            if std::time::Instant::now() >= publish_deadline {
+            if crate::time::now() >= publish_deadline {
                 return Err(IdentityFlowError::DecodeFailed(
                     "pairing broker did not acknowledge the DKG exchange".into(),
                 ));
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         }
         // The pairer also needs the host's round-1 contribution, sent as the
         // host's own round-2 message; bounded-poll the broker mailbox for it.
         let mut host_reply: Option<EnrolmentRound2> = None;
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(15))
+        let deadline = crate::time::now()
+            .checked_add(crate::time::Duration::from_secs(15))
             .ok_or_else(|| IdentityFlowError::DecodeFailed("pairing deadline overflow".into()))?;
         loop {
             if let Some((r, host_mac)) = hs.take_host_round2(&nonce) {
@@ -475,10 +482,10 @@ impl PairDeviceScreen {
                 host_reply = Some(r);
                 break;
             }
-            if std::time::Instant::now() >= deadline {
+            if crate::time::now() >= deadline {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         }
         let host_reply = host_reply.ok_or_else(|| {
             IdentityFlowError::DecodeFailed("host never published round-2 to pairer".into())
@@ -513,7 +520,7 @@ impl PairDeviceScreen {
     /// Returns [`IdentityFlowError`] when bootstrapping the device identity or
     /// beginning its enrolment round fails.
     pub fn produce_pairer_round1() -> Result<(DkgSession, EnrolmentRound1), IdentityFlowError> {
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         Ok(id.begin_enrolment(2, 2, 2, &mut rng)?)
     }
@@ -1072,7 +1079,7 @@ mod tests {
 
     #[test]
     fn validate_code_against_payload_round_trip() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
         let nonce = [0x77u8; 16];

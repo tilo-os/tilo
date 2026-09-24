@@ -97,7 +97,7 @@ fn configure_blob_store() {
     });
 }
 
-fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
     configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {

@@ -557,7 +557,7 @@ impl CalcScreen {
             let (fill, text_col) = key_colors(theme, key.role(), hovered, pressed);
             ui::surface::card(scene, t, r, 10.0, fill);
             if key.role() == KeyRole::Accent {
-                draw::stroke_rrect(scene, t, r, 10.0, c.accent[6], 1.0);
+                draw::stroke_round(scene, t, r, 10.0, c.accent[6], 1.0);
             }
             let size = match key.role() {
                 KeyRole::Digit | KeyRole::Operator | KeyRole::Accent => 22.0,

@@ -232,7 +232,7 @@ fn endpoint(base_url: &str, suffix: &str) -> Result<reqwest::Url, ModerationClie
 }
 
 fn client() -> Result<reqwest::blocking::Client, ModerationClientError> {
-    reqwest::blocking::Client::builder()
+    tilo_net::http::blocking_client()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())

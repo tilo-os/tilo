@@ -162,12 +162,8 @@ fn run_handoff() {
     // The supervisor re-execs itself to start a session. In production
     // `current_exe` is `tilo-ush`; under `cargo test` it's this test binary,
     // which would treat `run` as a name filter and exit — point it at the real one.
-    //
-    // SAFETY: set before any thread that reads it is spawned, and this test is
-    // the only writer.
-    unsafe {
-        std::env::set_var("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
 
     // On ordinary disk, not `/tmp`: a layer is an overlayfs upper and tmpfs
     // can't be one — putting the store there would test the refusal, not the handoff.
