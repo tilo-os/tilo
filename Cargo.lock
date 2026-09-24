@@ -131,7 +131,6 @@ dependencies = [
  "advisory-lock",
  "atomic-file",
  "bounded-command",
- "dirs 6.0.0",
  "getrandom 0.4.1",
  "private-fs",
  "secret-vault",
@@ -140,6 +139,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -549,7 +549,6 @@ dependencies = [
  "capnp-rpc",
  "capnpc",
  "clap",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "futures",
  "getrandom 0.4.1",
@@ -569,6 +568,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wire-frame",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -579,7 +579,6 @@ dependencies = [
  "atomic-file",
  "blake3",
  "bytes",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "hex",
  "iroh",
@@ -596,6 +595,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -606,7 +606,6 @@ dependencies = [
  "atomic-file",
  "automerge",
  "cli",
- "dirs 6.0.0",
  "durable-store",
  "same-file",
  "serial_test",
@@ -615,6 +614,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-test-env",
  "tracing",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -1697,7 +1697,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
- "dirs 6.0.0",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
@@ -1716,6 +1715,7 @@ dependencies = [
  "tilo-ocr",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -3187,16 +3187,7 @@ version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
 dependencies = [
- "dirs-sys 0.4.1",
-]
-
-[[package]]
-name = "dirs"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
-dependencies = [
- "dirs-sys 0.5.0",
+ "dirs-sys",
 ]
 
 [[package]]
@@ -3207,20 +3198,8 @@ checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users 0.4.6",
+ "redox_users",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users 0.5.2",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3949,7 +3928,6 @@ dependencies = [
  "cap-std",
  "chrono",
  "collab-types",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "flate2",
  "fluent",
@@ -6357,7 +6335,6 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
- "dirs 6.0.0",
  "hex",
  "libc",
  "qos-ntfs-protocol",
@@ -6376,6 +6353,7 @@ dependencies = [
  "vello",
  "windows-sys 0.61.2",
  "winit",
+ "xdg-paths",
  "zbus",
  "zstd",
 ]
@@ -6488,7 +6466,6 @@ dependencies = [
  "atomic-file",
  "blake3",
  "clap",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
@@ -8300,7 +8277,6 @@ dependencies = [
  "automerge",
  "base64",
  "bounded-command",
- "dirs 6.0.0",
  "gstreamer",
  "hex",
  "image",
@@ -8779,7 +8755,6 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
- "dirs 6.0.0",
  "runtime-dylib",
  "runtime-portal-xdg",
  "serde",
@@ -8794,6 +8769,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -11288,17 +11264,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redox_users"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
-dependencies = [
- "getrandom 0.2.17",
- "libredox",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "ref-cast"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11730,7 +11695,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "clap",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
@@ -11740,6 +11704,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -12677,7 +12642,6 @@ dependencies = [
  "bounded-command",
  "collab-types",
  "desktop-policy",
- "dirs 6.0.0",
  "launcher",
  "mail",
  "media",
@@ -12711,6 +12675,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -12888,7 +12853,6 @@ dependencies = [
  "collab-types",
  "compat-service",
  "desktop-policy",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "ffmpeg-next",
  "file-explorer",
@@ -13465,7 +13429,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5349534527378e1e24486a9b361127c0a044b0311857f778ec1ec2953c5ffbbf"
 dependencies = [
- "dirs 5.0.1",
+ "dirs",
  "log",
  "strum 0.26.3",
  "strum_macros 0.26.4",
@@ -13519,7 +13483,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
@@ -13542,6 +13505,7 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -14696,7 +14660,6 @@ dependencies = [
  "chrono",
  "collab-types",
  "cosmic-text",
- "dirs 6.0.0",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fluent",
@@ -14845,7 +14808,6 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "dirs 6.0.0",
  "hex",
  "serde",
  "serde_json",
@@ -14856,6 +14818,7 @@ dependencies = [
  "tilo-vm-protocol",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -15446,7 +15409,6 @@ dependencies = [
  "base64",
  "blake3",
  "bounded-command",
- "dirs 6.0.0",
  "flate2",
  "libc",
  "media",
@@ -15557,7 +15519,6 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "comemo",
- "dirs 6.0.0",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -15573,6 +15534,7 @@ dependencies = [
  "typst-render",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -16110,7 +16072,6 @@ dependencies = [
  "atomic-file",
  "bounded-command",
  "collab-types",
- "dirs 6.0.0",
  "landlock",
  "libc",
  "runtime-portal",
@@ -16126,6 +16087,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -18091,6 +18053,9 @@ checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
 [[package]]
 name = "xdg-paths"
 version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "xkbcommon"

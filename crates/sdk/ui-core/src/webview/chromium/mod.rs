@@ -513,7 +513,7 @@ fn launch_host(
         .arg(format!("--profile={}", profile.display()))
         .arg(format!(
             "--downloads={}",
-            dirs::download_dir()
+            xdg_paths::download_dir()
                 .unwrap_or_else(|| profile.join("downloads"))
                 .display()
         ))
@@ -567,7 +567,7 @@ impl ChromiumEngine {
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("QOS_CHROMIUM_PROFILE")
             .map(PathBuf::from)
-            .or_else(|| dirs::data_dir().map(|path| path.join("qos-browser/chromium")))
+            .or_else(|| xdg_paths::data_dir().map(|path| path.join("qos-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
         Self::with_host_extensions(&host_path()?, &profile, extensions, None)
     }

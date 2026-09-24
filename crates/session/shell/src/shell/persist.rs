@@ -87,7 +87,7 @@ fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
 }
 
 /// `TILO_STATE_PATH` overrides it. Anything driving a compositor that
-/// isn't the user's own session must set it — `dirs::config_dir()`
+/// isn't the user's own session must set it — `xdg_paths::config_dir()`
 /// **ignores a relative `XDG_CONFIG_HOME`**, so a harness isolating
 /// itself with a relative path writes into the user's
 /// `~/.config/tilo/state.json` instead.
@@ -97,7 +97,7 @@ pub fn state_json_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    dirs::config_dir().map_or_else(
+    xdg_paths::config_dir().map_or_else(
         || PathBuf::from("state.json"),
         |c| c.join("tilo").join("state.json"),
     )
@@ -111,7 +111,7 @@ pub fn fs_capability_export_path() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    dirs::config_dir().map_or_else(
+    xdg_paths::config_dir().map_or_else(
         || PathBuf::from("fs-capabilities.json"),
         |c| c.join("tilo").join("fs-capabilities.json"),
     )

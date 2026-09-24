@@ -448,7 +448,6 @@ clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false }
-dirs = "6.0.0"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.

@@ -24,7 +24,7 @@ pub fn registry_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Some(PathBuf::from(dir).join("registry.toml"));
     }
-    dirs::data_dir().map(|d| d.join("tilo-apps").join("registry.toml"))
+    xdg_paths::data_dir().map(|d| d.join("tilo-apps").join("registry.toml"))
 }
 
 /// One row of `tilo-install`'s registry.toml. Only the fields the

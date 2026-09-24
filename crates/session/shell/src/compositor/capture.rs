@@ -1895,8 +1895,8 @@ fn output_dimensions(width: f64, height: f64) -> Result<(u32, u32, f64), String>
 }
 
 fn next_screenshot_path(sequence: u64) -> PathBuf {
-    let root = dirs::picture_dir()
-        .or_else(dirs::home_dir)
+    let root = xdg_paths::picture_dir()
+        .or_else(xdg_paths::home)
         .unwrap_or_else(std::env::temp_dir)
         .join("Screenshots");
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
@@ -1909,8 +1909,8 @@ fn next_screenshot_path(sequence: u64) -> PathBuf {
 }
 
 fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = dirs::video_dir()
-        .or_else(dirs::home_dir)
+    let root = xdg_paths::video_dir()
+        .or_else(xdg_paths::home)
         .unwrap_or_else(std::env::temp_dir)
         .join("Screen Recordings");
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
@@ -1925,8 +1925,8 @@ fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
 }
 
 fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = dirs::video_dir()
-        .or_else(dirs::home_dir)
+    let root = xdg_paths::video_dir()
+        .or_else(xdg_paths::home)
         .unwrap_or_else(std::env::temp_dir)
         .join("Screen Recordings");
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");

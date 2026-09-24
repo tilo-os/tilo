@@ -271,7 +271,7 @@ fn load_file(path: &Path) -> Result<Vec<RegistryRef>, ConfigError> {
 
 /// `~/.config/tilo/registries.toml` (honours `$XDG_CONFIG_HOME`).
 pub fn global_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("tilo").join("registries.toml"))
+    xdg_paths::config_dir().map(|d| d.join("tilo").join("registries.toml"))
 }
 
 /// `<workspace>/.tilo/registries.toml`.
