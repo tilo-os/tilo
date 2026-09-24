@@ -548,6 +548,10 @@ impl Engine {
     }
 
     /// Cuts an epoch and publishes its changeset in journal order.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "capture, publication and persistence of one epoch stay in order in one place"
+    )]
     fn cut_epoch(&mut self) -> Result<()> {
         let t = Instant::now();
         let previous_snapshot = self.capture.last_snapshot().map(Path::to_path_buf);
@@ -1063,6 +1067,10 @@ impl Engine {
     }
 
     /// Materialises the record plane's current state.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one projection pass and the bookkeeping of what it changed"
+    )]
     fn project(&mut self) {
         let (open, spans) = self.changesets();
         if let Some(device) = open {
