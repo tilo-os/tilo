@@ -237,7 +237,7 @@ impl WorkspaceRuntime {
             if self.subscribers.contains_key(member) {
                 continue;
             }
-            let raw = crate::transport::encode(envelope).map_err(|e| {
+            let raw = crate::frame::encode(envelope).map_err(|e| {
                 crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode: {e}"),
@@ -257,7 +257,7 @@ impl WorkspaceRuntime {
                 if self.subscribers.contains_key(pr) {
                     continue;
                 }
-                let raw = crate::transport::encode(envelope).map_err(|e| {
+                let raw = crate::frame::encode(envelope).map_err(|e| {
                     crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("encode: {e}"),
@@ -278,7 +278,7 @@ impl WorkspaceRuntime {
         // queue. A device can be invited while every existing device is
         // offline, so it may have no per-device pending directory yet.
         if let Some(payload) = crate::coedit::CoeditPayload::decode(raw_delta_bytes) {
-            let encoded = crate::transport::encode(envelope).map_err(|error| {
+            let encoded = crate::frame::encode(envelope).map_err(|error| {
                 crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode retained envelope: {error}"),

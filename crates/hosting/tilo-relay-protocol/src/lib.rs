@@ -4,6 +4,10 @@
 //!
 //! Everything here is plain data plus the pure functions defined over it:
 //!
+//! - [`auth`] — the mutual challenge/response handshake messages and their
+//!   signing / verification;
+//! - [`transport`] — the relay ALPNs and the post-handshake [`Envelope`]
+//!   plus the discovery and home-peer management messages;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the deterministic placement / remote-control routing over them;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
@@ -32,13 +36,17 @@
     )
 )]
 
+pub mod auth;
 pub mod config;
 pub mod home_peer;
 pub mod mesh;
 pub mod metrics;
 pub mod policy;
 pub mod process_lease;
+mod sig64;
+pub mod transport;
 
+pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
 pub use config::{ConfigError, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
@@ -49,6 +57,7 @@ pub use mesh::{
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 
 /// Derive the stable numeric host/gossip shard for a room UUID. This is shared
 /// by the shell and admin CLI so local workspace handles never leak onto the
