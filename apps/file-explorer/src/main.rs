@@ -283,7 +283,7 @@ fn navigate_launch_directory(
 
 /// Open persisted state while preserving the file manager's per-replica actor
 /// naming. The shared runner still owns autosave, headless driving, and exit.
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     let (mut state, autosave) = ui::persist::open(app_id);
     // Keep each window's actor stable and distinct for the host-owned
     // collaborative document, even though Files itself stores no UI state in

@@ -15,7 +15,7 @@ impl App {
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
     )]
-    pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
+    pub fn with_autosave(mut self, autosave: crate::persist::DocWriter) -> Self {
         self.autosave_generation = self
             .autosave_generation
             .checked_add(1)
@@ -225,9 +225,9 @@ impl App {
         }
     }
 
-    /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
+    /// Lets a caller check [`crate::persist::DocWriter::last_error`] rather
     /// than assuming the disk accepted the writes.
-    pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
+    pub fn autosave(&self) -> Option<&crate::persist::DocWriter> {
         self.persistence.autosave.as_ref()
     }
 }

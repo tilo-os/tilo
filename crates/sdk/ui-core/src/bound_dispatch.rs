@@ -1338,7 +1338,7 @@ impl RecordActionState {
             qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
         } else if doc.pending_ops() != 0 {
             // Legacy widget input is not wrapped in a bound action frame.
-            // Persistence must still close that transaction or Autosave sees
+            // Persistence must still close that transaction or DocWriter sees
             // unchanged heads and silently writes only the earlier snapshot.
             doc.commit();
         }

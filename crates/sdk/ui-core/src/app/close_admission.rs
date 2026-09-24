@@ -579,7 +579,7 @@ mod tests {
             save_allowed: false,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture root owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
@@ -632,7 +632,7 @@ mod tests {
             crate::State::new(),
             Box::new(crate::widget::Text::new("body")),
         )
-        .with_autosave(crate::persist::Autosave::disabled(
+        .with_autosave(crate::persist::DocWriter::disabled(
             "required writer unavailable",
         ));
         assert!(
@@ -706,7 +706,7 @@ mod tests {
             save_allowed,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::Autosave::disabled(
+            .with_autosave(crate::persist::DocWriter::disabled(
                 "fixture owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);

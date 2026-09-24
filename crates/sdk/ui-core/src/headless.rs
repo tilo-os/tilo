@@ -4340,7 +4340,7 @@ pub fn run_with_theme(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, the
 pub(crate) fn build_initialized_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
-) -> Result<(Box<Driver>, crate::persist::Autosave), String> {
+) -> Result<(Box<Driver>, crate::persist::DocWriter), String> {
     use crate::launch::LegacyRecordPolicy;
     let autosave = &inputs.autosave;
     // An explicitly disabled writer is not successful durability, and never
@@ -4378,7 +4378,7 @@ pub(crate) fn build_audit_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
     theme: Theme,
-) -> (Box<Driver>, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::DocWriter) {
     build_legacy_driver(inputs, viewport, theme, false)
 }
 
@@ -4387,7 +4387,7 @@ fn build_legacy_driver(
     viewport: (u32, u32),
     theme: Theme,
     activate_automatic_records: bool,
-) -> (Box<Driver>, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::DocWriter) {
     use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     let LegacyLaunchInputs {
         mut state,
@@ -4564,7 +4564,7 @@ mod tests {
         let inputs = crate::launch::LegacyLaunchInputs::new(
             state,
             Box::new(crate::widget::Text::new("audit")),
-            crate::persist::Autosave::disabled("audit-only fixture"),
+            crate::persist::DocWriter::disabled("audit-only fixture"),
         )
         .with_records(crate::record::RecordSet::in_memory(), index);
         let (mut driver, autosave) =
@@ -4603,7 +4603,7 @@ mod tests {
         let mut inputs = crate::launch::LegacyLaunchInputs::new(
             State::new(),
             Box::new(crate::widget::Text::new("audit")),
-            crate::persist::Autosave::disabled("audit-only fixture"),
+            crate::persist::DocWriter::disabled("audit-only fixture"),
         );
         inputs.records = crate::launch::LegacyRecordPolicy::AutomaticHeadless {
             records: crate::record::RecordSet::in_memory(),
@@ -5796,7 +5796,7 @@ mod tests {
             let inputs = crate::launch::LegacyLaunchInputs::new(
                 State::new(),
                 Box::new(probe),
-                crate::persist::Autosave::disabled("fixture owns storage"),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
             )
             .with_widget_owned_persistence();
             assert_eq!(
@@ -5824,7 +5824,7 @@ mod tests {
             let inputs = crate::launch::LegacyLaunchInputs::new(
                 State::new(),
                 Box::new(probe),
-                crate::persist::Autosave::disabled("fixture owns storage"),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
             )
             .with_widget_owned_persistence();
             assert_eq!(
@@ -6036,7 +6036,7 @@ mod tests {
         let mut inputs = LegacyLaunchInputs::new(
             state,
             Box::new(Button::new("plain-root", "Plain", None)),
-            crate::persist::Autosave::disabled("no writes in this fixture"),
+            crate::persist::DocWriter::disabled("no writes in this fixture"),
         );
         inputs.records = LegacyRecordPolicy::AutomaticHeadless {
             records: crate::record::RecordSet::in_memory(),
