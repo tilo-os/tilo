@@ -26,6 +26,10 @@
 //! Not persistence — a persistent `wgpu::PipelineCache` would extend the
 //! win across restarts, but needs driver support not ubiquitous on the
 //! Mesa releases Tilo ships against, and wouldn't help first boot at all.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: cold-start warmup overlaps font and GPU setup on a thread"
+)]
 
 use std::thread;
 

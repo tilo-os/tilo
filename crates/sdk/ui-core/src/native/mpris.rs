@@ -5,6 +5,10 @@
 //! Real D-Bus serving requires Unix and the `mpris` feature (via zbus).
 //! Other platforms start no session. The service runs on its own worker
 //! thread with a private Tokio runtime so the UI thread is never blocked.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the D-Bus MPRIS service runs on its own thread"
+)]
 
 #[cfg(all(feature = "mpris", not(unix)))]
 use std::sync::mpsc::Receiver;

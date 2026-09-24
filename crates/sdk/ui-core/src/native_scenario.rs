@@ -2,6 +2,10 @@
 //!
 //! Call `spawn` only after the native window has first presented. Deadlines use
 //! one origin so slow handling cannot silently reduce the requested input rate.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: input timelines pace real window delivery"
+)]
 
 use crate::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};

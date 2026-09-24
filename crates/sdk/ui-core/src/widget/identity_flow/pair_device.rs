@@ -421,6 +421,13 @@ impl PairDeviceScreen {
     /// Returns [`IdentityFlowError`] when the payload cannot be decoded, when
     /// any DKG round fails, when the round-2 reply cannot be encoded, or when
     /// the host never publishes its own round-2 within the poll window.
+    ///
+    /// Blocks for up to the poll window: call it from a worker, never from a
+    /// frame.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "blocking pairing exchange for callers already on a worker; the broker round-trips are blocking I/O"
+    )]
     pub fn perform_pairing(
         &mut self,
         payload: &PairingPayload,
