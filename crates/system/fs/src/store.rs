@@ -37,6 +37,8 @@ use crate::eviction::{
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 
+mod files;
+
 #[cfg(feature = "filesystem")]
 pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(feature = "filesystem")]
