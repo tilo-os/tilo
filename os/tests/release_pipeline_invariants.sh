@@ -162,7 +162,7 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
    && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow" \
    && grep -Fq 'automation/kernel-snapshot-${snapshot_digest:0:16}' "$kernel_workflow" \
-   && grep -Fq 'python3 os/dev/open-kernel-snapshot-pr.py' "$kernel_workflow" \
+   && grep -Fq 'python3 os/dev/open-snapshot-pr.py' "$kernel_workflow" \
    && ! grep -Fq 'FORGEJO_TOKEN: ${{ github.token }}' "$kernel_workflow" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
    && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
