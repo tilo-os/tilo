@@ -9,6 +9,8 @@ license.workspace = true
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]
 default = ["filesystem"]
+# The document-media capability over the content store, without the mount.
+document-media = ["dep:runtime-fs"]
 filesystem = [
     "dep:clap",
     "dep:iroh",
@@ -22,7 +24,7 @@ filesystem = [
     "dep:thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
-    "dep:runtime-fs",
+    "document-media",
     "dep:libc",
     "dep:serde_bytes",
     "dep:serde_json",
