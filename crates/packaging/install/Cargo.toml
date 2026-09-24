@@ -34,7 +34,7 @@ semver.workspace = true
 # and downloads it over iroh-blobs. Same crate the app-host daemon
 # uses, so there is one implementation of "fetch and verify a tapp".
 app-registry = { path = "../app-registry" }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tilo-rt.workspace = true
 
 [dev-dependencies]
 getrandom.workspace = true

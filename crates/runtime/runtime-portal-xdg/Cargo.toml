@@ -20,9 +20,9 @@ path = "src/lib.rs"
 # ashpd uses the tokio backend to match the rest of the Tilo runtime stack;
 # default features are disabled to drop async-std.
 ashpd = { workspace = true, features = ["file_chooser", "notification", "open_uri", "screencast", "secret"] }
-# tokio powers the sync wrapper; apps with an existing runtime should use the
-# `*_async` variants.
-tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
+# The sync wrappers wait on the process's shared app runtime; async callers
+# use the `*_async` variants directly.
+tilo-rt.workspace = true
 thiserror.workspace = true
 # For the URL type in `OpenUri::open`.
 url.workspace = true
