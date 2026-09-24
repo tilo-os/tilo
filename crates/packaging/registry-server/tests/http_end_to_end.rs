@@ -34,7 +34,7 @@ use registry_types::{
 /// dir isn't cleaned up mid-test) + the owner + first publisher
 /// key.
 struct Harness {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     addr: SocketAddr,
     storage: Storage,
     allowlist: PublisherAllowlist,
@@ -82,7 +82,7 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     Harness {
-        _tmp: tmp,
+        tmp,
         addr: bound,
         storage,
         allowlist: allow,
@@ -723,4 +723,40 @@ async fn oversized_change_request_returns_413_without_touching_disk() {
 
     assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
     assert!(h.storage.load_pending_submissions().unwrap().is_empty());
+}
+
+/// A reviewed package's payload blobs are served by hash, so a client that
+/// downloaded the thin package fetches only what its store lacks — and a
+/// blob the registry never reviewed is not there to fetch.
+#[tokio::test]
+async fn payload_blobs_of_a_staged_package_are_served_by_hash() {
+    let h = spawn_server(true).await;
+    let identity = tilo_app_package::SigningIdentity::generate();
+    let payload = h.tmp.path().join("payload");
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/editor"), b"reviewed binary").unwrap();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+         [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+         [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         [sandbox.net]\nmode = \"off\"\n\
+         [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
+        hex::encode(identity.public_key_bytes())
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+    let full = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+    let digest = blake3::hash(&full).to_hex().to_string();
+    h.storage.save_staged_artifact(&digest, &full).unwrap();
+
+    let blobs = app_registry::HttpBlobs::new(format!("http://{}", h.addr));
+    let binary = tilo_app_package::BlobHash::of(b"reviewed binary");
+    let fetched = blobs.fetch_all(&[binary]).await.unwrap();
+    assert_eq!(fetched[0].as_ref(), b"reviewed binary");
+    assert!(
+        blobs
+            .fetch_all(&[tilo_app_package::BlobHash::of(b"never reviewed")])
+            .await
+            .is_err()
+    );
 }

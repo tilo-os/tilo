@@ -85,6 +85,11 @@ enum Cmd {
         /// Print exactly what would change and exit, touching nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Registry server to fetch payload blobs the .tapp does not carry
+        /// from (`<url>/blobs/<hash>`). A thin package needs one unless its
+        /// payload is already in the content store.
+        #[arg(long)]
+        payload_from: Option<String>,
     },
     /// Fetch a newer version of an installed package and swap it in,
     /// keeping the user's per-room state.
@@ -109,6 +114,10 @@ enum Cmd {
         trust: TrustFlags,
         #[command(flatten)]
         runtime: RuntimeFlags,
+        /// Registry server to fetch payload blobs a `--from` .tapp does not
+        /// carry from (`<url>/blobs/<hash>`).
+        #[arg(long, requires = "from")]
+        payload_from: Option<String>,
     },
     /// List installed packages.
     List,
@@ -816,14 +825,27 @@ fn replace_cli_shims(
     write_cli_shims(manifest, id_field)
 }
 
-fn install(
-    tapp: &Path,
+/// How `install` treats a package beyond trust and runtime policy.
+struct InstallOptions {
     pinned: bool,
     force: bool,
+    dry_run: bool,
+    /// Where payload blobs the archive does not carry come from.
+    payload_from: Option<app_registry::HttpBlobs>,
+}
+
+fn install(
+    tapp: &Path,
+    options: InstallOptions,
     trust: &TrustFlags,
     runtime: &RuntimeFlags,
-    dry_run: bool,
 ) -> Result<(), Error> {
+    let InstallOptions {
+        pinned,
+        force,
+        dry_run,
+        payload_from,
+    } = options;
     // 1. Read + verify, before the registry check, so a --dry-run plan
     //    describes a package we've actually seen and checked.
     let candidate = Candidate::File(tapp.to_path_buf());
@@ -857,7 +879,9 @@ fn install(
         &checked,
         pinned,
         tapp.display().to_string(),
-        None,
+        payload_from
+            .as_ref()
+            .map(|source| source as &dyn BlobFetcher),
     )?;
     replace_cli_shims(existing.as_ref(), &checked.manifest, checked.id())?;
 
@@ -935,19 +959,11 @@ fn describe_trust(checked: &Checked) -> String {
 }
 
 /// Fetch a newer version and swap it in, keeping the user's state.
-fn update(
-    pkg_id: Option<&str>,
-    from: Option<&Path>,
-    version_req: Option<&str>,
-    allow_downgrade: bool,
-    dry_run: bool,
-    trust: &TrustFlags,
-    runtime: &RuntimeFlags,
-) -> Result<(), Error> {
+fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error> {
     let targets: Vec<InstalledPackage> = if let Some(id) = pkg_id {
         vec![find_installed(id)?]
     } else {
-        if from.is_some() {
+        if request.from.is_some() {
             return Err(Error::Policy(
                 "--from names one .tapp, so it needs one package id".into(),
             ));
@@ -961,16 +977,8 @@ fn update(
 
     let mut updated: u32 = 0;
     let mut current: u32 = 0;
-    let request = UpdateRequest {
-        from,
-        version_req,
-        allow_downgrade,
-        dry_run,
-        trust,
-        runtime,
-    };
     for entry in &targets {
-        match update_one(entry, &request)? {
+        match update_one(entry, request)? {
             UpdateOutcome::Swapped => updated = updated.saturating_add(1),
             UpdateOutcome::AlreadyCurrent => current = current.saturating_add(1),
             UpdateOutcome::Planned => {}
@@ -996,6 +1004,8 @@ struct UpdateRequest<'a> {
     dry_run: bool,
     trust: &'a TrustFlags,
     runtime: &'a RuntimeFlags,
+    /// Where payload blobs a `--from` archive does not carry come from.
+    payload_from: Option<app_registry::HttpBlobs>,
 }
 
 /// Whether the candidate may replace the installed package, or why not.
@@ -1067,6 +1077,11 @@ fn update_one(
         let (bytes, source, provider) = fetch_from_registries(&entry.id, request.version_req)?;
         (Candidate::Fetched(bytes), source, Some(provider))
     };
+    let payload: Option<&dyn BlobFetcher> = match (&provider, &request.payload_from) {
+        (Some(provider), _) => Some(provider),
+        (None, Some(server)) => Some(server),
+        (None, None) => None,
+    };
     let checked = check(&candidate, request.trust)?;
     if let Some(outcome) = update_allowed(entry, &checked, request)? {
         return Ok(outcome);
@@ -1110,9 +1125,7 @@ fn update_one(
         &checked,
         entry.pinned,
         source.clone(),
-        provider
-            .as_ref()
-            .map(|provider| provider as &dyn BlobFetcher),
+        payload,
     )?;
     replace_cli_shims(Some(entry), &checked.manifest, &entry.id)?;
 
@@ -1820,6 +1833,30 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
     Ok(())
 }
 
+fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
+    match cmd {
+        RuntimeCmd::Install {
+            version,
+            from_host,
+            from,
+            arch,
+            identity,
+            force,
+        } => runtime_install(
+            &version,
+            from_host,
+            from.as_deref(),
+            arch.as_deref(),
+            identity.as_deref(),
+            force,
+        ),
+        RuntimeCmd::List => runtime_list(),
+        RuntimeCmd::Remove { version } => runtime_remove(&version),
+        RuntimeCmd::Path { version } => runtime_path(&version),
+        RuntimeCmd::Verify { version } => runtime_verify(&version),
+    }
+}
+
 /// Bring the package store up to date before a command that reads or
 /// writes installed packages. Trust, revocation, runtime and PATH commands
 /// do not touch the store.
@@ -1848,7 +1885,18 @@ fn main() {
             trust,
             runtime,
             dry_run,
-        } => install(&tapp, pinned, force, &trust, &runtime, dry_run),
+            payload_from,
+        } => install(
+            &tapp,
+            InstallOptions {
+                pinned,
+                force,
+                dry_run,
+                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+            },
+            &trust,
+            &runtime,
+        ),
         Cmd::Update {
             pkg_id,
             from,
@@ -1857,14 +1905,18 @@ fn main() {
             dry_run,
             trust,
             runtime,
+            payload_from,
         } => update(
             pkg_id.as_deref(),
-            from.as_deref(),
-            version.as_deref(),
-            allow_downgrade,
-            dry_run,
-            &trust,
-            &runtime,
+            &UpdateRequest {
+                from: from.as_deref(),
+                version_req: version.as_deref(),
+                allow_downgrade,
+                dry_run,
+                trust: &trust,
+                runtime: &runtime,
+                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+            },
         ),
         Cmd::List => list(),
         Cmd::Uninstall {
@@ -1902,27 +1954,7 @@ fn main() {
             RevokedCmd::List => revoked_list(),
         },
         Cmd::Path => print_path(),
-        Cmd::Runtime { cmd } => match cmd {
-            RuntimeCmd::Install {
-                version,
-                from_host,
-                from,
-                arch,
-                identity,
-                force,
-            } => runtime_install(
-                &version,
-                from_host,
-                from.as_deref(),
-                arch.as_deref(),
-                identity.as_deref(),
-                force,
-            ),
-            RuntimeCmd::List => runtime_list(),
-            RuntimeCmd::Remove { version } => runtime_remove(&version),
-            RuntimeCmd::Path { version } => runtime_path(&version),
-            RuntimeCmd::Verify { version } => runtime_verify(&version),
-        },
+        Cmd::Runtime { cmd } => runtime(cmd),
     });
     if let Err(e) = result {
         eprintln!("tilo-install: {e}");
