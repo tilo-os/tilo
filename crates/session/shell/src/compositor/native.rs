@@ -4422,11 +4422,6 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     #[allow(
         dead_code,
-        reason = "Retaining the runtime keeps portal worker tasks alive for the lifetime of the compositor backend."
-    )]
-    runtime: tokio::runtime::Runtime,
-    #[allow(
-        dead_code,
         reason = "Retaining the server handle keeps its D-Bus connection, bus name, and object server alive."
     )]
     server: crate::portal::ServerHandle,
@@ -4639,12 +4634,7 @@ fn start_portal_backend(
     inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     selection: crate::compositor::selection::SharedSelection,
 ) -> Option<PortalBackend> {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(2)
-        .thread_name("tilo-portal")
-        .build()
-    {
+    let runtime = match crate::session_runtime::runtime() {
         Ok(rt) => rt,
         Err(e) => {
             tracing::warn!("portal: no runtime ({e}); file open/save will not work");
@@ -4754,7 +4744,6 @@ fn start_portal_backend(
         );
     }
     Some(PortalBackend {
-        runtime,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -5690,17 +5679,13 @@ pub fn run() {
     frame_builder.with_chrome(|st| {
         st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
     });
-    // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
-    let mut notif_runtime: Option<tokio::runtime::Runtime> = None;
+    // The session runtime keeps driving zbus dispatch in the background for
+    // the life of the process.
+    let mut notif_runtime: Option<&'static tokio::runtime::Runtime> = None;
     // RAII: dropping this releases the D-Bus bus name and tears down the
     // object server. It is explicitly dropped in the ordered shutdown block.
     let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
-    match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(1)
-        .thread_name("tilo-notify")
-        .build()
-    {
+    match crate::session_runtime::runtime() {
         Ok(rt) => {
             let bridge = notif_bridge.clone();
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
@@ -5734,20 +5719,21 @@ pub fn run() {
                     );
                 }
             }
-            // Keep the runtime alive regardless of notification outcome: the power
-            // service lives on the *system* bus (logind/UPower), independent of the session-bus daemon, sharing these threads.
+            // The power service runs regardless of notification outcome: it
+            // lives on the *system* bus (logind/UPower), independent of the
+            // session-bus daemon, sharing these threads.
             notif_runtime = Some(rt);
         }
         Err(e) => {
-            tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
+            tracing::warn!("notifications: session runtime unavailable ({e}); D-Bus service off");
         }
     }
 
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
-    // Spawned on the notify runtime; if the system bus/logind/UPower are
+    // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime.as_ref() {
+    if let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
