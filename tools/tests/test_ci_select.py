@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -103,11 +104,14 @@ class SelectorTests(unittest.TestCase):
             self.metadata, self.root, ["tilo-ui/src/lib.rs"], 2
         )
         self.assertEqual(plan["matrix"]["include"][0]["runner"], "runner-large")
+        # Only the test links need the large runner; check and Clippy do not.
+        self.assertEqual(plan["matrix"]["include"][0]["check_runner"], "runner")
 
         ordinary = ci_select.make_plan(
             self.metadata, self.root, ["leaf/src/lib.rs"], 2
         )
         self.assertEqual(ordinary["matrix"]["include"][0]["runner"], "runner")
+        self.assertEqual(ordinary["matrix"]["include"][0]["check_runner"], "runner")
 
     def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
@@ -116,6 +120,7 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected_count"], 0)
         self.assertEqual(plan["shard_count"], 0)
         self.assertEqual(plan["matrix"], {"include": []})
+        self.assertEqual(plan["clippy_matrix"], {"include": []})
         output = self.root / "outputs"
         ci_select.emit_github(plan, output)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
@@ -728,6 +733,20 @@ class SelectorTests(unittest.TestCase):
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
+        self.assertEqual(json.loads(values["clippy_matrix"]), plan["matrix"])
+
+    def test_clippy_matrix_lints_each_package_set_once_on_x86(self) -> None:
+        self.install_builder_recipe()
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/Containerfile.builder"], 2, force_full=True)
+        rows = plan["matrix"]["include"]
+        self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
+        clippy = plan["clippy_matrix"]["include"]
+        self.assertEqual(clippy, [row for row in rows if row["arch"] == "x86_64"])
+        self.assertEqual(sorted(row["packages"] for row in clippy),
+                         sorted(row["packages"] for row in rows if row["arch"] == "aarch64"))
+        for row in rows:
+            self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
 
     def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
