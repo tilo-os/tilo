@@ -498,6 +498,58 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
     );
 }
 #[test]
+fn owned_route_frontier_moves_only_when_the_transport_accepts_the_change() {
+    let mut fixture = RoutedOwners::new();
+    let refusal = crate::collaboration::CollabSendError::TooLarge {
+        actual: collab_types::MAX_DOCUMENT_TRANSFER_BYTES + 1,
+        max: collab_types::MAX_DOCUMENT_TRANSFER_BYTES,
+    };
+    fixture.app.document_routes.refuse_for_test = Some(refusal);
+    fixture.app.publish_owned_documents();
+    assert!(fixture.app.document_routes.sent.is_empty());
+    let status = fixture
+        .app
+        .document_sync_status()
+        .expect("a refused change is reported")
+        .to_owned();
+    assert!(status.contains("no longer shared"), "{status}");
+    fixture.app.publish_owned_documents();
+    assert!(
+        fixture.app.document_routes.sent.is_empty(),
+        "still refused, and still not marked as sent"
+    );
+
+    fixture.app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    fixture.app.publish_owned_documents();
+    assert!(fixture.app.document_routes.sent.is_empty());
+
+    fixture.app.document_routes.refuse_for_test = None;
+    fixture.app.publish_owned_documents();
+    assert_eq!(
+        fixture.app.document_routes.sent.len(),
+        2,
+        "the snapshots that were refused are offered again once accepted"
+    );
+    assert!(
+        fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .all(|(_, request)| matches!(
+                request,
+                CollabRequest::Document {
+                    mutation: collab_types::DocumentMutation::Snapshot(_)
+                }
+            ))
+    );
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "an accepted change clears the report"
+    );
+}
+#[test]
 fn native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary() {
     for incremental in [false, true] {
         let mut fixture = RoutedOwners::new();

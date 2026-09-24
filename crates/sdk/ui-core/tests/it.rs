@@ -84,6 +84,9 @@ mod icon_grid_test;
 #[path = "incremental_render_regressions.rs"]
 mod incremental_render_regressions;
 #[cfg(unix)]
+#[path = "large_document_transfer.rs"]
+mod large_document_transfer;
+#[cfg(unix)]
 #[path = "large_frame_reassembly.rs"]
 mod large_frame_reassembly;
 #[path = "link_popover_renders.rs"]
