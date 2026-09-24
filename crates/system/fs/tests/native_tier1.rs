@@ -1169,17 +1169,19 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
         .wait_line("took the write lease of db.bin (epoch 1)");
     pair.peer.wait_line("db.bin is read-only here");
 
-    // On the peer, a reader reads and a writer gets EBUSY.
+    // On the peer, a reader reads and opening it for writing gets EBUSY.
     let mut head = vec![0u8; 16];
     std::fs::File::open(&db2)
         .unwrap()
         .read_exact_at(&mut head, 0)
         .unwrap();
     assert!(head == original[..16], "readers keep reading a leased file");
-    let peer_writer = std::fs::OpenOptions::new().write(true).open(&db2).unwrap();
-    let err = peer_writer.write_at(b"x", 0).unwrap_err();
+    let err = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&db2)
+        .unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
-    drop(peer_writer);
 
     // The host closes the file: the lease is released, and the peer's next
     // writing session takes it over with a new epoch.
@@ -1210,8 +1212,138 @@ fn a_file_modified_in_place_takes_a_lease_and_a_second_writer_gets_ebusy() {
     pair.peer
         .wait_line("took the write lease of db.bin (epoch 2)");
     pair.host.wait_line("db.bin is read-only here");
-    let host_writer = std::fs::OpenOptions::new().write(true).open(&db1).unwrap();
-    let err = host_writer.write_at(b"y", 0).unwrap_err();
+    let err = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&db1)
+        .unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
     peer_session.end();
+}
+
+fn sqlite(db: &Path, sql: &str) -> Result<String, String> {
+    let out = Command::new("sqlite3")
+        .arg(db)
+        .arg(sql)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+    }
+}
+
+/// Rewrites the first 16 bytes of `path` with what they already hold every
+/// 300 ms: a writing session that holds the lease without changing a byte.
+struct SameBytes {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SameBytes {
+    fn start(path: &Path) -> Self {
+        use std::os::unix::fs::FileExt as _;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut head = [0u8; 16];
+        file.read_exact_at(&mut head, 0).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                file.write_all_at(&head, 0).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn end(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            t.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_writes() {
+    let Some((a, b)) = stores("native_sqlite") else {
+        return;
+    };
+    if Command::new("sqlite3").arg("--version").output().is_err() {
+        assert!(!required(), "sqlite3 is not installed");
+        return;
+    }
+    let mut pair = start_pair(&a, &b, 0x81);
+    let db1 = pair.host.mount.join("app.db");
+    let db2 = pair.peer.mount.join("app.db");
+    sqlite(
+        &db1,
+        "CREATE TABLE t(v INTEGER); INSERT INTO t VALUES (1), (2), (3);",
+    )
+    .unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the database on the peer",
+        || (sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3").then_some(()),
+    );
+    // An update writes pages in place: the database becomes lease-class.
+    sqlite(&db1, "UPDATE t SET v = v + 10;").unwrap();
+    pair.host.wait_line("app.db is modified in place");
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the update on the peer",
+        || (sqlite(&db2, "SELECT sum(v) FROM t").ok()? == "36").then_some(()),
+    );
+
+    // The host holds the lease.
+    let session = SameBytes::start(&db1);
+    pair.host.wait_line("took the write lease of app.db");
+    pair.peer.wait_line("app.db is read-only here");
+
+    // sqlite3 opens read-write by default. On the peer it reads...
+    for _ in 0..3 {
+        assert_eq!(sqlite(&db2, "SELECT sum(v) FROM t").unwrap(), "36");
+    }
+    // ...and a write fails cleanly, leaving no journal behind.
+    let err = sqlite(&db2, "INSERT INTO t VALUES (99);").unwrap_err();
+    assert!(err.contains("readonly"), "{err}");
+    assert!(
+        !pair.peer.mount.join("app.db-journal").exists(),
+        "a refused write leaves no rollback journal to publish"
+    );
+    assert_eq!(sqlite(&db2, "PRAGMA integrity_check;").unwrap(), "ok");
+
+    // Once the host lets go, the peer writes, and the host sees it.
+    session.end();
+    let t = Instant::now();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's write after the handover",
+        || {
+            std::thread::sleep(Duration::from_millis(200));
+            sqlite(&db2, "INSERT INTO t VALUES (100);").ok()
+        },
+    );
+    eprintln!("the peer wrote {:?} after the host let go", t.elapsed());
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's row on the host",
+        || {
+            std::thread::sleep(Duration::from_millis(200));
+            (sqlite(&db1, "SELECT sum(v) FROM t").ok()? == "136").then_some(())
+        },
+    );
+    assert_eq!(sqlite(&db1, "PRAGMA integrity_check;").unwrap(), "ok");
+    assert!(
+        !pair.host.mount.join("app.db-journal").exists(),
+        "no journal reached the host"
+    );
 }

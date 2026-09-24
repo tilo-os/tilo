@@ -116,7 +116,11 @@ KeyringMode=private
 # placeholders and restores their mtime and residency xattr (owner-only
 # operations), and writes into directories the person owns. FUSE never needed
 # them because it presents ownership instead of storing it.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+# CAP_SYS_PTRACE: on Tier 1, reading /proc/<tid>/syscall and fdinfo of the
+# process a leased file's permission event blocked, which tells its reads
+# from its writes; without it the daemon cannot see the call and a writer
+# owned by another user passes as a reader.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SYS_PTRACE
 AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/fuse rw
