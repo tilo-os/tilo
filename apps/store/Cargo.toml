@@ -37,6 +37,7 @@ registry-types = { path = "../../crates/packaging/registry-types" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 blake3.workspace = true
 getrandom.workspace = true
+rand_core.workspace = true
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -49,13 +50,12 @@ taffy.workspace = true
 thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicitly install the workspace-standard ring provider at startup.
-rustls.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true
-png.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

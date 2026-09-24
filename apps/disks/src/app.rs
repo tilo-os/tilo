@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use ui::automerge::{AutoCommit, ObjId};
+use ui::format::bytes_si;
 use ui::taffy::style_helpers::percent;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
@@ -25,6 +26,7 @@ use ui::winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
+use ui::paint::with_alpha;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -40,7 +42,7 @@ use ui::widget::{
 use crate::doc::DisksDoc;
 use crate::model::{
     AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartAttr, SmartInfo, SmartStatus,
-    Topology, fmt_hours, fmt_size,
+    Topology, fmt_hours,
 };
 
 /// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
@@ -972,14 +974,14 @@ impl DisksApp {
             format!(
                 "{} drives · {}",
                 self.topo.drives.len(),
-                fmt_size(self.topo.total_size()),
+                bytes_si(self.topo.total_size()),
             )
         } else {
             format!(
                 "{} drives · {} total · {} in use",
                 self.topo.drives.len(),
-                fmt_size(self.topo.total_size()),
-                fmt_size(self.topo.total_used()),
+                bytes_si(self.topo.total_size()),
+                bytes_si(self.topo.total_used()),
             )
         };
         Self::txt(
@@ -1155,7 +1157,7 @@ impl DisksApp {
             None,
             TextWeight::Semibold,
         );
-        let sub = format!("/dev/{}  ·  {}", drive.name, fmt_size(drive.size));
+        let sub = format!("/dev/{}  ·  {}", drive.name, bytes_si(drive.size));
         Self::txt(
             scene,
             tr,
@@ -1238,7 +1240,7 @@ impl DisksApp {
             "{}  ·  /dev/{}  ·  {}{}",
             drive.kind.long(),
             drive.name,
-            fmt_size(drive.size),
+            bytes_si(drive.size),
             drive
                 .serial
                 .as_ref()
@@ -1740,7 +1742,7 @@ impl DisksApp {
                     Self::txt(
                         scene,
                         tr,
-                        &fmt_size(p.size),
+                        &bytes_si(p.size),
                         ty().xs,
                         with_alpha(seg_ink, 200),
                         seg.x0 + 8.0,
@@ -1767,7 +1769,7 @@ impl DisksApp {
                     Self::txt(
                         scene,
                         tr,
-                        &fmt_size(drive.free_tail()),
+                        &bytes_si(drive.free_tail()),
                         ty().xs,
                         c.text_dim,
                         seg.x0 + 8.0,
@@ -1853,7 +1855,7 @@ impl DisksApp {
             place(
                 p.display_label(),
                 role_color(theme, p.role()),
-                format!("{}  {}", p.role().legend(), fmt_size(p.size)),
+                format!("{}  {}", p.role().legend(), bytes_si(p.size)),
                 scene,
                 tr,
             );
@@ -1862,7 +1864,7 @@ impl DisksApp {
             place(
                 "Free".into(),
                 role_color(theme, PartRole::Free),
-                fmt_size(drive.free_tail()),
+                bytes_si(drive.free_tail()),
                 scene,
                 tr,
             );
@@ -1955,14 +1957,14 @@ impl DisksApp {
             let detail = match p.used {
                 Some(u) => format!(
                     "{} used of {}  ·  {} free  ·  {}",
-                    fmt_size(u),
-                    fmt_size(p.size),
-                    fmt_size(p.size.saturating_sub(u)),
+                    bytes_si(u),
+                    bytes_si(p.size),
+                    bytes_si(p.size.saturating_sub(u)),
                     p.fstype.clone().unwrap_or_default(),
                 ),
                 None => format!(
                     "{}  ·  {}",
-                    fmt_size(p.size),
+                    bytes_si(p.size),
                     p.fstype.clone().unwrap_or_default()
                 ),
             };
@@ -2180,7 +2182,7 @@ impl DisksApp {
         if let Some(w) = smart.written_gb {
             stat(
                 "Host writes",
-                fmt_size((w as u64) * 1_000_000_000),
+                bytes_si((w as u64) * 1_000_000_000),
                 scene,
                 tr,
                 &mut yy,
@@ -2729,7 +2731,7 @@ impl DisksApp {
         Self::txt(
             scene,
             tr,
-            &fmt_size(p.size),
+            &bytes_si(p.size),
             ty().sm,
             c.text_primary,
             cols.size,
@@ -3456,9 +3458,6 @@ fn partition_segments(drive: &Drive, map: Rect) -> Vec<(Rect, Option<usize>)> {
 }
 
 // ---- theme-derived colour helpers --------------------------------------
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 fn kind_color(theme: &Theme, kind: DriveKind) -> Color {
     let c = &theme.tokens.colors;
@@ -4202,7 +4201,7 @@ impl Widget for DisksApp {
                             .with_description(format!(
                                 "{}; {}; {}{}",
                                 drive.kind.long(),
-                                fmt_size(drive.size),
+                                bytes_si(drive.size),
                                 drive.smart_status().label(),
                                 drive
                                     .serial
@@ -4289,7 +4288,7 @@ impl Widget for DisksApp {
                             .with_description(format!(
                                 "{}; {}",
                                 part.display_label(),
-                                fmt_size(part.size)
+                                bytes_si(part.size)
                             ))
                             .with_bounds(*bounds)
                             .with_action_target(format!("disks.part:{}", part.name))

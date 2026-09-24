@@ -253,7 +253,7 @@ fn replacing_installed_autosave_invalidates_history_and_old_modal_action() {
     layout(&mut app);
     let old = named(&mut app, "Restore version");
     let heads = app.state.doc.base_heads();
-    app = app.with_autosave(crate::persist::Autosave::disabled("replacement"));
+    app = app.with_autosave(crate::persist::DocWriter::disabled("replacement"));
     layout(&mut app);
     assert!(app.validate_history_registration().is_err());
     app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
@@ -278,7 +278,7 @@ fn routed_document(
             route.record.as_deref().unwrap_or(""),
         ),
         collab_types::OpClass::Splice,
-        std::time::SystemTime::UNIX_EPOCH,
+        crate::time::SystemTime::UNIX_EPOCH,
         0,
     )
 }
@@ -400,7 +400,7 @@ impl RoutedOwners {
             .read_checked(&self.bindings[index].checkout.id, |doc| {
                 doc.get(ROOT, key)
                     .unwrap()
-                    .and_then(|(v, _)| v.to_str().map(str::to_owned))
+                    .and_then(|(v, _)| v.as_str().map(str::to_owned))
             })
             .unwrap()
     }
@@ -495,6 +495,58 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
         fixture.app.document_routes.sent.len(),
         1,
         "unchanged heads do not enqueue again"
+    );
+}
+#[test]
+fn owned_route_frontier_moves_only_when_the_transport_accepts_the_change() {
+    let mut fixture = RoutedOwners::new();
+    let refusal = crate::collaboration::CollabSendError::TooLarge {
+        actual: collab_types::MAX_DOCUMENT_TRANSFER_BYTES + 1,
+        max: collab_types::MAX_DOCUMENT_TRANSFER_BYTES,
+    };
+    fixture.app.document_routes.refuse_for_test = Some(refusal);
+    fixture.app.publish_owned_documents();
+    assert!(fixture.app.document_routes.sent.is_empty());
+    let status = fixture
+        .app
+        .document_sync_status()
+        .expect("a refused change is reported")
+        .to_owned();
+    assert!(status.contains("no longer shared"), "{status}");
+    fixture.app.publish_owned_documents();
+    assert!(
+        fixture.app.document_routes.sent.is_empty(),
+        "still refused, and still not marked as sent"
+    );
+
+    fixture.app.document_routes.refuse_for_test = Some(crate::collaboration::CollabSendError::Busy);
+    fixture.app.publish_owned_documents();
+    assert!(fixture.app.document_routes.sent.is_empty());
+
+    fixture.app.document_routes.refuse_for_test = None;
+    fixture.app.publish_owned_documents();
+    assert_eq!(
+        fixture.app.document_routes.sent.len(),
+        2,
+        "the snapshots that were refused are offered again once accepted"
+    );
+    assert!(
+        fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .all(|(_, request)| matches!(
+                request,
+                CollabRequest::Document {
+                    mutation: collab_types::DocumentMutation::Snapshot(_)
+                }
+            ))
+    );
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "an accepted change clears the report"
     );
 }
 #[test]
@@ -604,7 +656,7 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     };
     let doc = automerge::AutoCommit::load(data).unwrap();
     assert_eq!(
-        doc.get(ROOT, "offline").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "offline").unwrap().unwrap().0.as_str(),
         Some("restored locally")
     );
 }
@@ -1144,17 +1196,9 @@ fn native_tile_effect_isolation(semantic: bool) {
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     layout(&mut app);
     let actor = app.collaboration.local_author.0.clone();
-    app.invoke_resource_action(
-        &tilo_actions::ActionAddress::new("first", "export"),
-        None,
-        &actor,
-        true,
-        false,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    let address = tilo_actions::ActionAddress::new("first", "export");
+    app.invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
+        .unwrap();
     assert_eq!(probes[0].1.get(), 1);
     probes[0].0.borrow_mut().emit(()).unwrap();
     probes[1].0.borrow_mut().emit(()).unwrap();
@@ -1221,17 +1265,9 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         let mut app = App::new_with_controlled_inputs(State::new(), tile);
         layout(&mut app);
         let actor = app.collaboration.local_author.0.clone();
-        app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("retained", "export"),
-            None,
-            &actor,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let address = tilo_actions::ActionAddress::new("retained", "export");
+        app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
+            .unwrap();
         assert_eq!(probe.starts.get(), 1);
         app.layout.node_map.clear();
         app.bindings.clear();
@@ -1530,7 +1566,7 @@ fn native_scrollback_and_live_share_exact_primary_and_owned_route_admission() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("outer peer")
     );
     assert!(
@@ -1634,7 +1670,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
                     doc.pending_ops(),
                     doc.get(ROOT, "draft")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned)),
                     doc.get(ROOT, "remote").unwrap().is_some(),
                 )
             })
@@ -2287,7 +2323,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
                 .doc
                 .get(ROOT, "recovered")
                 .unwrap()
-                .map(|(value, _)| value.to_str().unwrap().to_owned())
+                .map(|(value, _)| value.as_str().unwrap().to_owned())
                 .as_deref(),
             Some("remote"),
             "primary malformed front must not block fresh snapshot recovery"
@@ -2301,7 +2337,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("preserved")
         );
         assert_eq!(fixture.app.state.history_revision(), revision);
@@ -2580,7 +2616,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
                 .doc
                 .get(ROOT, key)
                 .unwrap()
-                .map(|(value, _)| value.to_str().unwrap().to_owned())
+                .map(|(value, _)| value.as_str().unwrap().to_owned())
         }
     };
     assert_eq!(value(&fixture, "recovery-S").as_deref(), Some("first"));
@@ -2660,7 +2696,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
         };
         let published = automerge::AutoCommit::load(data).unwrap();
         assert_eq!(
-            published.get(ROOT, "later-D").unwrap().unwrap().0.to_str(),
+            published.get(ROOT, "later-D").unwrap().unwrap().0.as_str(),
             Some("later")
         );
     } else {

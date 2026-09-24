@@ -1,0 +1,24 @@
+[package]
+name = "console-control"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The tilo-control action protocol served by a console session app (installer, greeter) that runs outside the Tilo compositor"
+
+[lib]
+name = "console_control"
+path = "src/lib.rs"
+
+# Pure transport + door logic: no ui, winit or rendering dependencies. The
+# owning app delivers queued requests to its UI thread itself.
+[dependencies]
+tilo-actions = { path = "../../collab/actions" }
+serde_json.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

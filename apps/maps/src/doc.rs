@@ -23,6 +23,7 @@ use crate::model::{
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
+use ui::doc::{read_bool, read_number, read_scalar, read_str_or_text, read_u64};
 
 const ROOT_KEY: &str = "maps_v2";
 
@@ -281,23 +282,24 @@ impl MapsDoc {
         } else {
             Self::transit_get(doc, &r)
         };
-        m.mode = Self::text(doc, &r, "mode")
+        m.mode = read_str_or_text(doc, &r, "mode")
             .as_deref()
             .and_then(travel)
             .unwrap_or(TravelMode::Car);
         m.origin = Self::point_get(doc, &r, "origin");
-        m.origin_name = Self::text(doc, &r, "origin_name").unwrap_or_else(|| "Map centre".into());
+        m.origin_name =
+            read_str_or_text(doc, &r, "origin_name").unwrap_or_else(|| "Map centre".into());
         m.dest = Self::point_get(doc, &r, "dest");
-        m.dest_name = Self::text(doc, &r, "dest_name").unwrap_or_default();
+        m.dest_name = read_str_or_text(doc, &r, "dest_name").unwrap_or_default();
         m.transit_time = TransitTime {
-            mode: Self::text(doc, &r, "transit_time_mode")
+            mode: read_str_or_text(doc, &r, "transit_time_mode")
                 .as_deref()
                 .and_then(time)
                 .unwrap_or(TransitTimeMode::Depart),
             offset_min: Self::i_get(doc, &r, "transit_time_offset").unwrap_or(0) as i32,
         };
-        if let Some(value) =
-            Self::text(doc, &r, "transit_time").and_then(|json| serde_json::from_str(&json).ok())
+        if let Some(value) = read_str_or_text(doc, &r, "transit_time")
+            .and_then(|json| serde_json::from_str(&json).ok())
         {
             m.transit_time = value;
         }
@@ -365,7 +367,7 @@ impl MapsDoc {
     }
 
     fn active_plan_get(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ActivePlan> {
-        Self::text(doc, root, key).and_then(|json| serde_json::from_str(&json).ok())
+        read_str_or_text(doc, root, key).and_then(|json| serde_json::from_str(&json).ok())
     }
     fn load_legacy(doc: &AutoCommit) -> Option<MapModel> {
         let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "maps") else {
@@ -475,12 +477,12 @@ impl MapsDoc {
     }
     fn place_get(doc: &AutoCommit, r: &ObjId) -> Option<Place> {
         Some(Place {
-            id: Self::text(doc, r, "id")?,
-            name: Self::text(doc, r, "name")?,
-            category: category(&Self::text(doc, r, "category")?)?,
-            address: Self::text(doc, r, "address").unwrap_or_default(),
+            id: read_str_or_text(doc, r, "id")?,
+            name: read_str_or_text(doc, r, "name")?,
+            category: category(&read_str_or_text(doc, r, "category")?)?,
+            address: read_str_or_text(doc, r, "address").unwrap_or_default(),
             pos: Self::point_get(doc, r, "pos")?,
-            saved: Self::bool_get(doc, r, "saved").unwrap_or(false),
+            saved: read_bool(doc, r, "saved").unwrap_or(false),
         })
     }
     fn recents(doc: &mut AutoCommit, r: &ObjId, v: &[String]) {
@@ -512,9 +514,9 @@ impl MapsDoc {
                 (!Self::dead(doc, &x))
                     .then(|| {
                         Some((
-                            Self::u_get(doc, &x, "rank").unwrap_or(u64::MAX),
+                            read_u64(doc, &x, "rank").unwrap_or(u64::MAX),
                             id,
-                            Self::text(doc, &x, "text")?,
+                            read_str_or_text(doc, &x, "text")?,
                         ))
                     })
                     .flatten()
@@ -552,17 +554,17 @@ impl MapsDoc {
                 (0..doc.length(&l)).filter_map(move |n| {
                     let q = Self::index_map(doc, &l, n)?;
                     Some(RouteStep {
-                        instruction: Self::text(doc, &q, "instruction")?,
-                        distance_m: Self::f_get(doc, &q, "distance_m")?,
-                        maneuver: maneuver(&Self::text(doc, &q, "maneuver")?)?,
+                        instruction: read_str_or_text(doc, &q, "instruction")?,
+                        distance_m: read_number(doc, &q, "distance_m")?,
+                        maneuver: maneuver(&read_str_or_text(doc, &q, "maneuver")?)?,
                     })
                 })
             })
             .collect();
         Some(Route {
-            mode: travel(&Self::text(doc, &x, "mode")?)?,
-            distance_m: Self::f_get(doc, &x, "distance_m")?,
-            duration_s: Self::f_get(doc, &x, "duration_s")?,
+            mode: travel(&read_str_or_text(doc, &x, "mode")?)?,
+            distance_m: read_number(doc, &x, "distance_m")?,
+            duration_s: read_number(doc, &x, "duration_s")?,
             geometry: Self::points_get(doc, &x, "geometry"),
             steps,
             from: Self::point_get(doc, &x, "from")?,
@@ -625,10 +627,10 @@ impl MapsDoc {
                         })
                         .collect();
                     Some(TransitJourney {
-                        dep: Self::text(doc, &x, "dep")?,
-                        arr: Self::text(doc, &x, "arr")?,
-                        duration_min: Self::u_get(doc, &x, "duration_min")? as u32,
-                        transfers: Self::u_get(doc, &x, "transfers")? as u32,
+                        dep: read_str_or_text(doc, &x, "dep")?,
+                        arr: read_str_or_text(doc, &x, "arr")?,
+                        duration_min: read_u64(doc, &x, "duration_min")? as u32,
+                        transfers: read_u64(doc, &x, "transfers")? as u32,
                         legs,
                     })
                 })
@@ -637,20 +639,20 @@ impl MapsDoc {
     }
     fn leg_get(doc: &AutoCommit, r: &ObjId) -> Option<TransitLeg> {
         Some(TransitLeg {
-            mode: transit(&Self::text(doc, r, "mode")?)?,
-            line: Self::text(doc, r, "line")?,
-            headsign: Self::text(doc, r, "headsign")?,
-            from_name: Self::text(doc, r, "from_name")?,
-            to_name: Self::text(doc, r, "to_name")?,
-            dep: Self::text(doc, r, "dep")?,
-            arr: Self::text(doc, r, "arr")?,
-            duration_min: Self::u_get(doc, r, "duration_min")? as u32,
-            num_stops: Self::u_get(doc, r, "num_stops")? as u32,
+            mode: transit(&read_str_or_text(doc, r, "mode")?)?,
+            line: read_str_or_text(doc, r, "line")?,
+            headsign: read_str_or_text(doc, r, "headsign")?,
+            from_name: read_str_or_text(doc, r, "from_name")?,
+            to_name: read_str_or_text(doc, r, "to_name")?,
+            dep: read_str_or_text(doc, r, "dep")?,
+            arr: read_str_or_text(doc, r, "arr")?,
+            duration_min: read_u64(doc, r, "duration_min")? as u32,
+            num_stops: read_u64(doc, r, "num_stops")? as u32,
             geometry: Self::points_get(doc, r, "geometry"),
-            color: Self::text(doc, r, "color"),
-            text_color: Self::text(doc, r, "text_color"),
-            agency: Self::text(doc, r, "agency").unwrap_or_default(),
-            realtime: Self::bool_get(doc, r, "realtime").unwrap_or(false),
+            color: read_str_or_text(doc, r, "color"),
+            text_color: read_str_or_text(doc, r, "text_color"),
+            agency: read_str_or_text(doc, r, "agency").unwrap_or_default(),
+            realtime: read_bool(doc, r, "realtime").unwrap_or(false),
         })
     }
 
@@ -690,13 +692,13 @@ impl MapsDoc {
                 (!Self::dead(doc, &x))
                     .then(|| {
                         Some(DownloadedRegion {
-                            id: Self::text(doc, &x, "id")?,
-                            name: Self::text(doc, &x, "name")?,
+                            id: read_str_or_text(doc, &x, "id")?,
+                            name: read_str_or_text(doc, &x, "name")?,
                             min: Self::point_get(doc, &x, "min")?,
                             max: Self::point_get(doc, &x, "max")?,
-                            z0: Self::u_get(doc, &x, "z0")? as u8,
-                            z1: Self::u_get(doc, &x, "z1")? as u8,
-                            tiles: Self::u_get(doc, &x, "tiles")? as u32,
+                            z0: read_u64(doc, &x, "z0")? as u8,
+                            z1: read_u64(doc, &x, "z1")? as u8,
+                            tiles: read_u64(doc, &x, "tiles")? as u32,
                         })
                     })
                     .flatten()
@@ -721,8 +723,8 @@ impl MapsDoc {
     fn point_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<LatLon> {
         let r = Self::map(doc, p, k)?;
         Some(LatLon::new(
-            Self::f_get(doc, &r, "lat")?,
-            Self::f_get(doc, &r, "lon")?,
+            read_number(doc, &r, "lat")?,
+            read_number(doc, &r, "lon")?,
         ))
     }
     fn points(doc: &mut AutoCommit, p: &ObjId, k: &str, v: &[LatLon]) {
@@ -743,8 +745,8 @@ impl MapsDoc {
                 (0..doc.length(&l)).filter_map(move |n| {
                     let r = Self::index_map(doc, &l, n)?;
                     Some(LatLon::new(
-                        Self::f_get(doc, &r, "lat")?,
-                        Self::f_get(doc, &r, "lon")?,
+                        read_number(doc, &r, "lat")?,
+                        read_number(doc, &r, "lon")?,
                     ))
                 })
             })
@@ -775,12 +777,12 @@ impl MapsDoc {
         }
     }
     fn b(doc: &mut AutoCommit, p: &ObjId, k: &str, v: bool) {
-        if Self::bool_get(doc, p, k) != Some(v) {
+        if read_bool(doc, p, k) != Some(v) {
             let _ = doc.put(p, k, v);
         }
     }
     fn u(doc: &mut AutoCommit, p: &ObjId, k: &str, v: u64) {
-        if Self::u_get(doc, p, k) != Some(v) {
+        if read_u64(doc, p, k) != Some(v) {
             let _ = doc.put(p, k, v);
         }
     }
@@ -790,7 +792,7 @@ impl MapsDoc {
         }
     }
     fn f(doc: &mut AutoCommit, p: &ObjId, k: &str, v: f64) {
-        if Self::f_get(doc, p, k).is_none_or(|x| (x - v).abs() > f64::EPSILON) {
+        if read_number(doc, p, k).is_none_or(|x| (x - v).abs() > f64::EPSILON) {
             let _ = doc.put(p, k, v);
         }
     }
@@ -800,53 +802,11 @@ impl MapsDoc {
             _ => None,
         }
     }
-    fn text(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<String> {
-        match doc.get(p, k).ok().flatten() {
-            Some((Value::Object(ObjType::Text), id)) => doc.text(&id).ok(),
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
-                ScalarValue::Str(x) => Some(x.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-    fn bool_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<bool> {
-        match doc.get(p, k).ok().flatten()?.0 {
-            Value::Scalar(v) => match v.as_ref() {
-                ScalarValue::Boolean(x) => Some(*x),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-    fn u_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<u64> {
-        match doc.get(p, k).ok().flatten()?.0 {
-            Value::Scalar(v) => match v.as_ref() {
-                ScalarValue::Uint(x) => Some(*x),
-                ScalarValue::Int(x) if *x >= 0 => Some(*x as u64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
+    /// An `Int`, or a `Uint` that fits in `i64`.
     fn i_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<i64> {
-        match doc.get(p, k).ok().flatten()?.0 {
-            Value::Scalar(v) => match v.as_ref() {
-                ScalarValue::Int(x) => Some(*x),
-                ScalarValue::Uint(x) => i64::try_from(*x).ok(),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-    fn f_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<f64> {
-        match doc.get(p, k).ok().flatten()?.0 {
-            Value::Scalar(v) => match v.as_ref() {
-                ScalarValue::F64(x) => Some(*x),
-                ScalarValue::Int(x) => Some(*x as f64),
-                ScalarValue::Uint(x) => Some(*x as f64),
-                _ => None,
-            },
+        match read_scalar(doc, p, k)? {
+            ScalarValue::Int(x) => Some(x),
+            ScalarValue::Uint(x) => i64::try_from(x).ok(),
             _ => None,
         }
     }

@@ -41,8 +41,8 @@ fn factory(remote: &git2::Remote<'_>) -> Result<Transport, git2::Error> {
             "disabling Git HTTPS certificate verification is not supported",
         ));
     }
-    let mut builder = Client::builder()
-        .use_rustls_tls()
+    let mut builder = tilo_net::http::blocking_client()
+        .tls_backend_rustls()
         .connect_timeout(Duration::from_secs(10))
         .timeout(REQUEST_TIMEOUT)
         // Redirects must never move credential scope to another origin or

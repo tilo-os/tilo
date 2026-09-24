@@ -591,36 +591,17 @@ const TIDEGLASS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     //! Discovery + import run against real temp directories. The tests that set
-    //! the process-global `EBOOK_LIBRARY_DIR` / `TILO_WORKSPACE_DIR` env vars are
-    //! `#[serial]` so cargo's default parallel runner can't race them.
+    //! the process-global `EBOOK_LIBRARY_DIR` / `TILO_WORKSPACE_DIR` env vars do
+    //! so through `tilo_test_env::ScopedEnv`, which restores the prior values
+    //! when dropped.
 
     use super::*;
     use serial_test::serial;
 
-    struct WorkspaceEnvGuard(Option<std::ffi::OsString>);
-
-    impl WorkspaceEnvGuard {
-        fn set(path: &Path) -> Self {
-            let previous = std::env::var_os(WORKSPACE_DIR_ENV);
-            // SAFETY: every test that installs this process-global override is
-            // serialized with the same `serial_test` lock.
-            unsafe { std::env::set_var(WORKSPACE_DIR_ENV, path) };
-            Self(previous)
-        }
-    }
-
-    impl Drop for WorkspaceEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: see `set`; the guard restores the prior process state
-            // even when an assertion unwinds.
-            unsafe {
-                if let Some(previous) = self.0.take() {
-                    std::env::set_var(WORKSPACE_DIR_ENV, previous);
-                } else {
-                    std::env::remove_var(WORKSPACE_DIR_ENV);
-                }
-            }
-        }
+    fn workspace_env(path: &Path) -> tilo_test_env::ScopedEnv {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(WORKSPACE_DIR_ENV, path);
+        env
     }
 
     #[test]
@@ -637,10 +618,11 @@ mod tests {
         // No recorded books and nothing watched → a genuinely empty shelf. The
         // app never fabricates a starter book.
         let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
+        let mut library_env = tilo_test_env::ScopedEnv::new();
+        library_env.set(LIBRARY_DIR_ENV, tmp.path());
         let mut doc = AutoCommit::new();
         let lib = load_library(&mut doc, &[], &HashMap::new());
-        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
+        drop(library_env);
         assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
     }
 
@@ -653,18 +635,13 @@ mod tests {
         let b = second.path().join("second.epub");
         std::fs::write(&a, SAMPLE_EPUB).unwrap();
         std::fs::write(&b, SAMPLE_EPUB).unwrap();
-        let previous = std::env::var_os(LIBRARY_DIR_ENV);
-        unsafe {
-            std::env::set_var(
-                LIBRARY_DIR_ENV,
-                std::env::join_paths([first.path(), second.path()]).unwrap(),
-            )
-        };
+        let mut library_env = tilo_test_env::ScopedEnv::new();
+        library_env.set(
+            LIBRARY_DIR_ENV,
+            std::env::join_paths([first.path(), second.path()]).unwrap(),
+        );
         let paths = watched_epub_paths(&[]);
-        match previous {
-            Some(value) => unsafe { std::env::set_var(LIBRARY_DIR_ENV, value) },
-            None => unsafe { std::env::remove_var(LIBRARY_DIR_ENV) },
-        }
+        drop(library_env);
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&a));
         assert!(paths.contains(&b));
@@ -674,7 +651,7 @@ mod tests {
     #[test]
     #[serial]
     fn unconfigured_windows_workspace_keeps_import_local() {
-        let _workspace = WorkspaceEnvGuard::set(Path::new(""));
+        let _workspace = workspace_env(Path::new(""));
         let local = tempfile::tempdir().unwrap();
         let path = local.path().join("local.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
@@ -688,11 +665,12 @@ mod tests {
     #[serial]
     fn importing_a_path_adds_one_recorded_book() {
         let workspace = tempfile::tempdir().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(workspace.path());
+        let _workspace = workspace_env(workspace.path());
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("book.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
-        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
+        let mut library_env = tilo_test_env::ScopedEnv::new();
+        library_env.set(LIBRARY_DIR_ENV, tmp.path());
         let mut doc = AutoCommit::new();
 
         let book = import_path(&mut doc, &path).expect("a real epub imports");
@@ -703,7 +681,7 @@ mod tests {
         // Recorded once, and hydrating the library yields exactly that book.
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
         let lib = load_library(&mut doc, &[], &HashMap::new());
-        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
+        drop(library_env);
         assert_eq!(lib.len(), 1, "the imported book is on the shelf");
         assert_eq!(lib[0].book.id, book.id);
         assert_eq!(lib[0].path, workspace_book_path(&book.id));
@@ -729,7 +707,7 @@ mod tests {
         // A regular file cannot contain a `Books` directory, deterministically
         // modelling a host without the collaborative-workspace capability.
         let workspace = tempfile::NamedTempFile::new().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(workspace.path());
+        let _workspace = workspace_env(workspace.path());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("one-off.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
@@ -769,7 +747,7 @@ mod tests {
     #[serial]
     fn a_book_on_the_workspace_is_shared_others_are_local() {
         let ws = tempfile::tempdir().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(ws.path());
+        let _workspace = workspace_env(ws.path());
         let books_dir = workspace_books_dir();
         std::fs::create_dir_all(&books_dir).unwrap();
         let shared = books_dir.join("shared.epub");
@@ -790,7 +768,7 @@ mod tests {
     #[serial]
     fn shared_parse_materialises_content_before_the_library_row_is_written() {
         let ws = tempfile::tempdir().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(ws.path());
+        let _workspace = workspace_env(ws.path());
         let local = tempfile::tempdir().unwrap();
         let source = local.path().join("peer-readable.epub");
         std::fs::write(&source, SAMPLE_EPUB).unwrap();
@@ -822,7 +800,7 @@ mod tests {
     #[serial]
     fn sharing_copies_the_book_onto_the_workspace_keeping_its_identity() {
         let ws = tempfile::tempdir().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(ws.path());
+        let _workspace = workspace_env(ws.path());
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("mine.epub");
         std::fs::write(&src, SAMPLE_EPUB).unwrap();
@@ -849,7 +827,7 @@ mod tests {
     #[serial]
     fn sharing_never_overwrites_an_unrelated_same_named_workspace_file() {
         let ws = tempfile::tempdir().unwrap();
-        let _workspace = WorkspaceEnvGuard::set(ws.path());
+        let _workspace = workspace_env(ws.path());
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("book.epub");
         std::fs::write(&src, SAMPLE_EPUB).unwrap();

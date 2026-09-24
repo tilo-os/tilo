@@ -1,12 +1,14 @@
 name: Release / OS
 
-# Capacity relief: full OS builds are explicit or weekly, never per main push/PR.
-# Preserve the build/release implementation for deliberate native rehearsals.
-# Publish versions through v* tags or an explicit main-branch dispatch.
+# Capacity relief: full OS builds are explicit or nightly, never per main push/PR.
+# Publish versions through v* tags, an explicit main-branch dispatch, or the
+# nightly main run. The nightly run publishes through the same path as a
+# protected manual main publication, and builds nothing when the latest
+# published image already carries the current main revision.
 on:
   schedule:
-    # Keep the heavyweight image build away from Sunday's static-quality run.
-    - cron: "0 5 * * 6"
+    # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
+    - cron: "0 2 * * *"
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -43,9 +45,13 @@ on:
 
 concurrency:
   # Generations are a single dense security series. This workflow can publish
-  # from a tag or a manual main run. Every invocation shares the lock so
-  # concurrent explicit releases cannot allocate the same generation.
-  group: tilo-os-image-series
+  # from a tag, a manual main run or the nightly main run. Every run that may
+  # publish shares the series lock so concurrent releases cannot allocate the
+  # same generation; a scheduled run holds it even when it then skips, so its
+  # freshness check sees a publication queued ahead of it. Validation builds
+  # allocate nothing and must not hold up a release, so they serialize per ref.
+  # Job outputs are unavailable here; this mirrors the plan job's rule.
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -55,31 +61,107 @@ jobs:
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       publish: ${{ steps.matrix.outputs.publish }}
+      skip: ${{ steps.matrix.outputs.skip }}
     steps:
+      # The nightly run exists to keep a fresh image available, not to spend a
+      # generation and two native lanes on a revision that is already out.
+      # Every published image carries its source commit as the OCI revision
+      # label, and `latest` moves only after a complete publication. Any
+      # failure to read it (no image yet, registry trouble) publishes rather
+      # than risking a stale channel; a redundant release costs runner time
+      # only. The same holds for this commit's dev-trust integration image,
+      # which is what a nightly run produces while publication is not
+      # configured.
+      - name: Read the revision of the latest published image
+        id: published
+        if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+        env:
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              export DEBIAN_FRONTEND=noninteractive
+              { sudo -n apt-get -o Acquire::Retries=3 update \
+                && sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo; } || true
+            elif command -v dnf >/dev/null; then
+              sudo -n dnf --setopt=retries=3 install -y skopeo || true
+            fi
+          fi
+          revision=""
+          if command -v skopeo >/dev/null; then
+            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+              --override-os linux --override-arch amd64 \
+              docker://code.podesta.ai/qos/tilo:latest 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || revision=""
+          else
+            echo '::warning::skopeo is unavailable; publishing without a freshness check'
+          fi
+          integration=""
+          if command -v skopeo >/dev/null; then
+            integration="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+              "docker://code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "integration-revision=$integration" >> "$GITHUB_OUTPUT"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $GITHUB_SHA"
+
       - name: Select validation or native publication lanes
         id: matrix
         env:
-          # Intentionally disabled during alpha; preserve the implementation for later.
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
+          INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
+          # Publication refuses to start without these protected inputs. Until
+          # they are configured the nightly run is a main integration build, so
+          # dev VMs still get a same-commit image every night.
+          PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
         run: |
           set -euo pipefail
           publish=false
+          skip=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                      && ${REQUESTED_PUBLISH:-false} == true ) \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
+          elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then
+            # Nightly publication: the protected manual main path, unless main
+            # has not moved since the last published image.
+            if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
+            elif [[ ${PUBLICATION_CONFIGURED:-false} == true ]]; then
+              publish=true
+            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::the integration image of $GITHUB_SHA already exists and publication is not configured; skipping the nightly build"
+            else
+              echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
+            fi
           fi
           if [[ $publish == true ]]; then
-            matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            else
+              # A protected manual or nightly main publication uses the same native,
+              # large-disk fleet as the proven integration build. Its VM gate
+              # already falls back to TCG inside Kata when KVM is unavailable.
+              # Tags retain the dedicated release fleet above.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+            fi
           else
             # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
             # can fill during export. Use the larger disk lane for this build.
             matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
@@ -118,7 +200,7 @@ jobs:
 
   build-and-push:
     needs: [plan, signing-preflight]
-    if: ${{ always() && needs.plan.result == 'success' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
     strategy:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
@@ -131,6 +213,60 @@ jobs:
 
       - name: Require the selected native OS architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+
+      - name: Ensure the signed OCI inspector is available
+        run: |
+          set -euo pipefail
+          if command -v skopeo >/dev/null; then
+            exit 0
+          fi
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y skopeo
+          else
+            echo '::error::native OS runner must provide skopeo, apt-get, or dnf'
+            exit 1
+          fi
+          command -v skopeo >/dev/null
+
+      # The installed-desktop gate boots the image with a virgl GPU when the
+      # host exposes a usable DRM render node, and with a plain virtio GPU
+      # otherwise. Tilo's DRM backend paints on the CPU into dumb buffers and
+      # the guest carries Mesa software rendering, so the compositor, OOBE and
+      # AT-SPI gates run -- and must pass -- in either mode. Runners whose
+      # confined kernel has no DRM subsystem use the 2D display.
+      - name: Select the installed-desktop display for this host
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            sudo -n true
+            command -v apt-get >/dev/null || command -v dnf >/dev/null
+          fi
+          display=2d
+          rendernode=""
+          for candidate in /dev/dri/renderD*; do
+            if test -c "$candidate" && test -r "$candidate" && test -w "$candidate"; then
+              rendernode="$candidate"
+              display=gl
+              break
+            fi
+          done
+          echo "TILO_VM_DISPLAY=$display" >> "$GITHUB_ENV"
+          if [[ $display == gl ]]; then
+            echo "TILO_RENDERNODE=$rendernode" >> "$GITHUB_ENV"
+            echo "::notice::installed-desktop gate will use virgl on $rendernode"
+          else
+            echo '::notice::no usable DRI render node; installed-desktop gate will use the 2D virtio GPU with guest software rendering'
+          fi
+          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+            echo '::notice::installed-desktop gate will use KVM acceleration'
+          else
+            echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
+          fi
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -375,17 +511,25 @@ jobs:
           }
           cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
           digest="${RPMS_REF##*@}"
-          package_set_sha256="$(./os/dev/derive-rpm-package-set.py | sort -u | sha256sum | cut -d' ' -f1)"
+          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
+          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
           provenance="$(cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$RPMS_REF")"
           printf '%s' "$provenance" | jq -e --arg digest "$digest" \
-            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" '
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" \
+            --arg package_arm64_sha256 "$package_arm64_sha256" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
                   ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
                     or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
                   and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
                   and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
+                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
                 )
@@ -414,6 +558,19 @@ jobs:
             *)
               if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
                 with_browser=${REQUESTED_BROWSER:-1}
+              elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+                # The nightly release ships the same full image as a default
+                # manual publication once both architectures have a promoted
+                # WPE buildroot, so every child of a release carries the same
+                # apps. Until then it builds without the browser rather than
+                # failing every night; tags still require it.
+                . os/wpe-buildroot-snapshot.env
+                if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then
+                  with_browser=1
+                else
+                  with_browser=0
+                  echo '::warning::no promoted WPE buildroot for both architectures; the nightly image omits the browser until snapshot-wpe-buildroot promotes them'
+                fi
               else
                 with_browser=0
               fi
@@ -502,17 +659,23 @@ jobs:
       - name: Select build, validation, or publication mode
         id: release-mode
         env:
-          # Intentionally disabled during alpha; preserve the implementation for later.
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
-          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
-          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
+          # The plan job has already skipped a nightly run whose revision is
+          # published, so a scheduled main build that reaches here publishes.
+          PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                      && ${REQUESTED_PUBLISH:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main \
+                     && ${PLANNED_PUBLISH:-false} == true ) \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
@@ -692,6 +855,38 @@ jobs:
           cache-from: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }},mode=min
 
+      # Dev VMs must not wait on release gating. Every main build that gets
+      # this far pushes its image, unsigned, to tilo-ci: a development-only
+      # repository that production policy rejects
+      # (os/etc/containers/policy.json). dev-disk.yml builds the dev image and
+      # disk from it when this run does not also promote a signed release.
+      # No release channel, generation or signature is involved.
+      - name: Publish the dev-trust integration image
+        id: dev-image
+        if: steps.release-mode.outputs.validate == 'true' && github.ref == 'refs/heads/main'
+        # A registry hiccup here must never block a release.
+        continue-on-error: true
+        env:
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"
+          digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
+          TMPDIR=/var/tmp skopeo copy --retry-times 3 --dest-creds "$REGISTRY_CREDS" \
+            --digestfile "$digest_file" \
+            oci-archive:/var/tmp/tilo-image.tar "docker://$ref"
+          digest="$(tr -d '[:space:]' < "$digest_file")"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          revision="$(skopeo inspect --creds "$REGISTRY_CREDS" "docker://code.podesta.ai/qos/tilo-ci@$digest" \
+            | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
+          [[ $revision == "$GITHUB_SHA" ]] || {
+            echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "::notice::pushed dev-trust integration image $ref ($digest)"
+
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
@@ -859,9 +1054,12 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
-          # vm.sh documents that its 2D mode may not start that compositor;
-          # egl-headless + virgl is the release-test configuration that does.
-          ./os/dev/vm.sh boot --gl
+          # The display was selected for this host above; every gate below is
+          # mandatory in both modes.
+          case "${TILO_VM_DISPLAY:-}" in
+            gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;
+            *) echo '::error::no installed-desktop display was selected'; exit 1 ;;
+          esac
           ./os/dev/vm.sh wait
           ./os/dev/vm.sh login "$TILO_USER" "$TILO_PASS"
           for attempt in $(seq 1 60); do
@@ -1324,3 +1522,76 @@ jobs:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
           if-no-files-found: error
+
+  # Dev VM disks are derived from an image this run produced, never rebuilt
+  # from source here. A promoted release is preferred: the request pins its
+  # exact index digest. Otherwise a main run that built an image requests
+  # disks from its dev-trust integration image, so dev VMs keep up with main
+  # even while publication is failing or was not requested. Either way the
+  # request pins the source revision and digest, so a later main commit cannot
+  # change what the dev image is built on.
+  dispatch-dev-disk:
+    needs: [plan, build-and-push, promote-multiarch]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.promote-multiarch.result == 'success' || (github.ref == 'refs/heads/main' && needs.build-and-push.result != 'skipped' && needs.build-and-push.result != 'cancelled')) }}
+    runs-on: runner
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: needs.promote-multiarch.result == 'success'
+        with:
+          name: tilo-os-release-index
+          path: release-index
+      - name: Request dev VM disks for this run's image
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          PROMOTED: ${{ needs.promote-multiarch.result == 'success' }}
+        run: |
+          set -euo pipefail
+          if [[ $PROMOTED == true ]]; then
+            image="$(jq -er .image release-index/tilo-os-release-index.json)"
+            [[ "$image" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error::unexpected release index image: $image"
+              exit 1
+            }
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              tag="${GITHUB_REF_NAME#v}"
+            else
+              tag="main-${GITHUB_SHA:0:7}"
+            fi
+          else
+            # The dev-trust image of the x86_64 lane, which every main build
+            # has. Its revision label is checked here and again by dev-disk.
+            if ! command -v skopeo >/dev/null; then
+              if command -v apt-get >/dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                sudo -n apt-get -o Acquire::Retries=3 update
+                sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+              else
+                sudo -n dnf --setopt=retries=3 install -y skopeo
+              fi
+            fi
+            ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64"
+            if ! raw="$(skopeo inspect --retry-times 3 --raw --creds "$REGISTRY_CREDS" "docker://$ref")"; then
+              echo "::notice::no dev-trust integration image $ref; this run built none, so no dev disk is requested"
+              exit 0
+            fi
+            digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+            image="code.podesta.ai/qos/tilo-ci@$digest"
+            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" "docker://$image" \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
+            [[ $revision == "$GITHUB_SHA" ]] || {
+              echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+              exit 1
+            }
+            tag="main-${GITHUB_SHA:0:7}-ci"
+          fi
+          payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
+            --arg base "$image" --arg tag "$tag" \
+            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag}}')"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/dev-disk.yml/dispatches" \
+            --data "$payload"
+          echo "::notice::requested tilo-vm:$tag disks from $image"

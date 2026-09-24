@@ -187,7 +187,7 @@ fn adopting_the_schema_keeps_ops_already_pending() {
     assert_eq!(
         doc.get(&ROOT, "host_wrote_this")
             .unwrap()
-            .and_then(|(v, _)| v.to_str().map(str::to_string)),
+            .and_then(|(v, _)| v.as_str().map(str::to_string)),
         Some("before the schema existed".to_string()),
         "the pending op survived the schema being adopted underneath it"
     );

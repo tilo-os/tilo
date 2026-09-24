@@ -4,11 +4,11 @@
 //! to be resident. Only the viewport window owns widget instances; those
 //! instances survive reorder while their key remains visible.
 
+use crate::time::Instant;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
-use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -1088,11 +1088,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed = self
             .last_tick
             .replace(now)
-            .map_or(std::time::Duration::ZERO, |last| {
+            .map_or(crate::time::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
         let legacy_wakeup = self.model.poll_changed();
@@ -1327,11 +1327,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 let point = Point::new(position.x / scale_factor, position.y / scale_factor);
                 if self.reorder.is_tracking() {
                     self.momentum.stop();
-                    self.update_reorder_pointer(point, Instant::now());
-                    self.last_tick = Some(Instant::now());
+                    self.update_reorder_pointer(point, crate::time::now());
+                    self.last_tick = Some(crate::time::now());
                     *handled = self.reorder.is_active();
                 } else if self.drag_scroll.is_tracking() {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     let update = self.drag_scroll.update(point.y, now);
                     self.momentum.stop();
                     if let Some(update) = update {
@@ -1355,10 +1355,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     && let Some((_, key)) = self.row_at_cursor()
                 {
                     self.reorder.begin(key, cursor);
-                    self.last_tick = Some(Instant::now());
+                    self.last_tick = Some(crate::time::now());
                 } else {
                     self.drag_scroll
-                        .begin(cursor.y, self.viewport.offset(), Instant::now());
+                        .begin(cursor.y, self.viewport.offset(), crate::time::now());
                 }
                 self.momentum.stop();
                 *focus_target = Some(node_id);
@@ -1381,13 +1381,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         self.focused_key = Some(key);
                     }
                     *handled = true;
-                } else if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+                } else if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
                             self.momentum.stop();
                         } else {
                             self.momentum.fling(drag.velocity);
-                            self.last_tick = Some(Instant::now());
+                            self.last_tick = Some(crate::time::now());
                         }
                     } else if let Some((_, key)) = self.row_at_cursor() {
                         let toggle =
@@ -1416,7 +1416,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         -position.y
                     }
                 };
-                self.last_tick = Some(Instant::now());
+                self.last_tick = Some(crate::time::now());
                 *handled = self.scroll_by(delta);
                 if !*handled {
                     self.momentum.stop();
@@ -1647,9 +1647,9 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
@@ -2486,7 +2486,7 @@ mod tests {
         assert_eq!(list.scroll_offset(), WHEEL_LINE_PX);
         assert!(!list.momentum.is_active());
 
-        let now = Instant::now();
+        let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
         let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
         list.drag_scroll.begin(50.0, list.scroll_offset(), started);

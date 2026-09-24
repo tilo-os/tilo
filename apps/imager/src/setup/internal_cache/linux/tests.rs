@@ -63,13 +63,9 @@ mod native {
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
     fn directory() -> tempfile::TempDir {
-        // No /tmp fallback: native fixtures need a qualified filesystem. CI
-        // provisions one without changing process-wide HOME/XDG state for the
-        // unrelated packages that share this test shard.
-        let root = std::env::var_os("QOS_IMAGER_TEST_CACHE_ROOT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| dirs::cache_dir().unwrap());
-        tempfile::tempdir_in(root).unwrap()
+        // No /tmp fallback: native fixtures need a qualified filesystem, and
+        // never the real cache of the account running the tests.
+        crate::setup::test_support::qualified_tempdir()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("qos-internal-install").join(s.manifest_sha256())

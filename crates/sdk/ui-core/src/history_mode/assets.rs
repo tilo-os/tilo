@@ -69,7 +69,7 @@ impl HistoricalAssetResponse {
                 } else {
                     (
                         hash.strip_prefix("sha256:").unwrap_or(hash),
-                        format!("{:x}", Sha256::digest(bytes)),
+                        hex::encode(Sha256::digest(bytes)),
                     )
                 };
                 if recorded.len() != 64
@@ -117,7 +117,7 @@ mod tests {
             heads: vec![],
         };
         let bytes: Arc<[u8]> = Arc::from(b"recorded bytes".as_slice());
-        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let hash = hex::encode(Sha256::digest(&bytes));
         let (sender, receiver) = mpsc::channel();
         HistoricalAssetResponse::new(key.clone(), sender.clone())
             .complete(Ok(BTreeMap::from([(hash.clone(), bytes.clone())])));
@@ -154,7 +154,7 @@ mod algorithm_regressions {
     #[test]
     fn explicit_algorithms_wrong_bytes_malformed_unknown_and_bare_sha256_semantics() {
         let bytes: Arc<[u8]> = Arc::from(b"historical image bytes".as_slice());
-        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let sha = hex::encode(Sha256::digest(&bytes));
         let blake = blake3::hash(&bytes).to_hex().to_string();
         for id in [
             sha.clone(),
@@ -185,7 +185,7 @@ mod algorithm_regressions {
         let too_many = (0..4097).map(|i| (i.to_string(), Arc::from([]))).collect();
         assert!(admit(too_many).unwrap_err().contains("4096"));
         let bytes: Arc<[u8]> = vec![0u8; 65 * 1024 * 1024].into();
-        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let sha = hex::encode(Sha256::digest(&bytes));
         let blake = format!("asset:blake3:{}", blake3::hash(&bytes).to_hex());
         assert!(
             admit(BTreeMap::from([(sha, bytes.clone()), (blake, bytes)]))

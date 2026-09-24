@@ -59,6 +59,7 @@ gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
 # The decode probe example prints pipeline diagnostics; the same subscriber the
 # rest of the workspace uses, so log filtering behaves identically.
 tracing-subscriber.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

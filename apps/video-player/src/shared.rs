@@ -128,7 +128,7 @@ fn string(doc: &Doc, parent: &ObjId, field: &str) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.to_str().map(str::to_string))
+        .and_then(|value| value.as_str().map(str::to_string))
 }
 
 fn integer(doc: &Doc, parent: &ObjId, field: &str) -> Option<i64> {
@@ -136,7 +136,7 @@ fn integer(doc: &Doc, parent: &ObjId, field: &str) -> Option<i64> {
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_scalar().ok())
-        .and_then(|value| value.to_i64())
+        .and_then(|value| value.as_i64())
 }
 
 fn create_object(

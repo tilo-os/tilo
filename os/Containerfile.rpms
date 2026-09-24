@@ -70,12 +70,16 @@ ARG TARGETARCH
 # fetch mid-build — required for the kernel image to be reproducible).
 # dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
 # dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
+# --downloadonly skips packages the base already has installed, so a direct
+# spec the image later erases (pkgconf, for its development payloads) could not
+# be installed again when a later stage needs it; download every direct spec too.
 # After creating the repo, prove it resolves the complete requested transaction
 # (including dependencies) with every network repository hidden.
 RUN test -n "${PACKAGES}" \
  && dnf install -y --downloadonly --exclude='qemu-user-static*' --setopt=install_weak_deps=True ${PACKAGES} \
  && mkdir -p /repo \
  && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
+ && dnf download -y --destdir=/repo --exclude='qemu-user-static*' ${PACKAGES} \
  && cp /vendor/virtio-win-0.1.302-1.noarch.rpm /repo/ \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
  && ( dnf5 download --srpm --destdir=/repo kernel 2>/dev/null \
@@ -100,6 +104,16 @@ FROM ${BASE_REF} AS offline-check
 ARG PACKAGES
 COPY --from=repository /repo /repo
 RUN --network=none dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
+# os/Containerfile erases these base-installed packages once the compositor's
+# development specs resolve, and later stages (Wine's mingw64-libxslt) need them
+# again. Replay the same erase and prove the complete package set still
+# resolves offline, so the snapshot carries every package the image removes
+# together with its dependencies. The erase list must match os/Containerfile's.
+RUN --network=none rpm -qa --qf '%{NAME}\n' \
+      | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
+      | xargs -r rpm -e --nodeps \
+ && ! rpm -qa --qf '%{NAME}\n' | grep -Eq '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
+ && dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 
 # The published artifact contains only the repository.
 FROM scratch

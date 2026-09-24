@@ -1,0 +1,34 @@
+[package]
+name = "sandbox-core"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Landlock ruleset construction and seccomp-bpf deny-list compilation shared by every Tilo confinement path."
+
+[lib]
+name = "sandbox_core"
+path = "src/lib.rs"
+
+# A leaf on purpose. The launcher must not depend on the compositor, and the
+# app runtime must not depend on packaging; both confine processes with the
+# primitives here, so one implementation sits below all of them.
+
+[features]
+# Kernel probes used by dependants' tests to prove a compiled filter is
+# enforced, not merely produced. Never enabled by a production build.
+test-support = []
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+seccompiler.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

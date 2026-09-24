@@ -119,7 +119,7 @@ impl InternalTransport {
         Self::client(production_origin(), Duration::from_secs(30))
     }
     fn client(origin: Url, timeout: Duration) -> Result<Self, String> {
-        let client = Client::builder()
+        let client = tilo_net::http::blocking_client()
             .connect_timeout(Duration::from_secs(10))
             .timeout(timeout)
             .no_gzip()
@@ -790,7 +790,7 @@ fn hash_file_stoppable(
     if regular_length(file, length, cancel)? != length {
         return Err("Working file length changed".into());
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 fn validate_prefix(
     selected: &SelectedManifest,

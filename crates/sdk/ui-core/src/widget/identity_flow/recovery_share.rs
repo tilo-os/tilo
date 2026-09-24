@@ -544,16 +544,17 @@ impl Widget for RecoveryShareScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn metadata_never_generates_fake_recovery_words() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let record = IdentityRecord::from_threshold_identity(
             &id,
             "Ada",
             [1, 2, 3],
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
         )
         .unwrap();
         let mut screen = RecoveryShareScreen::new();

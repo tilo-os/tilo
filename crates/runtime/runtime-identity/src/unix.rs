@@ -45,11 +45,10 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[cfg(unix)]
@@ -192,38 +191,18 @@ pub struct IdentitySummary {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
-
-/// Symlink-safe, exclusive staging plus file+directory fsync. The shared
-/// atomic-file helper predates hostile-directory use and opens a predictable
-/// temp name without `O_NOFOLLOW`; identity state needs the stronger form.
+/// Durable owner-only replacement through atomic-file, with the staging file
+/// opened exclusively and without following links, so a planted symlink can
+/// never redirect identity bytes.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("identity");
-    let nonce = TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
-    let result = (|| {
-        let mut file = OpenOptions::new()
+    atomic_file::write_with_temp_opener(path, bytes, |temp| {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+            .open(temp)
+    })
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -998,7 +977,7 @@ impl SigningIdentity {
     ///
     /// Returns [`NotAvailable`] when this is not a host-local threshold share,
     /// the identity lock is poisoned, or FROST round-one setup fails.
-    pub fn threshold_sign_round1<R: rand_core::CryptoRng + rand_core::RngCore>(
+    pub fn threshold_sign_round1<R: rand_core::CryptoRng + ?Sized>(
         &self,
         rng: &mut R,
     ) -> Result<SigningRound1, NotAvailable> {
@@ -1645,6 +1624,7 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn secret_service_unavailability_has_a_typed_classification() {
@@ -1704,19 +1684,18 @@ mod tests {
         assert_eq!(unsigned_op, document);
     }
 
-    fn clear_env() {
-        // SAFETY: tests in this module all touch TILO_USER_IDENTITY
-        // and are logically serial.
-        unsafe {
-            env::remove_var(IDENTITY_ENV_VAR);
-            env::remove_var(broker::BROKER_ENV_VAR);
-        };
+    fn clear_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
+        scoped
+            .remove(IDENTITY_ENV_VAR)
+            .remove(broker::BROKER_ENV_VAR);
+        scoped
     }
 
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_without_env_returns_service_fd_missing() {
-        clear_env();
+        let _env = clear_env();
         match load() {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1726,12 +1705,10 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_with_empty_env_returns_service_fd_missing() {
-        clear_env();
-        // SAFETY: see clear_env
-        unsafe { env::set_var(IDENTITY_ENV_VAR, "") };
+        let mut env = clear_env();
+        env.set(IDENTITY_ENV_VAR, "");
         let out = load();
-        // SAFETY: cleanup
-        unsafe { env::remove_var(IDENTITY_ENV_VAR) };
+        drop(env);
         match out {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1741,28 +1718,13 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn relative_xdg_config_home_never_relocates_identity_by_cwd() {
-        let old_xdg = env::var_os("XDG_CONFIG_HOME");
-        let old_home = env::var_os("HOME");
-        // SAFETY: serialised with every identity env test.
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", "relative/config");
-            env::set_var("HOME", "/home/ada");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", "relative/config")
+            .set("HOME", "/home/ada");
         assert_eq!(
             identity_dir_from_env().unwrap(),
             PathBuf::from("/home/ada/.config/tilo/identity")
         );
-        // SAFETY: restore the process environment under the same serial lock.
-        unsafe {
-            match old_xdg {
-                Some(value) => env::set_var("XDG_CONFIG_HOME", value),
-                None => env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_home {
-                Some(value) => env::set_var("HOME", value),
-                None => env::remove_var("HOME"),
-            }
-        }
     }
 
     #[test]
@@ -1975,7 +1937,7 @@ mod tests {
 
     #[test]
     fn real_threshold_share_restores_and_participates_in_broker_rounds() {
-        let mut rng = rand_core::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();

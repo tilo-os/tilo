@@ -25,6 +25,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -75,7 +76,7 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
     };
     let ws = Workspace {
         strips: vec![strip_a, strip_b],
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -85,11 +86,14 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
     active_group.insert(s_b, G_B1);
 
     let t = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     (t, s_a, s_b)
@@ -145,7 +149,7 @@ fn moving_the_pointer_to_a_sibling_moves_the_light() {
 
     {
         let st = chrome.borrow();
-        st.tree_mut().set_active_group(s_a, G_A2);
+        st.tree_mut().desktop.set_active_group(s_a, G_A2);
     }
     tick(&mut host);
 
@@ -159,7 +163,7 @@ fn moving_the_pointer_to_a_sibling_moves_the_light() {
 #[test]
 fn moving_the_pointer_to_another_strip_moves_the_light() {
     let (t, s_a, s_b) = tree();
-    let ws_id = t.active;
+    let ws_id = t.desktop.active;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
     assert_eq!(
@@ -170,7 +174,7 @@ fn moving_the_pointer_to_another_strip_moves_the_light() {
 
     {
         let st = chrome.borrow();
-        st.tree_mut().active_strip.insert(ws_id, s_b);
+        st.tree_mut().desktop.active_strip.insert(ws_id, s_b);
     }
     tick(&mut host);
 
@@ -187,7 +191,7 @@ fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
     // A workspace can reach a frame with no active_group for a strip (fresh
     // boot, or a strip never clicked into); resolution must fall back rather
     // than leave the strip dark.
-    t.active_group.remove(&s_a);
+    t.desktop.active_group.remove(&s_a);
     let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
 
@@ -204,7 +208,7 @@ fn a_workspace_with_one_window_lights_nothing() {
     // Same builder, trimmed to a single group on a single strip.
     let (mut t, s_a, s_b) = tree();
     {
-        let ws = &mut t.workspaces[0];
+        let ws = &mut t.desktop.workspaces[0];
         ws.strips.retain(|s| s.id == s_a);
         ws.strips[0].window_groups.retain(|g| g.id == G_A1);
     }
@@ -225,7 +229,7 @@ fn a_second_window_anywhere_in_the_workspace_turns_the_marker_on() {
     // strip, plenty across the workspace — the case a per-strip count gets wrong.
     let (mut t, s_a, s_b) = tree();
     {
-        let ws = &mut t.workspaces[0];
+        let ws = &mut t.desktop.workspaces[0];
         ws.strips[0].window_groups.retain(|g| g.id == G_A1);
     }
     let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);

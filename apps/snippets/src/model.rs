@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub type SnippetId = Uuid;
 
 /// The syntax a snippet body is written in. Drives both the language
-/// badge and the (lightweight) syntax highlighter. `PlainText` is the
+/// badge and the syntax highlighter's grammar. `PlainText` is the
 /// fallback for prose snippets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {

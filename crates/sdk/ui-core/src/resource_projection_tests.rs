@@ -100,16 +100,8 @@ fn lazy_control_projection_preserves_rejected_surface_and_declared_availability(
     assert!(app.root_widget.children()[0].is_enabled());
     assert_eq!(counts[1].get(), 1, "rejected empty is cached, not unbuilt");
     let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action(
-        &tilo_actions::ActionAddress::new("test.obj:1", "flip"),
-        None,
-        &actor,
-        false,
-        false,
-        None,
-        None,
-        None,
-    );
+    let address = tilo_actions::ActionAddress::new("test.obj:1", "flip");
+    let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
     assert!(
         result.is_err(),
         "declared availability cannot bypass full invocation validation"
@@ -124,15 +116,24 @@ fn lazy_control_projection_does_not_commit_pending_document_transaction() {
         .doc
         .put(ROOT, "typing", "pending")
         .unwrap();
+    // Read without closing the open transaction: `get_heads` would commit
+    // it, which is the very thing under test.
+    let committed = |doc: &AutoCommit| doc.stats().num_changes;
     let pending = app.state.doc.pending_ops();
-    let before = format!("{:?}", app.state.doc);
+    let changes = committed(&app.state.doc);
+    let value = app.state.doc.hydrate(ROOT, None).unwrap();
     app.refresh_control_action_availability();
     assert_eq!(counts[1].get(), 0);
     app.collect_resources();
     app.collect_local_resources();
     app.collect_declared_resources();
-    assert_eq!(app.state.doc.pending_ops(), pending);
-    assert_eq!(format!("{:?}", app.state.doc), before);
+    assert_eq!(
+        app.state.doc.pending_ops(),
+        pending,
+        "transaction left open"
+    );
+    assert_eq!(committed(&app.state.doc), changes, "nothing committed");
+    assert_eq!(app.state.doc.hydrate(ROOT, None).unwrap(), value);
     assert_eq!(counts[1].get(), 1);
 }
 

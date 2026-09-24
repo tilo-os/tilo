@@ -1,84 +1,7 @@
-//! Small dependency-free date helpers. We deliberately avoid pulling
-//! `chrono`/`time` (extra build weight) — the app only needs civil-date math
-//! for relative timestamps in the message list and absolute dates in the
-//! reader header. Both use Howard Hinnant's well-known `days_from_civil` /
-//! `civil_from_days` algorithms.
+//! Date labels for the message list and reader header. Calendar arithmetic
+//! comes from `ui::date`, so the app needs no `chrono`/`time` dependency.
 
-/// Days since the Unix epoch for a proleptic-Gregorian Y/M/D.
-///
-/// Timestamps reach these helpers straight off a message header, so the year
-/// is not trusted to be sane. Every step saturates: inside the calendar range
-/// that is exactly the textbook algorithm, and an absurd year pins to the end
-/// of the `i64` day count instead of silently wrapping to a plausible date.
-pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y.saturating_sub(1) } else { y };
-    let era = if y >= 0 { y } else { y.saturating_sub(399) } / 400;
-    let yoe = y.saturating_sub(era.saturating_mul(400)); // [0, 399]
-    let shifted_month = if m > 2 {
-        m.saturating_sub(3)
-    } else {
-        m.saturating_add(9)
-    };
-    let doy = i64::from(shifted_month)
-        .saturating_mul(153)
-        .saturating_add(2)
-        / 5;
-    let doy = doy.saturating_add(i64::from(d)).saturating_sub(1);
-    let doe = yoe
-        .saturating_mul(365)
-        .saturating_add(yoe / 4)
-        .saturating_sub(yoe / 100)
-        .saturating_add(doy); // [0, 146096]
-    era.saturating_mul(146_097)
-        .saturating_add(doe)
-        .saturating_sub(719_468)
-}
-
-/// Inverse of [`days_from_civil`]: (year, month, day) for a day count.
-pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z.saturating_add(719_468);
-    let era = if z >= 0 { z } else { z.saturating_sub(146_096) } / 146_097;
-    let doe = z.saturating_sub(era.saturating_mul(146_097)); // [0, 146096]
-    let yoe = doe
-        .saturating_sub(doe / 1460)
-        .saturating_add(doe / 36524)
-        .saturating_sub(doe / 146_096)
-        / 365; // [0, 399]
-    let y = yoe.saturating_add(era.saturating_mul(400));
-    let leap_days = yoe
-        .saturating_mul(365)
-        .saturating_add(yoe / 4)
-        .saturating_sub(yoe / 100);
-    let doy = doe.saturating_sub(leap_days); // [0, 365]
-    let mp = doy.saturating_mul(5).saturating_add(2) / 153; // [0, 11]
-    let day_of_month = doy
-        .saturating_sub(mp.saturating_mul(153).saturating_add(2) / 5)
-        .saturating_add(1); // [1, 31]
-    let month = if mp < 10 {
-        mp.saturating_add(3)
-    } else {
-        mp.saturating_sub(9)
-    }; // [1, 12]
-    let year = if month <= 2 { y.saturating_add(1) } else { y };
-    (
-        year,
-        u32::try_from(month).unwrap_or(1),
-        u32::try_from(day_of_month).unwrap_or(1),
-    )
-}
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/// Short month name for a 1-based month number, empty outside `1..=12`.
-fn month_name(month: u32) -> &'static str {
-    usize::try_from(month.saturating_sub(1))
-        .ok()
-        .and_then(|i| MONTHS.get(i))
-        .copied()
-        .unwrap_or_default()
-}
+use ui::date::{civil_from_days, days_from_civil};
 
 /// Epoch-minutes for a Y/M/D H:M (UTC).
 pub fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
@@ -125,24 +48,17 @@ pub fn format_absolute(ts_min: i64) -> String {
 }
 
 fn weekday(day: i64) -> &'static str {
-    // 1970-01-01 was a Thursday (index 4 if week starts Sun=0).
-    const NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    // `rem_euclid(7)` yields 0..=6, exactly NAMES' length, so this is total.
-    let idx = (day.rem_euclid(7) + 4).rem_euclid(7) as usize;
-    NAMES.get(idx).copied().unwrap_or("Sun")
+    ui::format::weekday_abbrev(usize::try_from(ui::date::weekday(day)).unwrap_or(0))
+}
+
+/// Short month name for a 1-based month number.
+fn month_name(month: u32) -> &'static str {
+    ui::format::month_abbrev(usize::try_from(month.saturating_sub(1)).unwrap_or(0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn civil_round_trips() {
-        for &(y, m, d) in &[(1970, 1, 1), (2000, 2, 29), (2026, 6, 30), (1999, 12, 31)] {
-            let days = days_from_civil(y, m, d);
-            assert_eq!(civil_from_days(days), (y, m, d), "{y}-{m}-{d}");
-        }
-    }
 
     #[test]
     fn weekday_of_known_dates() {

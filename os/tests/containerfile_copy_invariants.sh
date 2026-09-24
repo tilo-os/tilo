@@ -22,17 +22,22 @@ containerfile="$repo/os/Containerfile"
 # zero-delay firewall-first network target that keeps both services off the
 # login chain without exposing an unfiltered interface, and
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
-# the build-only residual OpenSSL ABI package gate (removed after it runs).
+# the build-only residual OpenSSL ABI package gate (removed after it runs),
+# and the xdg-desktop-portal preference that selects the Tilo backend.
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
-# into its loader, so the former systemd environment override is absent. Sorting
+# into its loader, so the former systemd environment override is absent.
+# Tilo build outputs are installed through os/components.toml, so their rows
+# name the manifest component and build output instead of a builder /out path;
+# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
+# explicit optional /usr/bin/browser entry it always carried. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=81f115cff9a4bcf8e76ddc71aeb0c2153327e94c702879c0410fcc70e2692dcd
+expected_contract=ad1e05b40ab6c39a734cc1a2e2bd6c5e999c19ebfe822dfc00351826da37690c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -20,8 +20,8 @@ use threshold_identity::{
     signing::SigningRound2Partial, signing::verify_threshold_signature,
 };
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
 /// Run a 2-of-2 DKG in-memory. Returns the two device identities.
 // `_a`/`_b` names two independent DKG devices — the clearest available

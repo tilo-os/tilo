@@ -2,7 +2,12 @@
 //! timecodes, "time ago" labels, compact counts, and month/weekday names.
 //!
 //! [`bytes`] uses IEC binary units while [`bytes_si`] uses SI decimal units, so
-//! callers choose an unambiguous convention.
+//! callers choose an unambiguous convention. The platform's rule, shared with
+//! Files, Disks and the Storage pane: anything stored or transferred (files,
+//! downloads, caches, packages, drives and partitions) uses [`bytes_si`], the
+//! way drives are sold and file managers count; memory uses [`bytes`]. A flow
+//! whose requirements are themselves stated in binary units (the installer's
+//! GiB partition minimums) stays binary throughout so its numbers compare.
 //!
 //! Month/weekday lookups are index-based (not string-keyed) so a caller
 //! wiring `fluent` in can map the index to a translated string without this
@@ -27,8 +32,8 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Format a byte count with **base-1000 SI decimal units** (`B`, `kB`, `MB`,
-/// `GB`, `TB`, …), for callers that report a decimal
-/// quantity. Most callers want [`bytes`].
+/// `GB`, `TB`, …), for anything stored or transferred (see the module docs).
+/// Memory uses [`bytes`].
 ///
 /// ```
 /// use tilo_ui::format::bytes_si;
@@ -169,6 +174,36 @@ pub fn relative(secs_ago: i64) -> String {
         "1 year ago".to_string()
     } else {
         format!("{} years ago", secs_ago / YEAR)
+    }
+}
+
+/// Format a past interval (in seconds) as a narrow column label: `now`,
+/// `3m`, `2h`, `4d`, `2w`, `3mo`, `1y`. For list columns too tight for
+/// [`relative`]'s wording. Zero and negative deltas (clock skew) read `now`.
+///
+/// ```
+/// use tilo_ui::format::relative_compact;
+/// assert_eq!(relative_compact(30), "now");
+/// assert_eq!(relative_compact(180), "3m");
+/// assert_eq!(relative_compact(3 * 3600), "3h");
+/// assert_eq!(relative_compact(2 * 86_400), "2d");
+/// ```
+#[must_use]
+pub fn relative_compact(secs_ago: i64) -> String {
+    if secs_ago < MINUTE {
+        "now".to_string()
+    } else if secs_ago < HOUR {
+        format!("{}m", secs_ago / MINUTE)
+    } else if secs_ago < DAY {
+        format!("{}h", secs_ago / HOUR)
+    } else if secs_ago < WEEK {
+        format!("{}d", secs_ago / DAY)
+    } else if secs_ago < MONTH {
+        format!("{}w", secs_ago / WEEK)
+    } else if secs_ago < YEAR {
+        format!("{}mo", secs_ago / MONTH)
+    } else {
+        format!("{}y", secs_ago / YEAR)
     }
 }
 
@@ -353,6 +388,23 @@ mod tests {
         assert_eq!(relative(90 * 86_400), "3 months ago");
         assert_eq!(relative(400 * 86_400), "1 year ago"); // singular
         assert_eq!(relative(800 * 86_400), "2 years ago");
+    }
+
+    #[test]
+    fn relative_compact_buckets() {
+        assert_eq!(relative_compact(-10), "now");
+        assert_eq!(relative_compact(59), "now");
+        assert_eq!(relative_compact(60), "1m");
+        assert_eq!(relative_compact(59 * 60), "59m");
+        assert_eq!(relative_compact(3600), "1h");
+        assert_eq!(relative_compact(23 * 3600), "23h");
+        assert_eq!(relative_compact(86_400), "1d");
+        assert_eq!(relative_compact(6 * 86_400), "6d");
+        assert_eq!(relative_compact(7 * 86_400), "1w");
+        assert_eq!(relative_compact(29 * 86_400), "4w");
+        assert_eq!(relative_compact(30 * 86_400), "1mo");
+        assert_eq!(relative_compact(364 * 86_400), "12mo");
+        assert_eq!(relative_compact(365 * 86_400), "1y");
     }
 
     #[test]

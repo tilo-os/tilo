@@ -8,8 +8,8 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
+use crate::time::SystemTime;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -266,7 +266,7 @@ impl ChannelBrowser {
     }
 
     fn now(&self) -> SystemTime {
-        self.now_override.unwrap_or_else(SystemTime::now)
+        self.now_override.unwrap_or_else(crate::time::wall)
     }
 
     /// Sort key: (`space_name` asc, !`is_pinned`, `last_activity` desc).
@@ -1354,9 +1354,9 @@ impl Widget for ChannelBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 

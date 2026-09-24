@@ -60,9 +60,9 @@ use accesskit::{
     TreeInfo, TreeUpdate,
 };
 use taffy::NodeId as TaffyNodeId;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::a11y::{AccessNode, Action, FnvHasher, Role};
+use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
@@ -529,7 +529,7 @@ fn reverse_node_map<S: BuildHasher, const BOUND: bool>(
 
 fn byte_to_grapheme_index(text: &str, byte: usize) -> usize {
     let byte = crate::text_selection::grapheme_boundary_at_or_before(text, byte.min(text.len()));
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .take_while(|(start, _)| *start < byte)
         .map(|(_, grapheme)| grapheme.len().div_ceil(u8::MAX as usize))
         .sum()
@@ -537,7 +537,7 @@ fn byte_to_grapheme_index(text: &str, byte: usize) -> usize {
 
 fn accessible_character_lengths(text: &str) -> Vec<u8> {
     let mut lengths = Vec::new();
-    for grapheme in text.graphemes(true) {
+    for grapheme in graphemes(text) {
         let mut remaining = grapheme.len();
         while remaining > 0 {
             let chunk = remaining.min(u8::MAX as usize);
@@ -653,6 +653,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
 /// A fixed empty placeholder enables `SetValue` on password fields without
 /// disclosing their text, length, selection, or whether they contain anything.
 /// The shared semantic tree continues to carry no password value at all.
+#[cfg(feature = "native")]
 pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
     #[cfg(windows)]
     {

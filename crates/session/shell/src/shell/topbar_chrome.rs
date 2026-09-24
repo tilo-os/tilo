@@ -5,6 +5,7 @@
 //! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`] and
 //! paints the bar onto the root scene.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -15,20 +16,18 @@ use chrono::Local;
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
+use crate::shell::chrome_state::Chrome;
+use crate::shell::state::WorkspaceTree;
+use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
-use vello::peniko::Color;
-
-use crate::shell::chrome_state::Chrome;
-use crate::shell::state::WorkspaceTree;
-use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -287,15 +286,12 @@ fn publish_clock_command(command: &str, activity_id: Option<&str>) {
     else {
         return;
     };
-    let tmp = path.with_extension("json.new");
     let payload = serde_json::json!({
         "version": 1,
         "command": command,
         "activity_id": activity_id,
     });
-    if std::fs::write(&tmp, payload.to_string()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+    let _ = atomic_file::write(&path, payload.to_string().as_bytes());
 }
 
 fn clamp_clock_overlay(
@@ -933,13 +929,18 @@ impl TopBarChrome {
     }
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
-        self.workspace_total = tree.workspaces.len().max(1);
-        let active_ws = tree.workspaces.iter().find(|w| w.id == tree.active);
+        self.workspace_total = tree.desktop.workspaces.len().max(1);
+        let active_ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.desktop.active);
         let (idx, name) = tree
+            .desktop
             .workspaces
             .iter()
             .enumerate()
-            .find(|(_, w)| w.id == tree.active)
+            .find(|(_, w)| w.id == tree.desktop.active)
             .map_or_else(
                 || (0, String::from("Workspace")),
                 |(i, w)| (i, w.name.clone()),
@@ -1029,8 +1030,8 @@ impl TopBarChrome {
     pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
     pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
 
-    const DOT_COLUMN_MARGIN: f64 = 1.0;
-    const DOT_SLOT_HALF_W: f64 = 10.0;
+    const DOT_COLUMN_MARGIN: f64 = 1.0; // Optical dot geometry, not layout spacing.
+    const DOT_SLOT_HALF_W: f64 = 10.0; // Optical dot geometry, not layout spacing.
 
     /// Restore the accepted vertical carousel indicator from `7d58e7146`.
     /// The unequal active/inactive diameters are included in the layout so
@@ -1265,13 +1266,15 @@ impl TopBarChrome {
         let tree = state.tree();
         let mut viewers = Vec::new();
         for (peer, can_control) in authority {
-            if let Some((workspace, participant)) = tree.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .collaborators
-                    .iter()
-                    .find(|person| person.session == Some(peer))
-                    .map(|participant| (workspace, participant))
-            }) {
+            if let Some((workspace, participant)) =
+                tree.desktop.workspaces.iter().find_map(|workspace| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .find(|person| person.session == Some(peer))
+                        .map(|participant| (workspace, participant))
+                })
+            {
                 let is_agent = workspace.agent_members().iter().any(|(id, _)| {
                     id.eq_ignore_ascii_case(&participant.id)
                         || id.eq_ignore_ascii_case(&participant.name)
@@ -1355,7 +1358,8 @@ impl TopBarChrome {
         surfaces
             .into_iter()
             .map(|surface| {
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .find_map(|workspace| {
                         workspace
@@ -1375,7 +1379,7 @@ impl TopBarChrome {
                     .map_or_else(
                         || format!("surface {surface}"),
                         |(workspace, tab)| {
-                            if workspace.id == tree.active {
+                            if workspace.id == tree.desktop.active {
                                 tab.title.clone()
                             } else {
                                 format!("{} › {}", workspace.name, tab.title)
@@ -1447,6 +1451,10 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
+            target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
+                .map_or(Rect::ZERO, |(widget, present)| {
+                    self.widget_editor_action_rect(widget, present)
+                }),
             _ => Rect::ZERO,
         }
     }
@@ -1702,71 +1710,6 @@ impl TopBarChrome {
 
     // The following `draw_*` helpers exist only to keep `Widget::draw`
     // under the line budget; none is meaningful on its own.
-
-    /// Bar surface fill, bottom border hairline, and the soft drop-shadow
-    /// band beneath the bar.
-    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &self.rect,
-        );
-
-        // Bar role (HIG §9.1/§9.5): the one bottom hairline is derived
-        // against the overlay ground it sits on, never a declared border
-        // that vanishes three shades off the surface on the dark preset.
-        let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &border_rect,
-        );
-
-        // A Bar is elevated `e1`, downward only (HIG §9.1): a one-sided
-        // fade below the bar rather than a blurred outline, so nothing
-        // leaks above the screen edge. The token supplies hue *and*
-        // strength — its alpha is honoured — so a light or high-contrast
-        // palette gets its own answer instead of a fixed black wash; the
-        // fade's reach is the `s6` spacing step.
-        let shadow_h = f64::from(tokens.spacing.s6);
-        let shadow_hue = tokens.elevation.e1.color;
-        let shadow_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y1,
-            self.rect.x1,
-            self.rect.y1 + shadow_h,
-        );
-        let shadow_grad = Gradient::new_linear(
-            Point::new(0.0, self.rect.y1),
-            Point::new(0.0, self.rect.y1 + shadow_h),
-        )
-        .with_extend(Extend::Pad)
-        .with_stops(
-            &[
-                ColorStop {
-                    offset: 0.0,
-                    color: shadow_hue.into(),
-                },
-                ColorStop {
-                    offset: 1.0,
-                    color: shadow_hue.with_alpha_factor(0.0).into(),
-                },
-            ][..],
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &Brush::Gradient(shadow_grad),
-            None,
-            &shadow_rect,
-        );
-    }
 
     /// Overview icon, divider, and up/down workspace chevrons. Returns
     /// the x cursor position immediately after the down chevron, where
@@ -2116,17 +2059,28 @@ impl TopBarChrome {
             );
         }
 
-        let dot_x = band.x0 + CENTER_DOT_PITCH_PX / 2.0;
-        let dot_gap = CENTER_DOT_PITCH_PX;
-        let active_dot = self.center_widget.index();
-        for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
-            let cx = dot_x + small_count_to_f64(i) * dot_gap;
+        let widgets = self.widget_config.widgets.clone();
+        if !widgets.contains(&TopBarWidget::from(self.center_widget)) {
+            self.center_widget = widgets
+                .first()
+                .copied()
+                .unwrap_or(TopBarWidget::Clock)
+                .into();
+        }
+        let active_dot = widgets
+            .iter()
+            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
+            .unwrap_or(0);
+        let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
+        self.center_dot_rects = [Rect::ZERO; 3];
+        for (i, (slot, dot)) in self
+            .center_dot_rects
+            .iter_mut()
+            .zip(dots.iter())
+            .take(widgets.len())
+            .enumerate()
+        {
             let active = active_dot == i;
-            let r = if active {
-                Self::DOT_ACTIVE_RADIUS
-            } else {
-                Self::DOT_INACTIVE_RADIUS
-            };
             // An inactive page dot is dim ink from the semantic tier, never
             // a ramp slot (HIG §9.2).
             let color = if active {
@@ -2134,15 +2088,14 @@ impl TopBarChrome {
             } else {
                 colors.text_dim
             };
-            // One pitch wide and the full control height: a 32×32 target
-            // (HIG §9.6) that never shares a pixel with its neighbour.
+            let target_x0 = band.x0 + small_count_to_f64(i) * CENTER_DOT_PITCH_PX;
             *slot = Rect::new(
-                cx - CENTER_DOT_PITCH_PX / 2.0,
-                center_y - BAR_CONTROL_PX / 2.0,
-                cx + CENTER_DOT_PITCH_PX / 2.0,
-                center_y + BAR_CONTROL_PX / 2.0,
+                target_x0,
+                self.rect.center().y - BAR_CONTROL_PX / 2.0,
+                target_x0 + CENTER_DOT_PITCH_PX,
+                self.rect.center().y + BAR_CONTROL_PX / 2.0,
             );
-            let c = vello::kurbo::Circle::new(Point::new(cx, center_y), r);
+            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
@@ -2150,6 +2103,210 @@ impl TopBarChrome {
         let (content_x0, content_x1) = Self::center_content_lane(band, theme);
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
+    }
+
+    fn widget_editor_row(&self, index: usize) -> Rect {
+        let top = self.widget_editor_rect.y0 + 62.0 + small_count_to_f64(index) * 50.0;
+        Rect::new(
+            self.widget_editor_rect.x0 + 14.0,
+            top,
+            self.widget_editor_rect.x1 - 14.0,
+            top + 42.0,
+        )
+    }
+
+    fn widget_editor_remove_rect(&self, index: usize) -> Rect {
+        let row = self.widget_editor_row(index);
+        Rect::new(row.x1 - 76.0, row.y0 + 5.0, row.x1 - 5.0, row.y1 - 5.0)
+    }
+
+    fn widget_editor_add_rect(&self, widget: TopBarWidget) -> Rect {
+        let Some(index) = TopBarWidget::ALL
+            .into_iter()
+            .filter(|candidate| !self.widget_config.widgets.contains(candidate))
+            .position(|candidate| candidate == widget)
+        else {
+            return Rect::ZERO;
+        };
+        let x = self.widget_editor_rect.x0 + 16.0 + small_count_to_f64(index) * 82.0;
+        Rect::new(
+            x,
+            self.widget_editor_rect.y1 - 48.0,
+            x + 78.0,
+            self.widget_editor_rect.y1 - 8.0,
+        )
+    }
+
+    fn widget_editor_action_rect(&self, widget: TopBarWidget, present: bool) -> Rect {
+        if !self.widget_editing {
+            return Rect::ZERO;
+        }
+        if present {
+            if self.widget_config.widgets.len() <= 1 {
+                return Rect::ZERO;
+            }
+            self.widget_config
+                .widgets
+                .iter()
+                .position(|candidate| *candidate == widget)
+                .map_or(Rect::ZERO, |index| self.widget_editor_remove_rect(index))
+        } else {
+            self.widget_editor_add_rect(widget)
+        }
+    }
+
+    fn draw_widget_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.widget_editing {
+            self.widget_editor_rect = Rect::ZERO;
+            return;
+        }
+        let width = 286.0;
+        let available = TopBarWidget::ALL
+            .iter()
+            .filter(|widget| !self.widget_config.widgets.contains(widget))
+            .count();
+        let height = 86.0
+            + small_count_to_f64(self.widget_config.widgets.len()) * 50.0
+            + if available > 0 { 54.0 } else { 0.0 };
+        let panel = Rect::new(
+            self.center_rect.center().x - width / 2.0,
+            self.rect.y1 + 8.0,
+            self.center_rect.center().x + width / 2.0,
+            self.rect.y1 + 8.0 + height,
+        );
+        self.widget_editor_rect = panel;
+        let rr = RoundedRect::from_rect(panel, 16.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &rr,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::surface::edge_on(theme.tokens.colors.surfaces.overlay),
+            None,
+            &rr,
+        );
+        text.draw_text_weighted(
+            scene,
+            "Edit top bar",
+            theme.tokens.typography.scale.base,
+            theme.tokens.colors.text_primary,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text.draw_text(
+            scene,
+            "Drag to reorder · click Remove",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
+            None,
+        );
+        let metrics =
+            ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
+        self.widget_edit_drag.sync_insertion(&metrics);
+        for (index, widget) in self
+            .widget_config
+            .widgets
+            .clone()
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if self.widget_edit_drag.from_index() == Some(index) {
+                continue;
+            }
+            let mut row = self.widget_editor_row(index);
+            row = row.with_origin((
+                row.x0,
+                row.y0 + self.widget_edit_drag.item_shift(index, &metrics),
+            ));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let label = match widget {
+                TopBarWidget::Clock => "Clock",
+                TopBarWidget::SystemMonitor => "System monitor",
+                TopBarWidget::Calendar => "Calendar",
+            };
+            text.draw_text(
+                scene,
+                "⠿",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_dim,
+                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                "Remove",
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.semantic.danger,
+                at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
+                None,
+            );
+        }
+        if let Some(ghost) =
+            self.widget_edit_drag
+                .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
+        {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5].with_alpha(0.22),
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
+                    10.0,
+                ),
+            );
+        }
+        if available > 0 {
+            let y = panel.y1 - 40.0;
+            let mut x = panel.x0 + 16.0;
+            for widget in TopBarWidget::ALL {
+                if self.widget_config.widgets.contains(&widget) {
+                    continue;
+                }
+                let label = match widget {
+                    TopBarWidget::Clock => "+ Clock",
+                    TopBarWidget::SystemMonitor => "+ Monitor",
+                    TopBarWidget::Calendar => "+ Calendar",
+                };
+                text.draw_text(
+                    scene,
+                    label,
+                    theme.tokens.typography.scale.xs,
+                    theme.tokens.colors.accent[5],
+                    at(transform, (x, y)),
+                    None,
+                );
+                x += 82.0;
+            }
+        }
     }
 
     /// The lane the active centre widget draws into: after the three dot
@@ -3189,7 +3346,7 @@ impl TopBarChrome {
         scene.stroke(
             &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
             &chip,
         );
@@ -4804,6 +4961,7 @@ mod calendar_strip_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         CapOverride, Strip, Subject, Tab, TileContent, Verb, WindowGroup, WindowWidth, Workspace,
         WorkspaceId, WorkspaceTree,
@@ -4864,24 +5022,30 @@ mod tests {
 
     fn sample_chrome() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
     }
 
     fn floating_clock() -> TopBarChrome {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         {
             let mut state = chrome.borrow_mut();
@@ -5193,14 +5357,17 @@ mod tests {
     #[test]
     fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         // The 960px chrome reserves a 360px centre selector; after its dots
@@ -5327,11 +5494,14 @@ mod tests {
         let second = Workspace::new(WorkspaceId::new(), "B");
         let active = first.id;
         WorkspaceTree {
-            workspaces: vec![first, second],
-            active,
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![first, second],
+                active,
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -5406,13 +5576,13 @@ mod tests {
         // report unhandled just like a disabled pointer target.
         bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_UP.to_string());
         assert!(!press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let first_id = tree.workspaces.first().expect("first workspace").id;
-        assert_eq!(chrome.borrow().tree().active, first_id);
+        let first_id = tree.desktop.workspaces.first().expect("first workspace").id;
+        assert_eq!(chrome.borrow().tree().desktop.active, first_id);
 
         bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_DOWN.to_string());
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let second_id = tree.workspaces.get(1).expect("second workspace").id;
-        assert_eq!(chrome.borrow().tree().active, second_id);
+        let second_id = tree.desktop.workspaces.get(1).expect("second workspace").id;
+        assert_eq!(chrome.borrow().tree().desktop.active, second_id);
     }
 
     #[test]
@@ -5543,15 +5713,18 @@ mod tests {
     #[test]
     fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("alice", "Alice"));
         let mut bar = TopBarChrome::from_tree(&tree);
@@ -5649,14 +5822,17 @@ mod tests {
     #[test]
     fn new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         bar.center_widget = CenterWidget::Calendar;
@@ -5691,14 +5867,17 @@ mod tests {
     #[test]
     fn clicking_a_person_opens_people_not_history() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
@@ -5718,15 +5897,18 @@ mod tests {
     #[test]
     fn live_share_is_persistent_visible_named_and_accessible() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("ada", "Ada").with_session(7));
         let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
@@ -5756,12 +5938,15 @@ mod tests {
     #[test]
     fn disclosure_attributes_each_surface_to_its_actual_viewer() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0].collaborators.extend([
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0].collaborators.extend([
             crate::shell::state::Collaborator::new("ada", "Ada").with_session(7),
             crate::shell::state::Collaborator::new("lin", "Lin").with_session(9),
         ]);
@@ -5800,12 +5985,15 @@ mod tests {
     #[test]
     fn agent_viewer_is_never_described_as_a_person() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        let workspace = &mut tree.workspaces[0];
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        let workspace = &mut tree.desktop.workspaces[0];
         workspace.owner = Some("owner".to_string());
         let room = workspace.id.raw().to_string();
         workspace
@@ -5843,7 +6031,7 @@ mod tests {
     #[test]
     fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
         let mut tree = two_workspace_tree();
-        let shared = &mut tree.workspaces[1];
+        let shared = &mut tree.desktop.workspaces[1];
         shared.name = "Private".into();
         shared.owner = Some("owner".into());
         let room = shared.id.raw().to_string();
@@ -5989,15 +6177,18 @@ mod tests {
     #[test]
     fn avatar_stack_has_breathing_room_to_tray_pill() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
-        tree.workspaces[0]
+        tree.desktop.active = tree.desktop.workspaces[0].id;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(crate::shell::state::Collaborator::new("alice", "Alice"));
 
@@ -6011,7 +6202,7 @@ mod tests {
                 Style {
                     size: Size {
                         width: Dimension::length(1600.0),
-                        height: Dimension::length(40.0),
+                        height: Dimension::length(TOPBAR_HEIGHT_PX),
                     },
                     ..Default::default()
                 },
@@ -6023,7 +6214,7 @@ mod tests {
                 vp,
                 Size {
                     width: taffy::AvailableSpace::Definite(1600.0),
-                    height: taffy::AvailableSpace::Definite(40.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
             )
@@ -6052,14 +6243,17 @@ mod tests {
     #[test]
     fn empty_roster_restores_the_clickable_invite_affordance() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let chrome = crate::shell::chrome_state::ChromeState::new(tree);
@@ -6117,14 +6311,17 @@ mod tests {
     #[test]
     fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default();
@@ -6136,7 +6333,7 @@ mod tests {
                 Style {
                     size: Size {
                         width: Dimension::length(800.0),
-                        height: Dimension::length(40.0),
+                        height: Dimension::length(TOPBAR_HEIGHT_PX),
                     },
                     ..Default::default()
                 },
@@ -6148,7 +6345,7 @@ mod tests {
                 vp,
                 Size {
                     width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(40.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
             )
@@ -6164,15 +6361,15 @@ mod tests {
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
-        assert_eq!(TOPBAR_HEIGHT_PX, 40.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, 48.0);
         for (label, rect) in [
             ("overview", bar.overview_btn_rect),
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
         ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 4.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 4.0, "{label} bottom inset");
+            assert_eq!(rect.y0 - bar.rect.y0, 8.0, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, 8.0, "{label} bottom inset");
         }
         assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
         assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
@@ -6186,15 +6383,18 @@ mod tests {
     #[test]
     fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
         let empty = WorkspaceTree {
-            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-            active: WorkspaceId::from(0),
-            active_strip: HashMap::default(),
-            active_group: HashMap::default(),
-            collaborators: Vec::new(),
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                active: WorkspaceId::from(0),
+                active_strip: HashMap::default(),
+                active_group: HashMap::default(),
+                collaborators: Vec::new(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut empty = empty;
-        empty.active = empty.workspaces[0].id;
+        empty.desktop.active = empty.desktop.workspaces[0].id;
         let bar = TopBarChrome::from_tree(&empty);
         assert!(
             bar.collaborator_initials().is_empty(),
@@ -6202,7 +6402,8 @@ mod tests {
         );
 
         let mut elsewhere = empty.clone();
-        elsewhere.collaborators = vec![crate::shell::state::Collaborator::new("alice", "Alice")];
+        elsewhere.desktop.collaborators =
+            vec![crate::shell::state::Collaborator::new("alice", "Alice")];
         let bar = TopBarChrome::from_tree(&elsewhere);
         assert!(
             bar.collaborator_initials().is_empty(),
@@ -6210,7 +6411,7 @@ mod tests {
         );
 
         let mut joined = empty.clone();
-        joined.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
+        joined.desktop.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
             "peer@11895642303397647149",
             "Xaver",
         )];
@@ -6229,7 +6430,7 @@ mod tests {
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
         let mut asked = empty;
-        asked.workspaces[0].collaborators = vec![
+        asked.desktop.workspaces[0].collaborators = vec![
             crate::shell::state::Collaborator::new("peer@11895642303397647149", "Xaver")
                 .as_invited(),
         ];

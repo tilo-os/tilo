@@ -40,17 +40,20 @@ taffy.workspace = true
 
 # Live CalDAV sync (discovery, REPORT, and ETag-guarded PUT) is optional and
 # gated by `live`; the default build uses the offline path.
-reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
-roxmltree = "0.20"
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+roxmltree.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
 # The CalDAV transport runs on a background thread and is a no-op without a
 # configured account.
 default = ["live"]
-live = ["dep:reqwest"]
+live = ["dep:reqwest", "dep:tilo-net"]
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the handful of tests that set the process-wide
 # `TILO_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
 # so they never race each other under cargo's default parallel runner.

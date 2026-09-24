@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         [command, id, tag] if command == "remove" => HostNotifications::new(id)?.remove(tag)?,
         [command, id, tag, seconds, title, body] if command == "schedule" => {
-            let time = std::time::SystemTime::now() + std::time::Duration::from_secs(seconds.parse()?);
+            let time = tilo_ui::time::wall() + std::time::Duration::from_secs(seconds.parse()?);
             HostNotifications::new(id)?.schedule(tag, title, body, time)?;
         }
         [command, id] if command == "scheduled" => {

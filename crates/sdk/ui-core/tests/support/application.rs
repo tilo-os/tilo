@@ -349,7 +349,7 @@ pub fn body(records: &RecordStore, checkout: &RecordCheckout) -> String {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned()
         })
@@ -423,7 +423,7 @@ fn build_probe(
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned()
         })

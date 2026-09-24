@@ -29,6 +29,7 @@ use automerge::ActorId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use ui::doc::{read_bool, read_number, read_scalar, read_str};
 use uuid::Uuid;
 
 use crate::model::{
@@ -145,50 +146,16 @@ impl BooksDoc {
     fn merged_str(doc: &AutoCommit, entries: &[ObjId], key: &str) -> Option<String> {
         entries
             .iter()
-            .filter_map(|entry| Self::scalar_str(doc, entry, key))
+            .filter_map(|entry| read_str(doc, entry, key))
             .max()
     }
 
-    fn scalar_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::F64(f) => Some(*f),
-                ScalarValue::Int(i) => Some(*i as f64),
-                ScalarValue::Uint(u) => Some(*u as f64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
+    /// An `Int`, a `Uint` reinterpreted as `i64`, or an `F64` truncated.
     fn scalar_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Int(i) => Some(*i),
-                ScalarValue::Uint(u) => Some(*u as i64),
-                ScalarValue::F64(f) => Some(*f as i64),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn scalar_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn scalar_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
+        match read_scalar(doc, obj, key)? {
+            ScalarValue::Int(i) => Some(i),
+            ScalarValue::Uint(u) => Some(u as i64),
+            ScalarValue::F64(f) => Some(f as i64),
             _ => None,
         }
     }
@@ -244,8 +211,8 @@ impl BooksDoc {
         if maps.is_empty() {
             return s;
         }
-        let f64_value = |key| maps.iter().find_map(|map| Self::scalar_f64(doc, map, key));
-        let str_value = |key| maps.iter().find_map(|map| Self::scalar_str(doc, map, key));
+        let f64_value = |key| maps.iter().find_map(|map| read_number(doc, map, key));
+        let str_value = |key| maps.iter().find_map(|map| read_str(doc, map, key));
         if let Some(v) = f64_value("font_scale") {
             s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
         }
@@ -316,7 +283,7 @@ impl BooksDoc {
         e: &ObjId,
         fallback_id: Option<&str>,
     ) -> Option<FontEntry> {
-        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = read_str(doc, e, "id").unwrap_or_default();
         let id = if id.is_empty() {
             fallback_id?.to_string()
         } else {
@@ -324,13 +291,13 @@ impl BooksDoc {
         };
         Some(FontEntry {
             kind: FontKind::from_code(
-                &Self::scalar_str(doc, e, "kind").unwrap_or_else(|| "default".into()),
+                &read_str(doc, e, "kind").unwrap_or_else(|| "default".into()),
             ),
-            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
-            size_mult: Self::scalar_f64(doc, e, "size_mult").map_or(1.0, |v| {
+            name: read_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            size_mult: read_number(doc, e, "size_mult").map_or(1.0, |v| {
                 (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
             }),
-            shown: Self::scalar_bool(doc, e, "shown").unwrap_or(true),
+            shown: read_bool(doc, e, "shown").unwrap_or(true),
             id,
         })
     }
@@ -389,7 +356,7 @@ impl BooksDoc {
     pub fn read_default_font(doc: &AutoCommit) -> String {
         Self::root_maps(doc, "settings")
             .iter()
-            .find_map(|map| Self::scalar_str(doc, map, "default_font"))
+            .find_map(|map| read_str(doc, map, "default_font"))
             .unwrap_or_default()
     }
 
@@ -406,13 +373,13 @@ impl BooksDoc {
         let maps = Self::root_maps(doc, "settings");
         if let Some(v) = maps
             .iter()
-            .find_map(|map| Self::scalar_str(doc, map, "library_sort"))
+            .find_map(|map| read_str(doc, map, "library_sort"))
         {
             p.sort = LibrarySort::from_str(&v);
         }
         if let Some(v) = maps
             .iter()
-            .find_map(|map| Self::scalar_bool(doc, map, "library_hide_read"))
+            .find_map(|map| read_bool(doc, map, "library_hide_read"))
         {
             p.hide_read = v;
         }
@@ -460,7 +427,7 @@ impl BooksDoc {
             .map(|value| value as u64);
         let was_shared = entries
             .iter()
-            .any(|entry| Self::scalar_bool(doc, entry, "shared").unwrap_or(false));
+            .any(|entry| read_bool(doc, entry, "shared").unwrap_or(false));
         let added = existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { now_ms() });
         for entry in entries {
             // Earlier development snapshots stored a raw source path here.
@@ -510,7 +477,7 @@ impl BooksDoc {
                 id: key,
                 shared: entries
                     .iter()
-                    .any(|entry| Self::scalar_bool(doc, entry, "shared").unwrap_or(false)),
+                    .any(|entry| read_bool(doc, entry, "shared").unwrap_or(false)),
                 title: Self::merged_str(doc, &entries, "title").unwrap_or_default(),
                 author: Self::merged_str(doc, &entries, "author").unwrap_or_default(),
                 subject: Self::merged_str(doc, &entries, "subject").unwrap_or_default(),
@@ -601,7 +568,7 @@ impl BooksDoc {
         e: &ObjId,
         fallback_id: Option<&str>,
     ) -> Option<ColorScheme> {
-        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = read_str(doc, e, "id").unwrap_or_default();
         let id = if id.is_empty() {
             fallback_id?.to_string()
         } else {
@@ -609,14 +576,13 @@ impl BooksDoc {
         };
         let page = unpack_rgb(Self::scalar_i64(doc, e, "page").unwrap_or(0));
         Some(ColorScheme {
-            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            name: read_str(doc, e, "name").unwrap_or_else(|| id.clone()),
             page,
             ink: unpack_rgb(Self::scalar_i64(doc, e, "ink").unwrap_or(0)),
             accent: unpack_rgb(Self::scalar_i64(doc, e, "accent").unwrap_or(0)),
-            dark: Self::scalar_bool(doc, e, "dark")
-                .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
-            enabled: Self::scalar_bool(doc, e, "enabled").unwrap_or(true),
-            builtin: Self::scalar_bool(doc, e, "builtin").unwrap_or(false),
+            dark: read_bool(doc, e, "dark").unwrap_or_else(|| crate::model::luminance(page) < 0.5),
+            enabled: read_bool(doc, e, "enabled").unwrap_or(true),
+            builtin: read_bool(doc, e, "builtin").unwrap_or(false),
             id,
         })
     }
@@ -696,7 +662,7 @@ impl BooksDoc {
             .map(|entry| Progress {
                 chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
                 page: Self::scalar_i64(doc, &entry, "page").unwrap_or(0).max(0) as usize,
-                fraction: (Self::scalar_f64(doc, &entry, "fraction").unwrap_or(0.0) as f32)
+                fraction: (read_number(doc, &entry, "fraction").unwrap_or(0.0) as f32)
                     .clamp(0.0, 1.0),
                 opened: Self::scalar_i64(doc, &entry, "opened").unwrap_or(0).max(0) as u64,
             })
@@ -727,7 +693,7 @@ impl BooksDoc {
     fn has_tombstone(doc: &AutoCommit, key: &str, id: &str) -> bool {
         Self::root_maps(doc, key)
             .iter()
-            .any(|tombstones| Self::scalar_bool(doc, tombstones, id).unwrap_or(false))
+            .any(|tombstones| read_bool(doc, tombstones, id).unwrap_or(false))
     }
 
     pub fn annotation_is_deleted(doc: &AutoCommit, id: Uuid) -> bool {
@@ -780,7 +746,7 @@ impl BooksDoc {
             .remove(&a.id.to_string())
             .unwrap_or_default();
         for entry in &existing {
-            let existing_group = Self::scalar_str(doc, entry, "group")
+            let existing_group = read_str(doc, entry, "group")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(a.id);
             if existing_group != a.group || Self::group_is_deleted(doc, existing_group) {

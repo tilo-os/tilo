@@ -215,14 +215,7 @@ impl ApiDoc {
 
     /// Read a top-level `Text` object's contents (empty if absent).
     pub fn read_text(doc: &AutoCommit, root: &ObjId, key: &str) -> String {
-        match doc.get(root, key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
+        ui::doc::read_str_or_text(doc, root, key).unwrap_or_default()
     }
 
     /// Splice `value` into the `Text` object at `key`, but only when it
@@ -244,7 +237,7 @@ impl ApiDoc {
             .ok()
             .flatten()
             .and_then(|(stored, _)| match stored {
-                Value::Scalar(stored) => stored.to_str().map(str::to_owned),
+                Value::Scalar(stored) => stored.as_str().map(str::to_owned),
                 Value::Object(_) => None,
             });
         if current.as_deref() != Some(value) {
@@ -776,7 +769,7 @@ impl ApiDoc {
         doc.get(map, id).ok()?.and_then(|(value, _)| {
             if let Value::Scalar(value) = value {
                 value
-                    .to_str()
+                    .as_str()
                     .and_then(|json| serde_json::from_str(json).ok())
             } else {
                 None
@@ -794,7 +787,7 @@ impl ApiDoc {
             return;
         };
         let already_current = doc.get(map, key).ok().flatten().is_some_and(|(stored, _)| {
-            matches!(stored, Value::Scalar(stored) if stored.to_str() == Some(json.as_str()))
+            matches!(stored, Value::Scalar(stored) if stored.as_str() == Some(json.as_str()))
         });
         if !already_current {
             let _ = doc.put(map, key, json);
@@ -945,7 +938,7 @@ impl ApiDoc {
                 let id = id_of(record);
                 let already_current = doc.get_all(records, &id).is_ok_and(|values| {
                     values.into_iter().any(|(value, _)| {
-                        matches!(value, Value::Scalar(value) if value.to_str() == Some(json.as_str()))
+                        matches!(value, Value::Scalar(value) if value.as_str() == Some(json.as_str()))
                     })
                 });
                 if !already_current {
@@ -1207,7 +1200,7 @@ impl ApiDoc {
     fn string_list(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
         (0..doc.length(list))
             .filter_map(|index| match doc.get(list, index).ok().flatten() {
-                Some((Value::Scalar(value), _)) => value.to_str().map(str::to_owned),
+                Some((Value::Scalar(value), _)) => value.as_str().map(str::to_owned),
                 _ => None,
             })
             .collect()
@@ -1388,13 +1381,13 @@ mod tests {
         let visible = left
             .get(&map, "name")
             .expect("read winner")
-            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .expect("string winner");
         let losing = left
             .get_all(&map, "name")
             .expect("read conflicts")
             .into_iter()
-            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .filter_map(|(value, _)| value.as_str().map(str::to_owned))
             .find(|value| value != &visible)
             .expect("a concurrent losing value");
 
@@ -1402,7 +1395,7 @@ mod tests {
         assert_eq!(
             left.get(&map, "name")
                 .expect("read requested winner")
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some(losing),
             "requesting a value held only by a losing conflict updates the visible result"
         );
@@ -1440,13 +1433,13 @@ mod tests {
         let visible = left
             .get(&map, "record")
             .expect("read winner")
-            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .expect("JSON winner");
         let losing = left
             .get_all(&map, "record")
             .expect("read conflicts")
             .into_iter()
-            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .filter_map(|(value, _)| value.as_str().map(str::to_owned))
             .find(|value| value != &visible)
             .expect("a concurrent losing record");
         let requested: serde_json::Value = serde_json::from_str(&losing).expect("valid JSON");
@@ -1455,7 +1448,7 @@ mod tests {
         assert_eq!(
             left.get(&map, "record")
                 .expect("read requested winner")
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some(losing),
             "a requested losing JSON record replaces the materialized winner"
         );

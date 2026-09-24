@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `dirs::config_dir()/tilo-browser/settings.json`. It holds the
+//!    `xdg_paths::config_dir()/tilo-browser/settings.json`. It holds the
 //!    durable preferences (ad-blocking, clear-on-exit, search engine,
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
@@ -152,7 +152,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Absolute path of the on-disk settings file:
-    /// `dirs::config_dir()/tilo-browser/settings.json`. `None` when the
+    /// `xdg_paths::config_dir()/tilo-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
         crate::storage::config_dir().map(|d| d.join("settings.json"))

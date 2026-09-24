@@ -8,6 +8,7 @@ pub(crate) struct CallBounds {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "native")]
 pub(crate) enum MainStage {
     BeforeProfilerCommit,
     AfterProfilerCommit,
@@ -19,6 +20,7 @@ pub(crate) enum MainStage {
     AfterNativeRedrawLog,
 }
 
+#[cfg(feature = "native")]
 const MAIN_STAGE_NAMES: [&str; 8] = [
     "before_profiler_commit",
     "after_profiler_commit",
@@ -31,10 +33,12 @@ const MAIN_STAGE_NAMES: [&str; 8] = [
 ];
 
 #[derive(Default)]
+#[cfg(feature = "native")]
 pub(crate) struct MainStages {
     points: [Option<HostClockBracket>; 8],
 }
 
+#[cfg(feature = "native")]
 impl MainStages {
     pub(crate) fn row(&self, cpu_frame_id: Option<u64>) -> serde_json::Value {
         let mut row = serde_json::Map::new();
@@ -57,10 +61,12 @@ impl MainStages {
     }
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn record_main_stage(stages: &mut Option<MainStages>, stage: MainStage) {
     record_main_stage_with(stages, stage, capture);
 }
 
+#[cfg(feature = "native")]
 fn record_main_stage_with(
     stages: &mut Option<MainStages>,
     stage: MainStage,
@@ -77,15 +83,19 @@ fn record_main_stage_with(
 pub(crate) fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        gate(
-            cfg!(all(target_os = "macos", feature = "presentation-feedback")),
-            std::env::var("QOS_PROFILE_PRESENTATION").ok().as_deref(),
-            std::env::var_os("QOS_NATIVE_SCENARIO").as_deref(),
-        )
+        cfg!(all(target_os = "macos", feature = "presentation-feedback"))
+            && crate::host::environment().diagnostics.presentation_profile
     })
 }
 
-fn gate(supported: bool, profile: Option<&str>, scenario: Option<&std::ffi::OsStr>) -> bool {
+/// Presentation profiling needs support, an explicit `profile == "1"`, and a
+/// native scenario to profile.
+#[cfg(feature = "native")]
+pub(crate) fn gate(
+    supported: bool,
+    profile: Option<&str>,
+    scenario: Option<&std::ffi::OsStr>,
+) -> bool {
     supported && profile == Some("1") && scenario.is_some_and(|path| !path.is_empty())
 }
 

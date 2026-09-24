@@ -82,7 +82,7 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, Uri
     let app = {
         let state = chrome.borrow();
         let tree = state.tree();
-        let workspace = tree.active_workspace();
+        let workspace = tree.desktop.active_workspace();
         launcher::app_for_resource_with_policy(
             &resource,
             &state.local_user_id,
@@ -105,7 +105,10 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<InstalledApp, Uri
     let (room, capabilities) = {
         let state = chrome.borrow();
         let tree = state.tree();
-        let workspace = tree.active_workspace().ok_or(UriOpenError::NoWorkspace)?;
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .ok_or(UriOpenError::NoWorkspace)?;
         (workspace.room, workspace.capabilities.clone())
     };
     launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -103,11 +104,14 @@ class SelectorTests(unittest.TestCase):
             self.metadata, self.root, ["tilo-ui/src/lib.rs"], 2
         )
         self.assertEqual(plan["matrix"]["include"][0]["runner"], "runner-large")
+        # Only the test links need the large runner; check and Clippy do not.
+        self.assertEqual(plan["matrix"]["include"][0]["check_runner"], "runner")
 
         ordinary = ci_select.make_plan(
             self.metadata, self.root, ["leaf/src/lib.rs"], 2
         )
         self.assertEqual(ordinary["matrix"]["include"][0]["runner"], "runner")
+        self.assertEqual(ordinary["matrix"]["include"][0]["check_runner"], "runner")
 
     def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
@@ -116,6 +120,7 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected_count"], 0)
         self.assertEqual(plan["shard_count"], 0)
         self.assertEqual(plan["matrix"], {"include": []})
+        self.assertEqual(plan["clippy_matrix"], {"include": []})
         output = self.root / "outputs"
         ci_select.emit_github(plan, output)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
@@ -728,6 +733,20 @@ class SelectorTests(unittest.TestCase):
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
+        self.assertEqual(json.loads(values["clippy_matrix"]), plan["matrix"])
+
+    def test_clippy_matrix_lints_each_package_set_once_on_x86(self) -> None:
+        self.install_builder_recipe()
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/Containerfile.builder"], 2, force_full=True)
+        rows = plan["matrix"]["include"]
+        self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
+        clippy = plan["clippy_matrix"]["include"]
+        self.assertEqual(clippy, [row for row in rows if row["arch"] == "x86_64"])
+        self.assertEqual(sorted(row["packages"] for row in clippy),
+                         sorted(row["packages"] for row in rows if row["arch"] == "aarch64"))
+        for row in rows:
+            self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
 
     def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
@@ -792,6 +811,300 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(set(changes), {old, new})
         plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
         self.assertTrue({"base", "middle", "leaf"}.issubset(plan["selected"]))
+
+
+REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
+LOCAL_PACKAGES = ("base", "middle", "leaf", "qdoc", "pkg", "collab-types")
+
+
+def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[str]],
+             header: str = "version = 4\n") -> bytes:
+    """Render a Cargo.lock with registry packages and source-less workspace nodes."""
+    blocks = [header]
+    for (name, version), deps in sorted(external.items()):
+        blocks.append(
+            f'[[package]]\nname = "{name}"\nversion = "{version}"\nsource = "{REGISTRY}"\n'
+            f'checksum = "{name}-{version}"\ndependencies = {deps!r}\n'.replace("'", '"'))
+    for name, deps in sorted(local.items()):
+        blocks.append(
+            f'[[package]]\nname = "{name}"\nversion = "0.1.0"\ndependencies = {deps!r}\n'
+            .replace("'", '"'))
+    return "\n".join(blocks).encode()
+
+
+ROOT_MANIFEST = """\
+[workspace]
+resolver = "3"
+members = ["base", "middle", "leaf", "qdoc", "pkg", "collab-types"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.lints.clippy]
+pedantic = "deny"
+
+[workspace.dependencies]
+itoa = "1.0"
+serde = { version = "1", features = ["derive"] }
+json = { package = "serde_json", version = "1" }
+
+[profile.release]
+lto = "thin"
+
+[patch.crates-io]
+openh264-sys2 = { path = "vendor/openh264-sys2" }
+"""
+
+
+class ManifestAttributionTests(unittest.TestCase):
+    """Root Cargo.toml and Cargo.lock changes select only what they reach."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text(ROOT_MANIFEST)
+        self.metadata = {"packages": []}
+        for name, deps in [("base", [("serde", None)]), ("middle", [("base", "path"), ("itoa", None)]),
+                           ("leaf", [("middle", "path"), ("serde_json", "json")]),
+                           ("qdoc", []), ("pkg", []), ("collab-types", [])]:
+            self.add_package(name, deps)
+        self.external = {
+            ("serde", "1.0.0"): [],
+            ("itoa", "1.0.0"): [],
+            ("serde_json", "1.0.0"): ["itoa", "serde"],
+            ("openh264-sys2", "0.9.6"): ["cc"],
+            ("cc", "1.2.0"): [],
+        }
+        self.local = {
+            "base": ["serde"], "middle": ["base", "itoa"], "leaf": ["middle", "serde_json"],
+            "qdoc": [], "pkg": [], "collab-types": [],
+        }
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def add_package(self, name: str, deps: list[tuple[str, str | None]]) -> None:
+        dependencies = []
+        for dep, kind in deps:
+            entry = {"name": dep, "rename": None}
+            if kind == "path":
+                entry["path"] = str(self.root / dep)
+            elif kind:
+                entry["rename"] = kind
+            dependencies.append(entry)
+        self.metadata["packages"].append({
+            "name": name,
+            "manifest_path": str(self.root / name / "Cargo.toml"),
+            "targets": [{"name": name}],
+            "dependencies": dependencies,
+        })
+
+    def lock(self, external=None, local=None, header="version = 4\n") -> bytes:
+        return lockfile(self.external if external is None else external,
+                        self.local if local is None else local, header)
+
+    def plan(self, changes: list[str], resolved: dict) -> dict:
+        return ci_select.make_plan(self.metadata, self.root, changes, 2, resolved_inputs=resolved)
+
+    def test_adding_a_workspace_crate_selects_only_the_new_crate(self) -> None:
+        self.add_package("durable", [("serde", None), ("thiserror", None)])
+        before = self.lock()
+        after = self.lock(external={**self.external, ("thiserror", "2.0.0"): []},
+                          local={**self.local, "durable": ["serde", "thiserror"]})
+        manifest = ROOT_MANIFEST.replace('"collab-types"]', '"collab-types", "durable"]')
+        resolved = {
+            "Cargo.lock": ci_select.resolve_lockfile(before, after, self.metadata),
+            "Cargo.toml": ci_select.resolve_root_manifest(
+                ROOT_MANIFEST.encode(), manifest.encode(), self.metadata, self.root),
+        }
+        self.assertEqual(resolved["Cargo.lock"].seeds, {"durable"})
+        self.assertEqual(resolved["Cargo.toml"].seeds, {"durable"})
+        plan = self.plan(["Cargo.lock", "Cargo.toml", "durable/Cargo.toml", "durable/src/lib.rs"], resolved)
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["selected"]), {"durable"} | ci_select.ALWAYS_PACKAGES)
+        self.assertEqual(set(plan["tested"]), {"durable"} | ci_select.ALWAYS_PACKAGES)
+        self.assertFalse(plan["native_dependencies_required"])
+
+    def test_leaf_dependency_bump_selects_its_consumers_and_their_dependants(self) -> None:
+        after = self.lock(external={**{k: v for k, v in self.external.items() if k[0] != "itoa"},
+                                    ("itoa", "1.0.1"): []})
+        resolved = {"Cargo.lock": ci_select.resolve_lockfile(self.lock(), after, self.metadata)}
+        # itoa is used directly by middle and through serde_json by leaf.
+        self.assertEqual(resolved["Cargo.lock"].seeds, {"middle", "leaf"})
+        self.assertFalse(resolved["Cargo.lock"].native)
+        plan = self.plan(["Cargo.lock"], resolved)
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["selected"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
+        self.assertEqual(set(plan["tested"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
+        self.assertNotIn("base", plan["selected"])
+
+    def test_transitive_dependency_change_reaches_workspace_consumers(self) -> None:
+        external = dict(self.external)
+        external[("serde", "1.0.0")] = ["serde_derive"]
+        external[("serde_derive", "1.0.0")] = []
+        before = self.lock(external=external)
+        external.pop(("serde_derive", "1.0.0"))
+        external[("serde_derive", "1.0.1")] = []
+        resolved = ci_select.resolve_lockfile(before, self.lock(external=external), self.metadata)
+        self.assertEqual(resolved.seeds, {"base", "leaf"})
+        self.assertEqual(set(self.plan(["Cargo.lock"], {"Cargo.lock": resolved})["selected"]),
+                         {"base", "middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
+
+    def test_second_version_of_a_crate_does_not_touch_existing_consumers(self) -> None:
+        self.add_package("legacy", [("itoa", None)])
+        local = {**self.local, "middle": ["base", "itoa 1.0.0"], "leaf": ["middle", "serde_json"]}
+        external = {**self.external, ("itoa", "0.4.0"): [],
+                    ("serde_json", "1.0.0"): ["itoa 1.0.0", "serde"]}
+        after = self.lock(external=external, local={**local, "legacy": ["itoa 0.4.0"]})
+        resolved = ci_select.resolve_lockfile(
+            self.lock(local={**self.local, "legacy": []}), after, self.metadata)
+        self.assertEqual(resolved.seeds, {"legacy"})
+
+    def test_removing_a_dependency_selects_its_former_consumers(self) -> None:
+        external = {k: v for k, v in self.external.items() if k[0] != "itoa"}
+        external[("serde_json", "1.0.0")] = ["serde"]
+        after = self.lock(external=external, local={**self.local, "middle": ["base"]})
+        resolved = ci_select.resolve_lockfile(self.lock(), after, self.metadata)
+        self.assertEqual(resolved.seeds, {"middle", "leaf"})
+
+    def test_removing_a_workspace_member_selects_its_dependants(self) -> None:
+        manifest = ROOT_MANIFEST.replace('"base", "middle"', '"middle"')
+        self.metadata["packages"] = [p for p in self.metadata["packages"] if p["name"] != "base"]
+        resolved = ci_select.resolve_root_manifest(
+            ROOT_MANIFEST.encode(), manifest.encode(), self.metadata, self.root)
+        self.assertEqual(resolved.seeds, {"middle"})
+        self.assertFalse(resolved.native)
+        plan = self.plan(["Cargo.toml"], {"Cargo.toml": resolved})
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["selected"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
+        self.assertFalse(plan["native_dependencies_required"])
+
+    def test_workspace_dependency_change_selects_members_that_use_it(self) -> None:
+        for old, new, expected in [
+            ('itoa = "1.0"', 'itoa = "1.0.9"', {"middle"}),
+            ('features = ["derive"]', 'features = ["derive", "rc"]', {"base"}),
+            # A renamed entry is matched through both its key and package.
+            ('json = { package = "serde_json", version = "1" }',
+             'json = { package = "serde_json", version = "1.0.100" }', {"leaf"}),
+            ('itoa = "1.0"\n', 'itoa = "1.0"\nryu = "1"\n', set()),
+        ]:
+            with self.subTest(new=new):
+                resolved = ci_select.resolve_root_manifest(
+                    ROOT_MANIFEST.encode(), ROOT_MANIFEST.replace(old, new).encode(),
+                    self.metadata, self.root)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved.seeds, expected)
+
+    def test_unattributable_root_manifest_changes_keep_full_selection(self) -> None:
+        for old, new in [
+            ('pedantic = "deny"', 'pedantic = "warn"'),
+            ('lto = "thin"', 'lto = "fat"'),
+            ('edition = "2024"', 'edition = "2024"\nrust-version = "1.90"'),
+            ('openh264-sys2 = { path = "vendor/openh264-sys2" }', ''),
+            ('resolver = "3"', 'resolver = "2"'),
+            ('members = [', 'exclude = ["fuzz"]\nmembers = ['),
+            ('"collab-types"]', '"collab-types", "crates/*"]'),
+            ('"collab-types"]', '"collab-types", "unknown"]'),
+            ('[workspace]', '[workspace]\n[workspace.metadata.tool]\nx = 1\n[workspace.x]'),
+            ('[workspace]', '[package]\nname = "root"\n[workspace]'),
+            ('[workspace]', '[workspace'),
+        ]:
+            with self.subTest(new=new):
+                resolved = ci_select.resolve_root_manifest(
+                    ROOT_MANIFEST.encode(), ROOT_MANIFEST.replace(old, new).encode(),
+                    self.metadata, self.root)
+                self.assertIsNone(resolved)
+                plan = self.plan(["Cargo.toml"], {})
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+                self.assertTrue(plan["native_dependencies_required"])
+        self.assertIsNone(ci_select.resolve_root_manifest(
+            None, ROOT_MANIFEST.encode(), self.metadata, self.root))
+
+    def test_malformed_or_unprovable_lockfiles_keep_full_selection(self) -> None:
+        good = self.lock()
+        ambiguous = self.lock(external={**self.external, ("itoa", "0.4.0"): []})
+        for before, after in [
+            (good, b"[[package]\nname = "),
+            (b"\xff\xfe", good),
+            (None, good),
+            (good, None),
+            (good, self.lock(header="version = 3\n")),
+            # Two itoa records make the unqualified "itoa" references ambiguous.
+            (good, ambiguous),
+            (good, self.lock(local={**self.local, "middle": ["base", "missing"]})),
+            (good, good.replace(b'name = "cc"', b'name_typo = "cc"')),
+            # Attribution requires every workspace member to be a lockfile node.
+            (good, self.lock(local={k: v for k, v in self.local.items() if k != "qdoc"})),
+        ]:
+            with self.subTest(after=after and after[:40]):
+                self.assertIsNone(ci_select.resolve_lockfile(before, after, self.metadata))
+        plan = self.plan(["Cargo.lock"], {})
+        self.assertTrue(plan["full"])
+        self.assertIn("repository-wide", plan["reason"])
+
+    def test_lockfile_change_reaching_native_crate_requires_native_contract(self) -> None:
+        after = self.lock(external={**{k: v for k, v in self.external.items() if k[0] != "cc"},
+                                    ("cc", "1.2.1"): []})
+        resolved = ci_select.resolve_lockfile(self.lock(), after, self.metadata)
+        self.assertTrue(resolved.native)
+        self.assertEqual(resolved.seeds, set())
+        plan = self.plan(["Cargo.lock"], {"Cargo.lock": resolved})
+        self.assertFalse(plan["full"])
+        self.assertTrue(plan["native_dependencies_required"])
+        unrelated = ci_select.resolve_lockfile(
+            self.lock(), self.lock(external={**self.external, ("unused", "1.0.0"): []}),
+            self.metadata)
+        self.assertFalse(unrelated.native)
+        self.assertFalse(self.plan(["Cargo.lock"], {"Cargo.lock": unrelated})["native_dependencies_required"])
+
+    def test_attribution_never_hides_other_global_inputs_or_explicit_full(self) -> None:
+        after = self.lock(external={**self.external, ("unused", "1.0.0"): []})
+        resolved = {"Cargo.lock": ci_select.resolve_lockfile(self.lock(), after, self.metadata)}
+        for changes in (["Cargo.lock", "rust-toolchain.toml"], ["Cargo.lock", ".cargo/config.toml"],
+                        ["Cargo.lock", "Cargo.toml"]):
+            with self.subTest(changes=changes):
+                plan = self.plan(changes, resolved)
+                self.assertTrue(plan["full"])
+                self.assertTrue(plan["native_dependencies_required"])
+        full = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2,
+                                   force_full=True, resolved_inputs=resolved)
+        self.assertTrue(full["full"])
+        self.assertEqual(full["qualification"], "full-native")
+        self.assertTrue(full["native_dependencies_required"])
+        # A resolution for a path that did not change is ignored.
+        self.assertEqual(self.plan(["leaf/src/lib.rs"], resolved)["tested"],
+                         sorted({"leaf"} | ci_select.ALWAYS_PACKAGES))
+
+    def test_git_revisions_feed_manifest_attribution(self) -> None:
+        def git(*args: str) -> str:
+            return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "ci@example.invalid")
+        git("config", "user.name", "CI")
+        (self.root / "Cargo.lock").write_bytes(self.lock())
+        git("add", "Cargo.toml", "Cargo.lock")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        after = self.lock(external={**{k: v for k, v in self.external.items() if k[0] != "itoa"},
+                                    ("itoa", "1.0.1"): []})
+        (self.root / "Cargo.lock").write_bytes(after)
+        (self.root / "Cargo.toml").write_text(ROOT_MANIFEST.replace('itoa = "1.0"', 'itoa = "1.0.1"'))
+        git("commit", "-qam", "bump itoa")
+        changes = ci_select.changed_files(self.root, base, "HEAD")
+        resolved = ci_select.resolve_manifest_inputs(self.root, base, "HEAD", self.metadata, changes)
+        self.assertEqual(set(resolved), {"Cargo.lock", "Cargo.toml"})
+        plan = self.plan(changes, resolved)
+        self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["selected"]), {"middle", "leaf"} | ci_select.ALWAYS_PACKAGES)
+        self.assertIn("Cargo.lock", plan["reason"])
+        # An unreadable head lockfile is unattributable, so it stays global.
+        (self.root / "Cargo.lock").write_bytes(b"not toml [")
+        git("commit", "-qam", "corrupt")
+        changes = ci_select.changed_files(self.root, base, "HEAD")
+        resolved = ci_select.resolve_manifest_inputs(self.root, base, "HEAD", self.metadata, changes)
+        self.assertNotIn("Cargo.lock", resolved)
+        self.assertTrue(self.plan(changes, resolved)["full"])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@
 //! ([`OpClass::Govern`]) are non-revertible — an owner counters a
 //! governance act with another one rather than rewinding it.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -711,6 +712,9 @@ pub struct RoomActivityPane {
     /// The viewport `layout` was last given, so `draw` can lay the sheet
     /// out again when the theme's text scale changes the header's height.
     viewport: Rect,
+    /// Whether `viewport` belongs to an ordinary tiled Activity window or
+    /// the legacy right-anchored overlay layout.
+    window_layout: bool,
     /// The user's text scale as of the last draw. The header band is sized
     /// from it (`header_h`), so 200 % type has room instead of the title,
     /// subtitle and "Latest" line stacking on top of one another.
@@ -887,6 +891,7 @@ impl RoomActivityPane {
             contributors: Vec::new(),
             sheet: Rect::ZERO,
             viewport: Rect::ZERO,
+            window_layout: false,
             text_scale: 1.0,
             period_rects: Vec::new(),
             author_rects: Vec::new(),
@@ -1514,7 +1519,7 @@ impl RoomActivityPane {
     /// without reading or overwriting this device's persisted history state.
     #[cfg(feature = "hosted-test-control")]
     pub fn prepare_away_recap_for_shots(&mut self, tree: &mut WorkspaceTree) {
-        let workspace = tree.active.raw();
+        let workspace = tree.desktop.active.raw();
         let departed_at_secs = self
             .now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -1828,6 +1833,7 @@ impl RoomActivityPane {
         tree.commit_room_change();
 
         let name = tree
+            .desktop
             .active_workspace()
             .map(|w| w.name.clone())
             .unwrap_or_default();
@@ -1835,10 +1841,12 @@ impl RoomActivityPane {
             self.room_name = name;
         }
         self.task_room = tree
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
         self.tasks = tree
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.tasks.clone())
             .unwrap_or_default();
@@ -1859,7 +1867,7 @@ impl RoomActivityPane {
         }
 
         let heads = tree.doc.get_heads();
-        let active = tree.active.raw();
+        let active = tree.desktop.active.raw();
         if heads == self.last_heads && !self.timeline.entries().is_empty() {
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
@@ -1904,6 +1912,7 @@ impl RoomActivityPane {
         // host's Automerge key; otherwise every collaborative work session
         // misleadingly appears to have been done by the same machine.
         let receipt_actors = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.effect_receipts.iter())
@@ -1936,7 +1945,7 @@ impl RoomActivityPane {
             .filter(|facet| facet.key == "tilo.invocation")
             .map(|facet| facet.value.clone())
             .collect::<HashSet<_>>();
-        for workspace in &tree.workspaces {
+        for workspace in &tree.desktop.workspaces {
             for receipt in &workspace.effect_receipts {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;
@@ -2065,9 +2074,10 @@ impl RoomActivityPane {
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
     fn apply_scope(&mut self, tree: &WorkspaceTree) {
-        let active = tree.active.raw();
+        let active = tree.desktop.active.raw();
         self.last_active = Some(active);
         let names: std::collections::HashMap<u64, String> = tree
+            .desktop
             .workspaces
             .iter()
             .map(|w| (w.id.raw(), w.name.clone()))
@@ -2143,7 +2153,7 @@ impl RoomActivityPane {
             snapshot.resync_cache_from_doc();
 
             let mut workspaces = Vec::new();
-            for workspace in &snapshot.workspaces {
+            for workspace in &snapshot.desktop.workspaces {
                 if self.scope == RoomScope::ThisRoom && workspace.id.raw() != active_workspace {
                     continue;
                 }
@@ -2223,11 +2233,15 @@ impl RoomActivityPane {
             .set_authors(self.source.authors().clone());
         let query = match self.scope {
             RoomScope::ThisRoom => tree
+                .desktop
                 .active_workspace()
                 .map(|workspace| WorkspaceHistoryQuery::for_room(workspace.room))
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => WorkspaceHistoryQuery::for_rooms(
-                tree.workspaces.iter().map(|workspace| workspace.room),
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.room),
             ),
         };
         let changed = if let Some(local) = local {
@@ -2250,20 +2264,21 @@ impl RoomActivityPane {
         if changed {
             self.feed_coverage = self.history_index.coverage().clone();
             self.projected_origins.clear();
-            let record_workspaces: HashMap<String, Vec<String>> =
-                tree.workspaces
-                    .iter()
-                    .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.room_records_held.get(&workspace.room) {
-                            for id in records.keys() {
-                                labels
-                                    .entry(id.clone())
-                                    .or_default()
-                                    .push(workspace.name.clone());
-                            }
+            let record_workspaces: HashMap<String, Vec<String>> = tree
+                .desktop
+                .workspaces
+                .iter()
+                .fold(HashMap::new(), |mut labels, workspace| {
+                    if let Some(records) = tree.desktop.room_records_held.get(&workspace.room) {
+                        for id in records.keys() {
+                            labels
+                                .entry(id.clone())
+                                .or_default()
+                                .push(workspace.name.clone());
                         }
-                        labels
-                    });
+                    }
+                    labels
+                });
             let rows: Vec<HistoryEntry> = self
                 .history_index
                 .entries()
@@ -2298,7 +2313,7 @@ impl RoomActivityPane {
         }
         self.refresh_agent_runs(tree, records, local);
 
-        let workspace = tree.active.raw();
+        let workspace = tree.desktop.active.raw();
         let passive_frontier = self
             .seen_frontiers
             .get(&workspace)
@@ -2374,10 +2389,12 @@ impl RoomActivityPane {
 
         let rooms: HashSet<_> = match self.scope {
             RoomScope::ThisRoom => tree
+                .desktop
                 .active_workspace()
                 .map(|workspace| [workspace.room].into_iter().collect())
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => tree
+                .desktop
                 .workspaces
                 .iter()
                 .map(|workspace| workspace.room)
@@ -2385,7 +2402,7 @@ impl RoomActivityPane {
         };
         let record_ids: BTreeSet<RecordId> = rooms
             .into_iter()
-            .filter_map(|room| tree.room_records_held.get(&room))
+            .filter_map(|room| tree.desktop.room_records_held.get(&room))
             .flat_map(|held| held.keys())
             .filter_map(|id| RecordId::parse(id))
             .collect();
@@ -2505,6 +2522,7 @@ impl RoomActivityPane {
     /// full-bleed — a 360px sheet over a 600px desktop is two unusable halves.
     pub fn layout(&mut self, viewport: Rect) {
         self.viewport = viewport;
+        self.window_layout = false;
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
             (vw - 2.0 * SHEET_INSET).max(0.0)
@@ -2539,6 +2557,8 @@ impl RoomActivityPane {
     /// Window chrome, clipping, sizing and movement remain owned by the
     /// shared `WindowGroup`; this method only consumes its content viewport.
     pub fn layout_window(&mut self, viewport: Rect) {
+        self.viewport = viewport;
+        self.window_layout = true;
         let inset = 2.0;
         self.sheet = Rect::new(
             viewport.x0 + inset,
@@ -2566,7 +2586,7 @@ impl RoomActivityPane {
 
     fn chrome_height(&self) -> f64 {
         if self.view == ActivityView::CatchUp {
-            return HEADER_H;
+            return self.header_h();
         }
         if self.shows_chip_rows() {
             self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H
@@ -2618,7 +2638,11 @@ impl RoomActivityPane {
         if (self.text_scale - theme.text_scale).abs() > f32::EPSILON {
             self.text_scale = theme.text_scale;
             if self.viewport.area() > 0.0 {
-                self.layout(self.viewport);
+                if self.window_layout {
+                    self.layout_window(self.viewport);
+                } else {
+                    self.layout(self.viewport);
+                }
             }
         }
         // Panel role (HIG §9.1/§9.2/§9.5): the sheet's corner is the Panel
@@ -2645,11 +2669,19 @@ impl RoomActivityPane {
             &card,
         );
 
-        // Scope pills first: the title is elided to the room left of them,
-        // so at 200 % the two never paint over each other.
-        self.draw_scope_chips(scene, transform, tr, theme);
         self.draw_title_and_subtitle(scene, transform, tr, theme);
-        self.draw_view_tabs(scene, transform, tr, theme);
+        if self.view == ActivityView::CatchUp {
+            // Catch Up is the friendly, focused recap. Full-history scope and
+            // mode tabs belong to the deeper views and must not leak into its
+            // paint, hit-testing, keyboard order, or accessibility snapshot.
+            self.scope_rects.clear();
+            self.view_rects.clear();
+        } else {
+            // Scope pills first: the title is elided to the room left of them,
+            // so at 200 % the two never paint over each other.
+            self.draw_scope_chips(scene, transform, tr, theme);
+            self.draw_view_tabs(scene, transform, tr, theme);
+        }
 
         self.period_rects.clear();
         self.author_rects.clear();
@@ -3515,7 +3547,7 @@ impl RoomActivityPane {
                 Some(inner_w),
             );
             for (line, text) in lines.iter().enumerate() {
-                tr.draw_text_weighted(
+                tr.draw_text(
                     scene,
                     text,
                     body_size,
@@ -3534,6 +3566,7 @@ impl RoomActivityPane {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
+        let mut previous_index: Option<usize> = None;
         for (index, brief) in self
             .digest
             .briefs
@@ -3556,6 +3589,42 @@ impl RoomActivityPane {
                 0.0
             };
             let expanded = self.expanded_brief == Some(index);
+            if let Some(newer) = previous_index
+                && (expanded || self.expanded_brief == Some(newer))
+            {
+                let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
+                draw_work_session_boundary(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    rail,
+                    brief.changes > 1,
+                    self.digest.briefs[newer].changes > 1,
+                );
+                let (into_newer, into_older) = work_session_boundary_button_rects(rail);
+                if self.digest.briefs[newer].changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoOlder,
+                        },
+                        into_older,
+                    ));
+                }
+                if brief.changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoNewer,
+                        },
+                        into_newer,
+                    ));
+                }
+                y += 26.0;
+            }
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
@@ -3564,10 +3633,9 @@ impl RoomActivityPane {
                 text_width(x1 - x0 - 24.0),
                 2,
             );
-            let height = metrics.height(
-                title_lines.len(),
-                if expanded { brief.actions.len() } else { 0 },
-            );
+            let collapsed_height = metrics.height(title_lines.len(), 0);
+            let expanded_height = metrics.height(title_lines.len(), brief.actions.len());
+            let height = collapsed_height + (expanded_height - collapsed_height) * expansion;
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
@@ -3575,9 +3643,8 @@ impl RoomActivityPane {
                 || self.brief_offset > 0;
             let available_height =
                 (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
-                    .max(112.0 + title_extra);
-            let height =
-                (112.0 + (expanded_height - 112.0) * expansion + title_extra).min(available_height);
+                    .max(collapsed_height);
+            let height = height.min(available_height);
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
@@ -3604,6 +3671,7 @@ impl RoomActivityPane {
             scene.pop_layer();
             y += height + 8.0;
             shown = shown.saturating_add(1);
+            previous_index = Some(index);
         }
         let remaining = self
             .digest
@@ -4585,6 +4653,7 @@ impl RoomActivityPane {
         self.task_draft.clear();
         self.task_route = WorkspaceTaskRoute::Manual;
         self.task_agent = tree
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.agent_members().into_iter().next())
             .map(|(agent, _)| agent);
@@ -4615,7 +4684,7 @@ impl RoomActivityPane {
     }
 
     fn create_task_from_draft(&mut self, tree: &mut WorkspaceTree) -> RoomActivityOutcome {
-        let workspace = tree.active;
+        let workspace = tree.desktop.active;
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
             .then(|| self.task_agent.clone())
             .flatten();
@@ -4713,7 +4782,7 @@ impl RoomActivityPane {
             let Some(agent) = task.assigned_agent.as_deref() else {
                 return handled_outcome();
             };
-            let Some(workspace) = tree.active_workspace().cloned() else {
+            let Some(workspace) = tree.desktop.active_workspace().cloned() else {
                 return handled_outcome();
             };
             let key = (workspace.room.to_string(), agent.to_string());
@@ -4746,8 +4815,12 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
         };
-        let changed =
-            tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
+        let changed = tree.set_workspace_task_status(
+            tree.desktop.active,
+            &task_id,
+            status,
+            &self.local_user(),
+        );
         if changed {
             self.refresh(tree);
         }
@@ -5814,7 +5887,7 @@ impl RoomActivityPane {
                     "A causal replay of workspace layout and participant activity"
                 }
             })
-            .with_state(AccessState::new().modal(true));
+            .with_state(AccessState::new());
         if self.sheet.area() > 0.0 {
             root = root.with_bounds(self.sheet);
         }
@@ -6808,7 +6881,7 @@ fn draw_brief_card(
     scene.stroke(
         &Stroke::new(2.0),
         transform,
-        theme.tokens.colors.border_standard,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
         None,
         &Line::new((rail_x, rect.y0), (rail_x, rect.y1 + 8.0)),
     );
@@ -6857,7 +6930,7 @@ fn draw_brief_card(
         tr,
         theme,
         &brief.authors,
-        content_x,
+        rect.x0 + 12.0,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
@@ -6873,14 +6946,6 @@ fn draw_brief_card(
         theme.tokens.colors.text_dim,
         at(transform, byline_x, byline_y),
         None,
-    );
-    tr.draw_text(
-        scene,
-        &format_activity_range(brief.first_at, brief.last_at, now),
-        theme.tokens.typography.scale.sm,
-        theme.tokens.colors.text_dim,
-        at(transform, content_x, rect.y0 + 56.0 + title_extra),
-        Some(width),
     );
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
@@ -6932,9 +6997,9 @@ fn draw_brief_card(
                 scene,
                 transform,
                 Rect::new(
-                    content_x + 8.0,
+                    rect.x0 + 18.0,
                     action_y - 2.0,
-                    content_x + 24.0,
+                    rect.x0 + 34.0,
                     action_y + 14.0,
                 ),
                 &initial,
@@ -6942,7 +7007,12 @@ fn draw_brief_card(
                 theme,
                 tr,
             );
-            let action_line = format!("{} · {}", action.author.name, action.summary);
+            let action_line = format!(
+                "{} · {} · {}",
+                action.author.name,
+                action.summary,
+                format_relative_time(action.timestamp, now)
+            );
             let action_line = tr.elide_to_width(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
@@ -6953,20 +7023,11 @@ fn draw_brief_card(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, content_x + 32.0, action_y),
+                at(transform, rect.x0 + 40.0, action_y),
                 None,
             );
             action_y += m.action_pitch();
         }
-        tr.draw_text(
-            scene,
-            "Open in full history  →",
-            theme.tokens.typography.scale.sm,
-            theme.tokens.colors.accent[4],
-            at(transform, content_x, (action_y + 6.0).min(rect.y1 - 12.0)),
-            Some(width),
-        );
-        return;
     }
     let affordance = if expanded {
         "Open this work session in Explorer →"
@@ -7212,54 +7273,13 @@ fn draw_work_session_boundary(
     }
 }
 
-fn format_activity_timestamp(timestamp: SystemTime, now: SystemTime) -> String {
-    use chrono::{DateTime, Local};
-    let local: DateTime<Local> = timestamp.into();
-    format!(
-        "{}, {}",
-        activity_day_label(timestamp, now),
-        local.format("%H:%M")
+fn work_session_boundary_button_rects(rect: Rect) -> (Rect, Rect) {
+    let center = rect.x0 + rect.width() / 2.0;
+    let button_width = 104.0_f64.min((rect.width() - 16.0).max(0.0) / 2.0);
+    (
+        Rect::new(center - 6.0 - button_width, rect.y0, center - 6.0, rect.y1),
+        Rect::new(center + 6.0, rect.y0, center + 6.0 + button_width, rect.y1),
     )
-}
-
-fn format_activity_range(first: SystemTime, last: SystemTime, now: SystemTime) -> String {
-    use chrono::{DateTime, Local};
-    if first == last {
-        return format_activity_timestamp(last, now);
-    }
-    let first_local: DateTime<Local> = first.into();
-    let last_local: DateTime<Local> = last.into();
-    let minutes = last
-        .duration_since(first)
-        .unwrap_or_default()
-        .as_secs()
-        .saturating_add(30)
-        / 60;
-    let duration = if minutes >= 60 {
-        let hours = minutes / 60;
-        let remainder = minutes % 60;
-        if remainder == 0 {
-            format!("{hours} hr")
-        } else {
-            format!("{hours} hr {remainder} min")
-        }
-    } else {
-        format!("{} min", minutes.max(1))
-    };
-    if first_local.date_naive() == last_local.date_naive() {
-        format!(
-            "{}, {} – {} ({duration})",
-            activity_day_label(first, now),
-            first_local.format("%H:%M"),
-            last_local.format("%H:%M")
-        )
-    } else {
-        format!(
-            "{} – {} ({duration})",
-            format_activity_timestamp(first, now),
-            format_activity_timestamp(last, now)
-        )
-    }
 }
 
 fn draw_brief_author_stack(
@@ -7969,7 +7989,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.active;
+        let ws_id = tree.desktop.active;
 
         let granted = tree
             .grant_in_workspace(
@@ -7994,7 +8014,7 @@ mod tests {
         .expect("the owner may grant in their own room");
         assert!(tree.revoke_in_workspace(ws_id, &user, &granted));
 
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Design review".to_string();
         }
         tree.seed_doc_from_cache();
@@ -8023,7 +8043,7 @@ mod tests {
         let invocation = tilo_actions::InvocationId::new();
         assert!(
             tree.append_workspace_effect_receipt(
-                tree.active,
+                tree.desktop.active,
                 invocation,
                 "ada",
                 tilo_actions::ActionContext::for_resource(
@@ -8064,7 +8084,7 @@ mod tests {
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room;
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.qdoc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -8119,7 +8139,8 @@ mod tests {
             .expect("task receipt");
             qdoc::history::commit_stamped_at(doc, 23);
         });
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(record.to_string(), checkout.kind.to_string());
@@ -8286,8 +8307,9 @@ mod tests {
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let records = RecordStore::in_memory();
-        let home = tree.active;
+        let home = tree.desktop.active;
         let elsewhere = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.id != home)
@@ -8302,11 +8324,12 @@ mod tests {
         pane.refresh_records(&mut tree, &records);
 
         pane.observe_workspace(elsewhere.raw());
-        tree.active = elsewhere;
+        tree.desktop.active = elsewhere;
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         if changed {
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == home)
                 .expect("home workspace")
@@ -8314,7 +8337,7 @@ mod tests {
             tree.seed_doc_from_cache();
         }
 
-        tree.active = home;
+        tree.desktop.active = home;
         pane.set_now_for_test(departed_at + elapsed);
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
@@ -8354,6 +8377,7 @@ mod tests {
 
         assert!(outcome.task_changed);
         let task = tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8491,6 +8515,7 @@ mod tests {
             )
             .expect("automated task is created");
         let tasks = &tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8549,6 +8574,7 @@ mod tests {
 
         assert!(!outcome.task_changed);
         let task = tree
+            .desktop
             .workspaces
             .iter()
             .find(|candidate| candidate.id == workspace)
@@ -8761,7 +8787,7 @@ mod tests {
             "this room's own grant is present: {scoped:?}"
         );
 
-        let all_tree = { tree.workspaces.clone() };
+        let all_tree = { tree.desktop.workspaces.clone() };
         let _ = all_tree;
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
         let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
@@ -8894,7 +8920,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
-        let ws_id = tree.active;
+        let ws_id = tree.desktop.active;
 
         let week_ago = SystemTime::now() - Duration::from_secs(604_800);
         let week_ago_secs = i64::try_from(
@@ -9047,6 +9073,7 @@ mod tests {
         let mut pane = pane_over(&mut tree);
 
         let before_name = tree
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws_id)
@@ -9056,7 +9083,7 @@ mod tests {
         let versions_before = pane.entries().len();
 
         // Rename again, so there is something to revert back across.
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Renamed by mistake".to_string();
         }
         tree.seed_doc_from_cache();
@@ -9071,7 +9098,8 @@ mod tests {
         );
 
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.as_str()),
@@ -9217,7 +9245,8 @@ mod tests {
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_room();
-        tree.collaborators
+        tree.desktop
+            .collaborators
             .push(crate::shell::state::Collaborator::new(
                 "ghost",
                 "Never Edited",
@@ -9586,14 +9615,15 @@ mod tests {
         let boundary = pane.entries()[renamed_at].id;
 
         // Move on: rename again, so the document is no longer in that state.
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
             ws.name = "Something else".to_string();
         }
         tree.seed_doc_from_cache();
         pane.invalidate();
         pane.refresh(&mut tree);
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.clone()),
@@ -9605,7 +9635,8 @@ mod tests {
             "the restore wrote something"
         );
         assert_eq!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.clone()),
@@ -10552,7 +10583,7 @@ mod tests {
         ] {
             assert!(
                 tree.append_workspace_effect_receipt(
-                    tree.active,
+                    tree.desktop.active,
                     tilo_actions::InvocationId::new(),
                     "ada",
                     tilo_actions::ActionContext::for_resource(

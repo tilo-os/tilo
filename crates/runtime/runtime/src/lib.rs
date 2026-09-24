@@ -88,11 +88,10 @@ mod tests {
     /// rather than panicking — the Flatpak-on-stock-Linux path.
     #[test]
     fn every_service_reports_unavailable_when_env_is_empty() {
+        let mut env = tilo_test_env::ScopedEnv::new();
         for (key, _) in std::env::vars() {
             if key.starts_with("TILO_") {
-                // SAFETY: this test process' env is not touched by
-                // any other thread during test setup.
-                unsafe { std::env::remove_var(&key) };
+                env.remove(&key);
             }
         }
 

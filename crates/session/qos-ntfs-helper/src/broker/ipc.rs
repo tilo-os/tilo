@@ -318,7 +318,7 @@ fn content(
         request,
         Response::ReadDone {
             length,
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            sha256: hex::encode(Sha256::digest(&bytes)),
         },
         end,
     )?;

@@ -223,7 +223,7 @@ fn apply_signed_document(
         }
     }
     doc.get(&ROOT, FIELD)
-        .map(|value| value.map(|(value, _)| value.to_str().unwrap_or_default().to_string()))
+        .map(|value| value.map(|(value, _)| value.as_str().unwrap_or_default().to_string()))
         .map_err(|error| format!("document field could not be read: {error}"))
 }
 

@@ -43,11 +43,11 @@ atomic-file = { path = "../../system/atomic-file" }
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`, `threshold-identity`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 
 # The RNG shape ed25519-dalek 2.x consumes (`rand_core` 0.6). Kept
 # in lockstep with `collab-types` to avoid rand-version drift.
-rand.workspace = true
 
 # BLAKE3 for hashing the signing preimage (`preimage_constant ||
 # postcard(view_without_signature)`). Ed25519 signs the 32-byte
@@ -55,6 +55,9 @@ rand.workspace = true
 # a property the design pins explicitly for the DeviceCert and
 # RevocationEntry ABI.
 blake3.workspace = true
+
+# Lower-case hex names the per-user key files.
+hex.workspace = true
 
 # Canonical wire encoding for everything that gets signed. Same
 # choice as `collab-types`; postcard is little-endian +

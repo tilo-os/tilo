@@ -12,12 +12,12 @@ SPEC.loader.exec_module(contract)
 
 
 class AtspiEndpointContractTests(unittest.TestCase):
-    def audit_update(self, update, *, host_source=False):
+    def audit_update(self, update, *, source="crates/sdk/ui-core/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             files = {
-                "crates/sdk/ui-core/Cargo.toml": 'accesskit_winit = "0.34.0"',
-                ("crates/sdk/ui-core/src/app/host.rs" if host_source else "crates/sdk/ui-core/src/app.rs"): "\n".join([
+                "crates/sdk/ui-core/Cargo.toml": cargo,
+                source: "\n".join([
                     "accesskit_winit::Adapter::with_event_loop_proxy",
                     "self.app.dispatch_a11y_action(req.target_node, &action)",
                     "self.a11y_adapter = None;",
@@ -74,8 +74,42 @@ class AtspiEndpointContractTests(unittest.TestCase):
             "    app_ref.build_a11y_tree_update(scale),\n"
             ")\n"
             "});",
-            host_source=True,
+            source="crates/sdk/ui-core/src/app/host.rs",
         ), [])
+
+    NATIVE_UPDATE = (
+        "adapter.update_if_active(|| {\n"
+        "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))\n"
+        "});"
+    )
+
+    def test_default_native_runner_feature_preserves_endpoint_contract(self):
+        self.assertEqual(self.audit_update(
+            self.NATIVE_UPDATE,
+            source="crates/sdk/ui-core/src/app/native_runner.rs",
+            cargo="\n".join([
+                "[features]",
+                'default = ["native"]',
+                'native = ["dep:accesskit_winit"]',
+                "[dependencies]",
+                'accesskit_winit = { version = "0.34.0", optional = true }',
+            ]),
+        ), [])
+
+    def test_optional_adapter_outside_default_features_is_rejected(self):
+        self.assertIn(
+            "crates/sdk/ui-core/Cargo.toml: AccessKit winit adapter is not enabled by default",
+            self.audit_update(
+                self.NATIVE_UPDATE,
+                cargo="\n".join([
+                    "[features]",
+                    "default = []",
+                    'native = ["dep:accesskit_winit"]',
+                    "[dependencies]",
+                    'accesskit_winit = { version = "0.34.0", optional = true }',
+                ]),
+            ),
+        )
 
     def test_disconnected_tree_build_does_not_satisfy_update_contract(self):
         self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(

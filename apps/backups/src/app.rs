@@ -428,12 +428,7 @@ impl BackupsApp {
     }
 
     fn config_path() -> Option<PathBuf> {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .map(|root| root.join("tilo/backups/config.json"))
+        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -453,15 +448,9 @@ impl BackupsApp {
         ) else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-            if fs::write(&temporary, bytes).is_ok() {
-                let _ = fs::rename(temporary, path);
-            }
+            let _ = atomic_file::write_creating_parent(&path, &bytes);
         }
     }
 
@@ -918,10 +907,10 @@ impl BackupsApp {
             rect.y0 + 10.0 * scale,
         );
         let track = Rect::new(rect.x0 + S3, rect.y1 - 7.0, rect.x1 - S3, rect.y1 - 4.0);
-        paint::fill_rrect(scene, t, track, 2.0, c.surfaces.base);
+        paint::fill_round(scene, t, track, 2.0, c.surfaces.base);
         // Indeterminate progress is honest: traversal totals are not known before
         // walking the tree, so this communicates work without inventing a percent.
-        paint::fill_rrect(
+        paint::fill_round(
             scene,
             t,
             Rect::new(
@@ -1290,7 +1279,7 @@ impl BackupsApp {
             content.center().y + card_h / 2.0,
         );
         paint::card(scene, t, card, 16.0, c.surfaces.raised);
-        paint::stroke_rrect(
+        paint::stroke_round(
             scene,
             t,
             card,
@@ -1695,7 +1684,7 @@ impl BackupsApp {
             let thumb_h = (track_h * (track_h / self.timeline_content_h)).max(36.0);
             let thumb_y = list.y0 + (track_h - thumb_h) * (self.timeline_scroll / max_scroll);
             let thumb = Rect::new(list.x1 - 7.0, thumb_y, list.x1 - 2.0, thumb_y + thumb_h);
-            paint::fill_rrect(scene, t, thumb, 2.5, c.text_dim.with_alpha_factor(0.72));
+            paint::fill_round(scene, t, thumb, 2.5, c.text_dim.with_alpha_factor(0.72));
         }
     }
 
@@ -1718,7 +1707,7 @@ impl BackupsApp {
             c.surfaces.raised
         };
         paint::card(scene, t, card, 12.0, background);
-        paint::stroke_rrect(
+        paint::stroke_round(
             scene,
             t,
             card,
@@ -1781,8 +1770,8 @@ impl BackupsApp {
         // floats over content in overlay mode; either way the edge derives
         // from the fill it sits on.
         if self.drawer.is_overlay() {
-            paint::fill_rrect(scene, t, rail, 14.0, ground);
-            paint::stroke_rrect(scene, t, rail.inset(-0.5), 13.5, panel_border(theme), 1.0);
+            paint::fill_round(scene, t, rail, 14.0, ground);
+            paint::stroke_round(scene, t, rail.inset(-0.5), 13.5, panel_border(theme), 1.0);
         } else {
             paint::card(scene, t, rail, 14.0, ground);
         }
@@ -1933,7 +1922,7 @@ impl BackupsApp {
             rows_clip.x1 - S1,
             thumb_y + thumb_h,
         );
-        paint::fill_rrect(scene, t, thumb, 1.5, c.text_dim.with_alpha_factor(0.45));
+        paint::fill_round(scene, t, thumb, 1.5, c.text_dim.with_alpha_factor(0.45));
     }
 
     /// The ring a selected card takes: the stronger, panel-strength derived
@@ -1941,7 +1930,7 @@ impl BackupsApp {
     /// an accent wash.
     fn selected_ring(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
         let c = &theme.tokens.colors;
-        paint::stroke_rrect(
+        paint::stroke_round(
             scene,
             t,
             rect.inset(-0.5),
@@ -1968,10 +1957,10 @@ impl BackupsApp {
         // panel-strength ring (`selected_on`), hover half that wash.
         if selected {
             let (wash, ring) = selected_on(ground);
-            paint::fill_rrect(scene, t, row, 9.0, wash);
-            paint::stroke_rrect(scene, t, row.inset(-0.5), 8.5, ring, 1.0);
+            paint::fill_round(scene, t, row, 9.0, wash);
+            paint::stroke_round(scene, t, row.inset(-0.5), 8.5, ring, 1.0);
         } else if hovered {
-            paint::fill_rrect(
+            paint::fill_round(
                 scene,
                 t,
                 row,
@@ -2139,7 +2128,7 @@ impl BackupsApp {
         if self.hover == Some(Hit::Dest(d.id.clone())) {
             // Hover is half the selected wash, measured against the rail.
             let ground = self.rail_ground(theme);
-            paint::fill_rrect(
+            paint::fill_round(
                 scene,
                 t,
                 row,
@@ -2247,7 +2236,7 @@ impl BackupsApp {
             paint::card(scene, t, tile, 12.0, c.surfaces.raised);
             // accent ticker on the left edge (live state colour)
             let tick = Rect::new(tile.x0, tile.y0 + S3, tile.x0 + 3.0, tile.y1 - S3);
-            paint::fill_rrect(scene, t, tick, 1.5, *accent);
+            paint::fill_round(scene, t, tick, 1.5, *accent);
             paint::text(
                 scene,
                 tr,
@@ -2402,7 +2391,7 @@ impl BackupsApp {
             let thumb_h = (track_h * (track_h / content_h)).max(28.0);
             let thumb_y = list.y0 + (track_h - thumb_h) * (self.timeline_scroll / max_scroll);
             let thumb = Rect::new(list.x1 - 4.0, thumb_y, list.x1 - 1.0, thumb_y + thumb_h);
-            paint::fill_rrect(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.45));
+            paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.45));
         }
     }
 
@@ -3689,13 +3678,13 @@ impl BackupsApp {
 
         // Stacked proportional bar.
         let bar = Rect::new(content.x0, y0 + 22.0, content.x1, y0 + 40.0);
-        paint::fill_rrect(scene, t, bar, 9.0, c.lift(1.0));
+        paint::fill_round(scene, t, bar, 9.0, c.lift(1.0));
         let mut bar_x = bar.x0;
         for (id, _, count) in &counts {
             let bar_w = bar.width() * (*count as f64 / total as f64);
             if bar_w > 1.0 {
                 let seg = Rect::new(bar_x, bar.y0, (bar_x + bar_w).min(bar.x1), bar.y1);
-                paint::fill_rrect(scene, t, seg, 9.0, Self::dest_color(theme, id));
+                paint::fill_round(scene, t, seg, 9.0, Self::dest_color(theme, id));
             }
             bar_x += bar_w;
         }
@@ -3853,8 +3842,8 @@ impl BackupsApp {
         let row = Rect::new(panel.x0 + S3, ry, panel.x1 - S3, ry + row_h);
         let focused = self.policy_focus == i;
         if focused {
-            paint::fill_rrect(scene, t, row, 10.0, c.lift(0.5));
-            paint::stroke_rrect(scene, t, row, 10.0, c.border_focus, 2.0);
+            paint::fill_round(scene, t, row, 10.0, c.lift(0.5));
+            paint::stroke_round(scene, t, row, 10.0, c.border_focus, 2.0);
         }
         let rc = Self::retention_color(
             theme,
@@ -4351,7 +4340,7 @@ impl BackupsApp {
         if f.is_dir {
             // folder glyph
             let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
-            paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
+            paint::fill_round(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
         } else {
             let fr = Rect::new(
                 ix + 1.0,
@@ -4359,7 +4348,7 @@ impl BackupsApp {
                 ix + 11.0,
                 row.center().y + 6.0,
             );
-            paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
+            paint::stroke_round(scene, t, fr, 2.0, icol, 1.3);
         }
         paint::text_vc(
             scene,
@@ -4561,7 +4550,7 @@ impl BackupsApp {
                 }
             }
             SourceKind::Workspace => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7),
@@ -4579,7 +4568,7 @@ impl BackupsApp {
                 );
             }
             SourceKind::Custom => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r, x + r, y + r),
@@ -4604,7 +4593,7 @@ impl BackupsApp {
             DestKind::LocalBtrfs => {
                 for k in 0..3 {
                     let yy = y - r + f64::from(k) * r;
-                    paint::stroke_rrect(
+                    paint::stroke_round(
                         scene,
                         t,
                         Rect::new(x - r, yy, x + r, yy + r * 0.7),
@@ -4615,7 +4604,7 @@ impl BackupsApp {
                 }
             }
             DestKind::LocalFolder => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.7, x + r, y + r * 0.7),
@@ -4625,7 +4614,7 @@ impl BackupsApp {
                 );
             }
             DestKind::External => {
-                paint::stroke_rrect(
+                paint::stroke_round(
                     scene,
                     t,
                     Rect::new(x - r, y - r * 0.6, x + r, y + r * 0.6),

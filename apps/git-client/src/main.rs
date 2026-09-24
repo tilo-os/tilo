@@ -31,6 +31,12 @@ const NARROW_VIEWPORT: (u32, u32) = (680, 860);
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only reached from the screenshot entry points on the main thread, before \
+              the widget that reads these variables is built and before any app worker \
+              thread exists"
+)]
 fn prepare_shot(narrow: bool, scenario: Option<&str>) -> Box<dyn Widget> {
     // An explicit repository is the only way screenshots may inspect the
     // surrounding checkout; otherwise use the deterministic sample fixture.
