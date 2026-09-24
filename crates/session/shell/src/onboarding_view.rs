@@ -2301,7 +2301,8 @@ impl Widget for OnboardingView {
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
                         let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
                             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                        let requester = tilo_relay::ProcessLease::capture(std::process::id());
+                        let requester =
+                            tilo_relay_protocol::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
                                 .map_err(|error| error.to_string())
