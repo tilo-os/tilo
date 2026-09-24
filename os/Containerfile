@@ -321,7 +321,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         libseat-devel libinput-devel systemd-devel libdrm-devel \
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
         pipewire-devel \
-        ffmpeg-free-devel libva-devel \
         sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
         glib2-devel libsoup3-devel \
