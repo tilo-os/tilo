@@ -194,8 +194,12 @@ lanes before their child manifests can enter the multi-architecture index. Its
 server-side OIDC policy must therefore accept either the protected
 `release-imager.yml` semantic-tag identity above or `build-image.yml` on a
 protected `vMAJOR.MINOR.PATCH` tag, an authorized publishing dispatch from
-`main`, or an enabled continuous publication push to protected `main`. Reject
-all pull requests, branch rehearsals, non-main dispatches, and other workflows.
+`main`, the nightly scheduled run on protected `main`, or an enabled continuous
+publication push to protected `main`. Reject all pull requests, branch
+rehearsals, non-main dispatches, and other workflows. Tag lanes run on the
+`imager-linux-*` hosts; `main` publication lanes run on `runner-disk-100g` and
+`runner-disk-100g-arm64`, so the wrapper must be installed at the same
+canonical path on those runner images too.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
