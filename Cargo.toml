@@ -14,7 +14,6 @@ exclude = [
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
-    "vendor/openh264-sys2",
     "vendor/wayland-backend",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
@@ -406,7 +405,6 @@ fastcdc = { version = "3.2", default-features = false }
 image = { version = "0.25.10", default-features = false }
 qrcode = { version = "0.14", default-features = false }
 rqrr = { version = "0.10", default-features = false }
-openh264 = { version = "0.9", features = ["source"] }
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
@@ -530,9 +528,6 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
-# Keep native archive inputs independent of registry filesystem enumeration.
-# See vendor/openh264-sys2/TILO-PATCH.md.
-openh264-sys2 = { path = "vendor/openh264-sys2" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
