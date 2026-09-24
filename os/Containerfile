@@ -441,6 +441,12 @@ COPY . /build
 # Layer timestamp rewriting can make a restored target cache newer than changed
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
+# That is TILO_CARGO_FRESHNESS=clean, the default and what CI builds. Local
+# builds (os/dev/local-inputs.sh) pass `content`: os/scripts/cargo-freshness.sh
+# marks exactly the sources whose contents changed newer than the cached target,
+# and every other source older, so Cargo reuses what did not change instead of
+# relinking ~50 binaries through thin LTO on every rebuild.
+ARG TILO_CARGO_FRESHNESS=clean
 ARG TILO_WITH_BROWSER
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
@@ -475,8 +481,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
     && { sccache --zero-stats 2>/dev/null || true; } \
-    && cargo clean --release \
-    && cargo clean --profile thin-app \
+    && case "$TILO_CARGO_FRESHNESS" in \
+         clean) cargo clean --release && cargo clean --profile thin-app ;; \
+         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+                    || { cargo clean --release && cargo clean --profile thin-app; } ;; \
+         *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
+       esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
          BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
        else \
