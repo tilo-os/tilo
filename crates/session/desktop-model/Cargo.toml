@@ -12,15 +12,14 @@ license.workspace = true
 # `tools/policy/check_desktop_model_dependencies.py` enforces that list.
 
 [dependencies]
+automerge.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true
