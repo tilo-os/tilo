@@ -683,14 +683,9 @@ fn push_revision_part(parts: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tilo_actions::Action;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
-
-    // Two adversarial 100k fixtures are intentionally large enough to prove
-    // bounded query work. Serialising only those fixtures keeps the normal
-    // parallel test runner below its memory ceiling.
-    static LARGE_CATALOG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
         let address = result.action_address().expect("canonical action address");
@@ -772,56 +767,51 @@ mod tests {
 
     #[test]
     fn late_relation_is_discoverable_without_scanning_a_large_schema() {
-        let _guard = LARGE_CATALOG_TEST_LOCK.lock().unwrap();
-        let mut session = Session::with_sample();
-        let mut template = session.schema.schemas[0].tables[0].clone();
-        // Keep this adversarial catalog at 100k indexed relations rather than
-        // multiplying the fixture's columns into an unrelated million-entry
-        // allocation.
-        template.columns.clear();
-        session.schema.schemas[0].tables = (0..100_001)
-            .map(|index| {
-                let mut table = template.clone();
-                table.name = format!("table-{index}");
-                table
-            })
-            .collect();
-        session.schema.schemas[0].tables.last_mut().unwrap().name = "late unique relation".into();
-        let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc).unwrap();
-        let page = index.provider().search_page("unique relation", None, 2, 2);
-        assert!(page.inspected <= 2, "query work stays bounded");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late unique relation");
-        assert_address_resolves(&index, &page.results[0]);
+        let (_, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut session = Session::with_sample();
+                let mut template = session.schema.schemas[0].tables[0].clone();
+                // Only relations are under test; the fixture's columns would
+                // multiply the catalogue without adding late relations.
+                template.columns.clear();
+                session.schema.schemas[0].tables = corpus
+                    .map(|row| {
+                        let mut table = template.clone();
+                        table.name = row.text;
+                        table
+                    })
+                    .collect();
+                index.sync(&session, &mut AutoCommit::new()).unwrap();
+                index.provider()
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        assert_address_resolves(&index, &hit);
     }
 
     #[test]
     fn late_column_is_discoverable_through_its_own_exact_browse_address() {
-        let _guard = LARGE_CATALOG_TEST_LOCK.lock().unwrap();
-        let mut session = Session::with_sample();
-        let template = session.schema.schemas[0].tables[0].columns[0].clone();
-        session.schema.schemas[0].tables[0].columns = (0..100_001)
-            .map(|index| {
-                let mut column = template.clone();
-                column.name = format!("column-{index}");
-                column
-            })
-            .collect();
-        session.schema.schemas[0].tables[0]
-            .columns
-            .last_mut()
-            .unwrap()
-            .name = "late unique column".into();
-        let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc).unwrap();
-        let page = index.provider().search_page("unique column", None, 2, 2);
-        assert!(page.inspected <= 2, "query work stays bounded");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late unique column");
-        assert_address_resolves(&index, &page.results[0]);
+        let (_, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut session = Session::with_sample();
+                let template = session.schema.schemas[0].tables[0].columns[0].clone();
+                session.schema.schemas[0].tables[0].columns = corpus
+                    .map(|row| {
+                        let mut column = template.clone();
+                        column.name = row.text;
+                        column
+                    })
+                    .collect();
+                index.sync(&session, &mut AutoCommit::new()).unwrap();
+                index.provider()
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        assert_address_resolves(&index, &hit);
     }
 
     #[test]
