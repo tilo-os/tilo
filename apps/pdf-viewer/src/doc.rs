@@ -17,19 +17,29 @@
 //! ```text
 //! root
 //! ├── "meta" (Map) { title, author, seeded:bool,
-//! │                  source-hash, source-len, source-mime }
+//! │                  source-hash, source-len, source-mime, imported-source }
 //! ├── "page-plan" (List of Map) { id, source-page, [import descriptor] }
 //! ├── "page-plan-tombstones" (Map) { <page id>: true }
 //! ├── "page-rotation" (Map) { <page id>: degrees }
 //! ├── "annotations" (List of Map)
 //! │     { id, page-id, kind, color, author, created-ms, geom-space,
-//! │       quads, chars | points | x, y }
+//! │       quads, chars | points | strokes | x, y | x, y, w, h, text, font-size }
 //! ├── "comments" (List of Map)
 //! │     { id, anno, page-id, author, body, created, resolved, replies:List }
 //! ├── "signatures" (List of Map)
 //! │     { id, page-id, geom-space, x, y, w, h, signer, date, ink, strokes }
-//! └── "form-values" (Map) { <field name>: Map { kind, value, export } }
+//! ├── "form-values" (Map) { <field name>: Map { kind, value, export } }
+//! └── "adopted" (Map) { <annotation or reply id>:
+//!                        Map { page, index, name, kind, print, parent } }
 //! ```
+//!
+//! **Markup already in the PDF is taken over.** The first time a record
+//! meets its source bytes, the file's highlights, notes and their reply
+//! threads, free text, ink and form values become records like any other
+//! (`meta.imported-source` names the bytes imported; ids derive from them so
+//! concurrent imports merge). `adopted` remembers where each came from, so
+//! an export keeps, replaces or removes the originals instead of adding
+//! copies — see [`crate::adopt`].
 //!
 //! **The PDF itself is an immutable blob.** `meta.source-*` pins the
 //! content hash of the bytes the markup was made against; the same bytes are
@@ -534,6 +544,97 @@ impl PdfDoc {
         );
     }
 
+    // ---- markup taken over from the PDF -----------------------------
+
+    /// The source hash whose existing markup this record has taken over.
+    pub fn imported_source(doc: &AutoCommit) -> Option<String> {
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return None;
+        };
+        read_str(doc, &meta, "imported-source")
+    }
+
+    /// Take over a document's existing markup: add the planned records and
+    /// remember where each came from. Idempotent per source: a record that
+    /// already imported `source_hash` is left alone, and every record id is
+    /// derived from the source, so concurrent imports merge.
+    pub fn import_existing(
+        doc: &mut AutoCommit,
+        source_hash: &str,
+        plan: &crate::adopt::ImportPlan,
+    ) {
+        if Self::imported_source(doc).as_deref() == Some(source_hash) {
+            return;
+        }
+        Self::ensure_containers(doc);
+        for (annotation, page_id) in &plan.annotations {
+            Self::add_annotation(doc, annotation, Some(page_id));
+        }
+        for comment in &plan.comments {
+            Self::add_comment(doc, comment);
+        }
+        let recorded = Self::form_values(doc);
+        for (name, value) in &plan.form_values {
+            if !recorded.contains_key(name) {
+                Self::set_form_value(doc, name, value);
+            }
+        }
+        let map = match doc.get(&ROOT, "adopted") {
+            Ok(Some((Value::Object(ObjType::Map), map))) => Some(map),
+            _ => doc.put_object(&ROOT, "adopted", ObjType::Map).ok(),
+        };
+        if let Some(map) = map {
+            for entry in &plan.adopted {
+                let Ok(e) = doc.put_object(&map, entry.id.as_str(), ObjType::Map) else {
+                    continue;
+                };
+                let _ = doc.put(&e, "page", entry.page as i64);
+                let _ = doc.put(&e, "index", entry.index as i64);
+                let _ = doc.put(&e, "name", entry.name.as_str());
+                let _ = doc.put(&e, "kind", entry.kind.as_str());
+                let _ = doc.put(&e, "print", entry.print.as_str());
+                if let Some(parent) = &entry.parent {
+                    let _ = doc.put(&e, "parent", parent.as_str());
+                }
+            }
+        }
+        if let Some(meta) = Self::meta(doc) {
+            let _ = doc.put(&meta, "imported-source", source_hash);
+        }
+    }
+
+    /// Every taken-over annotation's origin, by record id.
+    pub fn adopted(doc: &AutoCommit) -> Vec<crate::adopt::AdoptedEntry> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for map in Self::roots(doc, "adopted", ObjType::Map) {
+            for id in doc.keys(&map) {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&map, id.as_str()) else {
+                    continue;
+                };
+                let (Some(page), Some(index)) = (
+                    Self::get_i64(doc, &e, "page").and_then(|p| usize::try_from(p).ok()),
+                    Self::get_i64(doc, &e, "index").and_then(|i| usize::try_from(i).ok()),
+                ) else {
+                    continue;
+                };
+                out.push(crate::adopt::AdoptedEntry {
+                    id,
+                    page,
+                    index,
+                    name: read_str(doc, &e, "name").unwrap_or_default(),
+                    kind: read_str(doc, &e, "kind").unwrap_or_default(),
+                    print: read_str(doc, &e, "print").unwrap_or_default(),
+                    parent: read_str(doc, &e, "parent"),
+                });
+            }
+        }
+        out
+    }
+
     // ---- form values ------------------------------------------------
 
     /// Every form value held in the record, by field name.
@@ -766,8 +867,71 @@ impl PdfDoc {
                 let _ = doc.put(&m, "x", *x);
                 let _ = doc.put(&m, "y", *y);
             }
-            AnnoKind::Ink { points } => {
-                let _ = doc.put(&m, "points", Self::points_to_str(points));
+            AnnoKind::Ink { strokes } => match strokes.as_slice() {
+                [points] => {
+                    let _ = doc.put(&m, "points", Self::points_to_str(points));
+                }
+                _ => {
+                    let _ = doc.put(&m, "strokes", Self::strokes_to_str(strokes));
+                }
+            },
+            AnnoKind::FreeText { rect, text, size } => {
+                Self::put_rect(doc, &m, rect);
+                let _ = doc.put(&m, "text", text.as_str());
+                let _ = doc.put(&m, "font-size", *size);
+            }
+        }
+    }
+
+    fn put_rect(doc: &mut AutoCommit, m: &ObjId, rect: &PtRect) {
+        let _ = doc.put(m, "x", rect.x);
+        let _ = doc.put(m, "y", rect.y);
+        let _ = doc.put(m, "w", rect.w);
+        let _ = doc.put(m, "h", rect.h);
+    }
+
+    fn annotation_entry(doc: &AutoCommit, id: &str) -> Option<ObjId> {
+        let (list, i) = Self::locate(doc, "annotations", id)?;
+        match doc.get(&list, i) {
+            Ok(Some((Value::Object(ObjType::Map), m))) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Replace a free text annotation's text.
+    pub fn set_free_text(doc: &mut AutoCommit, id: &str, text: &str) {
+        if let Some(m) = Self::annotation_entry(doc, id)
+            && read_str(doc, &m, "kind").as_deref() == Some("freetext")
+        {
+            let _ = doc.put(&m, "text", text);
+        }
+    }
+
+    /// Move or resize a free text box, and set its text size.
+    pub fn set_free_text_box(
+        doc: &mut AutoCommit,
+        id: &str,
+        rect: &PtRect,
+        size: f64,
+        space: GeomSpace,
+    ) {
+        if !size.is_finite()
+            || size <= 0.0
+            || [rect.x, rect.y, rect.w, rect.h]
+                .iter()
+                .any(|n| !n.is_finite())
+        {
+            return;
+        }
+        if let Some(m) = Self::annotation_entry(doc, id)
+            && read_str(doc, &m, "kind").as_deref() == Some("freetext")
+        {
+            Self::put_rect(doc, &m, rect);
+            let _ = doc.put(&m, "font-size", size);
+            if space == GeomSpace::User {
+                let _ = doc.put(&m, "geom-space", "user");
+            } else {
+                let _ = doc.delete(&m, "geom-space");
             }
         }
     }
@@ -797,8 +961,25 @@ impl PdfDoc {
             );
             AnnoKind::Markup { style, quads }
         } else if kind_key == "ink" {
-            AnnoKind::Ink {
-                points: Self::points_from_str(&read_str(doc, m, "points").unwrap_or_default()),
+            let strokes = match read_str(doc, m, "strokes") {
+                Some(s) => Self::strokes_from_str(&s),
+                None => vec![Self::points_from_str(
+                    &read_str(doc, m, "points").unwrap_or_default(),
+                )],
+            };
+            AnnoKind::Ink { strokes }
+        } else if kind_key == "freetext" {
+            AnnoKind::FreeText {
+                rect: PtRect::new(
+                    read_number(doc, m, "x").unwrap_or(0.0),
+                    read_number(doc, m, "y").unwrap_or(0.0),
+                    read_number(doc, m, "w").unwrap_or(0.0),
+                    read_number(doc, m, "h").unwrap_or(0.0),
+                ),
+                text: read_str(doc, m, "text").unwrap_or_default(),
+                size: read_number(doc, m, "font-size")
+                    .filter(|s| s.is_finite() && *s > 0.0)
+                    .unwrap_or(crate::model::FREE_TEXT_SIZE),
             }
         } else {
             AnnoKind::Note {
@@ -902,8 +1083,10 @@ impl PdfDoc {
     }
 
     pub fn delete_annotation(doc: &mut AutoCommit, id: &str) {
-        if let Some((list, i)) = Self::locate(doc, "annotations", id) {
-            let _ = doc.delete(&list, i);
+        // Every copy: replicas that took over the same markup concurrently
+        // each inserted the record under its source-derived id.
+        for list in Self::roots(doc, "annotations", ObjType::List) {
+            Self::remove_from_list(doc, &list, id);
         }
         // Any comments anchored to this annotation are removed with it so a
         // deleted note never leaves a dangling thread behind in the rail.
@@ -1238,9 +1421,7 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink {
-                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
-            },
+            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
             color: Swatch::Blue,
             author: "Bob".into(),
             chars: None,
@@ -1250,7 +1431,8 @@ mod tests {
         PdfDoc::add_annotation(&mut doc, &a, None);
         let got = PdfDoc::list_annotations(&doc);
         match &got[0].kind {
-            AnnoKind::Ink { points } => {
+            AnnoKind::Ink { strokes } => {
+                let points = &strokes[0];
                 assert_eq!(points.len(), 3);
                 assert!((points[1].0 - 3.5).abs() < 1e-6);
                 assert!((points[1].1 - 4.25).abs() < 1e-6);
@@ -1303,9 +1485,7 @@ mod tests {
         let a = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Ink {
-                points: vec![(1.0, 2.0), (3.0, 4.0)],
-            },
+            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.0, 4.0)]),
             color: Swatch::Blue,
             author: "Bob".into(),
             chars: None,
@@ -1316,7 +1496,7 @@ mod tests {
         PdfDoc::add_annotation(&mut doc, &a, None);
         PdfDoc::set_annotation_position(&mut doc, &id, 99.0, 99.0, GeomSpace::Page);
         match &PdfDoc::list_annotations(&doc)[0].kind {
-            AnnoKind::Ink { points } => assert_eq!(points.len(), 2, "ink polyline preserved"),
+            AnnoKind::Ink { strokes } => assert_eq!(strokes[0].len(), 2, "ink polyline preserved"),
             _ => panic!("expected ink"),
         }
     }

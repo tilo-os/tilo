@@ -279,6 +279,19 @@ pub enum AnnoGeom {
         x: f64,
         y: f64,
     },
+    /// Freehand ink of more than one stroke.
+    InkStrokes {
+        strokes: Vec<Vec<(f64, f64)>>,
+    },
+    /// A free text box.
+    FreeText {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        text: String,
+        size: f64,
+    },
 }
 
 impl AnnoGeom {
@@ -289,10 +302,23 @@ impl AnnoGeom {
                 quads: quads.iter().map(|q| (q.x, q.y, q.w, q.h)).collect(),
                 chars,
             },
-            AnnoKind::Ink { points } => AnnoGeom::Ink {
-                points: points.clone(),
+            AnnoKind::Ink { strokes } => match strokes.as_slice() {
+                [points] => AnnoGeom::Ink {
+                    points: points.clone(),
+                },
+                _ => AnnoGeom::InkStrokes {
+                    strokes: strokes.clone(),
+                },
             },
             AnnoKind::Note { x, y } => AnnoGeom::Note { x: *x, y: *y },
+            AnnoKind::FreeText { rect, text, size } => AnnoGeom::FreeText {
+                x: rect.x,
+                y: rect.y,
+                w: rect.w,
+                h: rect.h,
+                text: text.clone(),
+                size: *size,
+            },
         }
     }
 
@@ -316,13 +342,74 @@ impl AnnoGeom {
                 },
                 *chars,
             ),
-            AnnoGeom::Ink { points } => (
+            AnnoGeom::Ink { points } => (AnnoKind::ink(points.clone()), None),
+            AnnoGeom::InkStrokes { strokes } => (
                 AnnoKind::Ink {
-                    points: points.clone(),
+                    strokes: strokes.clone(),
                 },
                 None,
             ),
             AnnoGeom::Note { x, y } => (AnnoKind::Note { x: *x, y: *y }, None),
+            AnnoGeom::FreeText {
+                x,
+                y,
+                w,
+                h,
+                text,
+                size,
+            } => (
+                AnnoKind::FreeText {
+                    rect: PtRect::new(*x, *y, *w, *h),
+                    text: text.clone(),
+                    size: if size.is_finite() && *size > 0.0 {
+                        *size
+                    } else {
+                        crate::model::FREE_TEXT_SIZE
+                    },
+                },
+                None,
+            ),
+        }
+    }
+}
+
+/// A comment thread as an import carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommentWire {
+    pub id: String,
+    pub anno_id: Option<String>,
+    pub page: usize,
+    pub author: String,
+    pub body: String,
+    pub created: i64,
+    /// `(id, author, body)` per reply.
+    pub replies: Vec<(String, String, String)>,
+}
+
+/// An imported annotation, in its page's user space.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedAnnotationWire {
+    pub id: String,
+    pub page: usize,
+    pub page_id: String,
+    pub geom: AnnoGeom,
+    pub color: String,
+    pub author: String,
+    pub created_ms: i64,
+}
+
+impl ImportedAnnotationWire {
+    fn to_annotation(&self) -> Annotation {
+        let (kind, chars) = self.geom.to_kind();
+        Annotation {
+            id: self.id.clone(),
+            page: self.page,
+            kind,
+            color: Swatch::parse(&self.color),
+            author: self.author.clone(),
+            chars,
+            created_ms: self.created_ms,
+            space: GeomSpace::User,
         }
     }
 }
@@ -518,6 +605,33 @@ pub enum PdfViewerAction {
         hash: String,
         len: u64,
         mime: String,
+    },
+    /// Take over the markup and form values already in the source bytes
+    /// `source_hash` as records (see [`crate::adopt`]). A record imports a
+    /// given source once; ids derive from the source, so concurrent imports
+    /// merge.
+    ImportExisting {
+        source_hash: String,
+        annotations: Vec<ImportedAnnotationWire>,
+        comments: Vec<CommentWire>,
+        form_values: Vec<(String, FormValueWire)>,
+        adopted: Vec<crate::adopt::AdoptedEntry>,
+    },
+    /// Replace a free text box's text.
+    SetFreeText {
+        id: String,
+        text: String,
+    },
+    /// Move or resize a free text box and set its text size.
+    SetFreeTextBox {
+        id: String,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        size: f64,
+        #[serde(default)]
+        user_space: bool,
     },
 }
 
@@ -718,6 +832,68 @@ impl Action for PdfViewerAction {
             PdfViewerAction::PinSource { hash, len, mime } => {
                 PdfDoc::pin_source(doc, hash, *len, mime);
             }
+            PdfViewerAction::ImportExisting {
+                source_hash,
+                annotations,
+                comments,
+                form_values,
+                adopted,
+            } => {
+                if annotations.len() > crate::adopt::MAX_IMPORTED_ANNOTATIONS
+                    || adopted.len() > 4 * crate::adopt::MAX_IMPORTED_ANNOTATIONS
+                {
+                    return Ok(());
+                }
+                let plan = crate::adopt::ImportPlan {
+                    annotations: annotations
+                        .iter()
+                        .map(|a| (a.to_annotation(), a.page_id.clone()))
+                        .collect(),
+                    comments: comments
+                        .iter()
+                        .map(|c| Comment {
+                            id: c.id.clone(),
+                            anno_id: c.anno_id.clone(),
+                            page: c.page,
+                            author: c.author.clone(),
+                            body: c.body.clone(),
+                            created: c.created,
+                            resolved: false,
+                            replies: c
+                                .replies
+                                .iter()
+                                .map(|(id, author, body)| Reply {
+                                    id: id.clone(),
+                                    author: author.clone(),
+                                    body: body.clone(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                    form_values: form_values
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.to_entry()))
+                        .collect(),
+                    adopted: adopted.clone(),
+                };
+                PdfDoc::import_existing(doc, source_hash, &plan);
+            }
+            PdfViewerAction::SetFreeText { id, text } => PdfDoc::set_free_text(doc, id, text),
+            PdfViewerAction::SetFreeTextBox {
+                id,
+                x,
+                y,
+                w,
+                h,
+                size,
+                user_space,
+            } => PdfDoc::set_free_text_box(
+                doc,
+                id,
+                &PtRect::new(*x, *y, *w, *h),
+                *size,
+                space(*user_space),
+            ),
         }
         Ok(())
     }
@@ -767,7 +943,7 @@ pub fn add_annotation_on(a: &Annotation, page_id: Option<&str>) -> PdfViewerActi
         id: a.id.clone(),
         page: a.page,
         geom: AnnoGeom::from_kind(&a.kind, a.chars),
-        color: a.color.key().to_string(),
+        color: a.color.key(),
         author: a.author.clone(),
         page_id: page_id.map(str::to_string),
         user_space: a.space == GeomSpace::User,
@@ -778,7 +954,7 @@ pub fn add_annotation_on(a: &Annotation, page_id: Option<&str>) -> PdfViewerActi
 pub fn set_annotation_color_action(id: &str, color: Swatch) -> PdfViewerAction {
     PdfViewerAction::SetAnnotationColor {
         id: id.to_string(),
-        color: color.key().to_string(),
+        color: color.key(),
     }
 }
 
@@ -815,6 +991,72 @@ pub fn set_form_value_action(name: &str, value: &FormEntry) -> PdfViewerAction {
     }
 }
 
+/// Take over the existing markup an import plan found in `source_hash`.
+pub fn import_existing_action(
+    source_hash: &str,
+    plan: &crate::adopt::ImportPlan,
+) -> PdfViewerAction {
+    PdfViewerAction::ImportExisting {
+        source_hash: source_hash.to_string(),
+        annotations: plan
+            .annotations
+            .iter()
+            .map(|(a, page_id)| ImportedAnnotationWire {
+                id: a.id.clone(),
+                page: a.page,
+                page_id: page_id.clone(),
+                geom: AnnoGeom::from_kind(&a.kind, a.chars),
+                color: a.color.key(),
+                author: a.author.clone(),
+                created_ms: a.created_ms,
+            })
+            .collect(),
+        comments: plan
+            .comments
+            .iter()
+            .map(|c| CommentWire {
+                id: c.id.clone(),
+                anno_id: c.anno_id.clone(),
+                page: c.page,
+                author: c.author.clone(),
+                body: c.body.clone(),
+                created: c.created,
+                replies: c
+                    .replies
+                    .iter()
+                    .map(|r| (r.id.clone(), r.author.clone(), r.body.clone()))
+                    .collect(),
+            })
+            .collect(),
+        form_values: plan
+            .form_values
+            .iter()
+            .map(|(name, value)| (name.clone(), FormValueWire::from_entry(value)))
+            .collect(),
+        adopted: plan.adopted.clone(),
+    }
+}
+
+pub fn set_free_text_action(id: &str, text: &str) -> PdfViewerAction {
+    PdfViewerAction::SetFreeText {
+        id: id.to_string(),
+        text: text.to_string(),
+    }
+}
+
+/// Move/resize a free text box; `rect` and `size` in its page's user space.
+pub fn set_free_text_box_user_action(id: &str, rect: &PtRect, size: f64) -> PdfViewerAction {
+    PdfViewerAction::SetFreeTextBox {
+        id: id.to_string(),
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        size,
+        user_space: true,
+    }
+}
+
 pub fn pin_source_action(hash: &str, len: u64) -> PdfViewerAction {
     PdfViewerAction::PinSource {
         hash: hash.to_string(),
@@ -848,7 +1090,7 @@ pub fn create_note_action(
         page,
         x,
         y,
-        color: color.key().to_string(),
+        color: color.key(),
         author: author.to_string(),
         created,
         body: body.to_string(),
@@ -880,7 +1122,7 @@ pub fn create_note_on_action(
         page,
         x: at_user.0,
         y: at_user.1,
-        color: color.key().to_string(),
+        color: color.key(),
         author: author.to_string(),
         created,
         body: body.to_string(),
@@ -1051,6 +1293,7 @@ fn anno_label(a: &Annotation) -> String {
         AnnoKind::Markup { .. } => "Highlight",
         AnnoKind::Ink { .. } => "Ink",
         AnnoKind::Note { .. } => "Note",
+        AnnoKind::FreeText { .. } => "Text",
     };
     format!("{kind} · p.{}", a.page)
 }
@@ -2081,9 +2324,7 @@ mod tests {
         let anno = Annotation {
             id: Annotation::new_id(),
             page: 2,
-            kind: AnnoKind::Ink {
-                points: vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)],
-            },
+            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
             color: Swatch::Blue,
             author: "You".into(),
             chars: None,

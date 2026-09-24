@@ -62,6 +62,10 @@ pub fn swatch_color(theme: &Theme, s: Swatch) -> Color {
         Swatch::Pink => c.semantic.danger,
         Swatch::Blue => c.semantic.info,
         Swatch::Purple => c.accent[ACCENT_PURPLE],
+        Swatch::Custom(_) => {
+            let (red, green, blue) = s.rgb();
+            Color::from_rgb8(red, green, blue)
+        }
     }
 }
 const ACCENT_PURPLE: usize = 6; // indigo-400, reads as a violet ink
@@ -635,7 +639,7 @@ fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
 )]
 fn draw_annotation(
     scene: &mut Scene,
-    tr: &TextRenderer,
+    tr: &mut TextRenderer,
     theme: &Theme,
     base: Affine,
     a: &Annotation,
@@ -665,6 +669,20 @@ fn draw_annotation(
                         let line = vello::kurbo::Line::new((r.x0, y), (r.x1, y));
                         scene.stroke(&Stroke::new((1.4 * scale).max(1.0)), base, col, None, &line);
                     }
+                    MarkupStyle::Squiggly => {
+                        // A wave along the baseline.
+                        let y = r.y0 + r.height() * 0.9;
+                        let step = (2.0 * scale).max(1.5);
+                        let mut wave = BezPath::new();
+                        wave.move_to((r.x0, y));
+                        let steps = (r.width() / step).ceil().clamp(1.0, 4096.0) as usize;
+                        for i in 1..=steps {
+                            let x = (r.x0 + step * i as f64).min(r.x1);
+                            let crest = if i % 2 == 1 { y - step * 0.6 } else { y };
+                            wave.line_to((x, crest));
+                        }
+                        scene.stroke(&Stroke::new((1.0 * scale).max(0.8)), base, col, None, &wave);
+                    }
                 }
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             }
@@ -673,36 +691,76 @@ fn draw_annotation(
                 draw_handles(scene, theme, base, r);
             }
         }
-        AnnoKind::Ink { points } => {
-            let Some(&(fx, fy)) = points.first() else {
-                return;
-            };
-            if points.len() < 2 {
-                return;
+        AnnoKind::Ink { strokes } => {
+            for points in strokes {
+                let (Some(&(fx, fy)), Some(&(lx, ly))) = (points.first(), points.last()) else {
+                    continue;
+                };
+                if points.len() < 2 {
+                    continue;
+                }
+                let mut path = BezPath::new();
+                path.move_to(pt(origin, scale, fx, fy));
+                for w in points.windows(2) {
+                    let [(x0, y0), (x1, y1)] = w else { continue };
+                    let a0 = pt(origin, scale, *x0, *y0);
+                    let b0 = pt(origin, scale, *x1, *y1);
+                    let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
+                    path.quad_to(a0, mid);
+                }
+                path.line_to(pt(origin, scale, lx, ly));
+                scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
             }
-            let mut path = BezPath::new();
-            let first = pt(origin, scale, fx, fy);
-            path.move_to(first);
-            for w in points.windows(2) {
-                let [(x0, y0), (x1, y1)] = w else { continue };
-                let a0 = pt(origin, scale, *x0, *y0);
-                let b0 = pt(origin, scale, *x1, *y1);
-                let mid = Point::new(f64::midpoint(a0.x, b0.x), f64::midpoint(a0.y, b0.y));
-                path.quad_to(a0, mid);
-            }
-            let Some(&(lx, ly)) = points.last() else {
-                return;
-            };
-            let last = pt(origin, scale, lx, ly);
-            path.line_to(last);
-            scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
         }
         AnnoKind::Note { x, y } => {
             let p = pt(origin, scale, *x, *y);
             draw_note_marker(scene, base, p, col, scale, selected);
-            let _ = tr;
+        }
+        AnnoKind::FreeText { rect, text, size } => {
+            let p0 = pt(origin, scale, rect.x, rect.y);
+            let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
+            draw_free_text(scene, tr, base, r, text, (*size * scale) as f32, col);
+            if selected {
+                scene.stroke(&Stroke::new(1.5), base, col, None, &r);
+                draw_handles(scene, theme, base, r);
+            }
         }
     }
+}
+
+/// Free text drawn in its box: wrapped to the box width from its top-left,
+/// clipped to the box, with the same inner padding the exported appearance
+/// uses.
+pub fn draw_free_text(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    base: Affine,
+    r: Rect,
+    text: &str,
+    size: f32,
+    color: Color,
+) {
+    /// In points at 100 %, as in the exported appearance.
+    const PADDING: f64 = 2.0; // PDF points inside the annotation, not UI spacing
+    if text.is_empty() || !(size.is_finite() && size > 0.5) {
+        return;
+    }
+    let zoom = f64::from(size) / crate::model::FREE_TEXT_SIZE;
+    let pad = PADDING * zoom.max(0.25);
+    let inner = Rect::new(r.x0 + pad, r.y0 + pad, r.x1 - pad, r.y1 - pad);
+    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &r);
+    tr.draw_text(
+        scene,
+        text,
+        size,
+        color,
+        base * Affine::translate((inner.x0, inner.y0)),
+        Some(inner.width() as f32),
+    );
+    scene.pop_layer();
 }
 
 fn draw_note_marker(
