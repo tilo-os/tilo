@@ -1190,6 +1190,24 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.bg_app);
     }
 
+    /// Rasterise the most recently laid-out frame over a transparent
+    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
+    pub fn render_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+    }
+
+    /// [`FrameHarness::render_rgba`] over the theme background, as the
+    /// native window composites it.
+    pub fn render_window_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(self.theme.bg_app)
+    }
+
+    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
+        self.drain_component_wakes();
+        let (w, h) = self.viewport;
+        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
