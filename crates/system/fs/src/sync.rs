@@ -95,7 +95,7 @@ impl FsTransportIdentity {
         self
     }
 
-    fn partitioned(&self) -> bool {
+    pub(crate) fn partitioned(&self) -> bool {
         self.gate.partitioned()
     }
 
@@ -1654,6 +1654,9 @@ impl Workspace {
                 record_plane.clone(),
                 Some(identity.clone()),
             )),
+        );
+        let builder = crate::document_media::accept_media_protocol(
+            builder, &endpoint, &identity, &policy, &store,
         );
         let builder = match (&record_plane, replica_ack_protocol) {
             (Some(records), Some(replica_ack)) => builder
