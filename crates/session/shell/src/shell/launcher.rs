@@ -3344,7 +3344,7 @@ mod tests {
     /// replaced by a recorder that fails and is quoted back as a
     /// `LaunchEvent`.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     #[cfg(target_os = "linux")]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3729,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     #[cfg(target_os = "linux")]
     fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
         let _ = drain_events();
