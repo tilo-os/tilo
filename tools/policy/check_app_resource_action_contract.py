@@ -25,9 +25,11 @@ RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
 ACTION_SPEC = re.compile(r"\bActionSpec\s*::\s*(?:immediate|prompted|typed|operation)")
 RESOURCE_CONSUMER = re.compile(r"\bActionDescriptor\b")
-BROKER_CATALOGUE_CONSUMER = re.compile(r"\b(?:ActionCatalogue|BrokerActionSurface)\b")
-BROKER_ACTION_INVOKER = re.compile(r"\bInvokePublishedAction\b")
-BROKER_ACTION_STATUS = re.compile(r"\bPublishedInvocationStatus\b")
+# The agent reaches published actions through the remote-action vocabulary,
+# the same messages peers and local SDK callers use.
+BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueRequest\b")
+BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
+BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
 OPERATION_HANDLER = re.compile(
     r"\bfn\s+(?:invoke_resource_operation(?:_v2)?|start_resource_operation(?:_with_document)?)\s*\("
@@ -690,7 +692,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     Violation(
                         manifest_path,
                         1,
-                        "headless agent must consume the broker's generic action catalogue",
+                        "headless agent must consume the generic action catalogue through remote-action messages",
                     )
                 )
             if not BROKER_ACTION_INVOKER.search(combined) or not BROKER_ACTION_STATUS.search(combined):
@@ -698,7 +700,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     Violation(
                         manifest_path,
                         1,
-                        "headless agent must invoke and observe actions through the broker protocol",
+                        "headless agent must invoke and observe actions through remote-action messages",
                     )
                 )
         else:

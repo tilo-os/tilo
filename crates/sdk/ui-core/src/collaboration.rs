@@ -33,11 +33,6 @@ mod loopback;
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback::{LoopbackPeer, LoopbackTransport};
 
-/// Reserved `invokePublishedAction.peerId` meaning "the application
-/// connection making this request". Live broker peer ids are allocated from
-/// zero upward; the broker never assigns this sentinel.
-pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
-
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 pub use runtime_collab::{
@@ -215,28 +210,11 @@ pub enum CollabRequest {
         address: tilo_actions::ActionAddress,
         update: tilo_actions::InvocationUpdate,
     },
-    InvokePublishedAction {
-        request_id: u64,
-        peer_id: u64,
-        resource: String,
-        action: String,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        confirmation: serde_json::Value,
-    },
-    PublishedInvocationStatus {
-        request_id: u64,
-        id: u64,
-    },
-    CancelPublishedInvocation {
-        request_id: u64,
-        id: u64,
-    },
-    LaunchPublishedApplication {
-        request_id: u64,
-        app_id: String,
-        /// Optional portable blob identity staged read-only by the session
-        /// before it launches the target application.
-        content_hash: Option<String>,
+    /// One remote-action request to the session's action host: list the
+    /// actions offered to this connection, invoke one, observe or cancel an
+    /// invocation. The answer arrives as [`CollabEvent::RemoteAction`].
+    RemoteAction {
+        message: tilo_actions::remote::RemoteActionMessage,
     },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
@@ -249,6 +227,10 @@ pub enum CollabRequest {
     /// broker-owned task context. `request_id` correlates the async reply.
     InvokeTaskAction {
         request_id: u64,
+        /// The caller's id for this invocation. A retry reuses it; the
+        /// broker reports the original, and [`Self::RemoteAction`] observes
+        /// or cancels it.
+        invocation: tilo_actions::InvocationId,
         run_id: u64,
         lease: String,
         peer_id: u64,
@@ -317,41 +299,6 @@ pub struct ExportedAction {
     pub params_json: String,
     pub contract_json: String,
     pub input: ExportedInput,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionSurface {
-    pub peer_id: u64,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub record_id: String,
-    pub live: bool,
-    pub actions: Vec<BrokerActionDescriptor>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionDescriptor {
-    pub resource: String,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: tilo_actions::OperationKind,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub contract: tilo_actions::ActionContract,
-    pub input: BrokerActionInput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct BrokerActionInput {
-    pub kind: String,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub placeholder: String,
-    #[serde(default)]
-    pub wants_content: bool,
 }
 
 /// An explicit typed collaboration route.
@@ -481,12 +428,9 @@ pub enum CollabEvent {
     InvocationCancellation {
         id: u64,
     },
-    ActionCatalogue {
-        surfaces: Vec<BrokerActionSurface>,
-    },
-    PublishedInvocationResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+    /// The session's answer to a [`CollabRequest::RemoteAction`].
+    RemoteAction {
+        message: tilo_actions::remote::RemoteActionMessage,
     },
     /// A run addressed to this admitted agent. The envelope is broker-minted
     /// and contains a lease, not a caller-selected authority token.
