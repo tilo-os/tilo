@@ -50,6 +50,9 @@ jobs:
       # this and search the full case count once a day. 256 is proptest's
       # own default, so tests without an explicit count are unaffected.
       PROPTEST_CASES: "256"
+      # The builder image carries the encoders and muxers the footage tests
+      # need, so their absence here is a failure, not a skip.
+      TILO_REQUIRE_MEDIA: "1"
       # Keep this identical to the nextest gpu-golden override. These tests
       # need an idle software Vulkan renderer, not merely serialization with
       # one another; the isolated tail below retains full daily coverage.
