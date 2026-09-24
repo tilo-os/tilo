@@ -22,6 +22,7 @@
 )]
 
 pub mod btrfs;
+pub mod capture;
 pub mod chunking;
 pub mod extents;
 pub mod fanotify;
