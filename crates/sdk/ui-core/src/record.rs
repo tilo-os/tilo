@@ -633,81 +633,6 @@ impl Ord for RecordCheckout {
     }
 }
 
-/// The writer behind one open record: the launch-environment route's
-/// background [`crate::persist::Autosave`], or a [`app_state::DocWriter`]
-/// over the host's [`DurableStore`].
-enum RecordWriter {
-    Legacy(crate::persist::Autosave),
-    Store(app_state::DocWriter),
-}
-
-impl RecordWriter {
-    /// Submit whatever changed since the last submission.
-    fn request(&mut self, doc: &mut AutoCommit) {
-        match self {
-            Self::Legacy(saver) => saver.request(doc),
-            Self::Store(writer) => writer.request(doc),
-        }
-    }
-
-    /// Submit changes, retrying with a full checkpoint after a failure.
-    fn save(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
-        match self {
-            Self::Legacy(saver) => saver.request(doc),
-            Self::Store(writer) => writer.save(doc),
-        }
-        Ok(())
-    }
-
-    fn try_flush(&mut self) -> Result<(), String> {
-        match self {
-            Self::Legacy(saver) => saver.try_flush(),
-            Self::Store(writer) => writer.try_flush(),
-        }
-    }
-
-    fn flush(&mut self) {
-        match self {
-            Self::Legacy(saver) => saver.flush(),
-            Self::Store(writer) => {
-                if let Err(error) = writer.try_flush() {
-                    tracing::error!(%error, "record persistence failed");
-                }
-            }
-        }
-    }
-
-    fn last_error(&self) -> Option<String> {
-        match self {
-            Self::Legacy(saver) => saver.last_error(),
-            Self::Store(writer) => writer.last_error(),
-        }
-    }
-
-    fn durability_snapshot(&self) -> app_state::DurabilitySnapshot {
-        match self {
-            Self::Legacy(saver) => saver.durability_snapshot(),
-            Self::Store(writer) => writer.durability_snapshot(),
-        }
-    }
-
-    /// The launch-environment route's file, which is its storage identity.
-    fn document_path(&self) -> Option<&Path> {
-        match self {
-            Self::Legacy(saver) => Some(saver.document_path()),
-            Self::Store(_) => None,
-        }
-    }
-
-    #[cfg(test)]
-    fn counts(&self) -> (usize, usize) {
-        match self {
-            Self::Legacy(saver) => (saver.full_writes(), saver.appends()),
-            Self::Store(writer) => (writer.full_writes(), writer.appends()),
-        }
-    }
-}
-
 /// One record this process has open but is not currently showing.
 struct Parked {
     /// `None` exactly while checked out — the live document is the
@@ -716,7 +641,7 @@ struct Parked {
     kind: RecordKind,
     /// Debounced writer for this record's file. `None` for an in-memory
     /// set, or when the store failed to open (reported once, not per frame).
-    autosave: Option<RecordWriter>,
+    autosave: Option<app_state::DocWriter>,
     /// Belongs to the record: an [`crate::state::UndoEntry`] is a pair of
     /// change hashes in *this* document's graph, so sharing a stack across
     /// records would revert the wrong history.
@@ -1010,7 +935,7 @@ impl RecordSet {
     }
 
     /// Open a record's stored document, and the writer for it.
-    fn load(&self, id: &RecordId) -> (AutoCommit, Option<RecordWriter>) {
+    fn load(&self, id: &RecordId) -> (AutoCommit, Option<app_state::DocWriter>) {
         let mut doc = AutoCommit::new();
         let autosave = self.persist_for(id, &mut doc);
         (doc, autosave)
@@ -1021,7 +946,7 @@ impl RecordSet {
     /// content survives. The writer is seeded from the **stored** heads,
     /// not merged — seeding from merged heads would mark adopted content
     /// as already saved.
-    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<RecordWriter> {
+    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
         if !self.persistent {
             return None;
         }
@@ -1041,8 +966,8 @@ impl RecordSet {
                     error = %e,
                     "record store unavailable; writes refused"
                 );
-                return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                    format!("record {id} store unavailable: {e}"),
+                return Some(crate::persist::DocWriter::disabled(format!(
+                    "record {id} store unavailable: {e}"
                 )));
             }
         };
@@ -1054,8 +979,8 @@ impl RecordSet {
                     error = %e,
                     "stored record could not be read; original bytes retained and writes refused"
                 );
-                return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                    format!("stored record {id} could not be read: {e}"),
+                return Some(crate::persist::DocWriter::disabled(format!(
+                    "stored record {id} could not be read: {e}"
                 )));
             }
         };
@@ -1097,8 +1022,8 @@ impl RecordSet {
             && let Err(error) = merged.merge(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
-            return Some(RecordWriter::Legacy(crate::persist::Autosave::disabled(
-                format!("stored record {id} could not be merged: {error}"),
+            return Some(crate::persist::DocWriter::disabled(format!(
+                "stored record {id} could not be merged: {error}"
             )));
         }
         // The package actor belongs to its index, and a bootstrap fork actor
@@ -1106,7 +1031,7 @@ impl RecordSet {
         // operations belong to this record's original persistent writer.
         merged.set_actor(store.actor().clone());
         *doc = merged;
-        let mut autosave = crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
+        let mut autosave = store.writer();
         if let Some(mut stored) = stored {
             // Only seed heads that are already in this scoped store.  A
             // legacy document's heads are absent from the new file; seeding
@@ -1116,7 +1041,7 @@ impl RecordSet {
                 autosave.seed(&mut stored);
             }
         }
-        Some(RecordWriter::Legacy(autosave))
+        Some(autosave)
     }
 
     // A host showing several records at once: none can be "checked out"
@@ -1222,7 +1147,7 @@ impl RecordSet {
         validate_identity(loaded.document(), want, &self.home)?;
         let mut doc = owner.accept(loaded)?;
         let owner = Rc::new(owner);
-        let autosave = RecordWriter::Store(app_state::DocWriter::try_start(&owner)?);
+        let autosave = app_state::DocWriter::try_start(&owner)?;
         let history = crate::state::UndoLog::new(&mut doc);
         self.open.insert(
             want.id.clone(),
@@ -1336,7 +1261,8 @@ impl RecordSet {
                 continue;
             };
             slot.action_state.commit_for_save(doc);
-            if let Err(error) = saver.save(doc).and_then(|()| saver.try_flush()) {
+            saver.save(doc);
+            if let Err(error) = saver.try_flush() {
                 errors.push(format!("{id}: {error}"));
             }
         }
@@ -1529,7 +1455,7 @@ impl RecordReservation {
         {
             return Err(RecordOpenError::Busy);
         }
-        let autosave = RecordWriter::Store(start(&owner, &mut doc)?);
+        let autosave = start(&owner, &mut doc)?;
         let history = crate::state::UndoLog::new(&mut doc);
         set.pending.remove(&self.checkout.id);
         set.open.insert(
@@ -1622,8 +1548,8 @@ impl RecordStore {
                 parked
                     .autosave
                     .as_ref()
-                    .and_then(RecordWriter::document_path)
-                    .map(|path| path.to_string_lossy().into_owned())
+                    .filter(|saver| saver.is_enabled())
+                    .map(|saver| saver.document_path().to_string_lossy().into_owned())
             });
         Ok((storage, set.package_id.clone(), set.home.clone()))
     }
@@ -1728,7 +1654,7 @@ impl RecordStore {
             .open
             .get(id)
             .and_then(|p| p.autosave.as_ref())
-            .and_then(RecordWriter::last_error)
+            .and_then(app_state::DocWriter::last_error)
     }
 
     /// Close/retry one actual owner without settling another record's edit.
@@ -1749,10 +1675,8 @@ impl RecordStore {
             return Ok(());
         };
         slot.action_state.commit_for_save(doc);
-        saver
-            .save(doc)
-            .and_then(|()| saver.try_flush())
-            .map_err(|error| format!("{id}: {error}"))
+        saver.save(doc);
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
     }
 
     /// Request current changes once and await actual acknowledgements for every record.
@@ -1858,12 +1782,7 @@ impl RecordStore {
             );
         }
         doc.commit();
-        let mut autosave = owner.map(|owner| {
-            RecordWriter::Legacy(crate::persist::Autosave::spawn(
-                owner,
-                crate::persist::DEFAULT_DEBOUNCE,
-            ))
-        });
+        let mut autosave = owner.map(|owner| owner.writer());
         if let Some(error) = autosave
             .as_ref()
             .and_then(|saver| saver.durability_snapshot().error)
@@ -1973,8 +1892,7 @@ impl RecordStore {
             if home(&doc).as_deref() != Some(set.home.as_str()) {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            let mut autosave =
-                crate::persist::Autosave::spawn(owner, crate::persist::DEFAULT_DEBOUNCE);
+            let mut autosave = owner.writer();
             if let Some(error) = autosave.durability_snapshot().error {
                 return Err(RecordOpenError::Initialization(error));
             }
@@ -1990,7 +1908,7 @@ impl RecordStore {
                 Parked {
                     doc: Some(doc),
                     kind: want.kind.clone(),
-                    autosave: Some(RecordWriter::Legacy(autosave)),
+                    autosave: Some(autosave),
                     history,
                     action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
@@ -2529,7 +2447,8 @@ mod tests {
         let before = {
             let set = store.0.borrow();
             let p = &set.open[&want.id];
-            let (full_writes, appends) = p.autosave.as_ref().unwrap().counts();
+            let saver = p.autosave.as_ref().unwrap();
+            let (full_writes, appends) = (saver.full_writes(), saver.appends());
             (full_writes, appends, p.history.revision())
         };
         store.with(&want.id, |doc| put_text(doc, "body", "one edit"));
@@ -2543,7 +2462,8 @@ mod tests {
         let after = {
             let set = store.0.borrow();
             let p = &set.open[&want.id];
-            let (full_writes, appends) = p.autosave.as_ref().unwrap().counts();
+            let saver = p.autosave.as_ref().unwrap();
+            let (full_writes, appends) = (saver.full_writes(), saver.appends());
             (full_writes, appends, p.history.revision())
         };
         assert_eq!(after, (before.0, before.1 + 1, before.2));

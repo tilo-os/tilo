@@ -1424,7 +1424,7 @@ fn legacy_ui_restore_schedules_only_target_and_reopens_durable_result() {
     assert_eq!(
         store.save_status(&first.id).unwrap(),
         crate::record::RecordSaveStatus::Saved,
-        "normal target Autosave acknowledges restore without sweep/flush"
+        "normal target DocWriter acknowledges restore without sweep/flush"
     );
     assert_eq!(
         store

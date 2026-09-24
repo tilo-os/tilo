@@ -101,7 +101,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     // Contacts kept its own address-book file before the shared store
     // existed; import it once so an existing user's book comes across.
     match contacts::storage::default_path() {

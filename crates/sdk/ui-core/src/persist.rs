@@ -49,7 +49,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-pub use app_state::{Autosave, DEFAULT_DEBOUNCE, DocStore, StoreError};
+pub use app_state::{DEFAULT_DEBOUNCE, DocStore, DocWriter, StoreError};
 
 use crate::state::State;
 
@@ -59,7 +59,7 @@ use crate::state::State;
 /// home, missing `HOME`, a corrupt document) the error is logged and the app
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
-pub fn open(manifest_id: &str) -> (State, Autosave) {
+pub fn open(manifest_id: &str) -> (State, DocWriter) {
     try_open(manifest_id).unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
@@ -74,7 +74,7 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
 /// On the first scoped open the legacy package document is merged, never
 /// moved or deleted.  The next autosave lands in the room directory, so a
 /// crash during migration still leaves the legacy source intact.
-pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
+pub fn open_room(manifest_id: &str, room_id: &str) -> (State, DocWriter) {
     open_room_in(manifest_id, room_id, &crate::host::environment().identity)
 }
 
@@ -84,12 +84,12 @@ pub fn open_room_in(
     manifest_id: &str,
     room_id: &str,
     identity: &crate::host::HostIdentity,
-) -> (State, Autosave) {
+) -> (State, DocWriter) {
     let package_id = identity
         .package_id
         .clone()
         .unwrap_or_else(|| manifest_id.to_string());
-    let attempt = || -> Result<(State, Autosave), StoreError> {
+    let attempt = || -> Result<(State, DocWriter), StoreError> {
         let mut store = DocStore::open_room(&package_id, room_id)?;
         let legacy = DocStore::legacy_package_document_path(&package_id)?;
         if legacy.is_file() && DocStore::claim_legacy_package_migration(&package_id, room_id)? {
@@ -129,8 +129,8 @@ pub fn open_room_in(
 /// preserved and running the migration twice is a no-op. The old file is
 /// left on disk; deleting it is a decision for whoever knows whether
 /// anything else still reads it.
-pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
-    let attempt = || -> Result<(State, Autosave), StoreError> {
+pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
+    let attempt = || -> Result<(State, DocWriter), StoreError> {
         let mut store = DocStore::open_with_manifest_id(manifest_id)?;
         match store.migrate_from(legacy) {
             Ok(true) => tracing::info!(
@@ -156,11 +156,11 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
 /// Returns [`StoreError`] when the state directory can't be opened (a
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
-pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
+pub fn try_open(manifest_id: &str) -> Result<(State, DocWriter), StoreError> {
     Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
 }
 
-fn finish(mut store: DocStore) -> (State, Autosave) {
+fn finish(mut store: DocStore) -> (State, DocWriter) {
     let mut doc = store.load_or_new();
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
@@ -176,21 +176,21 @@ fn finish(mut store: DocStore) -> (State, Autosave) {
         );
         eprintln!("tilo: {reason}");
         eprintln!("tilo: this session starts empty and will NOT be saved.");
-        return (State::from_doc(doc), Autosave::disabled(reason));
+        return (State::from_doc(doc), DocWriter::disabled(reason));
     }
-    let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
+    let mut autosave = store.writer();
     autosave.seed(&mut doc);
     (State::from_doc(doc), autosave)
 }
 
 /// The degraded path: an empty document and a disabled writer.
-/// [`Autosave::is_enabled`] returns `false` and
-/// [`Autosave::last_error`] carries the reason, so nothing downstream can
+/// [`DocWriter::is_enabled`] returns `false` and
+/// [`DocWriter::last_error`] carries the reason, so nothing downstream can
 /// mistake this for a working store.
-fn in_memory_fallback() -> (State, Autosave) {
+fn in_memory_fallback() -> (State, DocWriter) {
     (
         State::new(),
-        Autosave::disabled("state directory unavailable"),
+        DocWriter::disabled("state directory unavailable"),
     )
 }
 
@@ -202,12 +202,11 @@ fn in_memory_fallback() -> (State, Autosave) {
 /// Returns [`StoreError`] when the state directory can't be opened (a
 /// read-only home, a missing `HOME`, or a document a newer build wrote in
 /// an incompatible layout).
-pub fn open_for(package_id: &str) -> Result<(State, Autosave), StoreError> {
+pub fn open_for(package_id: &str) -> Result<(State, DocWriter), StoreError> {
     Ok(finish(DocStore::open_for(package_id)?))
 }
 
-/// The debounce window [`open`] uses. Re-exported so an app that wants a
-/// different one can build its own [`Autosave`] from a [`DocStore`].
+/// The debounce window the native store applies to [`open`]'s writes.
 pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
 
 #[cfg(test)]

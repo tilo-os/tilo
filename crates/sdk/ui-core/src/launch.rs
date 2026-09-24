@@ -36,7 +36,7 @@ type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>
 pub struct LegacyLaunchInputs {
     pub(crate) state: State,
     pub(crate) root: Box<dyn Widget>,
-    pub(crate) autosave: crate::persist::Autosave,
+    pub(crate) autosave: crate::persist::DocWriter,
     pub(crate) records: LegacyRecordPolicy,
     pub(crate) registry: tilo_actions::ActionRegistry,
     pub(crate) persistence: LegacyPersistencePolicy,
@@ -64,7 +64,7 @@ pub(crate) enum LegacyRecordPolicy {
 }
 
 impl LegacyLaunchInputs {
-    pub fn new(state: State, root: Box<dyn Widget>, autosave: crate::persist::Autosave) -> Self {
+    pub fn new(state: State, root: Box<dyn Widget>, autosave: crate::persist::DocWriter) -> Self {
         Self {
             state,
             root,
@@ -116,8 +116,8 @@ type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
-type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
-type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::Autosave);
+type OpenState = fn(&'static str) -> (State, crate::persist::DocWriter);
+type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::DocWriter);
 type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
@@ -1701,7 +1701,7 @@ mod tests {
             }
         }
     }
-    fn migrated_fixture_open(app_id: &'static str) -> (State, crate::persist::Autosave) {
+    fn migrated_fixture_open(app_id: &'static str) -> (State, crate::persist::DocWriter) {
         use automerge::transaction::Transactable;
         let (mut state, autosave) = crate::persist::open_for(app_id).unwrap();
         state
@@ -1843,7 +1843,7 @@ mod tests {
         .unwrap();
         drop(app);
     }
-    fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::Autosave) {
+    fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::DocWriter) {
         crate::persist::open_for("so.tilo.other-fixture").unwrap()
     }
 
@@ -1854,7 +1854,7 @@ mod tests {
                 Ok(LegacyLaunchInputs::new(
                     State::new(),
                     dummy_root(),
-                    crate::persist::Autosave::disabled("owned fixture"),
+                    crate::persist::DocWriter::disabled("owned fixture"),
                 )
                 .with_records(
                     crate::record::RecordSet::in_memory(),
@@ -1932,11 +1932,11 @@ mod tests {
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().push(crate::WakeHandle::new()));
     }
 
-    fn scoped_open_state(_: &'static str) -> (State, crate::persist::Autosave) {
+    fn scoped_open_state(_: &'static str) -> (State, crate::persist::DocWriter) {
         capture_launch_wake();
         (
             State::new(),
-            crate::persist::Autosave::disabled("wake routing test"),
+            crate::persist::DocWriter::disabled("wake routing test"),
         )
     }
 
@@ -2241,7 +2241,7 @@ mod tests {
                     content_schema: None,
                 }],
             };
-        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::Autosave) {
+        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::DocWriter) {
             let mut state = State::new();
             state
                 .doc
@@ -2253,7 +2253,7 @@ mod tests {
                 .unwrap();
             (
                 state,
-                crate::persist::Autosave::disabled("detached argument opener test"),
+                crate::persist::DocWriter::disabled("detached argument opener test"),
             )
         }
         fn replace_storage(app: &mut App) {
@@ -2265,7 +2265,7 @@ mod tests {
                     dummy_root(),
                 ),
             );
-            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+            *app = owned.with_autosave(crate::persist::DocWriter::disabled("replacement"));
         }
         for raw in [
             strings(&["app"]),
@@ -2366,7 +2366,7 @@ mod tests {
                     dummy_root(),
                 ),
             );
-            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+            *app = owned.with_autosave(crate::persist::DocWriter::disabled("replacement"));
         }
         let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
         for spec in [
@@ -2757,7 +2757,7 @@ mod tests {
         );
     }
 
-    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
+    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::DocWriter) {
         crate::persist::open(app_id)
     }
 

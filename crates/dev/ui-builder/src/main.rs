@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, run_or_exit};
-use ui::persist::Autosave;
+use ui::persist::DocWriter;
 use ui::{State, Theme, UiGraphEditor, UiGraphHandle, Widget};
 
 const APP_ID: &str = "so.tilo.ui-builder";
@@ -14,10 +14,10 @@ fn main() {
     );
 }
 
-fn transient_preview_state(_: &'static str, _: &LaunchArgs) -> (State, Autosave) {
+fn transient_preview_state(_: &'static str, _: &LaunchArgs) -> (State, DocWriter) {
     (
         State::new(),
-        Autosave::disabled("UI builder preview state is session-local"),
+        DocWriter::disabled("UI builder preview state is session-local"),
     )
 }
 
