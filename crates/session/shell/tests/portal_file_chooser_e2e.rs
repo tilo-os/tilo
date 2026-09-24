@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceAuthority as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,7 +133,7 @@ fn host_with_portal(
 ) -> (ShellOverlayHost, GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(WS);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let handle = tree.shared();
     {
@@ -394,6 +395,7 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     let paths: Vec<PathBuf> = {
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)
@@ -509,6 +511,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     let replicated = {
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)

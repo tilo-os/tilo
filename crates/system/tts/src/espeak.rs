@@ -101,11 +101,11 @@ impl EspeakSpeaker {
     fn kill_current(&mut self) {
         if let Some(mut child) = self.current.take() {
             #[cfg(unix)]
-            if let Ok(pid) = i32::try_from(child.id()) {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
+            if let Some(pid) = i32::try_from(child.id())
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
             }
             let _ = child.kill();
             let _ = child.wait();
@@ -174,7 +174,7 @@ impl Speaker for EspeakSpeaker {
             }
         }
         if let Err(e) = self.spawn(&utterance.text) {
-            log::warn!("espeak-ng: failed to speak: {e}");
+            tracing::warn!("espeak-ng: failed to speak: {e}");
         }
     }
 

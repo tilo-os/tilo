@@ -3230,7 +3230,7 @@ mod tests {
             assert_eq!(state.get_actor(), &actor);
             assert_eq!(wp.containers.as_ref().unwrap().blocks, blocks);
             assert_eq!(
-                state.get(ROOT, "host-marker").unwrap().unwrap().0.to_str(),
+                state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
                 Some("preserve me")
             );
             assert!(

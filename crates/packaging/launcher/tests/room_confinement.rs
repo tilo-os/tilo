@@ -23,34 +23,15 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use launcher::appdir;
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
-const PACKAGE: &str = "so.tilo.roomtest";
+use crate::support::{isolated_options, roomtest_payload};
 
-/// Build the fixture with `rustc` directly, outside the workspace, so
-/// a single-shot build doesn't dirty the workspace target dir.
-fn build_fixture(out_dir: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/roomtest/src/main.rs");
-    let bin = out_dir.join("bin").join("roomtest");
-    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-    let status = std::process::Command::new("rustc")
-        .arg("--edition=2021")
-        .arg("-O")
-        .arg(&src)
-        .arg("-o")
-        .arg(&bin)
-        .status()
-        .expect("invoke rustc");
-    assert!(
-        status.success(),
-        "rustc failed to build the roomtest fixture"
-    );
-    bin
-}
+const PACKAGE: &str = "so.tilo.roomtest";
 
 fn manifest() -> MinimalManifest {
     MinimalManifest {
@@ -102,7 +83,7 @@ fn bwrap() -> PathBuf {
 }
 
 /// Run the fixture in `room` with `argv`, returning its stdout.
-fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
+fn run_in_room(data: &DataHome, room: Option<&str>, argv: &[&str]) -> String {
     let opts = RunOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
@@ -112,9 +93,9 @@ fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
             command: "roomtest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
-        ..RunOptions::default()
+        ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(&manifest(), payload, &opts).expect("launch");
+    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -123,38 +104,19 @@ fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
     text
 }
 
-/// `XDG_DATA_HOME` is process-global and the launcher reads it to
-/// decide where the rooms tree lives, so these tests take turns.
+/// The host data home a test's launches keep their rooms tree in, handed
+/// to the launcher rather than set in the environment, so these tests run
+/// side by side.
 struct DataHome {
     _dir: tempfile::TempDir,
     path: PathBuf,
-    previous: Option<std::ffi::OsString>,
 }
 
 impl DataHome {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().to_path_buf();
-        let previous = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_DATA_HOME", &path) };
-        Self {
-            _dir: dir,
-            path,
-            previous,
-        }
-    }
-}
-
-impl Drop for DataHome {
-    fn drop(&mut self) {
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe {
-            match self.previous.take() {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
+        Self { _dir: dir, path }
     }
 }
 
@@ -166,14 +128,11 @@ impl Drop for DataHome {
 /// succeeding in room A, "not found in B" would be equally consistent
 /// with a fixture that never wrote anything.
 #[test]
-#[serial_test::serial(process_env)]
 fn an_app_cannot_read_across_rooms() {
     let data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
 
     let wrote = run_in_room(
-        payload.path(),
+        &data,
         Some("room-a"),
         &["write", "record.txt", "room-A-secret"],
     );
@@ -196,11 +155,7 @@ fn an_app_cannot_read_across_rooms() {
     );
 
     // Same app, same in-sandbox path, room B.
-    let from_b = run_in_room(
-        payload.path(),
-        Some("room-b"),
-        &["read", "/run/tilo/app/record.txt"],
-    );
+    let from_b = run_in_room(&data, Some("room-b"), &["read", "/run/tilo/app/record.txt"]);
     assert_eq!(
         from_b, "ERR /run/tilo/app/record.txt ENOENT",
         "an app in room B must not find a record it wrote in room A"
@@ -208,7 +163,7 @@ fn an_app_cannot_read_across_rooms() {
 
     // Nor by naming room A's host path — the sandbox has no such path.
     let by_host_path = run_in_room(
-        payload.path(),
+        &data,
         Some("room-b"),
         &["read", &host_file.display().to_string()],
     );
@@ -219,22 +174,14 @@ fn an_app_cannot_read_across_rooms() {
 
     // The room-B directory is genuinely empty of the record, rather than
     // holding a copy the app happened not to open.
-    let listing = run_in_room(
-        payload.path(),
-        Some("room-b"),
-        &["readdir", "/run/tilo/app"],
-    );
+    let listing = run_in_room(&data, Some("room-b"), &["readdir", "/run/tilo/app"]);
     assert!(
         !listing.contains("record.txt"),
         "room B's directory must not contain room A's record: {listing}"
     );
 
     // Confirm that the fixture can read what it wrote back in room A.
-    let from_a = run_in_room(
-        payload.path(),
-        Some("room-a"),
-        &["read", "/run/tilo/app/record.txt"],
-    );
+    let from_a = run_in_room(&data, Some("room-a"), &["read", "/run/tilo/app/record.txt"]);
     assert_eq!(
         from_a, "OK /run/tilo/app/record.txt room-A-secret",
         "room A must still see its own record — otherwise the failure in \
@@ -245,15 +192,12 @@ fn an_app_cannot_read_across_rooms() {
 /// The personal room is a room, not a bypass — an app launched into a
 /// workspace must not reach it either.
 #[test]
-#[serial_test::serial(process_env)]
 fn a_workspace_cannot_read_the_personal_room() {
-    let _data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
+    let data = DataHome::new();
 
-    run_in_room(payload.path(), None, &["write", "diary.txt", "personal"]);
+    run_in_room(&data, None, &["write", "diary.txt", "personal"]);
     let from_workspace = run_in_room(
-        payload.path(),
+        &data,
         Some("some-workspace"),
         &["read", "/run/tilo/app/diary.txt"],
     );
@@ -269,11 +213,8 @@ fn a_workspace_cannot_read_the_personal_room() {
 /// it was given, or the confinement above applies to one path and
 /// not to the paths apps actually use.
 #[test]
-#[serial_test::serial(process_env)]
 fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
     let data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
 
     for var in [
         "HOME",
@@ -283,7 +224,7 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
         "XDG_CACHE_HOME",
         "TILO_APP_DIR",
     ] {
-        let line = run_in_room(payload.path(), Some("room-a"), &["env", var]);
+        let line = run_in_room(&data, Some("room-a"), &["env", var]);
         let value = line.split_once('=').expect("ENV k=v").1;
         assert!(
             value.starts_with(appdir::SANDBOX_APP_DIR),
@@ -295,7 +236,7 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
     // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`. An
     // app using it must end up in the room's directory on the host.
     let wrote = run_in_room(
-        payload.path(),
+        &data,
         Some("room-a"),
         &[
             "write",
@@ -322,17 +263,13 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
 /// The read profile is a ceiling, not a floor: a path outside it isn't
 /// in the namespace at all, and a path inside it can't be written.
 #[test]
-#[serial_test::serial(process_env)]
 fn the_read_profile_is_all_there_is_and_it_is_read_only() {
-    let _data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
+    let data = DataHome::new();
 
     // Outside the profile: the user's own files, the shadow file, the
     // collaborative mount, the host's programs. `/home` and the invoking
-    // user's home are named explicitly since the cross-room tests run with
-    // `XDG_DATA_HOME` in a tempdir under `/tmp` (which the sandbox covers
-    // with a tmpfs) — this closes the reading that would otherwise only
+    // user's home are named explicitly since these tests keep their data
+    // home in a tempdir under `/tmp` (which the sandbox covers with a tmpfs) — this closes the reading that would otherwise only
     // prove `/tmp` is a tmpfs.
     let real_home = std::env::var("HOME").expect("HOME is set for the test process");
     let outside_the_profile: Vec<String> = [
@@ -348,7 +285,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     ]
     .into();
     for outside in &outside_the_profile {
-        let line = run_in_room(payload.path(), Some("room-a"), &["read", outside]);
+        let line = run_in_room(&data, Some("room-a"), &["read", outside]);
         assert!(
             line.starts_with("ERR "),
             "{outside} must not be readable without a capability: {line}"
@@ -356,11 +293,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     }
 
     // Inside the profile: readable.
-    let read = run_in_room(
-        payload.path(),
-        Some("room-a"),
-        &["readdir", "/usr/share/fonts"],
-    );
+    let read = run_in_room(&data, Some("room-a"), &["readdir", "/usr/share/fonts"]);
     assert!(
         read.starts_with("OK "),
         "the profile must actually deliver fonts: {read}"
@@ -375,11 +308,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
         "/etc/ld.so.cache",
         "/usr/lib64/tilo-confinement-probe.so",
     ] {
-        let line = run_in_room(
-            payload.path(),
-            Some("room-a"),
-            &["writeabs", target, "owned"],
-        );
+        let line = run_in_room(&data, Some("room-a"), &["writeabs", target, "owned"]);
         assert!(
             line.starts_with("ERR "),
             "{target} must not be writable: {line}"
@@ -395,7 +324,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     // The app's own directory is writable, so the failures above are the
     // read-only mount, not a fixture that can't write at all.
     let ok = run_in_room(
-        payload.path(),
+        &data,
         Some("room-a"),
         &["writeabs", "/run/tilo/app/probe", "owned"],
     );
@@ -409,11 +338,8 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
 /// two directories, so a package can't read the state of the app whose
 /// id it happens to know.
 #[test]
-#[serial_test::serial(process_env)]
 fn one_app_cannot_read_another_apps_directory() {
     let data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
 
     // Stand in for another package's secrets, in the same room.
     let victim = data
@@ -429,7 +355,7 @@ fn one_app_cannot_read_another_apps_directory() {
         "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
         "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
     ] {
-        let line = run_in_room(payload.path(), Some("room-a"), &["read", &attempt]);
+        let line = run_in_room(&data, Some("room-a"), &["read", &attempt]);
         assert!(
             line.starts_with("ERR "),
             "another package's state must be unreachable via {attempt}: {line}"
@@ -444,11 +370,8 @@ fn one_app_cannot_read_another_apps_directory() {
 /// manifest naming a path is refused before bwrap is spawned, and
 /// nothing it named is created.
 #[test]
-#[serial_test::serial(process_env)]
 fn a_manifest_that_names_a_path_is_refused_at_launch() {
     let data = DataHome::new();
-    let payload = tempfile::tempdir().unwrap();
-    build_fixture(payload.path());
 
     let victim = data.path.join("so.tilo.totp");
     for (field, entry) in [
@@ -467,9 +390,9 @@ fn a_manifest_that_names_a_path_is_refused_at_launch() {
         let opts = RunOptions {
             no_services: true,
             bwrap_bin: Some(bwrap()),
-            ..RunOptions::default()
+            ..isolated_options(&data.path)
         };
-        let err = run_with_captured(&m, payload.path(), &opts)
+        let err = run_with_captured(&m, roomtest_payload(), &opts)
             .err()
             .unwrap_or_else(|| panic!("{field} = {entry:?} must be refused"));
         assert!(

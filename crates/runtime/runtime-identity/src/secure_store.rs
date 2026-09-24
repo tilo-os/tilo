@@ -11,6 +11,7 @@
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
 
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -112,26 +113,45 @@ impl SecretProvider for SecretServiceProvider {
     }
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
-        secret_service_load(locator, "secret-tool")
+        secret_service_load(locator, &[OsStr::new("secret-tool")])
     }
 
     fn remove(&self, locator: &str) -> io::Result<()> {
-        secret_service_remove(locator, "secret-tool")
+        secret_service_remove(locator, &[OsStr::new("secret-tool")])
     }
 }
 
-fn secret_service_remove(locator: &str, program: &str) -> io::Result<()> {
+/// Run the Secret Service client named by `argv` (the program, then any
+/// arguments that precede the subcommand) with `subcommand` appended.
+fn secret_tool(
+    argv: &[&OsStr],
+    subcommand: [&str; 5],
+    output_limit: usize,
+) -> io::Result<bounded_command::Output> {
+    let Some((program, prefix)) = argv.split_first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no Secret Service client command",
+        ));
+    };
+    let full: Vec<&OsStr> = prefix
+        .iter()
+        .copied()
+        .chain(subcommand.iter().map(OsStr::new))
+        .collect();
+    bounded_command::run_os(program, &full, None, output_limit, Duration::from_secs(5))
+        .map_err(io::Error::other)
+}
+
+fn secret_service_remove(locator: &str, argv: &[&OsStr]) -> io::Result<()> {
     validate_software_locator(locator)?;
     let mut removed = false;
     for (purpose_key, purpose_value, identity_key) in SECRET_ATTRIBUTES {
-        let output = bounded_command::run(
-            program,
-            &["clear", purpose_key, purpose_value, identity_key, locator],
-            None,
+        let output = secret_tool(
+            argv,
+            ["clear", purpose_key, purpose_value, identity_key, locator],
             1024,
-            Duration::from_secs(5),
-        )
-        .map_err(io::Error::other)?;
+        )?;
         removed |= output.status.success();
     }
     if removed {
@@ -149,20 +169,17 @@ const SECRET_ATTRIBUTES: [(&str, &str, &str); 2] = [
     ("qos-purpose", "qos-identity-signing-v1", "qos-identity-key"),
 ];
 
-fn secret_service_load(locator: &str, program: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+fn secret_service_load(locator: &str, argv: &[&OsStr]) -> io::Result<Zeroizing<Vec<u8>>> {
     validate_software_locator(locator)?;
     for (purpose_key, purpose_value, identity_key) in SECRET_ATTRIBUTES {
-        let output = bounded_command::run(
-            program,
-            &["lookup", purpose_key, purpose_value, identity_key, locator],
-            None,
+        let output = secret_tool(
+            argv,
+            ["lookup", purpose_key, purpose_value, identity_key, locator],
             usize::try_from(MAX_IDENTITY_SECRET_BYTES)
                 .unwrap_or(usize::MAX)
                 .saturating_mul(2)
                 .saturating_add(2),
-            Duration::from_secs(5),
-        )
-        .map_err(io::Error::other)?;
+        )?;
         if !output.status.success() {
             continue;
         }
@@ -356,7 +373,7 @@ mod rename_compat_tests {
     fn secret_service_load_finds_legacy_attributes_without_creating_keys() {
         let dir = tempfile::tempdir().unwrap();
         let command = dir.path().join("secret-tool-fixture");
-        fs::write(
+        let command = tilo_test_env::script(
             &command,
             r#"#!/bin/sh
 [ "$1" = lookup ] || exit 99
@@ -367,8 +384,7 @@ printf '010203\n'
 "#,
         )
         .unwrap();
-        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
-        let secret = secret_service_load(&"ab".repeat(32), command.to_str().unwrap()).unwrap();
+        let secret = secret_service_load(&"ab".repeat(32), &command.exec_argv()).unwrap();
         assert_eq!(secret.as_slice(), &[1, 2, 3]);
     }
 }
@@ -381,7 +397,7 @@ mod removal_compat_tests {
     fn secret_service_removes_legacy_entry() {
         let dir = tempfile::tempdir().unwrap();
         let command = dir.path().join("secret-tool-fixture");
-        fs::write(
+        let command = tilo_test_env::script(
             &command,
             r#"#!/bin/sh
 [ "$1" = clear ] || exit 99
@@ -392,15 +408,14 @@ exit 0
 "#,
         )
         .unwrap();
-        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
-        secret_service_remove(&"ab".repeat(32), command.to_str().unwrap()).unwrap();
+        secret_service_remove(&"ab".repeat(32), &command.exec_argv()).unwrap();
     }
 
     #[test]
     fn corrupt_current_secret_is_not_masked_by_legacy_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let command = dir.path().join("secret-tool-fixture");
-        fs::write(
+        let command = tilo_test_env::script(
             &command,
             r#"#!/bin/sh
 [ "$1" = lookup ] || exit 99
@@ -408,9 +423,8 @@ if [ "$2" = tilo-purpose ]; then printf 'not-hex'; else printf '010203'; fi
 "#,
         )
         .unwrap();
-        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
-            secret_service_load(&"ab".repeat(32), command.to_str().unwrap())
+            secret_service_load(&"ab".repeat(32), &command.exec_argv())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData

@@ -378,31 +378,12 @@ fn write_lease(id: &str, purpose: EgressPurpose, expires: u64) -> Result<(), Str
 /// opaque lease ID remains in its root-only record under `LEASE_ROOT`.
 fn write_egress_summary(purpose: EgressPurpose, expires: u64) -> Result<(), String> {
     ensure_egress_runtime_root()?;
-    let root = Path::new(EGRESS_RUNTIME_ROOT);
-    let temporary = root.join(runtime_temporary_name("egress-summary"));
-    let summary = Path::new(EGRESS_SUMMARY);
     let bytes = format!(
         "{{\"schema_version\":1,\"purpose\":\"{}\",\"expires_at_unix\":{expires}}}\n",
         purpose.as_str()
     );
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o640)
-        .open(&temporary)
-        .map_err(|error| format!("cannot create egress summary: {error}"))?;
-    if let Err(error) = file
-        .write_all(bytes.as_bytes())
-        .and_then(|()| file.sync_all())
-    {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("cannot write egress summary: {error}"));
-    }
-    if let Err(error) = fs::rename(&temporary, summary) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("cannot publish egress summary: {error}"));
-    }
-    Ok(())
+    atomic_file::write_with_mode(Path::new(EGRESS_SUMMARY), bytes.as_bytes(), 0o640)
+        .map_err(|error| format!("cannot publish egress summary: {error}"))
 }
 
 fn ensure_egress_runtime_root() -> Result<(), String> {
@@ -458,39 +439,14 @@ fn write_status_summary<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> 
             )
         })
         .unwrap_or_default();
-    let root = Path::new(EGRESS_RUNTIME_ROOT);
-    let temporary = root.join(runtime_temporary_name("status"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o640)
-        .open(&temporary)
-        .map_err(|error| format!("cannot create Windows status summary: {error}"))?;
     let summary =
         format!("{{\"schema_version\":1,\"power_state\":\"{power_state}\"{temporary_egress}}}\n");
-    if let Err(error) = file
-        .write_all(summary.as_bytes())
-        .and_then(|()| file.sync_all())
-    {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("cannot write Windows status summary: {error}"));
-    }
-    if let Err(error) = fs::rename(&temporary, STATUS_SUMMARY) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("cannot publish Windows status summary: {error}"));
-    }
-    Ok(())
+    atomic_file::write_with_mode(Path::new(STATUS_SUMMARY), summary.as_bytes(), 0o640)
+        .map_err(|error| format!("cannot publish Windows status summary: {error}"))
 }
 
 fn remove_egress_summary() {
     let _ = fs::remove_file(EGRESS_SUMMARY);
-}
-
-fn runtime_temporary_name(kind: &str) -> String {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    format!(".{kind}-{}-{nonce}.tmp", std::process::id())
 }
 
 fn read_egress_summary() -> Result<Option<(&'static str, u64)>, String> {

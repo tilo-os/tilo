@@ -165,9 +165,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --filter=ca-anchors --overwrite --comment --purpose server-auth /ca-bundle.crt \
     && /usr/bin/busybox grep -q '^-----BEGIN CERTIFICATE-----$' /ca-bundle.crt \
     && microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5 \
-    && /usr/bin/busybox mkdir -p /etc/pki/tls/certs \
-    && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt \
-    && /usr/bin/busybox test -s /etc/pki/tls/certs/ca-bundle.crt \
+    && /usr/bin/busybox mkdir -p /etc/pki/ca-trust/extracted/pem \
+    && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+    && /usr/bin/busybox test -s /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
     && ! /usr/bin/busybox find / -xdev \
         \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
         -print -quit | /usr/bin/busybox grep -q .

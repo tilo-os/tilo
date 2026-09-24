@@ -82,44 +82,20 @@ pub fn application_dirs() -> Vec<PathBuf> {
         }
     };
 
-    if let Some(home) = data_home() {
+    if let Some(home) = xdg_paths::xdg::data_home() {
         push(home.join("applications"));
     }
-    for base in data_dirs() {
+    for base in xdg_paths::xdg::data_dirs() {
         push(base.join("applications"));
     }
     // Flatpak's exports. Appended, not prepended: the dedup above keeps their real precedence if
     // the session already listed them, and appending is correct otherwise — a hand-installed
     // entry should override an export.
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = xdg_paths::home() {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
     push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     dirs
-}
-
-fn data_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-        && !dir.is_empty()
-    {
-        return Some(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("HOME")?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(Path::new(&home).join(".local/share"))
-}
-
-fn data_dirs() -> Vec<PathBuf> {
-    let raw = std::env::var_os("XDG_DATA_DIRS")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| OsStr::new("/usr/local/share:/usr/share").to_os_string());
-    raw.to_string_lossy()
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect()
 }
 
 /// Scan the XDG application directories of the current environment.

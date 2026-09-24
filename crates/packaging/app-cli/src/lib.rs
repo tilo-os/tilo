@@ -35,6 +35,7 @@
 
 pub mod client;
 pub mod config;
+pub mod dev_env;
 pub mod install;
 
 use serde::{Deserialize, Serialize};

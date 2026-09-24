@@ -177,10 +177,8 @@ fn snapshot_active_default() -> bool {
 /// per-login; owner/mode checks on the shell side prevent forged status.
 pub mod transport {
     use super::ShellSnapshot;
-    use std::fs::{self, OpenOptions};
-    use std::io::{self, Write};
-    #[cfg(unix)]
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::fs;
+    use std::io;
     use std::path::PathBuf;
 
     #[must_use]
@@ -192,22 +190,7 @@ pub mod transport {
     pub fn publish(snapshot: &ShellSnapshot) -> io::Result<()> {
         let path = path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing"))?;
-        let dir = path
-            .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid clocks path"))?;
-        fs::create_dir_all(dir)?;
-        #[cfg(unix)]
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-        let tmp = path.with_extension("json.new");
-        let mut opts = OpenOptions::new();
-        opts.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        opts.mode(0o600);
-        let mut file = opts.open(&tmp)?;
-        serde_json::to_writer(&mut file, snapshot)?;
-        file.flush()?;
-        file.sync_all()?;
-        fs::rename(tmp, path)
+        atomic_file::write_private(&path, &serde_json::to_vec(snapshot)?)
     }
 
     #[derive(serde::Deserialize)]

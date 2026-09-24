@@ -936,6 +936,27 @@ pub enum RecordPublisherError {
     ),
 }
 
+impl RecordPublisherError {
+    /// Whether the record (or repository) has reached a size bound, so the
+    /// same publication will keep failing however often it is retried.
+    #[must_use]
+    pub const fn is_capacity_exhausted(&self) -> bool {
+        matches!(
+            self,
+            Self::HistoryTooLarge
+                | Self::ConflictHistoryTooLarge
+                | Self::SequenceExhausted
+                | Self::Repository(
+                    RecordRepositoryError::TooManyVersions
+                        | RecordRepositoryError::TooManyOperations
+                        | RecordRepositoryError::TooManyConflicts
+                        | RecordRepositoryError::TooManyRecords
+                        | RecordRepositoryError::RecordFileTooLarge
+                )
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use collab_types::{

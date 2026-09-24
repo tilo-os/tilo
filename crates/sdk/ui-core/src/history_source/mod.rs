@@ -9,7 +9,7 @@
 //! both an app's scrubber and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
-//! materialises each version with [`qdoc::history::materialize_at`] and
+//! materialises the window with [`qdoc::history::materialize_series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
 //! documents carrying the `qdoc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
@@ -21,8 +21,8 @@
 //! it's content-addressed and stable across peers, letting
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
@@ -188,18 +188,22 @@ impl HistorySource {
         // consecutive frontiers.
         let heads = prefix_heads_series(doc, start, versions.len());
 
-        // Needed so the first row in the window still describes a delta.
-        let mut prev_snapshot: Option<DocSnapshot> = if start == 0 {
-            Some(DocSnapshot::default())
-        } else {
-            // `start != 0` here, so this never saturates below the value
-            // plain subtraction would have produced.
-            qdoc::history::materialize_at(doc, start.saturating_sub(1)).ok()
+        // One replay of the change log yields every snapshot in the window,
+        // plus the one before it, so the first row still describes a delta.
+        let before_window = start.checked_sub(1);
+        let indices: Vec<usize> = before_window
+            .into_iter()
+            .chain(versions.iter().skip(start).map(|v| v.index))
+            .collect();
+        let mut snapshots = qdoc::history::materialize_series(doc, &indices).into_iter();
+        let mut prev_snapshot: Option<DocSnapshot> = match before_window {
+            None => Some(DocSnapshot::default()),
+            Some(_) => snapshots.next().flatten(),
         };
 
         let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
         for v in versions.iter().skip(start) {
-            let cur_snapshot = qdoc::history::materialize_at(doc, v.index).ok();
+            let cur_snapshot = snapshots.next().flatten();
             let before = heads
                 .get(&v.index.wrapping_sub(1))
                 .cloned()

@@ -37,19 +37,10 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const SHOT_SCENARIOS: &[&str] = &[
@@ -320,7 +311,7 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::fmt::Write as _;
 
     println!("\n== independent HTTP verification (Range GET first 64 KiB) ==");
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
     let resp = client
@@ -525,37 +516,16 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
 /// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
 fn run_bench(n: usize, viewport: (u32, u32)) {
     use std::time::Instant;
-    let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(theme.text_scale);
+    let mut frame = ShotFrame::new(viewport, Theme::dark());
     let mut widget = music::app_root_for_shot(""); // offline sample, hermetic
-    let mut state = ui::State::new();
 
     // Warm up (first frame builds text-shape caches etc.).
-    let _ = render_widget_frame(
-        widget.as_mut(),
-        &mut state,
-        viewport,
-        &mut tr,
-        &theme,
-        &presence,
-        &permission,
-    );
+    let _ = render_widget_frame(&mut frame, widget.as_mut());
 
     let mut samples = Vec::with_capacity(n);
     for _ in 0..n {
         let t0 = Instant::now();
-        let _ = render_widget_frame(
-            widget.as_mut(),
-            &mut state,
-            viewport,
-            &mut tr,
-            &theme,
-            &presence,
-            &permission,
-        );
+        let _ = render_widget_frame(&mut frame, widget.as_mut());
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     samples.sort_by(f64::total_cmp);
@@ -576,82 +546,23 @@ fn run_bench(n: usize, viewport: (u32, u32)) {
 }
 
 /// Run one offscreen frame against `widget` and return the drawn Vello scene.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
-fn render_widget_frame(
-    widget: &mut dyn Widget,
-    state: &mut ui::State,
-    viewport: (u32, u32),
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permission: &PermissionContext,
-) -> Scene {
-    let (w, h) = viewport;
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
-    // `new_with_children` only fails for a child `NodeId` from a different
-    // tree, which never happens here — `child` was just built in this exact
-    // `taffy` above.
+/// The frame's document and text renderer persist across calls, as they do
+/// between frames of the live app.
+fn render_widget_frame(frame: &mut ShotFrame, widget: &mut dyn Widget) -> Scene {
+    frame.sync(widget);
+    // Taffy rejects only a child from a different tree, and the frame builds
+    // its tree from this widget.
     #[allow(
         clippy::expect_used,
-        reason = "new_with_children only errors for a child NodeId from a different tree; `child` was just built in this exact taffy above"
+        reason = "the frame builds a fresh tree from this widget, so taffy cannot reject it"
     )]
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .expect("shot root");
-
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(widget, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            text_renderer,
-        )
-        .expect("shot layout");
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        presence,
-        permission,
-    );
-    scene
+    frame.layout(widget).expect("shot layout");
+    frame.draw(widget)
 }
 
 /// Write a rendered scene out as a PNG.
-fn write_scene_png(scene: &Scene, viewport: (u32, u32), out: &std::path::Path) {
-    let (w, h) = viewport;
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(scene, Color::TRANSPARENT, out);
+fn write_scene_png(frame: &ShotFrame, scene: &Scene, out: &std::path::Path) {
+    frame.write_png(scene, out);
     println!("music: wrote shot to {}", out.display());
 }
 
@@ -662,21 +573,9 @@ fn render_shot_to_png(
     out: &std::path::Path,
     theme: &Theme,
 ) {
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut state = ui::State::new();
-    let scene = render_widget_frame(
-        widget.as_mut(),
-        &mut state,
-        viewport,
-        &mut text_renderer,
-        theme,
-        &presence,
-        &permission,
-    );
-    write_scene_png(&scene, viewport, out);
+    let mut frame = ShotFrame::new(viewport, theme.clone());
+    let scene = render_widget_frame(&mut frame, widget.as_mut());
+    write_scene_png(&frame, &scene, out);
 }
 
 /// Live shot: build the real Music app, let its background worker + image cache
@@ -690,33 +589,25 @@ fn render_live_shot_to_png(
     theme: &Theme,
 ) {
     use std::time::Duration;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(theme.text_scale);
+    let mut shot = ShotFrame::new(viewport, theme.clone());
     let mut app = music::live_shot_app();
-    let mut state = ui::State::new();
-
-    let mut frame = |app: &mut music::MusicApp, state: &mut ui::State| {
-        render_widget_frame(app, state, viewport, &mut tr, theme, &presence, &permission)
-    };
 
     if let Some(q) = play {
         // Stage a real playing track for a lyrics / now-playing capture.
         for _ in 0..3 {
-            let _ = frame(&mut app, &mut state);
+            let _ = render_widget_frame(&mut shot, &mut app);
         }
         app.shot_begin_search(q);
         for _ in 0..200 {
-            let _ = frame(&mut app, &mut state);
+            let _ = render_widget_frame(&mut shot, &mut app);
             if app.shot_has_results() {
-                app.shot_play_top_result(&mut state.doc);
+                app.shot_play_top_result(&mut shot.state.doc);
                 break;
             }
             std::thread::sleep(Duration::from_millis(80));
         }
         for _ in 0..200 {
-            let _ = frame(&mut app, &mut state);
+            let _ = render_widget_frame(&mut shot, &mut app);
             if app.images_idle() && app.shot_lyrics_ready() {
                 break;
             }
@@ -729,7 +620,7 @@ fn render_live_shot_to_png(
         // Cap the wait (~13s) so a failed/geo-blocked fetch still renders rather
         // than hanging; a successful fetch settles far sooner.
         for _ in 0..160 {
-            let _ = frame(&mut app, &mut state);
+            let _ = render_widget_frame(&mut shot, &mut app);
             let idle = app.images_idle() && app.is_content_loaded_for_shot();
             if idle {
                 stable += 1;
@@ -744,6 +635,6 @@ fn render_live_shot_to_png(
         }
     }
 
-    let scene = frame(&mut app, &mut state);
-    write_scene_png(&scene, viewport, out);
+    let scene = render_widget_frame(&mut shot, &mut app);
+    write_scene_png(&shot, &scene, out);
 }

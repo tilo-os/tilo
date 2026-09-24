@@ -1,6 +1,7 @@
 //! Stateless paint, text-fit, and canvas geometry helpers for the editor.
 
 use super::*;
+pub(super) use ui::paint::{fill_rect, fill_round, stroke_round};
 
 /// A label colour guaranteed legible on `fill`, and the (possibly deepened)
 /// fill to paint under it — the toolkit's own contrast rule, so a clip name on
@@ -164,10 +165,6 @@ pub(super) fn blit_thumb(
         &RoundedRect::from_rect(dest, radius),
     );
 }
-
-pub(super) fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
-    scene.fill(Fill::NonZero, tf, color, None, &rect);
-}
 /// Diagonal hatching clipped to `rect`, for a surface whose content is a
 /// stand-in rather than the real thing. Hatching (not a flat tint) so the
 /// state survives a colour-blind reading and a greyscale screenshot.
@@ -199,32 +196,6 @@ pub(super) fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect
         x += step;
     }
     scene.pop_layer();
-}
-
-pub(super) fn fill_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
-    scene.fill(
-        Fill::NonZero,
-        tf,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
-}
-pub(super) fn stroke_rrect(
-    scene: &mut Scene,
-    tf: Affine,
-    color: Color,
-    rect: Rect,
-    radius: f64,
-    w: f64,
-) {
-    scene.stroke(
-        &Stroke::new(w),
-        tf,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
 }
 pub(super) fn stroke_line(
     scene: &mut Scene,
@@ -767,7 +738,7 @@ pub(super) fn draw_level_meter(
         (area.x1 - flag_w - 2.0).max(area.x0),
         area.y1,
     );
-    fill_rrect(scene, tf, c.neutral[3], bars, 1.5);
+    fill_round(scene, tf, bars, 1.5, c.neutral[3]);
     let h = ((area.height() - 2.0) / 2.0).max(1.0);
     let thresholds = meter_thresholds();
     for (i, l) in level.iter().enumerate() {
@@ -777,12 +748,12 @@ pub(super) fn draw_level_meter(
         }
         let y0 = area.y0 + i as f64 * (h + 2.0);
         let bar = Rect::new(bars.x0, y0, bars.x0 + bars.width() * frac, y0 + h);
-        fill_rrect(
+        fill_round(
             scene,
             tf,
-            thresholds.color(theme, frac as f32),
             bar,
             (h / 2.0).min(1.5),
+            thresholds.color(theme, frac as f32),
         );
     }
     // Peak-hold: the loudest this has been since the meter was cleared. It is
@@ -794,8 +765,8 @@ pub(super) fn draw_level_meter(
         fill_rect(
             scene,
             tf,
-            c.text_primary,
             Rect::new(x - 1.0, area.y0, x, area.y1),
+            c.text_primary,
         );
     }
     let flag = Rect::new(area.x1 - flag_w, area.y0, area.x1, area.y1);
@@ -804,7 +775,7 @@ pub(super) fn draw_level_meter(
     } else {
         (c.neutral[3], c.text_dim)
     };
-    fill_rrect(scene, tf, fill, flag, 1.5);
+    fill_round(scene, tf, flag, 1.5, fill);
 }
 
 pub(super) fn hit_slider(track: Rect, p: Point) -> bool {
@@ -987,8 +958,8 @@ pub(super) fn draw_waveform(scene: &mut Scene, tf: Affine, paint: WaveformPaint<
         fill_rect(
             scene,
             tf,
-            paint.color,
             Rect::new(x, midy - amp, x + 2.0, midy + amp),
+            paint.color,
         );
     }
 }
@@ -1009,8 +980,8 @@ pub(super) fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color:
     fill_rect(
         scene,
         tf,
-        with_alpha(color, 0.55),
         Rect::new(area.x0 + 2.0, midy - 0.75, area.x1 - 2.0, midy + 0.75),
+        with_alpha(color, 0.55),
     );
 }
 
@@ -1039,20 +1010,7 @@ pub(super) fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
 /// and drawing at 13px under-elides, and the overflow lands wherever the
 /// caller's clip happens to be.
 pub(super) fn elide_at(s: &str, max_px: f32, size: f32, tr: &mut TextRenderer) -> String {
-    let (w, _) = tr.measure(s, size, None);
-    if w <= max_px {
-        return s.to_string();
-    }
-    let mut chars: Vec<char> = s.chars().collect();
-    while chars.len() > 1 {
-        chars.pop();
-        let candidate: String = chars.iter().collect::<String>() + "…";
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if cw <= max_px {
-            return candidate;
-        }
-    }
-    "…".to_string()
+    tr.elide_to_width(s, size, max_px)
 }
 
 /// Choose a ruler tick spacing (seconds) so labels stay ~70px apart.
@@ -1139,7 +1097,7 @@ pub(super) fn selection_row(
 ) {
     let tier = ui::chrome::selection_tier(theme, state);
     if tier.fill.components[3] > 0.0 {
-        fill_rrect(scene, tf, tier.fill, rect, radius);
+        fill_round(scene, tf, rect, radius, tier.fill);
     }
     if let Some(border) = tier.border {
         scene.stroke(

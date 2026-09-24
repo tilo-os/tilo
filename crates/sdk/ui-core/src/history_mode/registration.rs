@@ -136,9 +136,10 @@ pub enum HistoryRegistrationError {
 impl HistoryRegistration {
     /// Called only by the runner that installed an explicitly app-global opener.
     /// A persistence path identifies storage; it is not a user-file write target.
+    #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
-        autosave: Option<&crate::persist::Autosave>,
+        autosave: Option<&crate::persist::DocWriter>,
         lifetime: uuid::Uuid,
     ) -> Result<Self, HistoryRegistrationError> {
         if definition

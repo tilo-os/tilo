@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use parking_lot::Mutex;
 use thiserror::Error;
 
 use tilo_app_package::blobs::{BlobHash, BlobStore, BlobStoreError, Collection};
@@ -149,19 +149,25 @@ impl Store {
         })
     }
 
+    // A panic in another holder must not wedge the store for every later
+    // caller.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Root directory the store occupies. Useful for tests.
     pub fn root(&self) -> PathBuf {
-        self.inner.lock().root.clone()
+        self.lock().root.clone()
     }
 
     /// Sub-directory where extracted payload trees live.
     pub fn payloads_root(&self) -> PathBuf {
-        self.inner.lock().root.join("payloads")
+        self.lock().root.join("payloads")
     }
 
     /// All currently-known registry entries.
     pub fn list(&self) -> Vec<RegistryEntry> {
-        self.inner.lock().registry.entries().cloned().collect()
+        self.lock().registry.entries().cloned().collect()
     }
 
     /// Resolve a single id.
@@ -170,7 +176,7 @@ impl Store {
     ///
     /// Returns [`StoreError::Unknown`] if `id` is not present in the registry.
     pub fn resolve(&self, id: PackageId) -> Result<RegistryEntry, StoreError> {
-        let inner = self.inner.lock();
+        let inner = self.lock();
         inner
             .registry
             .get(&id)
@@ -185,7 +191,7 @@ impl Store {
     /// Returns [`StoreError::Unknown`] if `id` is not present in the
     /// registry, or an error if persisting the updated registry fails.
     pub fn pin(&self, id: PackageId) -> Result<(), StoreError> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         if !inner.registry.set_pinning(&id, Pinning::Pinned) {
             return Err(StoreError::Unknown(id));
         }
@@ -201,7 +207,7 @@ impl Store {
     /// Returns [`StoreError::Unknown`] if `id` is not present in the
     /// registry, or an error if persisting the updated registry fails.
     pub fn unpin(&self, id: PackageId) -> Result<(), StoreError> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         if !inner.registry.set_pinning(&id, Pinning::Tried) {
             return Err(StoreError::Unknown(id));
         }
@@ -217,7 +223,7 @@ impl Store {
     /// Returns [`StoreError::Unknown`] if `id` is not present in the
     /// registry, or an error if persisting the updated registry fails.
     pub fn mark_used(&self, id: PackageId) -> Result<(), StoreError> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         if !inner.registry.touch(&id) {
             return Err(StoreError::Unknown(id));
         }
@@ -237,7 +243,7 @@ impl Store {
     /// pinned, or an error if persisting the registry or removing the
     /// payload tree fails.
     pub fn remove(&self, id: PackageId) -> Result<u64, StoreError> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         let Some(entry) = inner.registry.get(&id).cloned() else {
             return Err(StoreError::Unknown(id));
         };
@@ -258,7 +264,7 @@ impl Store {
     ///
     /// Returns an error if persisting the updated registry fails.
     pub fn put_entry(&self, entry: RegistryEntry) -> Result<(), StoreError> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         inner.registry.insert(entry);
         inner.persist_registry()?;
         drop(inner);
@@ -268,7 +274,7 @@ impl Store {
     /// Lock + hand out the inner blob store for an install operation that
     /// needs to ingest several blobs and then unpack via `tilo_app_package::unpack`.
     pub fn with_blobs<R>(&self, f: impl FnOnce(&mut FsBlobStore) -> R) -> R {
-        let mut inner = self.inner.lock();
+        let mut inner = self.lock();
         f(&mut inner.blobs)
     }
 
@@ -278,7 +284,7 @@ impl Store {
     ///
     /// Returns an error if the blob store's total size cannot be read.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
-        let inner = self.inner.lock();
+        let inner = self.lock();
         let payloads_root = inner.root.join("payloads");
         let store_total = inner.blobs.total_bytes()?;
         let mut by_pinning = BTreeMap::<Pinning, u64>::new();
@@ -315,7 +321,7 @@ impl Store {
 
     /// Read-only access to the registry. Used by GC.
     pub fn snapshot_registry(&self) -> Vec<RegistryEntry> {
-        self.inner.lock().registry.entries().cloned().collect()
+        self.lock().registry.entries().cloned().collect()
     }
 }
 

@@ -14,10 +14,7 @@ use crate::{
 use tilo_actions::ActionAddress;
 use ui::{
     icons::Icon,
-    search::{
-        DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-        SearchResult,
-    },
+    search::{CatalogSearchProvider, SearchCatalog, SearchResult},
 };
 
 pub const SEARCH_KIND: &str = "Image Editor";
@@ -109,36 +106,13 @@ impl ProjectSearch {
     }
 }
 
-impl SearchProvider for ProjectSearch {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for ProjectSearch {
+    fn provider_name(&self) -> &str {
         SEARCH_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
@@ -168,6 +142,7 @@ fn operation_name(operation: Option<&Operation>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
 
     #[test]
     fn search_rows_use_the_same_canonical_resources_as_the_graph() {

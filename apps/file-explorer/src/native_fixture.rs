@@ -12,7 +12,7 @@ pub(crate) fn order_hash(entries: &[crate::model::Entry]) -> String {
         hash.update(entry.name.as_bytes());
         hash.update([u8::from(entry.is_dir)]);
     }
-    format!("{:x}", hash.finalize())
+    hex::encode(hash.finalize())
 }
 
 /// Create 1,200 real entries, including 299 distinct PNGs and four folders.

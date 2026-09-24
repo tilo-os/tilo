@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -90,7 +91,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
             ws.grant_app(app_id, cap);
         }
     }
-    tree.workspaces.push(ws);
+    tree.desktop.workspaces.push(ws);
     tree.set_active(id);
     tree
 }
@@ -199,7 +200,7 @@ fn tree_with_members() -> WorkspaceTree {
         )
         .expect("the owner may write a membership");
     }
-    tree.workspaces.push(ws);
+    tree.desktop.workspaces.push(ws);
     tree.set_active(id);
     tree
 }
@@ -207,7 +208,8 @@ fn tree_with_members() -> WorkspaceTree {
 fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
     let st = chrome.borrow();
     let tree = st.tree();
-    tree.active_workspace()
+    tree.desktop
+        .active_workspace()
         .map(|ws| ws.capabilities.clone())
         .unwrap_or_default()
 }
@@ -229,7 +231,7 @@ fn the_permissions_pill_is_painted_on_a_workspace_with_no_grants() {
         let st = chrome.borrow();
         let t = st.tree();
         assert!(
-            !t.active_workspace().unwrap().has_app_grants(),
+            !t.desktop.active_workspace().unwrap().has_app_grants(),
             "precondition: no grants"
         );
     }
@@ -327,7 +329,7 @@ fn clicking_grant_writes_a_capability_the_decision_function_honours() {
     let subjects = {
         let st = chrome.borrow();
         let t = st.tree();
-        workspace_settings::grant_subjects(t.active_workspace().unwrap())
+        workspace_settings::grant_subjects(t.desktop.active_workspace().unwrap())
     };
     let target = subjects
         .iter()
@@ -357,7 +359,7 @@ fn clicking_grant_writes_a_capability_the_decision_function_honours() {
     {
         let st = chrome.borrow();
         let t = st.tree();
-        let ws = t.active_workspace().unwrap();
+        let ws = t.desktop.active_workspace().unwrap();
         assert!(!ws.allows(
             &ws.actor_for_app("firefox"),
             &ResourceRef::Device("microphone".into()),
@@ -370,7 +372,7 @@ fn clicking_grant_writes_a_capability_the_decision_function_honours() {
 
     let st = chrome.borrow();
     let t = st.tree();
-    let ws = t.active_workspace().expect("active workspace");
+    let ws = t.desktop.active_workspace().expect("active workspace");
     assert!(
         ws.allows(
             &ws.actor_for_app("firefox"),
@@ -502,7 +504,7 @@ fn the_members_tab_renders_the_roster_with_controls() {
     let roster = {
         let st = chrome.borrow();
         let t = st.tree();
-        t.active_workspace().unwrap().roster()
+        t.desktop.active_workspace().unwrap().roster()
     };
     assert_eq!(
         rows.len(),
@@ -535,7 +537,7 @@ fn role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do() {
     {
         let st = chrome.borrow();
         let t = st.tree();
-        let ws = t.active_workspace().unwrap();
+        let ws = t.desktop.active_workspace().unwrap();
         assert_eq!(
             ws.role_of(&"ada".to_string()),
             Some(shell::shell::state::CapRole::Viewer)
@@ -573,7 +575,7 @@ fn role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do() {
 
     let st = chrome.borrow();
     let t = st.tree();
-    let ws = t.active_workspace().unwrap();
+    let ws = t.desktop.active_workspace().unwrap();
     assert_eq!(
         ws.role_of(&"ada".to_string()),
         Some(shell::shell::state::CapRole::Editor)
@@ -597,9 +599,13 @@ fn role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do() {
 fn removing_a_member_takes_their_capabilities_with_them() {
     let mut tree = tree_with_members();
     let owner = shell::shell::state::local_user_id_for_room(
-        &tree.active_workspace().expect("fixture workspace").room,
+        &tree
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room,
     );
-    if let Some(ws) = tree.active_workspace_mut() {
+    if let Some(ws) = tree.desktop.active_workspace_mut() {
         ws.grant_as(
             &owner,
             CapOverride::grant(
@@ -632,7 +638,7 @@ fn removing_a_member_takes_their_capabilities_with_them() {
 
     let st = chrome.borrow();
     let t = st.tree();
-    let ws = t.active_workspace().unwrap();
+    let ws = t.desktop.active_workspace().unwrap();
     assert_eq!(ws.role_of(&"ada".to_string()), None, "no longer a member");
     assert!(
         !ws.allows(
@@ -677,7 +683,11 @@ fn the_owner_row_offers_no_role_change_and_no_removal() {
     // change it would be a control that lies.
     let tree = tree_with_members();
     let owner = shell::shell::state::local_user_id_for_room(
-        &tree.active_workspace().expect("fixture workspace").room,
+        &tree
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room,
     );
     let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
     let row = host
@@ -695,7 +705,7 @@ fn the_owner_row_offers_no_role_change_and_no_removal() {
     let st = chrome.borrow();
     let t = st.tree();
     assert_eq!(
-        t.active_workspace().unwrap().role_of(&owner),
+        t.desktop.active_workspace().unwrap().role_of(&owner),
         Some(shell::shell::state::CapRole::Owner)
     );
 }

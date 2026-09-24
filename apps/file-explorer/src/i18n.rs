@@ -1,15 +1,10 @@
 //! Fluent localization for Files.
 //!
 //! Catalogs are embedded so standalone, sandboxed, headless and test runs all
-//! resolve the same copy. Locale selection follows the usual POSIX variables
-//! (`LC_ALL`, `LANGUAGE`, `LANG`) and falls back per-message to `en-US`.
+//! resolve the same copy, through the toolkit's [`ui::i18n`] manager. Locale
+//! selection follows the usual POSIX variables (`LC_ALL`, `LC_MESSAGES`,
+//! `LANGUAGE`, `LANG`) and falls back per-message to `en-US`.
 
-use std::{
-    cell::RefCell,
-    sync::{OnceLock, RwLock},
-};
-
-use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use icu_datetime::{
     DateTimeFormatter,
     fieldsets::YMD,
@@ -17,137 +12,53 @@ use icu_datetime::{
 };
 use icu_decimal::{DecimalFormatter, input::Decimal};
 use icu_locale::Locale;
+use ui::i18n::{ArgValue, EmbeddedCatalog};
 use unic_langid::LanguageIdentifier;
 
 const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
 const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
+/// Region variants such as de-AT and de-CH negotiate to the complete German
+/// catalog, while ICU and Fluent keep the requested locale for number,
+/// plural and date rules.
+static CATALOG: EmbeddedCatalog = catalog();
+
+const fn catalog() -> EmbeddedCatalog {
+    let catalog = EmbeddedCatalog::new(
+        "en-US",
+        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
+        "files-menu-open",
+    )
+    .with_system_locale();
+    // Unit tests assert source-copy behavior throughout the widget. Keep them
+    // deterministic across developer/CI host locales; catalog negotiation
+    // itself is exercised through explicit-locale helpers below.
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+}
+
 fn source_lang() -> LanguageIdentifier {
     "en-US".parse().unwrap_or_default()
 }
 
-fn parse_posix_locale(raw: &str) -> Option<LanguageIdentifier> {
-    let first = raw.split(':').next().unwrap_or(raw).trim();
-    let identifier = first.split(['.', '@']).next().unwrap_or(first);
-    if identifier.is_empty()
-        || identifier.eq_ignore_ascii_case("C")
-        || identifier.eq_ignore_ascii_case("POSIX")
-    {
-        return None;
-    }
-    identifier.replace('_', "-").parse().ok()
-}
-
-#[cfg_attr(test, allow(dead_code))]
-fn locale_from_env() -> Option<LanguageIdentifier> {
-    for name in ["LC_ALL", "LANGUAGE", "LANG"] {
-        let Ok(raw) = std::env::var(name) else {
-            continue;
-        };
-        if raw.trim().is_empty() {
-            continue;
-        }
-        if let Some(locale) = parse_posix_locale(&raw) {
-            return Some(locale);
-        }
-        // POSIX precedence is authoritative: an explicit C/POSIX locale means
-        // source English, not "ignore this and consult LANG".
-        let identifier = raw
-            .split(':')
-            .next()
-            .unwrap_or(&raw)
-            .trim()
-            .split(['.', '@'])
-            .next()
-            .unwrap_or_default();
-        if identifier.eq_ignore_ascii_case("C") || identifier.eq_ignore_ascii_case("POSIX") {
-            return Some(source_lang());
-        }
-    }
-    None
-}
-
-#[cfg(not(test))]
-fn initial_locale() -> LanguageIdentifier {
-    locale_from_env().unwrap_or_else(source_lang)
-}
-
-// Unit tests assert source-copy behavior throughout the widget. Keep them
-// deterministic across developer/CI host locales; catalog negotiation itself
-// is exercised through explicit-locale helpers below.
-#[cfg(test)]
-fn initial_locale() -> LanguageIdentifier {
-    source_lang()
-}
-
-fn make_bundle(locale: LanguageIdentifier, source: &str) -> FluentBundle<FluentResource> {
-    let mut bundle = FluentBundle::new(vec![locale]);
-    bundle.set_use_isolating(false);
-    let resource =
-        FluentResource::try_new(source.to_string()).unwrap_or_else(|(partial, _)| partial);
-    let _ = bundle.add_resource(resource);
-    bundle
-}
-
-fn negotiated_catalog(locale: &LanguageIdentifier) -> Option<&'static str> {
-    match locale.language.as_str() {
-        // Region variants such as de-AT and de-CH negotiate to the complete
-        // German catalog. ICU/Fluent still retain the requested locale for
-        // number, plural and date rules.
-        "de" => Some(DE_FTL),
-        _ => None,
-    }
-}
-
-struct CatalogBundle {
-    locale: LanguageIdentifier,
-    primary: Option<FluentBundle<FluentResource>>,
-    fallback: FluentBundle<FluentResource>,
-}
-
-fn make_catalog_bundle(locale: LanguageIdentifier) -> CatalogBundle {
-    let primary = negotiated_catalog(&locale).map(|source| make_bundle(locale.clone(), source));
-    // English fallback is formatted using the requested locale so numbers and
-    // plural selectors remain correct even when copy falls back per-message.
-    let fallback = make_bundle(locale.clone(), SOURCE_FTL);
-    CatalogBundle {
-        locale,
-        primary,
-        fallback,
-    }
-}
-
-thread_local! {
-    static BUNDLE: RefCell<CatalogBundle> = {
-        let locale = source_lang();
-        RefCell::new(make_catalog_bundle(locale))
-    };
-}
-
-static ACTIVE: OnceLock<RwLock<LanguageIdentifier>> = OnceLock::new();
-
 fn active_locale() -> LanguageIdentifier {
-    ACTIVE
-        .get_or_init(|| RwLock::new(initial_locale()))
-        .read()
-        .map_or_else(|_| source_lang(), |locale| locale.clone())
+    CATALOG
+        .current_locale()
+        .parse()
+        .unwrap_or_else(|_| source_lang())
 }
 
-/// Change the process-wide Files locale without rebuilding the widget tree.
-/// The host can call this when the desktop locale changes; the next structural
-/// render resolves fresh strings. Unknown/invalid locales safely use `en-US`.
+/// Change the Files locale without rebuilding the widget tree. The host can
+/// call this when the desktop locale changes; the next structural render
+/// resolves fresh strings. Unknown/invalid locales safely use `en-US`.
 pub fn set_locale(locale: &str) {
-    let locale = parse_posix_locale(locale)
-        .or_else(|| locale.parse().ok())
-        .unwrap_or_else(source_lang);
-    if let Ok(mut active) = ACTIVE.get_or_init(|| RwLock::new(initial_locale())).write() {
-        *active = locale;
-    }
+    CATALOG.set_locale(locale);
 }
 
 /// Active BCP-47 language identifier, for diagnostics and host integration.
 pub fn current_locale() -> String {
-    active_locale().to_string()
+    CATALOG.current_locale()
 }
 
 fn data_locale(locale: &LanguageIdentifier) -> Locale {
@@ -245,118 +156,44 @@ pub fn format_bytes(bytes: u64) -> String {
     format_bytes_for(&active_locale(), bytes)
 }
 
-fn pseudo_localize(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 8);
-    out.push('[');
-    for ch in input.chars() {
-        out.push(match ch {
-            'a' => 'á',
-            'A' => 'Á',
-            'e' => 'é',
-            'E' => 'É',
-            'i' => 'í',
-            'I' => 'Í',
-            'o' => 'ó',
-            'O' => 'Ó',
-            'u' => 'ú',
-            'U' => 'Ú',
-            'c' => 'ç',
-            'C' => 'Ç',
-            'n' => 'ñ',
-            'N' => 'Ñ',
-            other => other,
-        });
-    }
-    out.push_str(" !!]");
-    out
-}
-
-fn pseudo_localize_preserving_args(input: &str, args: Option<&FluentArgs<'_>>) -> String {
-    let Some(args) = args else {
-        return pseudo_localize(input);
-    };
-    let values: Vec<&str> = args
-        .iter()
-        .filter_map(|(_, value)| match value {
-            FluentValue::String(value) if !value.is_empty() => Some(value.as_ref()),
-            _ => None,
-        })
-        .collect();
-    let mut protected = input.to_string();
-    for (index, value) in values.iter().enumerate() {
-        protected = protected.replace(value, &format!("\u{e000}{index}\u{e001}"));
-    }
-    let mut localized = pseudo_localize(&protected);
-    for (index, value) in values.iter().enumerate() {
-        localized = localized.replace(&format!("\u{e000}{index}\u{e001}"), value);
-    }
-    localized
-}
-
-fn lookup_for(locale: &LanguageIdentifier, key: &str, args: Option<&FluentArgs>) -> String {
-    fn resolve(
-        bundle: &FluentBundle<FluentResource>,
-        key: &str,
-        args: Option<&FluentArgs>,
-    ) -> Option<String> {
-        let message = bundle.get_message(key)?;
-        let pattern = message.value()?;
-        let mut errors = Vec::new();
-        let value = bundle
-            .format_pattern(pattern, args, &mut errors)
-            .into_owned();
-        errors.is_empty().then_some(value)
-    }
-
-    let resolved = BUNDLE.with(|cached| {
-        let mut cached = cached.borrow_mut();
-        if cached.locale != *locale {
-            *cached = make_catalog_bundle(locale.clone());
-        }
-        cached
-            .primary
-            .as_ref()
-            .and_then(|bundle| resolve(bundle, key, args))
-            .or_else(|| resolve(&cached.fallback, key, args))
-            .unwrap_or_else(|| key.to_string())
-    });
-    if locale.language.as_str() == "qps" {
-        pseudo_localize_preserving_args(&resolved, args)
-    } else {
-        resolved
-    }
-}
-
 pub fn t(key: &str) -> String {
-    lookup_for(&active_locale(), key, None)
+    CATALOG.t(key)
 }
 
-pub fn t_args(key: &str, args: &[(&str, FluentValue<'_>)]) -> String {
-    let mut fluent_args = FluentArgs::new();
-    for (name, value) in args {
-        fluent_args.set(*name, value.clone());
-    }
-    lookup_for(&active_locale(), key, Some(&fluent_args))
+pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
+    CATALOG.t_args(key, args)
 }
 
-pub fn arg<'a, V: Into<FluentValue<'a>>>(name: &'a str, value: V) -> (&'a str, FluentValue<'a>) {
+pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
     (name, value.into())
 }
 
+/// Resolve `key` under `locale` without leaving it selected.
 #[cfg(test)]
-fn t_args_for(locale: &str, key: &str, args: &[(&str, FluentValue<'_>)]) -> String {
-    let locale = parse_posix_locale(locale).unwrap_or_else(source_lang);
-    let mut fluent_args = FluentArgs::new();
-    for (name, value) in args {
-        fluent_args.set(*name, value.clone());
-    }
-    lookup_for(&locale, key, Some(&fluent_args))
+fn t_args_for(locale: &str, key: &str, args: &[(&str, ArgValue)]) -> String {
+    let previous = current_locale();
+    set_locale(locale);
+    let value = t_args(key, args);
+    set_locale(&previous);
+    value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluent::{FluentBundle, FluentResource};
     use std::collections::{BTreeMap, BTreeSet};
+
+    /// Parse a catalog the way Fluent will, keeping entries past a syntax
+    /// error so the assertions below name every affected key.
+    fn make_bundle(locale: LanguageIdentifier, source: &str) -> FluentBundle<FluentResource> {
+        let mut bundle = FluentBundle::new(vec![locale]);
+        bundle.set_use_isolating(false);
+        let resource =
+            FluentResource::try_new(source.to_string()).unwrap_or_else(|(partial, _)| partial);
+        let _ = bundle.add_resource(resource);
+        bundle
+    }
 
     fn catalog_messages(source: &str) -> BTreeMap<String, String> {
         let mut messages = BTreeMap::new();
@@ -481,8 +318,8 @@ mod tests {
             "files-share-created",
             &[arg("person", "Zoë 🔗")],
         );
-        assert!(rendered.starts_with('['));
-        assert!(rendered.ends_with(" !!]"));
+        assert!(rendered.starts_with('⟦'));
+        assert!(rendered.ends_with('⟧'));
         assert!(
             rendered.contains('🔗'),
             "non-letter data survives: {rendered}"
@@ -527,7 +364,8 @@ mod tests {
     fn cldr_formats_dates_for_en_us_de_de_and_invalid_locale_fallback() {
         let en: LanguageIdentifier = "en-US".parse().unwrap();
         let de: LanguageIdentifier = "de-DE".parse().unwrap();
-        let fallback = parse_posix_locale("not a locale!").unwrap_or_else(source_lang);
+        let fallback: LanguageIdentifier =
+            "not a locale!".parse().unwrap_or_else(|_| source_lang());
 
         assert_eq!(
             format_datetime_parts_for(&en, 2025, 1, 15, 16, 9).unwrap(),
@@ -740,7 +578,7 @@ mod tests {
             "files-a11y-current-folder",
             &[arg("path", path)],
         );
-        assert!(rendered.starts_with('[') && rendered.ends_with(" !!]"));
+        assert!(rendered.starts_with('⟦') && rendered.ends_with('⟧'));
         assert!(
             rendered.contains(path),
             "interpolated path is preserved: {rendered}"

@@ -23,7 +23,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -189,7 +188,7 @@ fn full_redraw(
     canvas_h: u32,
     times: &mut Phases,
 ) {
-    let t_compute = Instant::now();
+    let t_compute = tilo_ui::time::now();
     // Repeat the App's lambda exactly — taffy borrows the node_map
     // immutably while letting the measure closure mutate the text
     // renderer.
@@ -219,11 +218,11 @@ fn full_redraw(
     }
     times.compute_us = t_compute.elapsed().as_micros();
 
-    let t_apply = Instant::now();
+    let t_apply = tilo_ui::time::now();
     root.apply_layout(taffy, root_node, Point::ZERO);
     times.apply_us = t_apply.elapsed().as_micros();
 
-    let t_draw = Instant::now();
+    let t_draw = tilo_ui::time::now();
     scene.reset();
     root.draw_with_presence(
         scene,
@@ -235,7 +234,7 @@ fn full_redraw(
     );
     times.draw_us = t_draw.elapsed().as_micros();
 
-    let t_render = Instant::now();
+    let t_render = tilo_ui::time::now();
     let _ = renderer.render(scene, theme.tokens.colors.surfaces.base);
     times.render_us = t_render.elapsed().as_micros();
 }
@@ -384,7 +383,7 @@ fn run_one_cycle(
     // Drive a cursor-moved + mouse-press + mouse-release cycle so the
     // ToggleGroup latches the click.
     let mut phases = Phases::default();
-    let t_handle = Instant::now();
+    let t_handle = tilo_ui::time::now();
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let (click_x, click_y) = click;

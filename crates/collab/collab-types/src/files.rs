@@ -1333,7 +1333,7 @@ pub enum FileRecordError {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn metadata_v2_round_trips_rich_properties_and_v1_migrates() {
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn replacement_transaction_is_signed_sorted_and_projection_bound() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: Ed25519PublicKey([9; 32]),
             device: Ed25519PublicKey(key.verifying_key().to_bytes()),

@@ -106,7 +106,7 @@ fn malformed_shape_ids_and_renderer_geometry_are_refused_without_mutation() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned();
                 doc.put(second, "id", id).unwrap();
@@ -118,7 +118,7 @@ fn malformed_shape_ids_and_renderer_geometry_are_refused_without_mutation() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned();
                 doc.put(second, "id", id).unwrap();
@@ -173,7 +173,7 @@ fn exact_restore_preserves_unknown_fields_text_marks_and_current_metadata() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("preserve me")
     );
     assert_eq!(doc.marks(title).unwrap().len(), 1);
@@ -182,7 +182,7 @@ fn exact_restore_preserves_unknown_fields_text_marks_and_current_metadata() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("current receipt")
     );
 }

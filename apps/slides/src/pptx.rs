@@ -24,7 +24,9 @@
 )]
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
+
+use crate::odp::Package;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -118,14 +120,14 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
 }
 
 pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
-    crate::odp::validate_archive(&mut zip)?;
+    let mut zip = crate::odp::open_package(bytes)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
         .and_then(|x| first_text(&x, b"dc:title"))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Imported PowerPoint".into());
-    let mut names: Vec<String> = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+    let mut names: Vec<String> = zip
+        .file_names()
+        .map(str::to_string)
         .filter(|n| {
             n.starts_with("ppt/slides/slide")
                 && std::path::Path::new(n)
@@ -388,11 +390,7 @@ impl Default for Pending {
     }
 }
 
-fn parse_slide(
-    xml: &str,
-    rels: &HashMap<String, String>,
-    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
-) -> Slide {
+fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>) -> Slide {
     let mut slide = Slide::new(Layout::Blank);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -541,6 +539,13 @@ fn parse_slide(
                     }
                 }
             }
+            // quick-xml reports `&amp;`/`&#x2019;` as events of their own between
+            // the text around them.
+            Ok(Event::GeneralRef(r)) if in_text => {
+                if let Some(c) = cur.as_mut() {
+                    c.text.extend(qdoc::codecs::resolve_general_ref(&r));
+                }
+            }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
                 b"rPr" | b"defRPr" => in_text_style = in_text_style.saturating_sub(1),
@@ -565,7 +570,7 @@ fn push_pending(
     slide: &mut Slide,
     c: Pending,
     rels: &HashMap<String, String>,
-    zip: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    zip: &mut Package<'_>,
 ) {
     let w = if c.w > 0.0 { c.w } else { 1.0 };
     let h = if c.h > 0.0 { c.h } else { 1.0 };
@@ -574,20 +579,9 @@ fn push_pending(
             return;
         };
         let path = format!("ppt/{}", target.trim_start_matches("../"));
-        let Ok(f) = zip.by_name(&path) else {
+        let Some(bytes) = crate::odp::read_package_picture(zip, &path) else {
             return;
         };
-        if f.size() > crate::odp::MAX_IMPORTED_PICTURE_BYTES as u64 {
-            return;
-        }
-        let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
-        if f.take((crate::odp::MAX_IMPORTED_PICTURE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() > crate::odp::MAX_IMPORTED_PICTURE_BYTES
-        {
-            return;
-        }
         let Some(src) = crate::odp::cache_imported_picture(&bytes) else {
             return;
         };
@@ -686,6 +680,9 @@ fn parse_notes(xml: &str) -> String {
                     notes.push_str(&text);
                 }
             }
+            Ok(Event::GeneralRef(r)) if in_text => {
+                notes.extend(qdoc::codecs::resolve_general_ref(&r));
+            }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
                 b"sp" => {
@@ -704,21 +701,8 @@ fn parse_notes(xml: &str) -> String {
     notes
 }
 
-fn read_zip_text<R: Read + std::io::Seek>(
-    z: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Option<String> {
-    let f = z.by_name(name).ok()?;
-    if f.size() > crate::odp::MAX_XML_MEMBER_BYTES as u64 {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
-    f.take((crate::odp::MAX_XML_MEMBER_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() <= crate::odp::MAX_XML_MEMBER_BYTES)
-        .then(|| String::from_utf8(bytes).ok())
-        .flatten()
+fn read_zip_text(z: &mut Package<'_>, name: &str) -> Option<String> {
+    crate::odp::read_package_xml(z, name).ok()
 }
 fn parse_rels(xml: &str) -> HashMap<String, String> {
     let mut r = Reader::from_str(xml);
@@ -736,14 +720,21 @@ fn parse_rels(xml: &str) -> HashMap<String, String> {
     }
     m
 }
+/// The text content of the first `wanted` element, or `None` if there is none.
 fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
     let mut r = Reader::from_str(xml);
-    let mut hit = false;
+    let mut text: Option<String> = None;
     loop {
-        match r.read_event() {
-            Ok(Event::Start(e)) => hit = e.name().as_ref() == wanted,
-            Ok(Event::Text(t)) if hit => return t.xml10_content().ok().map(|x| x.into_owned()),
-            Ok(Event::Eof) | Err(_) => return None,
+        match (r.read_event(), text.as_mut()) {
+            (Ok(Event::Start(e)), None) if e.name().as_ref() == wanted => {
+                text = Some(String::new());
+            }
+            (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
+            (Ok(Event::GeneralRef(g)), Some(text)) => {
+                text.extend(qdoc::codecs::resolve_general_ref(&g));
+            }
+            (Ok(Event::End(_)), Some(_)) => return text,
+            (Ok(Event::Eof) | Err(_), _) => return None,
             _ => {}
         }
     }
@@ -752,7 +743,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .map(|a| String::from_utf8_lossy(a.value.as_ref()).into_owned())
+        .and_then(|a| qdoc::codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {
@@ -948,7 +939,7 @@ mod tests {
         };
 
         let bytes = write_pptx(&deck).expect("pptx export");
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let accent_xml = read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
         let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
         assert!(
@@ -977,7 +968,7 @@ mod tests {
         };
 
         let bytes = write_pptx(&deck).expect("pptx export");
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
         let notes =
             read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml").expect("notes slide");
@@ -985,7 +976,9 @@ mod tests {
         assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
         assert!(notes.contains("Open with the decision."));
         assert!(
-            archive.by_name("ppt/notesSlides/notesSlide2.xml").is_err(),
+            !archive
+                .file_names()
+                .any(|name| name == "ppt/notesSlides/notesSlide2.xml"),
             "slides without notes do not gain empty note pages"
         );
         drop(archive);
@@ -1004,6 +997,55 @@ mod tests {
             r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
         );
         assert_eq!(notes, "Keep this");
+    }
+
+    /// Every predefined entity and decimal/hex character references (one
+    /// outside the BMP), next to each other and to text.
+    const RAW_REFS: &str =
+        "R&amp;D &lt;b&gt; &quot;q&quot; &apos;s&apos; &#8217;&#x2019;&#x1F600;&#65;&amp;&amp;";
+    const REFS_TEXT: &str = "R&D <b> \"q\" 's' \u{2019}\u{2019}\u{1F600}A&&";
+
+    #[test]
+    fn round_trips_reserved_characters_in_title_text_and_notes() {
+        let mut slide = Slide::new(Layout::Blank);
+        slide.add(Element::text(
+            "R&D <b> & \u{1F600}",
+            10.0,
+            20.0,
+            500.0,
+            100.0,
+            36.0,
+        ));
+        slide.notes = "a < b && c > d".into();
+        let deck = Deck {
+            title: "Q&A <live>".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![slide],
+        };
+        let got = read_pptx(&write_pptx(&deck).unwrap()).unwrap();
+        assert_eq!(got.title, "Q&A <live>");
+        assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
+        assert_eq!(got.slides[0].notes, "a < b && c > d");
+    }
+
+    #[test]
+    fn entity_and_character_references_resolve_in_notes_title_and_attributes() {
+        let notes = parse_notes(&format!(
+            r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+        ));
+        assert_eq!(notes, REFS_TEXT);
+        let title = first_text(
+            &format!("<cp:coreProperties><dc:title>{RAW_REFS}</dc:title></cp:coreProperties>"),
+            b"dc:title",
+        );
+        assert_eq!(title.as_deref(), Some(REFS_TEXT));
+        let rels = parse_rels(
+            r#"<Relationships><Relationship Id="rId1" Target="../media/R&amp;D&#x20;chart.png"/></Relationships>"#,
+        );
+        assert_eq!(
+            rels.get("rId1").map(String::as_str),
+            Some("../media/R&D chart.png")
+        );
     }
 
     #[test]

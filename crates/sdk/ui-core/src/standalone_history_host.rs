@@ -904,11 +904,11 @@ mod tests {
         let before = AutoCommit::load(&comparison.before_document).unwrap();
         let after = AutoCommit::load(&comparison.after_document).unwrap();
         assert_eq!(
-            before.get(ROOT, "value").unwrap().unwrap().0.to_str(),
+            before.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("before")
         );
         assert_eq!(
-            after.get(ROOT, "value").unwrap().unwrap().0.to_str(),
+            after.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("three")
         );
         assert_eq!(doc.pending_ops(), pending);

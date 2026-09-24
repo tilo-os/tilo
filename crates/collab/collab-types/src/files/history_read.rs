@@ -1,7 +1,6 @@
 //! Bounded, read-only navigation of immutable file history. Cursors grant no authority.
 use super::{FileRecordId, FileVersionId, FileVersionV1};
 use serde::{Deserialize, Serialize};
-use std::fmt::Write;
 use uuid::Uuid;
 
 pub const HISTORY_READ_XATTR: &str = "user.qos.hread.v1";
@@ -83,10 +82,7 @@ impl FileHistoryReadQueryV1 {
                 version_id,
             } => ("b", frontier, version_id),
         };
-        let mut digest = String::with_capacity(64);
-        for byte in frontier {
-            let _ = write!(digest, "{byte:02x}");
-        }
+        let digest = hex::encode(frontier);
         format!("{HISTORY_READ_XATTR}.{kind}.{digest}.{}", id.0.simple())
     }
     /// Parse one canonical versioned query name.

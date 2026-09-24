@@ -5,15 +5,16 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use crate::time::{Duration, Instant};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
+use crate::text_break::{grapheme_indices, graphemes};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -29,7 +30,6 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
@@ -1458,7 +1458,7 @@ impl TextInput {
         let ci = self
             .text
             .get(r.start..b)
-            .map_or(0, |s| s.graphemes(true).count());
+            .map_or(0, |s| graphemes(s).count());
         r.char_x
             .get(ci)
             .copied()
@@ -1469,7 +1469,7 @@ impl TextInput {
         let Some(row_text) = self.text.get(r.start..r.end) else {
             return r.end;
         };
-        match row_text.grapheme_indices(true).nth(ci) {
+        match grapheme_indices(row_text).nth(ci) {
             Some((b, _)) => r.start.saturating_add(b),
             None => r.end,
         }
@@ -1717,7 +1717,7 @@ impl TextInput {
         let Some(para) = self.text.get(start..end) else {
             return;
         };
-        let mut boundaries: Vec<usize> = para.grapheme_indices(true).map(|(i, _)| i).collect();
+        let mut boundaries: Vec<usize> = grapheme_indices(para).map(|(i, _)| i).collect();
         boundaries.push(para.len()); // end sentinel
         let cum: Vec<f64> = boundaries
             .iter()
@@ -3073,7 +3073,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         if let Some(obj_id) = obj_id {
             let del = isize::try_from(char_count).unwrap_or(isize::MAX);
             let _ = state.splice_text(obj_id, char_start, del, "");
@@ -3139,7 +3139,7 @@ impl TextInput {
             }
         }
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -3185,7 +3185,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -3806,7 +3806,7 @@ impl TextInput {
         let mut best_idx = 0;
         // Stale if the text changed since the last draw and this fires before
         // the next one — fall back to skipping rather than panicking.
-        for (i, _) in self.text.grapheme_indices(true) {
+        for (i, _) in grapheme_indices(&self.text) {
             let Some(&x) = self.char_x_positions.get(i) else {
                 continue;
             };
@@ -4473,8 +4473,7 @@ impl Widget for TextInput {
             }
             Action::SetSelection { anchor, focus } => {
                 let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
+                    grapheme_indices(&self.text)
                         .nth(character_index)
                         .map_or(self.text.len(), |(byte, _)| byte)
                 };
@@ -4503,7 +4502,7 @@ impl Widget for TextInput {
         }
         self.last_edit_time
             .map(|edited| edited + SPELL_EDIT_SETTLE)
-            .filter(|deadline| *deadline > Instant::now())
+            .filter(|deadline| *deadline > crate::time::now())
     }
 
     fn needs_commit(&self) -> bool {
@@ -4588,7 +4587,7 @@ impl Widget for TextInput {
             // re-derived approximation. `transform` maps the local rect to the scene.
 
             // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
+            let now = crate::time::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 let rect = self.selection_rect(theme, range.start, range.end);
                 // `Affine * Point` is a geometric transform over f64 coordinates,
@@ -4740,7 +4739,7 @@ impl TextInput {
             .resize(self.text.len().saturating_add(1), 0.0);
         if self.masked() {
             self.single_layout = None;
-            for (byte_idx, _) in self.text.grapheme_indices(true) {
+            for (byte_idx, _) in grapheme_indices(&self.text) {
                 let (w, _) =
                     self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
                 if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
@@ -4797,9 +4796,7 @@ impl TextInput {
                 return 0.0;
             };
             let end_byte = self.text_to_layout_byte(self.text.len());
-            let positions: Vec<(usize, f64)> = self
-                .text
-                .grapheme_indices(true)
+            let positions: Vec<(usize, f64)> = grapheme_indices(&self.text)
                 .map(|(byte_idx, _)| {
                     let x = layout.caret_geometry(self.text_to_layout_byte(byte_idx)).0;
                     (byte_idx, f64::from(x))
@@ -5440,7 +5437,7 @@ impl TextInput {
                 self.text.replace_range(start..end, "");
                 self.cursor_pos = start;
                 self.caret_affinity = TextAffinity::Before;
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -5473,7 +5470,7 @@ impl TextInput {
                 let char_start = before.chars().count();
                 let char_count = removed.chars().count();
                 self.text.replace_range(start..end, "");
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -6591,12 +6588,12 @@ mod tests {
             .with_initial_value("teh wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
         // Dictionary warm-up can dominate this unit test in an unoptimised
         // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
@@ -6612,7 +6609,7 @@ mod tests {
             .with_initial_value("wrold ");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 
@@ -6628,7 +6625,7 @@ mod tests {
             .with_initial_value("wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Instant::now()
+        ti.last_edit_time = crate::time::now()
             .checked_sub(SPELL_EDIT_SETTLE)
             .and_then(|t| t.checked_sub(Duration::from_millis(1)));
 
@@ -6649,7 +6646,7 @@ mod tests {
         ti.cursor_pos = ti.text.len();
         ti.spell_spans = vec![(0, 3)];
         ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 

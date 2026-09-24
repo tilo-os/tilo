@@ -130,8 +130,8 @@ impl RelayClient {
             .map_err(|error| ClientError::Iroh(error.to_string()))?;
         let mut nonce = [0; 32];
         {
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut nonce);
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut nonce);
         }
         write_frame(
             &mut send,
@@ -293,8 +293,8 @@ impl RelayClient {
             .map_err(|error| ClientError::Iroh(error.to_string()))?;
         let mut nonce = [0; 32];
         {
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut nonce);
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut nonce);
         }
         write_frame(
             &mut send,
@@ -476,8 +476,8 @@ impl RelayClient {
 
         let mut client_nonce = [0u8; 32];
         {
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut client_nonce);
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut client_nonce);
         }
         let hello = Hello {
             cert: own_cert.clone(),
