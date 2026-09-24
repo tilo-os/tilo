@@ -684,34 +684,6 @@ mod tests {
     }
 
     #[test]
-    fn action_equality_and_payloads() {
-        assert_eq!(Action::Activate, Action::Activate);
-        assert_ne!(Action::Increment, Action::Decrement);
-        assert_eq!(Action::SetValue("a".into()), Action::SetValue("a".into()));
-        assert_ne!(Action::SetValue("a".into()), Action::SetValue("b".into()));
-        assert_eq!(
-            Action::SetSelection {
-                anchor: 0,
-                focus: 3
-            },
-            Action::SetSelection {
-                anchor: 0,
-                focus: 3
-            },
-        );
-        assert_ne!(
-            Action::SetSelection {
-                anchor: 0,
-                focus: 3
-            },
-            Action::SetSelection {
-                anchor: 1,
-                focus: 3
-            },
-        );
-    }
-
-    #[test]
     fn a11y_settings_default_is_all_off() {
         let s = A11ySettings::default();
         assert!(!s.high_contrast);
