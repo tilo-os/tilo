@@ -124,7 +124,9 @@ class TiloVmTests(unittest.TestCase):
                 "--disposable-target", "--run-id", "local-target",
             ])
             completed = mock.Mock(returncode=0, stdout="{}\n", stderr="")
-            with mock.patch.object(tilo_vm, "run_launcher", return_value=completed):
+            with mock.patch.object(tilo_vm, "powershell", return_value="pwsh"), mock.patch.object(
+                tilo_vm, "run_launcher", return_value=completed
+            ):
                 self.assertEqual(tilo_vm.preflight_or_start(args, start=False), 0)
             target = base / "targets" / "local-target.raw"
             self.assertFalse(target.exists())
