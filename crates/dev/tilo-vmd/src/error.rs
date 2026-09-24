@@ -52,6 +52,8 @@ pub enum DaemonError {
     ControlMissing(String),
     #[error("'{0}' has no session")]
     NoSession(String),
+    #[error("slot '{0}' has no running session to run the command in")]
+    SessionStopped(String),
     #[error("{step} failed: {detail}")]
     Apply { step: String, detail: String },
     #[error("slot '{slot}' session differs from a greetd session: {detail}")]
@@ -120,6 +122,7 @@ impl DaemonError {
             | Self::InvalidLayer(_)
             | Self::NoEarlierGeneration(_)
             | Self::NoSession(_)
+            | Self::SessionStopped(_)
             | Self::HeadlessInput(_)
             | Self::KernelLayer(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
@@ -142,7 +145,7 @@ impl DaemonError {
                 "the VM's image is older than this tilo-vm: tilo-vm vm upgrade".into()
             }
             Self::VersionMismatch { .. } => {
-                "this tilo-vm is older than the VM's image: rebuild it (cargo install --path crates/dev/tilo-vm)"
+                "this tilo-vm is older than the VM's image: rebuild it with cargo build -p tilo-vm   (rcargo works as a drop-in)"
                     .into()
             }
             Self::HelloRequired => "connect through tilo-vm rather than speaking to tilo-vmd by hand".into(),
@@ -194,7 +197,10 @@ impl DaemonError {
             Self::AbiMismatch { .. } => {
                 "rebuild against this VM's base (tilo-vm vm upgrade first if the VM is older than your worktree)".into()
             }
-            Self::NoSession(_) => "use a headful or headless slot: tilo-vm slot list".into(),
+            Self::NoSession(_) => "use a headful or headless slot: tilo-vm slot list   (the vm slot's layers are the VM's own /usr: tilo-vm vm ssh -- <command>)".into(),
+            Self::SessionStopped(slot) => format!(
+                "start it again: tilo-vm slot restart --slot {slot}   (tilo-vm logs --slot {slot} says why it stopped)"
+            ),
             Self::ControlMissing(_) => {
                 "run a dev image, which adds tilo-control: tilo-vm vm upgrade --image code.sandbox.example/qos/tilo-vm:<tag>"
                     .into()
@@ -257,7 +263,8 @@ impl DaemonError {
             | Self::SlotKindConflict { .. }
             | Self::ReservedName(_)
             | Self::InvalidName(_)
-            | Self::NoSession(_) => Some("tilo-vm guide concepts"),
+            | Self::NoSession(_)
+            | Self::SessionStopped(_) => Some("tilo-vm guide concepts"),
             Self::LayerNotFound(_)
             | Self::UploadNotFound(_)
             | Self::InvalidLayer(_)
@@ -366,6 +373,7 @@ mod tests {
                 vm: "b".into(),
             },
             DaemonError::NoSession("vm".into()),
+            DaemonError::SessionStopped("a".into()),
             DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
             DaemonError::Apply {
                 step: "s".into(),
@@ -448,6 +456,7 @@ mod tests {
                 | DaemonError::Busy(_)
                 | DaemonError::AbiMismatch { .. }
                 | DaemonError::NoSession(_)
+                | DaemonError::SessionStopped(_)
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }
                 | DaemonError::SessionParity { .. }

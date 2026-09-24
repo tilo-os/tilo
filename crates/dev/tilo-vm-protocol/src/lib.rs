@@ -109,6 +109,8 @@ pub enum Request {
     SlotRestart(SlotRestart),
     #[serde(rename = "slot.rm")]
     SlotRm(SlotRm),
+    #[serde(rename = "slot.show")]
+    SlotShow(SlotShow),
     #[serde(rename = "layer.upload.begin")]
     LayerUploadBegin(LayerUploadBegin),
     #[serde(rename = "layer.upload.chunk")]
@@ -150,6 +152,7 @@ impl Request {
             Self::SlotList(_) => "slot.list",
             Self::SlotRestart(_) => "slot.restart",
             Self::SlotRm(_) => "slot.rm",
+            Self::SlotShow(_) => "slot.show",
             Self::LayerUploadBegin(_) => "layer.upload.begin",
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
             Self::LayerImport(_) => "layer.import",
@@ -194,6 +197,7 @@ call! {
     SlotList => Vec<SlotInfo>,
     SlotRestart => ApplyResult,
     SlotRm => SlotRmResult,
+    SlotShow => SlotShowResult,
     LayerUploadBegin => LayerUploadBeginResult,
     LayerUploadChunk => LayerUploadChunkResult,
     LayerImport => LayerImportResult,
@@ -244,6 +248,13 @@ pub struct SlotRestart {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotRm {
+    pub name: String,
+}
+
+/// One slot with every file its current generation adds, and where each
+/// comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotShow {
     pub name: String,
 }
 
@@ -343,6 +354,10 @@ pub struct Gc {
     /// has this much free space.
     #[serde(default)]
     pub free_goal_bytes: Option<u64>,
+    /// Unreferenced layers younger than this stay (an import whose swap has
+    /// not happened yet looks unreferenced); the daemon's default when absent.
+    #[serde(default)]
+    pub min_age_seconds: Option<u64>,
 }
 
 /// Drive a headful slot's seat through its own uinput keyboard and pointer.
@@ -645,9 +660,10 @@ pub struct SlotInfo {
     pub kind: SlotKind,
     pub owner: Owner,
     pub user: Option<String>,
-    /// Current generation; 0 is the implicit base generation with no layers.
+    /// Current generation; 0 is the base generation with no layers.
     pub generation: u64,
-    /// Every recorded generation, oldest first (the base is implicit).
+    /// Every generation a rollback can reach, oldest first, starting with
+    /// the base generation 0.
     pub generations: Vec<u64>,
     /// Component name to layer hash for the current generation.
     pub components: BTreeMap<String, String>,
@@ -673,7 +689,53 @@ pub struct GcResult {
     #[serde(default)]
     pub freed_target_bytes: u64,
     pub storage: Storage,
+    /// Unreferenced layers kept because they are younger than the minimum age.
+    #[serde(default)]
+    pub kept_young: Vec<KeptLayer>,
+    /// The minimum age this run used, in seconds.
+    #[serde(default)]
+    pub min_age_seconds: u64,
 }
+
+/// An unreferenced layer gc kept for its age.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptLayer {
+    pub hash: String,
+    pub component: String,
+    pub age_seconds: u64,
+    /// When a gc run with the same minimum age removes it.
+    pub eligible_in_seconds: u64,
+}
+
+/// A slot and the files its current generation's layers add.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotShowResult {
+    pub slot: SlotInfo,
+    /// Every file and symlink, grouped by component, sorted by path.
+    pub files: Vec<SlotFile>,
+}
+
+/// One file a layer puts into the slot's view of the system.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotFile {
+    pub component: String,
+    pub layer: String,
+    /// Where the slot sees it, e.g. `/usr/bin/shell`.
+    pub path: String,
+    /// SHA-256 (hex) of a regular file's contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// A symlink's target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub executable: bool,
+}
+
+/// `tilo-vmd exec` stops a command after this long by default.
+pub const EXEC_TIMEOUT_SECONDS: u64 = 60;
+/// `tilo-vmd exec` stops a command whose output passes this many bytes.
+pub const EXEC_MAX_BYTES: u64 = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResult {
@@ -960,6 +1022,7 @@ mod tests {
             .into(),
             Status::default().into(),
             SlotList {}.into(),
+            SlotShow { name: "a".into() }.into(),
             LayerList {}.into(),
             Swap {
                 slot: "a".into(),
