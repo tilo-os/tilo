@@ -214,22 +214,39 @@ jobs:
           fi
           command -v skopeo >/dev/null
 
-      - name: Require a compositor-capable native publication host
-        if: needs.plan.outputs.publish == 'true'
+      # The installed-desktop gate boots the image with a virgl GPU when the
+      # host exposes a usable DRM render node, and with a plain virtio GPU
+      # otherwise. Tilo's DRM backend paints on the CPU into dumb buffers and
+      # the guest carries Mesa software rendering, so the compositor, OOBE and
+      # AT-SPI gates run -- and must pass -- in either mode. Runners whose
+      # confined kernel has no DRM subsystem use the 2D display.
+      - name: Select the installed-desktop display for this host
         run: |
           set -euo pipefail
-          sudo -n true
-          command -v apt-get >/dev/null || command -v dnf >/dev/null
-          rendernode="$(compgen -G '/dev/dri/renderD*' | head -n 1 || true)"
-          test -n "$rendernode" && test -c "$rendernode" \
-            && test -r "$rendernode" && test -w "$rendernode" || {
-              echo '::error::OS publication requires a readable/writable DRI render node for the installed compositor gate'
-              exit 1
-            }
-          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
-            echo '::notice::OS publication will use KVM acceleration'
+          if [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            sudo -n true
+            command -v apt-get >/dev/null || command -v dnf >/dev/null
+          fi
+          display=2d
+          rendernode=""
+          for candidate in /dev/dri/renderD*; do
+            if test -c "$candidate" && test -r "$candidate" && test -w "$candidate"; then
+              rendernode="$candidate"
+              display=gl
+              break
+            fi
+          done
+          echo "TILO_VM_DISPLAY=$display" >> "$GITHUB_ENV"
+          if [[ $display == gl ]]; then
+            echo "TILO_RENDERNODE=$rendernode" >> "$GITHUB_ENV"
+            echo "::notice::installed-desktop gate will use virgl on $rendernode"
           else
-            echo '::notice::OS publication will use the bounded QEMU TCG fallback'
+            echo '::notice::no usable DRI render node; installed-desktop gate will use the 2D virtio GPU with guest software rendering'
+          fi
+          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+            echo '::notice::installed-desktop gate will use KVM acceleration'
+          else
+            echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
           fi
 
       - name: Restore checksum-verified GitHub build inputs
@@ -977,9 +994,12 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
-          # vm.sh documents that its 2D mode may not start that compositor;
-          # egl-headless + virgl is the release-test configuration that does.
-          ./os/dev/vm.sh boot --gl
+          # The display was selected for this host above; every gate below is
+          # mandatory in both modes.
+          case "${TILO_VM_DISPLAY:-}" in
+            gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;
+            *) echo '::error::no installed-desktop display was selected'; exit 1 ;;
+          esac
           ./os/dev/vm.sh wait
           ./os/dev/vm.sh login "$TILO_USER" "$TILO_PASS"
           for attempt in $(seq 1 60); do

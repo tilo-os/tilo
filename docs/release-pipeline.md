@@ -177,6 +177,13 @@ cost of that fallback is one redundant release. Because the check runs inside
 the generation lock, a nightly run queued behind a manual publication of the
 same commit also skips.
 
+The installed-desktop gate boots the candidate with a virgl GPU when the runner
+exposes a usable `/dev/dri/renderD*`, and with a plain 2D virtio GPU otherwise;
+the Kata-confined runner kernels have no DRM subsystem. Tilo's DRM backend
+paints on the CPU into dumb buffers and the guest carries Mesa software
+rendering, so the first-login OOBE, compositor, lock and AT-SPI gates run and
+must pass in either mode. The display mode never selects which gates run.
+
 Only runs that can publish (tags, manual `main` runs with `publish`, and
 scheduled `main` runs) share the `tilo-os-image-series` concurrency group.
 Non-publishing integration builds allocate no generation and serialize per
