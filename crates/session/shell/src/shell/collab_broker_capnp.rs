@@ -399,17 +399,93 @@ impl StagedContent {
     }
 }
 
+/// The application a launcher-authenticated connection belongs to, and the
+/// workspace it was launched into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LaunchScope {
+    app_id: String,
+    workspace_id: String,
+}
+
+impl LaunchScope {
+    /// The document-media scope the launcher handed this application: the
+    /// same room partition its private directory uses.
+    fn blob_room(&self) -> String {
+        launcher::appdir::room_slug(Some(&self.workspace_id))
+    }
+}
+
+/// Reads content an application asked the shell to open, through that
+/// application's own document-media scope. Possessing a hash never grants
+/// access, so the shell cannot be used to read around an app's capability.
+trait LaunchContentReader: Send + Sync {
+    fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String>;
+}
+
+/// The filesystem daemon's content store, reached as the desktop session.
+struct SessionContentStore;
+
+static SESSION_BLOBS: std::sync::Mutex<Option<runtime_fs::blobs::BlobClient>> =
+    std::sync::Mutex::new(None);
+
+impl LaunchContentReader for SessionContentStore {
+    fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
+        use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+
+        let mut session = SESSION_BLOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let client = if let Some(client) = session.as_ref() {
+            client.clone()
+        } else {
+            let socket = launcher::services::blob_socket();
+            let client = BlobClient::connect_session(&socket)
+                .map_err(|error| format!("launch content store: {error}"))?;
+            *session = Some(client.clone());
+            client
+        };
+        let result = client
+            .scope(room, app)
+            .and_then(|scoped| scoped.read_all(hash));
+        if matches!(result, Err(BlobError::Disconnected(_))) {
+            // Reconnect on the next launch rather than keep a dead session.
+            *session = None;
+        }
+        drop(session);
+        match result {
+            Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
+            Ok(ReadOutcome::Pending) => {
+                Err("launch content is still arriving on this device".into())
+            }
+            Ok(ReadOutcome::Unavailable) => {
+                Err("launch content is unavailable on this device".into())
+            }
+            Err(error) => Err(format!("launch content store: {error}")),
+        }
+    }
+}
+
 /// Stage the published content `content_hash` names as a file. `None` for a
-/// plain launch with no content. Reading the blob and writing the staged copy
-/// happen on the I/O pool, never on the broker's RPC thread; the result
-/// arrives once the file is in place, so the launch that awaits it finds it.
-async fn stage_launch_content(content_hash: &str) -> Result<Option<StagedContent>, String> {
+/// plain launch with no content. The bytes are read through `caller`, the
+/// scope of the application that asked, and never with the shell's own
+/// authority: holding a hash is not access. Reading the content and writing
+/// the staged copy happen on the I/O pool, never on the broker's RPC thread;
+/// the result arrives once the file is in place, so the launch that awaits it
+/// finds it.
+async fn stage_launch_content(
+    content_hash: &str,
+    caller: Option<&LaunchScope>,
+    reader: std::sync::Arc<dyn LaunchContentReader>,
+) -> Result<Option<StagedContent>, String> {
     if content_hash.is_empty() {
         return Ok(None);
     }
     validate_launch_content_hash(content_hash)?;
+    let caller = caller.cloned().ok_or_else(|| {
+        "launch content requires an application the launcher authenticated".to_owned()
+    })?;
     let hash = content_hash.to_owned();
-    tilo_rt::io::run(move || Ok(write_launch_content(&hash)))
+    tilo_rt::io::run(move || Ok(write_launch_content(&hash, &caller, &*reader)))
         .await
         .map_err(|error| format!("stage launch content: {error}"))?
         .map(Some)
@@ -428,11 +504,15 @@ fn validate_launch_content_hash(content_hash: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The blocking half of [`stage_launch_content`]: verify the blob and write
-/// it beneath the private staging directory.
-fn write_launch_content(content_hash: &str) -> Result<StagedContent, String> {
-    let bytes = qdoc::blobstore::get(content_hash)
-        .ok_or_else(|| "launch content is unavailable on this device".to_owned())?;
+/// The blocking half of [`stage_launch_content`]: read the content through
+/// the calling application's scope, verify it and write it beneath the
+/// private staging directory.
+fn write_launch_content(
+    content_hash: &str,
+    caller: &LaunchScope,
+    reader: &dyn LaunchContentReader,
+) -> Result<StagedContent, String> {
+    let bytes = reader.read(&caller.blob_room(), &caller.app_id, content_hash)?;
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
         || !qdoc::blobstore::verify(content_hash, &bytes)
@@ -2013,12 +2093,9 @@ impl RealtimeFabricAppBridge {
         };
         #[cfg(test)]
         pause_realtime_consent_after_mint();
-        let mut realtime = match self.state.realtime.lock() {
-            Ok(realtime) => realtime,
-            Err(_) => {
-                revoke_realtime_capture_authorizations(&capture, &authorizations);
-                return Err("realtime broker is unavailable".into());
-            }
+        let Ok(mut realtime) = self.state.realtime.lock() else {
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime broker is unavailable".into());
         };
         let live_binding = realtime.sessions.get(session).is_some_and(|binding| {
             binding.imported
@@ -4606,6 +4683,9 @@ struct CapnpCollabService {
     /// Peer id assigned at accept time. Fanout uses it to skip the
     /// author when replaying its own frames back at itself.
     peer_id: u64,
+    /// The launcher-authenticated application behind this connection, if
+    /// it arrived through the launcher.
+    launch: Option<LaunchScope>,
 }
 
 impl collab_service::Server for CapnpCollabService {
@@ -4704,6 +4784,7 @@ impl collab_service::Server for CapnpCollabService {
                 channel_id,
                 peer_id,
                 verified_identity,
+                launch: self.launch.clone(),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(handle);
             results.get().set_handle(client);
@@ -4720,6 +4801,7 @@ struct CapnpChannelHandle {
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
+    launch: Option<LaunchScope>,
 }
 
 const MAX_PRIVATE_PLAYBACK_REPORT_BYTES: usize = 256 * 1024;
@@ -4934,6 +5016,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let host = crate::shell::remote_actions::BrokerActionHost::for_connection(
             crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(&self.state)),
             self.peer_id,
+            self.launch.clone(),
         );
         let Some(answer) = serve(&host, &caller, request.message) else {
             return Promise::err(capnp::Error::failed(
@@ -5177,16 +5260,15 @@ impl channel_handle::Server for CapnpChannelHandle {
                                         Instant::now(),
                                     )
                                 });
-                        match handle {
-                            Some(handle) => runtime_collab::NearbyTransferReply::Queued { handle },
-                            None => {
-                                let _ = crate::shell::device_fabric_runtime::cancel_nearby_transfer(
-                                    &network,
-                                    transfer_id,
-                                );
-                                runtime_collab::NearbyTransferReply::Rejected {
-                                    reason: "Nearby Send transfer authority is full".into(),
-                                }
+                        if let Some(handle) = handle {
+                            runtime_collab::NearbyTransferReply::Queued { handle }
+                        } else {
+                            let _ = crate::shell::device_fabric_runtime::cancel_nearby_transfer(
+                                &network,
+                                transfer_id,
+                            );
+                            runtime_collab::NearbyTransferReply::Rejected {
+                                reason: "Nearby Send transfer authority is full".into(),
                             }
                         }
                     }
@@ -8576,9 +8658,9 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
 
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
-) -> Result<(), capnp::Error> {
+) -> Result<Option<LaunchScope>, capnp::Error> {
     if !has_collab_launch_marker(stream).await? {
-        return Ok(());
+        return Ok(None);
     }
     let credentials = stream.peer_cred().map_err(|error| {
         capnp::Error::failed(format!(
@@ -8607,7 +8689,7 @@ async fn authenticate_launcher_handoff(
             "collaboration launch handoff has an unsupported or empty identity".into(),
         ));
     }
-    attest_collab_launch(pid, &handoff).await
+    attest_collab_launch(pid, handoff).await
 }
 
 /// Read the launcher's collaboration handoff: the launch marker, then one
@@ -8640,7 +8722,10 @@ async fn read_collab_launch_handoff<S: tokio::io::AsyncRead + Unpin>(
     })
 }
 
-async fn attest_collab_launch(pid: u32, handoff: &CollabLaunchHandoff) -> Result<(), capnp::Error> {
+async fn attest_collab_launch(
+    pid: u32,
+    handoff: CollabLaunchHandoff,
+) -> Result<Option<LaunchScope>, capnp::Error> {
     // `spawn_launch` records immediately after `Command::spawn`; the child
     // can connect first on a fast machine. Retry only this narrow registration
     // race. A direct tilo-launcher command never obtains a record and fails
@@ -8653,7 +8738,10 @@ async fn attest_collab_launch(pid: u32, handoff: &CollabLaunchHandoff) -> Result
         )
         .is_some()
         {
-            return Ok(());
+            return Ok(Some(LaunchScope {
+                app_id: handoff.app_id,
+                workspace_id: handoff.workspace_id,
+            }));
         }
         if attempt < LAUNCH_RECORD_RACE_RETRIES {
             tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
@@ -8675,7 +8763,7 @@ async fn drive_connection(
     peer_id: u64,
 ) -> Result<(), capnp::Error> {
     let mut stream = stream;
-    authenticate_launcher_handoff(&mut stream).await?;
+    let launch = authenticate_launcher_handoff(&mut stream).await?;
     let (reader, writer) = stream.into_split();
     let reader = reader.compat();
     let writer = writer.compat_write();
@@ -8689,6 +8777,7 @@ async fn drive_connection(
         state,
         directories,
         peer_id,
+        launch,
     };
     let client: collab_service::Client = capnp_rpc::new_client(service);
     let rpc = RpcSystem::new(network, Some(client.client));
@@ -9398,12 +9487,64 @@ pub(crate) mod tests {
         assert_eq!(cancel.signal, RealtimeFabricSignal::Cancel(fabric_id));
     }
 
+    /// Content keyed by `(room, hash)`, standing in for the content store's
+    /// room-scoped reads.
+    #[derive(Default)]
+    struct ScopedContent {
+        entries: std::collections::BTreeMap<(String, String), Vec<u8>>,
+        reads: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl ScopedContent {
+        fn with(room: &str, bytes: &[u8]) -> (Self, String) {
+            let hash = qdoc::blobstore::hash_bytes(bytes);
+            let mut content = Self::default();
+            content
+                .entries
+                .insert((room.into(), hash.clone()), bytes.to_vec());
+            (content, hash)
+        }
+    }
+
+    impl LaunchContentReader for ScopedContent {
+        fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
+            self.reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((room.into(), app.into()));
+            self.entries
+                .get(&(room.into(), hash.into()))
+                .cloned()
+                .ok_or_else(|| "launch content is unavailable on this device".into())
+        }
+    }
+
+    fn caller(app_id: &str, workspace_id: &str) -> LaunchScope {
+        LaunchScope {
+            app_id: app_id.into(),
+            workspace_id: workspace_id.into(),
+        }
+    }
+
+    fn stage(
+        hash: &str,
+        caller: Option<&LaunchScope>,
+        content: &std::sync::Arc<ScopedContent>,
+    ) -> Result<Option<StagedContent>, String> {
+        let reader: std::sync::Arc<dyn LaunchContentReader> = content.clone();
+        tilo_rt::block_on(stage_launch_content(hash, caller, reader)).expect("runtime")
+    }
+
     #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
-        let stage = |hash: &str| tilo_rt::block_on(stage_launch_content(hash)).expect("runtime");
-        assert_eq!(stage("").expect("plain launch"), None);
-        assert!(stage("not-a-hash").is_err());
-        assert!(stage(&"a".repeat(64)).is_err());
+        let content = std::sync::Arc::new(ScopedContent::default());
+        let photos = caller("so.tilo.photos", "room-1");
+        assert_eq!(
+            stage("", Some(&photos), &content).expect("plain launch"),
+            None
+        );
+        assert!(stage("not-a-hash", Some(&photos), &content).is_err());
+        assert!(stage(&"a".repeat(64), Some(&photos), &content).is_err());
     }
 
     #[cfg(unix)]
@@ -9413,15 +9554,18 @@ pub(crate) mod tests {
         let runtime = tempfile::tempdir().expect("runtime directory");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
-        let content = b"staged launch fixture";
-        let hash = qdoc::blobstore::put(content).expect("store fixture");
-        let staged = tilo_rt::block_on(stage_launch_content(&hash))
-            .expect("runtime")
+        let (content, hash) = ScopedContent::with("room-1", b"staged launch fixture");
+        let content = std::sync::Arc::new(content);
+        let photos = caller("so.tilo.photos", "room-1");
+        let staged = stage(&hash, Some(&photos), &content)
             .expect("staged")
             .expect("content present");
         // The file is complete by the time the stage resolves, which is when
         // the launch that awaits it runs.
-        assert_eq!(std::fs::read(&staged.path).expect("staged file"), content);
+        assert_eq!(
+            std::fs::read(&staged.path).expect("staged file"),
+            b"staged launch fixture"
+        );
         assert_eq!(staged.dir, runtime.path().join("tilo-opened"));
 
         let mut workspace = crate::shell::state::Workspace::new(
@@ -9438,11 +9582,51 @@ pub(crate) mod tests {
         );
 
         // Staging the same content again reuses the verified copy.
-        let again = tilo_rt::block_on(stage_launch_content(&hash))
-            .expect("runtime")
+        let again = stage(&hash, Some(&photos), &content)
             .expect("restaged")
             .expect("content present");
         assert_eq!(again.path, document);
+    }
+
+    /// The shell stages content through the scope of the application that
+    /// asked, never its own authority: a caller in another room holding the
+    /// hash, or a connection the launcher did not authenticate, stages nothing.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launch_content_is_read_through_the_calling_applications_scope() {
+        let runtime = tempfile::tempdir().expect("runtime directory");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let (content, hash) = ScopedContent::with("room-1", b"a photograph");
+        let content = std::sync::Arc::new(content);
+
+        let staged = stage(&hash, Some(&caller("so.tilo.photos", "room-1")), &content)
+            .expect("the owning app's content stages")
+            .expect("a staged path");
+        assert_eq!(
+            std::fs::read(&staged.path).expect("staged bytes"),
+            b"a photograph"
+        );
+        assert_eq!(
+            content
+                .reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last(),
+            Some(&("room-1".to_owned(), "so.tilo.photos".to_owned()))
+        );
+
+        for other in [
+            caller("so.tilo.chat", "room-2"),
+            caller("so.tilo.photos", "room-2"),
+        ] {
+            assert!(
+                stage(&hash, Some(&other), &content).is_err(),
+                "{other:?} holds the hash but not the content"
+            );
+        }
+        assert!(stage(&hash, None, &content).is_err());
     }
 
     #[cfg(unix)]
@@ -9452,27 +9636,21 @@ pub(crate) mod tests {
         let runtime = tempfile::tempdir().expect("runtime directory");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
-        let hash = qdoc::blobstore::put(b"verified launch fixture").expect("store fixture");
+        let (content, hash) = ScopedContent::with("room-1", b"verified launch fixture");
+        let content = std::sync::Arc::new(content);
+        let photos = caller("so.tilo.photos", "room-1");
         let staged = runtime
             .path()
             .join("tilo-opened")
             .join(format!("{hash}.bin"));
         std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
         std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
-        assert!(
-            tilo_rt::block_on(stage_launch_content(&hash))
-                .expect("runtime")
-                .is_err()
-        );
+        assert!(stage(&hash, Some(&photos), &content).is_err());
         std::fs::remove_file(&staged).expect("remove corrupt fixture");
         let target = runtime.path().join("outside");
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(
-            tilo_rt::block_on(stage_launch_content(&hash))
-                .expect("runtime")
-                .is_err()
-        );
+        assert!(stage(&hash, Some(&photos), &content).is_err());
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9708,6 +9886,7 @@ pub(crate) mod tests {
                     role: CapRole::Editor,
                     agent_id: None,
                 },
+                launch: None,
             });
             let mut request = client.update_invocation_request();
             request.get().set_id(id);
