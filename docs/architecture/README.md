@@ -61,6 +61,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
 | `security.md` | sandbox, permissions, capability grants |
+| `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
