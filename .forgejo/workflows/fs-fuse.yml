@@ -83,6 +83,7 @@ on:
       - "crates/session/shell/**"
       - "crates/sdk/ui-core/**"
       - "crates/dev/test-env/**"
+      - "crates/system/fs-native/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
       - "os/usr/libexec/tilo-session"

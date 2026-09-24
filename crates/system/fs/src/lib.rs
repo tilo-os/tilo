@@ -51,6 +51,8 @@ pub mod identity;
 pub mod named_share_delivery;
 #[cfg(feature = "filesystem")]
 pub mod namespace;
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
 #[cfg(feature = "filesystem")]

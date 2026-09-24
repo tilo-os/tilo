@@ -36,6 +36,8 @@ filesystem = [
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
+    "dep:fs-native",
+    "dep:redb",
 ]
 
 [[bin]]
@@ -71,6 +73,11 @@ required-features = ["filesystem"]
 [[test]]
 name = "performance_gate"
 path = "tests/performance_gate.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "native_tier1"
+path = "tests/native_tier1.rs"
 required-features = ["filesystem"]
 
 [dependencies]
@@ -117,6 +124,7 @@ blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
+redb = { workspace = true, optional = true }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
@@ -127,6 +135,11 @@ workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 fuser = { workspace = true, optional = true }
+
+# The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
+# pre-content placeholders. Linux-only kernel interfaces.
+[target.'cfg(target_os = "linux")'.dependencies]
+fs-native = { path = "../fs-native", optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.
 [target.'cfg(target_os = "macos")'.dependencies]
