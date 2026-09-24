@@ -37,6 +37,10 @@ use crate::sys;
 /// The value is `P <size> <content-id-hex> <resident ranges>`.
 pub const RESIDENCY_XATTR: &str = "trusted.tilo.residency";
 
+/// Name prefix of files being prepared next to their final path. They are
+/// renamed into place once complete and are never captured.
+pub const STAGING_PREFIX: &str = ".tilo-staging-";
+
 /// Supplies content bytes for placeholders.
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
@@ -116,6 +120,11 @@ struct FileState {
     window: u64,
     /// Furthest offset read-ahead was already scheduled up to.
     ahead_end: u64,
+    /// The mtime the file should show. Filling writes bytes, which moves
+    /// the mtime; it is put back so a placeholder that becomes resident
+    /// looks exactly like the version it stands for (`ls -l`, `git status`,
+    /// make). A change made by someone else between fills is kept.
+    mtime: Option<libc::timespec>,
 }
 
 impl FileState {
@@ -128,6 +137,7 @@ impl FileState {
             seq_end: 0,
             window: 0,
             ahead_end: 0,
+            mtime: None,
         }
     }
 }
@@ -367,6 +377,43 @@ impl Shared {
         }
     }
 
+    /// Fetches the claimed ranges and writes them in place. Returns the
+    /// ranges written, and the first error, which stops the rest.
+    fn fetch_claims(
+        &self,
+        content: &[u8; 32],
+        fd: BorrowedFd<'_>,
+        claim: &[Range<u64>],
+    ) -> (Vec<Range<u64>>, io::Result<()>) {
+        let mut done = Vec::new();
+        for c in claim {
+            let len = c.end.saturating_sub(c.start);
+            let r = self
+                .fetcher
+                .fetch(content, c.start, len)
+                .and_then(|bytes| {
+                    if bytes.len() as u64 == len {
+                        Ok(bytes)
+                    } else {
+                        Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "fetcher returned a short range",
+                        ))
+                    }
+                })
+                .and_then(|bytes| write_all_at(fd, &bytes, c.start));
+            match r {
+                Ok(()) => {
+                    self.stats.fills.fetch_add(1, Ordering::Relaxed);
+                    self.stats.bytes_filled.fetch_add(len, Ordering::Relaxed);
+                    done.push(c.clone());
+                }
+                Err(e) => return (done, Err(e)),
+            }
+        }
+        (done, Ok(()))
+    }
+
     /// Fetches and writes the missing parts of `want`. With `block`, ranges
     /// another worker is filling are waited for; without it they are left
     /// to that worker.
@@ -409,49 +456,38 @@ impl Shared {
                     .0;
                 continue;
             }
+            if st.inflight.is_empty()
+                && let Ok(now) = sys::fmtime(fd)
+                && st
+                    .mtime
+                    .is_none_or(|t| t.tv_sec != now.tv_sec || t.tv_nsec != now.tv_nsec)
+            {
+                // Nobody is filling, so a different mtime is someone else's.
+                st.mtime = Some(now);
+            }
             for c in &claim {
                 st.inflight.insert(c.clone());
             }
             let content = st.content;
             drop(files);
-            let mut result = Ok(());
-            let mut done = Vec::new();
-            for c in &claim {
-                let len = c.end.saturating_sub(c.start);
-                let r = self
-                    .fetcher
-                    .fetch(&content, c.start, len)
-                    .and_then(|bytes| {
-                        if bytes.len() as u64 == len {
-                            Ok(bytes)
-                        } else {
-                            Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "fetcher returned a short range",
-                            ))
-                        }
-                    })
-                    .and_then(|bytes| write_all_at(fd, &bytes, c.start));
-                match r {
-                    Ok(()) => {
-                        self.stats.fills.fetch_add(1, Ordering::Relaxed);
-                        self.stats.bytes_filled.fetch_add(len, Ordering::Relaxed);
-                        filled = filled.saturating_add(len);
-                        done.push(c.clone());
-                    }
-                    Err(e) => {
-                        result = Err(e);
-                        break;
-                    }
-                }
+            let (done, result) = self.fetch_claims(&content, fd, &claim);
+            for d in &done {
+                filled = filled.saturating_add(d.end.saturating_sub(d.start));
             }
             files = self.files.lock().map_err(|_| poisoned())?;
             if let Some(st) = files.get_mut(&key) {
                 for c in &claim {
                     st.inflight.remove(c.clone());
                 }
+                let wrote = !done.is_empty();
                 for d in done {
                     st.missing.remove(d);
+                }
+                if wrote
+                    && st.inflight.is_empty()
+                    && let Some(t) = st.mtime
+                {
+                    let _ = sys::set_fmtime(fd, t);
                 }
                 // Persist progress so a restart never refetches over local
                 // writes to ranges that were already resident.
@@ -637,9 +673,10 @@ impl Hydrator {
         &self.shared.stats
     }
 
-    fn register(&self, file: &File, st: FileState) -> io::Result<()> {
+    fn register(&self, file: &File, mut st: FileState) -> io::Result<()> {
         let key = key_of(file.as_fd())?;
         let empty = st.missing.is_empty();
+        st.mtime = sys::fmtime(file.as_fd()).ok();
         self.shared
             .files
             .lock()
@@ -677,7 +714,7 @@ impl Hydrator {
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
         let staging = dir.join(format!(
-            ".tilo-staging-{}-{}",
+            "{STAGING_PREFIX}{}-{}",
             std::process::id(),
             String::from_utf8_lossy(name.as_bytes())
         ));
@@ -746,6 +783,12 @@ impl Hydrator {
         sys::fset_xattr(&file, RESIDENCY_XATTR, &encode_residency(&st))?;
         self.register(&file, st)?;
         sys::punch_hole(&file, 0, size)
+    }
+
+    /// Whether `path` is a placeholder or partially resident file, from its
+    /// residency xattr. Reading the xattr never hydrates anything.
+    pub fn is_placeholder(path: &Path) -> bool {
+        matches!(sys::get_xattr(path, RESIDENCY_XATTR), Ok(Some(_)))
     }
 
     /// Refuses writers of the file at `path` with `errno` (for example

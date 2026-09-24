@@ -487,3 +487,16 @@ fn a_path_marked_dirty_is_examined_without_a_journal_entry() {
     assert_eq!(op_paths(&cs), ["+quiet"]);
     cap.release().unwrap();
 }
+
+#[test]
+fn staging_files_are_never_captured() {
+    let Some(s) = btrfs_scratch("capture_staging") else {
+        return;
+    };
+    fs::write(s.live.join(".tilo-staging-1-0"), b"half written").unwrap();
+    fs::write(s.live.join("real"), b"r").unwrap();
+    let mut cap = EpochCapture::new(CaptureConfig::new(&s.live, &s.epochs)).unwrap();
+    let cs = cap.capture(&batch(&[])).unwrap();
+    assert_eq!(op_paths(&cs), ["+real"]);
+    cap.release().unwrap();
+}

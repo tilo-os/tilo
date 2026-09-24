@@ -552,7 +552,7 @@ impl EpochCapture {
                         || ft.is_fifo()
                         || ft.is_block_device()
                         || ft.is_char_device();
-                    !special && !local_only.contains(&path)
+                    !special && !is_staging(&path) && !local_only.contains(&path)
                 }
                 None => false,
             };
@@ -717,6 +717,14 @@ fn next_state(
         }
     }
     next
+}
+
+/// Staging files are the daemon's own half-written versions, renamed into
+/// place when complete (`hydrate::STAGING_PREFIX`); they are never content.
+fn is_staging(rel: &Path) -> bool {
+    rel.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with(crate::hydrate::STAGING_PREFIX))
 }
 
 fn is_placeholder(abs: &Path) -> bool {
