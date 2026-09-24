@@ -1665,42 +1665,22 @@ mod tests {
         }
     }
 
+    /// The launcher's environment contract, pointed at a scratch data home.
+    /// The variables are restored before the directory is removed.
     struct LaunchFixtureEnv {
+        _env: tilo_test_env::ScopedEnv,
         _directory: tempfile::TempDir,
-        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
     }
     impl LaunchFixtureEnv {
         fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let mut previous = Vec::new();
-            for (key, value) in [
-                ("XDG_DATA_HOME", directory.path().as_os_str().to_os_string()),
-                ("TILO_PACKAGE_ID", "so.tilo.launch-fixture".into()),
-                (
-                    "TILO_WORKSPACE_ID",
-                    "00000000-0000-0000-0000-000000000000".into(),
-                ),
-            ] {
-                previous.push((key, std::env::var_os(key)));
-                unsafe {
-                    std::env::set_var(key, value);
-                }
-            }
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", directory.path())
+                .set("TILO_PACKAGE_ID", "so.tilo.launch-fixture")
+                .set("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000");
             Self {
+                _env: env,
                 _directory: directory,
-                previous,
-            }
-        }
-    }
-    impl Drop for LaunchFixtureEnv {
-        fn drop(&mut self) {
-            for (key, value) in &self.previous {
-                unsafe {
-                    match value {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
             }
         }
     }
@@ -1750,7 +1730,6 @@ mod tests {
         parse_args_extended(&raw, &[], &[], &[], &[], 1).unwrap()
     }
     #[test]
-    #[serial_test::serial(process_env)]
     fn headless_dispatch_uses_configured_migration_loader() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("dump.json");
@@ -1766,7 +1745,6 @@ mod tests {
         assert_eq!(state["migration_marker"], "configured-loader");
     }
     #[test]
-    #[serial_test::serial(process_env)]
     fn prepared_file_state_and_original_room_index_reach_real_headless_dispatch() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1817,7 +1795,6 @@ mod tests {
         assert_eq!(state["file_marker"], "replacement-file-content");
     }
     #[test]
-    #[serial_test::serial(process_env)]
     fn native_constructor_consumes_the_same_fallible_preparer() {
         use automerge::ReadDoc;
         let fixture = LaunchFixtureEnv::new();
@@ -1874,7 +1851,6 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial(process_env)]
     fn headless_custom_namespace_and_disabled_writer_fail_without_default_fallback() {
         let fixture = LaunchFixtureEnv::new();
         for open in [
@@ -1899,7 +1875,6 @@ mod tests {
         );
     }
     #[test]
-    #[serial_test::serial(process_env)]
     fn failed_file_preparer_stops_real_dispatch_before_output_or_fallback() {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("must-not-exist.json");

@@ -481,52 +481,23 @@ mod window_title_tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn env_path_end_to_end_prefers_app_name() {
-        let prev_name = std::env::var_os("TILO_APP_NAME");
-        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_APP_NAME", "Weather");
-            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.weather");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_NAME", "Weather")
+            .set("TILO_PACKAGE_ID", "so.tilo.weather");
         let resolved = resolve_window_title(None);
-        // Restore before asserting so a failure doesn't leak env.
-        unsafe {
-            match prev_name {
-                Some(v) => std::env::set_var("TILO_APP_NAME", v),
-                None => std::env::remove_var("TILO_APP_NAME"),
-            }
-            match prev_id {
-                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
-                None => std::env::remove_var("TILO_PACKAGE_ID"),
-            }
-        }
+        drop(env);
         assert_eq!(resolved, "Weather");
         assert_ne!(resolved, "QuickUI App");
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn env_path_falls_back_to_package_id_without_app_name() {
-        let prev_name = std::env::var_os("TILO_APP_NAME");
-        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("TILO_APP_NAME");
-            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.calculator");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_APP_NAME")
+            .set("TILO_PACKAGE_ID", "so.tilo.calculator");
         let resolved = resolve_window_title(None);
-        unsafe {
-            match prev_name {
-                Some(v) => std::env::set_var("TILO_APP_NAME", v),
-                None => std::env::remove_var("TILO_APP_NAME"),
-            }
-            match prev_id {
-                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
-                None => std::env::remove_var("TILO_PACKAGE_ID"),
-            }
-        }
+        drop(env);
         assert_eq!(resolved, "Calculator");
     }
 }
@@ -624,11 +595,11 @@ mod pointer_broadcast_tests {
     /// The scope is what sends `Arrived`, so opt-in would mean an app that
     /// forgets to set it never receives state written before it opened.
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ID", room) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ID", room)
+            .remove("QUICK_CLUSTER_ID");
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
@@ -637,18 +608,13 @@ mod pointer_broadcast_tests {
             }),
             "a workspace in the environment is a scope, with no app-side call"
         );
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ID") };
     }
 
     /// The nil cluster addresses nobody, so no room means nothing published.
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_app_with_no_workspace_publishes_nothing() {
-        // SAFETY: see above.
-        unsafe {
-            std::env::remove_var("TILO_WORKSPACE_ID");
-            std::env::remove_var("QUICK_CLUSTER_ID");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_WORKSPACE_ID").remove("QUICK_CLUSTER_ID");
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert!(app.presence_broadcast_scope().is_none());
     }

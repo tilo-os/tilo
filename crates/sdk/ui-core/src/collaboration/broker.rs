@@ -5055,7 +5055,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(tilo_svc_collab_fd)]
     #[cfg(unix)]
     fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
         // A connected socket whose far end is gone — a broker that died
@@ -5064,18 +5063,13 @@ mod tests {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
         drop(theirs);
         let fd = ours.into_raw_fd();
-        // SAFETY: serialised on `tilo_svc_collab_fd` against every other
-        // test that reads or writes these two variables.
-        unsafe {
-            std::env::set_var("TILO_SVC_COLLAB_FD", fd.to_string());
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_SVC_COLLAB_FD", fd.to_string());
 
         let started = crate::time::now();
         let mut mgr = CollaborationManager::new();
         let took = started.elapsed();
-
-        // SAFETY: as above.
-        unsafe { std::env::remove_var("TILO_SVC_COLLAB_FD") };
+        drop(env);
 
         assert!(
             took < SHOVEL_INIT_TIMEOUT * 2,
@@ -5090,13 +5084,10 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(tilo_svc_collab_fd)]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set — falls through to `Backend::Disabled`.
-        // SAFETY: the crate is single-threaded per-test module here.
-        unsafe {
-            std::env::remove_var("TILO_SVC_COLLAB_FD");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_SVC_COLLAB_FD");
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
         mgr.send(CollabRequest::document_snapshot(b"nope".to_vec()));
