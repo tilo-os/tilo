@@ -5,7 +5,7 @@
 //! parameters such as [`crate::record::RecordSet::open_in`]) rather than
 //! reading the process environment itself. Only the native runner derives
 //! them from the process — environment variables, the settings file — in
-//! [`crate::host::native::process_environment`]. Another host installs its
+//! `ui::native::services::process_environment`. Another host installs its
 //! own with [`install_environment`].
 
 use std::path::PathBuf;
@@ -120,8 +120,9 @@ pub fn install_environment(environment: HostEnvironment) {
     }
 }
 
-/// The host inputs for this process: the installed ones, else — in a native
-/// build — what the native runner reads from the process, else none.
+/// The host inputs for this process: the installed ones, else — with the
+/// `native` feature — what the native runner reads from the process, else
+/// none.
 ///
 /// The native fallback is read afresh on each call, because the process
 /// environment is the routing truth for a launched app and tests change it
@@ -130,7 +131,10 @@ pub fn environment() -> Arc<HostEnvironment> {
     if let Some(installed) = INSTALLED.read().ok().and_then(|slot| slot.clone()) {
         return installed;
     }
-    Arc::new(crate::host::native::process_environment())
+    #[cfg(feature = "native")]
+    return Arc::new(crate::native::services::process_environment());
+    #[cfg(not(feature = "native"))]
+    Arc::new(HostEnvironment::default())
 }
 
 #[cfg(test)]

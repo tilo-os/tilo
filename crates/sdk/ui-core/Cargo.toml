@@ -15,7 +15,13 @@ autoexamples = false
 ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
-default = ["broker-transport"]
+default = ["native", "broker-transport"]
+# The native desktop runner and host services: the winit event loop with its
+# AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
+# warmup, and the `ui::native` backends. Without it the crate is the portable
+# toolkit — widgets, state, layout, rendering and the headless host — and a
+# host supplies its own `ui::host::HostServices`.
+native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboard", "dep:smithay-client-toolkit"]
 # The collaboration manager's built-in transport: the qOS collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -50,15 +56,15 @@ gpu-video = ["dmabuf-import"]
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
-mpris = ["dep:zbus", "zbus/tokio"]
+mpris = ["native", "dep:zbus", "zbus/tokio"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
-notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
+portal = ["native", "dep:ashpd", "dep:windows", "dep:mime_guess"]
+notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
 private-fs = { path = "../../system/private-fs" }
@@ -153,12 +159,12 @@ media = { path = "../../media/core" }
 # talk to the data-control compositor extension when available
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
-arboard = { workspace = true, features = ["image-data"] }
+arboard = { workspace = true, features = ["image-data"], optional = true }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open = { workspace = true, features = ["shellexecute-on-windows"] }
+open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -229,7 +235,7 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = "0.34.0"
+accesskit_winit = { version = "0.34.0", optional = true }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -240,11 +246,11 @@ tts = { path = "../../system/tts" }
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
 # Windows/macOS targets. The only call sites are already Linux-gated in
 # `clipboard.rs`, so keep the backend out of host bundles on other platforms.
-smithay-clipboard = "0.7"
+smithay-clipboard = { version = "0.7", optional = true }
 # The image source uses the regular focus-gated wl_data_device protocol. The
 # text-only smithay-clipboard facade cannot advertise binary MIME payloads,
 # while data-control would bypass Tilo's focus/privilege boundary.
-smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
+smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
