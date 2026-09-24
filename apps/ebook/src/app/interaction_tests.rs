@@ -2363,17 +2363,20 @@ fn import_worker_never_blocks_and_rejects_a_stale_result() {
     let mut app = BooksApp::with_library(Vec::new());
     let mut doc = AutoCommit::new();
 
-    let start = Instant::now();
-    app.begin_import_with_delay(&pa, ImportKind::Open, Duration::from_millis(180))
-        .unwrap();
+    // Queueing returns while the worker is held inside A's parse, so the UI
+    // thread never waits for a parse to finish.
+    let (entered, release_a) = app.begin_import_held(&pa, ImportKind::Open).unwrap();
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the worker took A");
     assert!(
-        start.elapsed() < Duration::from_millis(40),
-        "queueing a slow parse stays on the UI budget"
+        app.import_loading.is_some(),
+        "A is pending, not parsed inline"
     );
-    // Let A leave the latest-wins mailbox and enter the worker, then B
-    // supersedes it. A may still finish, but its generation must be ignored.
-    std::thread::sleep(Duration::from_millis(20));
+    // B supersedes A while A is still in the worker. A finishes afterwards,
+    // and its generation must be ignored.
     app.begin_import(pb.clone(), ImportKind::Open).unwrap();
+    drop(release_a);
     assert_eq!(app.import_loading.as_ref().map(|l| &l.path), Some(&pb));
 
     wait_for_import(&mut app, &mut doc);
@@ -2394,8 +2397,7 @@ fn watch_scan_cannot_replace_an_explicit_open() {
     std::fs::write(&watched, crate::content::SAMPLE_EPUB).unwrap();
     let mut app = BooksApp::with_library(Vec::new());
 
-    app.begin_import_with_delay(&open, ImportKind::Open, Duration::from_millis(100))
-        .unwrap();
+    let (_entered, _release) = app.begin_import_held(&open, ImportKind::Open).unwrap();
     app.begin_import(watched, ImportKind::Watch).unwrap();
     let loading = app.import_loading.as_ref().expect("open remains pending");
     assert_eq!(loading.kind, ImportKind::Open);
@@ -4333,7 +4335,7 @@ fn completed_import_wakes_its_idle_host() {
             path,
             kind: ImportKind::Open,
             expected_book_id: None,
-            delay: Duration::ZERO,
+            hold: None,
         })
         .unwrap();
     let event = receiver
