@@ -5,13 +5,6 @@ use vello::peniko::Color;
 
 pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 1;
 
-fn env_flag_enabled(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 /// Stable, app-independent representation of a user-authored OS theme.
 /// Theme Studio edits it; the shell and every UI app consume it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -623,16 +616,13 @@ impl Theme {
         let text = settings
             .and_then(|path| std::fs::read_to_string(path).ok())
             .unwrap_or_default();
-        let reduce_motion_override = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-            .iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .any(|value| env_flag_enabled(&value));
+        let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
         let mut theme = Self::from_settings_json(text).unwrap_or_else(Self::dark);
-        let thick = serde_json::from_str::<serde_json::Value>(&text)
+        let thick = serde_json::from_str::<serde_json::Value>(text)
             .ok()
             .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
             .unwrap_or(false);
@@ -1316,13 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_theme_honours_explicit_reduce_motion_environment() {
-        for enabled in ["1", "true", "TRUE", "yes", " on "] {
-            assert!(env_flag_enabled(enabled));
-        }
-        for disabled in ["", "0", "false", "no", "off", "garbage"] {
-            assert!(!env_flag_enabled(disabled));
-        }
+    fn configured_theme_honours_the_host_reduce_motion_input() {
         assert!(Theme::configured_from_text("", true).reduce_motion);
         assert!(!Theme::configured_from_text("", false).reduce_motion);
     }
