@@ -22,6 +22,12 @@ env:
   # write baselines that every other runner correctly rejects.
   VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
   WGPU_ADAPTER_NAME: llvmpipe
+  # Keep this identical to nightly.yml and the nextest gpu-golden override:
+  # candidates are rendered for exactly the tests nightly verifies.
+  GOLDEN_FILTER: >-
+    (package(tilo-ui) and test(typography_visual_regression::)) or
+    (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
+    (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
 
 jobs:
   refresh:
@@ -57,18 +63,19 @@ jobs:
           UPDATE_EBOOK_TYPOGRAPHY_BASELINE: "1"
           UPDATE_SNAPSHOTS: "1"
           UPDATE_TYPOGRAPHY_BASELINES: "1"
-        run: |
-          cargo test --locked -p tilo-ui --test it \
-            typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
-          cargo test --locked -p ebook reader_matches
-          cargo test --locked -p shell --test it e2e_shell_flows::
-          # Each wheel case creates a headless Vulkan renderer. Running six of
-          # those in one process concurrently can crash Mesa's software driver
-          # before Rust can report a test failure, so serialize this tiny set.
-          cargo test --locked -p shell --test it sidebar_wheel_disc_snapshot:: \
-            -- --test-threads=1
+          TILO_REQUIRE_GPU: "1"
+        # The same runner, profile, environment and filter as nightly's
+        # verification step. nextest runs each test in its own process and
+        # the gpu-golden test group runs them one at a time, so concurrent
+        # headless Vulkan renderers cannot crash Mesa's software driver.
+        run: >-
+          bash tools/with-test-environment.sh
+          cargo nextest run --workspace --locked --profile ci
+          -E "$GOLDEN_FILTER"
 
       - name: Assemble review bundle
+        # Still collect the candidates written before any test failed.
+        if: ${{ !cancelled() }}
         run: |
           review=target/visual-baseline-review
           mkdir -p "$review/files"
@@ -108,6 +115,7 @@ jobs:
           (cd "$review" && sha256sum candidates.patch > candidates.patch.sha256)
 
       - name: Upload candidates for visual review
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: visual-baseline-candidates-${{ github.sha }}
