@@ -148,6 +148,9 @@ pub struct ContentStore {
     mutation: tokio::sync::Mutex<()>,
     /// Exact live set supplied only for an authorized selective sweep.
     gc_live: Arc<RwLock<Option<HashSet<Hash>>>>,
+    /// Open deferred-durability groups, and whether a write inside one
+    /// still waits for its database sync; see [`ContentStore::defer_sync`].
+    deferred: std::sync::Mutex<(usize, bool)>,
 }
 
 impl ContentStore {
@@ -213,6 +216,7 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
+            deferred: std::sync::Mutex::new((0, false)),
         })
     }
 
@@ -228,6 +232,7 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live,
+            deferred: std::sync::Mutex::new((0, false)),
         }
     }
 
@@ -244,6 +249,7 @@ impl ContentStore {
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc_live: Arc::new(RwLock::new(None)),
+            deferred: std::sync::Mutex::new((0, false)),
         }
     }
 
@@ -252,6 +258,49 @@ impl ContentStore {
             Backend::Mem(m) => m,
             Backend::Fs(f) => f,
         }
+    }
+
+    /// Opens a deferred-durability group: until the last open group ends
+    /// ([`Self::end_deferred_sync`]), writes skip their database sync and
+    /// the group's end syncs once. A changeset of many small files then
+    /// costs one sync instead of one per file. Callers end the group before
+    /// anything depending on the writes is made durable or announced.
+    pub fn defer_sync(&self) {
+        let mut deferred = self
+            .deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        deferred.0 = deferred.0.saturating_add(1);
+    }
+
+    /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
+    /// database if a write inside the groups skipped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database sync fails; the writes stay
+    /// pending for the next sync.
+    pub async fn end_deferred_sync(&self) -> Result<()> {
+        let sync = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            deferred.0 = deferred.0.saturating_sub(1);
+            let sync = deferred.0 == 0 && deferred.1;
+            if sync {
+                deferred.1 = false;
+            }
+            sync
+        };
+        if sync && let Err(error) = self.store().sync_db().await {
+            self.deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1 = true;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Build a `BlobsProtocol` handler backed by this store (for the router).
@@ -480,8 +529,22 @@ impl ContentStore {
         // `FsStore` explicitly does not promise that dropping it flushes recent
         // writes. Make the named protection durable before releasing the
         // temporary protection. This is a no-op-compatible boundary for the
-        // in-memory backend.
-        self.store().sync_db().await?;
+        // in-memory backend. Inside a deferred-durability group the group's
+        // end syncs once instead; the owned tags are already installed, so
+        // nothing collects the blobs meanwhile.
+        let deferred = {
+            let mut deferred = self
+                .deferred
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if deferred.0 > 0 {
+                deferred.1 = true;
+            }
+            deferred.0 > 0
+        };
+        if !deferred {
+            self.store().sync_db().await?;
+        }
         let hashes = protected
             .iter()
             .map(|(temporary, _)| temporary.hash())

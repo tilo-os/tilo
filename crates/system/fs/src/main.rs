@@ -3162,6 +3162,7 @@ async fn run_mount(
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
+    let durable_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace);
     let fs = if allow_legacy_record_migration {
@@ -3298,6 +3299,9 @@ async fn run_mount(
             read_only,
         )?
     {
+        if let Some(path) = namespace_path(predictive_cache_root.as_deref()) {
+            fs.set_durability_hook(Arc::new(move || persist_now(&durable_namespace, &path)));
+        }
         let outcome = run_native(fs, cfg, native_sync, rebind).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
