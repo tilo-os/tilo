@@ -4190,7 +4190,7 @@ mod tests {
         let plan = launcher::capabilities::CapabilityPlan::for_app(
             "so.tilo.books",
             &records,
-            Some(launcher::capabilities::now_unix()),
+            Some(tilo_clock::unix_now()),
         );
 
         clear_workspace_capabilities();

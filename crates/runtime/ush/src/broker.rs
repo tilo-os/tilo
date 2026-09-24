@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::caps::Verb;
+use tilo_clock::unix_now;
 
 use crate::audit::{AuditLog, AuditRecord};
 use crate::policy::{Policy, is_trustable};
@@ -313,9 +314,7 @@ impl BrokerState {
             Request::Check { path, write } => {
                 let verb = if write { Verb::Write } else { Verb::Read };
                 Response::Check {
-                    allowed: self
-                        .policy
-                        .permits(&path, verb, Some(crate::audit::now_unix())),
+                    allowed: self.policy.permits(&path, verb, Some(unix_now())),
                 }
             }
             Request::PkgRecorded {
@@ -554,7 +553,7 @@ impl BrokerState {
     }
 
     fn status(&self) -> SessionStatus {
-        let now = Some(crate::audit::now_unix());
+        let now = Some(unix_now());
         SessionStatus {
             session: self.session_id.clone(),
             profile: self.profile.as_str().to_string(),

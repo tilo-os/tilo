@@ -10,7 +10,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     CapRole, Collaborator, Effect, GroupId, Principal, StripId, Subject, TabId, UserId, Workspace,
-    WorkspaceId, WorkspaceTree, local_user_id, now_unix,
+    WorkspaceId, WorkspaceTree, local_user_id,
 };
 
 /// Cached, plain-data snapshot of a single workspace for rendering a card.
@@ -241,7 +241,7 @@ fn room_people_with_local_user(ws: &Workspace, tree: &WorkspaceTree, me: &str) -
 /// the same folder to two people are one share with two holders.
 pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
     use crate::shell::workspace_settings::scope_label;
-    let now = Some(now_unix());
+    let now = Some(tilo_clock::unix_now());
     let mut out: Vec<RoomShare> = Vec::new();
     for cap in &ws.capabilities {
         if !cap.is_live_at(now) || cap.effect != Effect::Grant {

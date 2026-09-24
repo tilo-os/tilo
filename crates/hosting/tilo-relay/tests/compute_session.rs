@@ -1,8 +1,9 @@
 //! Dedicated personal-compute ALPN integration coverage.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use tilo_clock::unix_now_ms;
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeJobSpec,
     ComputeResourceLimits, ComputeStatusUpdate, ComputeWorkerAdvertisement, PowerAvailability,
@@ -10,14 +11,6 @@ use tilo_relay::{
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_session_routes_and_replays_unacknowledged_status() {
@@ -50,7 +43,7 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
             pending: 0
         }
     ));
-    let issued_at_ms = now_ms();
+    let issued_at_ms = unix_now_ms();
     worker_client
         .send(&ComputeEnvelope::Advertise {
             workspace_id: 77,
@@ -213,7 +206,7 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
             pending: 0
         }
     ));
-    let issued_at_ms = now_ms();
+    let issued_at_ms = unix_now_ms();
     worker_client
         .send(&ComputeEnvelope::Advertise {
             workspace_id: 88,

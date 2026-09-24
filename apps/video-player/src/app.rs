@@ -18,6 +18,7 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_clock::unix_now_ms;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -1523,7 +1524,7 @@ impl PlayerApp {
         let id = format!(
             "item-{}-{}",
             crate::actions::identity_token_for_action(&media_ref),
-            media::now_ms()
+            unix_now_ms()
         );
         self.dispatch_shared(
             doc,
@@ -1545,7 +1546,7 @@ impl PlayerApp {
         let id = format!(
             "annotation-{}-{}-{time_ms}",
             crate::actions::identity_token_for_action(&media_ref),
-            media::now_ms()
+            unix_now_ms()
         );
         self.dispatch_shared(
             doc,
@@ -2031,7 +2032,7 @@ impl PlayerApp {
                 }
             }
         }
-        let now = media::now_ms();
+        let now = unix_now_ms();
         match collab.role() {
             Role::Host => {
                 // The manager connects in the background; the host's state
@@ -5130,7 +5131,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "tilo-video-player-open-lifecycle-{}-{}.mp4",
             std::process::id(),
-            media::now_ms()
+            unix_now_ms()
         ));
         std::fs::write(&path, []).expect("create a portal-equivalent local file");
         let operation = PlayerOperation::Open {
@@ -5211,7 +5212,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "tilo-video-player-open-timeout-{}-{}.mp4",
             std::process::id(),
-            media::now_ms()
+            unix_now_ms()
         ));
         std::fs::write(&path, []).expect("create a portal-equivalent local file");
         let payload = serde_json::to_vec(&PlayerOperation::Open {
@@ -5332,7 +5333,7 @@ mod tests {
         app.perform_resource_operation(crate::actions::PlayerOperation::SetPlaybackRate(2.0));
         let engine = app.player.engine().expect("engine");
         assert!((engine.rate() - 2.0).abs() < f32::EPSILON);
-        assert!((engine.transport_state(media::now_ms()).rate - 2.0).abs() < f32::EPSILON);
+        assert!((engine.transport_state(unix_now_ms()).rate - 2.0).abs() < f32::EPSILON);
     }
 
     #[test]

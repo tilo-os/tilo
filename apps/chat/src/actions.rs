@@ -64,6 +64,7 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
@@ -1482,7 +1483,7 @@ fn build_channel_resource(
                     &cid,
                     &id,
                     &me,
-                    now_secs(),
+                    unix_now_i64(),
                     text,
                     None,
                     None,
@@ -1701,7 +1702,7 @@ fn build_message_resource(
         {
             let cid = ch.id.clone();
             let mid = m.id.clone();
-            move |text: &str| encode(&edit_message_action(&cid, &mid, text, now_secs()))
+            move |text: &str| encode(&edit_message_action(&cid, &mid, text, unix_now_i64()))
         },
     ));
 
@@ -1866,16 +1867,6 @@ fn message_label(
     };
     let snippet = body.chars().take(72).collect::<String>();
     format!("{author}: {snippet}")
-}
-
-/// Wall-clock seconds since the epoch, used by the prompted palette closures to
-/// mint a send/edit timestamp at authoring time (presentation-side — the closure
-/// never crosses a boundary, only its self-contained [`EncodedAction`] does).
-fn now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 impl ResourceProvider for crate::app::ChatApp {

@@ -14,7 +14,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
+use tilo_clock::unix_now;
+
+use crate::capabilities::{CapabilityPlan, load_capability_file};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
@@ -483,7 +485,7 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(now_unix()));
+    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(unix_now()));
     // A workspace launch with no explicit author grant is a viewer. Treating
     // missing/malformed policy as authorship made every failure permissive.
     if opts.workspace_id.is_some()

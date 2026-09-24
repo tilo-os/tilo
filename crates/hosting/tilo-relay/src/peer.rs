@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tilo_clock::unix_now_ns;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -61,11 +62,6 @@ pub struct WorkspaceAutobind {
     /// Relay state root under which a newly seen workspace is persisted.
     pub state_root: std::path::PathBuf,
 }
-
-/// Sequence-number source for enqueued deltas — wall-clock nanoseconds,
-/// so filenames sort in delivery order across restarts. The same clock the
-/// handshake checks certificates against.
-pub use crate::auth::now_ns;
 
 /// Relay-wide state a peer session needs for its whole lifetime — the
 /// workspace registry, autobind policy, live revocation list, own
@@ -663,7 +659,7 @@ async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    let seq = now_ns();
+    let seq = unix_now_ns();
     let raw_bytes = delta.clone();
     let offline_devices = wr
         .membership

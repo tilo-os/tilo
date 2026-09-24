@@ -16,6 +16,7 @@ use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
 use rand_core::Rng;
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
@@ -857,14 +858,6 @@ fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-fn now_unix_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn pending_invites_path(keypair_path: &Path) -> PathBuf {
@@ -3472,7 +3465,7 @@ impl ShellNetwork {
             request_id,
             source,
             target: target.clone(),
-            issued_unix_ms: now_unix_millis(),
+            issued_unix_ms: unix_now_ms(),
             action,
         };
         envelope
@@ -3690,7 +3683,7 @@ impl ShellNetwork {
             .as_ref()
             .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
         message
-            .validate_at(local, peer, now_unix_millis())
+            .validate_at(local, peer, unix_now_ms())
             .map_err(|error| error.to_string())?;
         if !self.display_route_authorized(&message) {
             return Err("display stream is not authorized by a saved placement".into());
@@ -4265,6 +4258,10 @@ impl ShellNetwork {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatcher authenticates a personal fabric frame once, then routes each payload kind with that same route in hand"
+    )]
     fn dispatch_personal_fabric(
         &self,
         ws: u64,
@@ -4357,9 +4354,7 @@ impl ShellNetwork {
                 let Some(local) = self.personal_continuity_device.as_ref() else {
                     return;
                 };
-                if message
-                    .validate_at(&source, local, now_unix_millis())
-                    .is_err()
+                if message.validate_at(&source, local, unix_now_ms()).is_err()
                     || !self.display_route_authorized(&message)
                 {
                     tracing::warn!(peer = %peer, "dropping unauthorized personal display traffic");
@@ -4608,10 +4603,7 @@ impl ShellNetwork {
         else {
             return;
         };
-        if envelope
-            .validate_at(&source, local, now_unix_millis())
-            .is_err()
-        {
+        if envelope.validate_at(&source, local, unix_now_ms()).is_err() {
             tracing::warn!(peer = %peer, "dropping untrusted personal fabric action");
             return;
         }
@@ -6936,7 +6928,7 @@ mod tests {
             request_id: [8; 16],
             source,
             target,
-            issued_unix_ms: now_unix_millis(),
+            issued_unix_ms: unix_now_ms(),
             action: crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
                 request_id: [7; 16],
                 session_id: "player:one".into(),
@@ -6996,7 +6988,7 @@ mod tests {
                 session_id: "player:old".into(),
             },
         );
-        envelope.issued_unix_ms = now_unix_millis();
+        envelope.issued_unix_ms = unix_now_ms();
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&user),
             peer.public(),

@@ -17,6 +17,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tilo_clock::unix_now;
 
 /// One line of the log.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -43,7 +44,7 @@ pub struct AuditRecord {
 impl AuditRecord {
     pub fn new(session: &str, profile: &str, request: &str, allowed: bool) -> Self {
         Self {
-            at: now_unix(),
+            at: unix_now(),
             session: session.to_string(),
             profile: profile.to_string(),
             request: request.to_string(),
@@ -64,13 +65,6 @@ impl AuditRecord {
         self.detail = Some(detail.into());
         self
     }
-}
-
-/// Seconds since the Unix epoch.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// The append-only log in a directory.
@@ -212,7 +206,7 @@ mod tests {
         log.append(&AuditRecord::new("s1", "ush", "trust-dir", true));
         std::fs::OpenOptions::new()
             .append(true)
-            .open(log.file_for(now_unix()))
+            .open(log.file_for(unix_now()))
             .unwrap()
             .write_all(b"{ truncated\n")
             .unwrap();

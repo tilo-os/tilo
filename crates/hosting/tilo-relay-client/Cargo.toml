@@ -13,6 +13,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-clock = { path = "../../system/tilo-clock" }
 iroh.workspace = true
 iroh-base.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }

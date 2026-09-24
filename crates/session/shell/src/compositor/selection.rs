@@ -56,6 +56,7 @@ use smithay::wayland::selection::primary_selection::{
 use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
 #[cfg(target_os = "linux")]
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use tilo_clock::unix_now_ms;
 
 #[cfg(target_os = "linux")]
 use crate::compositor::state::{ClientState, State};
@@ -331,14 +332,6 @@ fn history_id(values: &BTreeMap<String, Vec<u8>>) -> [u8; 32] {
     *hash.finalize().as_bytes()
 }
 
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 fn record_clipboard_history(store: &mut SelectionStore) {
     let slot = &store.clipboard;
     if slot.values.is_empty()
@@ -357,7 +350,7 @@ fn record_clipboard_history(store: &mut SelectionStore) {
         let created_unix_ms = store
             .history
             .front()
-            .map_or_else(now_unix_ms, |item| item.created_unix_ms);
+            .map_or_else(unix_now_ms, |item| item.created_unix_ms);
         store.history.pop_front();
         store.history.push_front(ClipboardHistoryItem {
             id,
@@ -386,7 +379,7 @@ fn record_clipboard_history(store: &mut SelectionStore) {
     store.history.push_front(ClipboardHistoryItem {
         id,
         generation: slot.generation,
-        created_unix_ms: now_unix_ms(),
+        created_unix_ms: unix_now_ms(),
         values: slot.values.clone(),
         mime_types: slot.mime_types.clone(),
         pinned,

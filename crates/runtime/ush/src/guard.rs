@@ -21,6 +21,7 @@ use std::time::Duration;
 use landlock::{ABI, Access, AccessFs, BitFlags, CompatLevel};
 pub use sandbox_core::landlock::LandlockOutcome;
 use sandbox_core::landlock::{FsRule, RulesetSpec, outcome_from_status};
+use tilo_clock::unix_now;
 
 /// Where quarantined files go, inside the layer.
 pub const QUARANTINE_DIR: &str = "/usr/lib/ush/quarantine";
@@ -261,7 +262,7 @@ pub fn quarantine_add(path: &Path, quarantine_dir: &Path) -> std::io::Result<Pat
     // Keep the original location in the stored name: restoring has to put it
     // back where it came from, and a bare basename cannot say where that was.
     let encoded = path.to_string_lossy().replace('/', "%2F");
-    let dest = quarantine_dir.join(format!("{}-{encoded}", crate::audit::now_unix()));
+    let dest = quarantine_dir.join(format!("{}-{encoded}", unix_now()));
     std::fs::rename(path, &dest).or_else(|_| {
         // Across filesystems `rename` fails; copy and unlink instead.
         std::fs::copy(path, &dest)?;

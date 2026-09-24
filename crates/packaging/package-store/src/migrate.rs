@@ -23,8 +23,9 @@ use tilo_app_package::{PackageMeta, Verification};
 use crate::content::{self, Content};
 use crate::integrity;
 use crate::layout::parse_id_hex;
-use crate::store::{Admission, PackageStore, unix_now};
+use crate::store::{Admission, PackageStore};
 use crate::{InstalledPackage, StoreError};
+use tilo_clock::unix_now;
 
 /// What a migration did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

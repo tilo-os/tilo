@@ -17,6 +17,7 @@
 //! - **Show on lock screen** — mirror notifications onto the lock screen.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_clock::unix_now_i64;
 use ui::doc::{read_bool, read_str};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
@@ -173,12 +174,6 @@ fn mute_seconds(label: &str) -> Option<i64> {
         .find_map(|(candidate, seconds)| (*candidate == label).then_some(*seconds))
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
-}
-
 const FOCUS_TIMES: &[(&str, u16)] = &[
     ("18:00", 18 * 60),
     ("20:00", 20 * 60),
@@ -245,7 +240,7 @@ impl NotificationsPane {
     /// deterministic `--shots` render.
     pub fn with_prefs(prefs: NotificationPrefs) -> Self {
         let apps = installed_notification_apps(&prefs.per_app);
-        let now = unix_now();
+        let now = unix_now_i64();
         let mute_labels = apps
             .iter()
             .map(|app| {
@@ -516,7 +511,7 @@ impl NotificationsPane {
 
     fn build_app_cards(&self) -> Vec<Box<dyn Widget>> {
         let mut app_cards = Vec::new();
-        let now = unix_now();
+        let now = unix_now_i64();
         for app in &self.apps {
             let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
             let banners = rule.banners.unwrap_or(self.prefs.show_banners);
@@ -709,7 +704,7 @@ impl NotificationsPane {
             FOCUS_DAYS_KEY,
             focus_days_label(self.prefs.focus.weekdays),
         );
-        let now = unix_now();
+        let now = unix_now_i64();
         for app in &self.apps {
             let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
             for (field, value) in [
@@ -759,7 +754,7 @@ impl NotificationsPane {
 
     fn reconcile_per_app_rules(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
         let mut changed = false;
-        let now = unix_now();
+        let now = unix_now_i64();
         for app in &self.apps {
             // An override is a toggle whose value moved since the pane last
             // saw it — a user flip, an undo or a peer's edit. The value seeded
