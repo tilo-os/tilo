@@ -25,6 +25,7 @@ pub mod btrfs;
 pub mod chunking;
 pub mod extents;
 pub mod fanotify;
+pub mod hydrate;
 pub mod journal;
 pub mod ranges;
 pub mod store;
