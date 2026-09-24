@@ -135,6 +135,11 @@ fn round_trip_from(
         policy,
         display_size: Some((width, height)),
     })?;
+    // A receiver is told the stream's colour out of band, as the shell's
+    // stream announcement does: not every encoder writes a colour
+    // description (VA-API's do not) and not every decoder reads one (libaom's
+    // `av1dec` guesses BT.601 below HD while `dav1ddec` reads BT.709).
+    decoder.set_stream_color(Some(config.color));
     let mut decoded = 0;
     let mut last_psnr = 0.0;
     let mut encode_times = Vec::new();
