@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 #[cfg(any(test, target_os = "linux"))]
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;

@@ -43,6 +43,13 @@ while IFS= read -r f; do
     && grep -qE "^[[:space:]]*path[[:space:]]*=[[:space:]]*\"tests/${base}\\.rs\"[[:space:]]*$" "$crate_manifest"; then
     continue
   fi
+  # A test file the crate's own sources include with `#[path]` is compiled
+  # as part of that target, not orphaned.
+  crate_src="$(dirname "$crate_tests")/src"
+  if [ -d "$crate_src" ] \
+    && grep -rqE "^[[:space:]]*#\[path = \"(\.\./)+tests/${base}\.rs\"\]" "$crate_src"; then
+    continue
+  fi
   if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then
     note "$f is not declared in $crate_tests/it.rs — it will not be compiled or run"
     fail=1

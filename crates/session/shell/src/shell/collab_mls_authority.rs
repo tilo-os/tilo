@@ -3,6 +3,7 @@
 //! No app-facing RPC accepts these values. The workspace authority constructs
 //! typed commands containing only random handles registered by [`MlsVaultProvider`].
 
+use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -923,6 +924,7 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         let signer_user = hex::encode(signer.as_bytes());
         let mut tree = self.workspaces.write();
         let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room.to_string() == tx.workspace)
@@ -972,6 +974,7 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         let signer_user = hex::encode(signer.as_bytes());
         let tree = self.workspaces.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == tx.workspace)
@@ -1038,6 +1041,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::state::FreshId as _;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1161,11 +1165,11 @@ mod tests {
             fail_after_journal_once: AtomicBool::new(true),
         });
 
-        let mut workspace = Workspace::test_default(WorkspaceId::new(), "MLS test");
+        let mut workspace = Workspace::new(WorkspaceId::new(), "MLS test");
         workspace.set_owner(hex::encode(signer_pk.as_bytes()));
         let workspace_id = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let workspaces = tree.shared();
         let broker = Arc::new(Mutex::new(BrokerChannels::default()));
         let root = dir.path().join("authority");
@@ -1207,7 +1211,7 @@ mod tests {
         assert!(coordinator.apply(conflicting).is_err());
         assert!(broker.lock().unwrap().governance.contains_key(&channel));
         assert_eq!(
-            workspaces.read().workspaces[0].role_of(&hex::encode([5; 32])),
+            workspaces.read().desktop.workspaces[0].role_of(&hex::encode([5; 32])),
             Some(crate::shell::state::CapRole::Editor)
         );
 
@@ -1224,7 +1228,7 @@ mod tests {
         };
         coordinator.apply(removal).unwrap();
         assert_eq!(
-            workspaces.read().workspaces[0].role_of(&hex::encode([5; 32])),
+            workspaces.read().desktop.workspaces[0].role_of(&hex::encode([5; 32])),
             None
         );
         let pending = broker
@@ -1243,7 +1247,7 @@ mod tests {
         let enable = MlsAuthorityTransaction {
             idempotency_key: [9; 32],
             channel: *channel.0.as_bytes(),
-            workspace: workspaces.read().workspaces[0].room.to_string(),
+            workspace: workspaces.read().desktop.workspaces[0].room.to_string(),
             expected_membership_revision: 3,
             vault: state_handle,
             action: MlsAuthorityAction::EnableEncryption {

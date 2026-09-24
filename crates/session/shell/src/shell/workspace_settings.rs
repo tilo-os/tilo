@@ -14,6 +14,7 @@
 //! [`Workspace::may_administer`]. Non-owners see the same information
 //! with controls painted disabled, not hidden.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -1529,6 +1530,7 @@ impl GrantSubject {
     pub fn display(&self) -> String {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
+            SubjectKind::App => tilo_desktop_model::apps::app_label(&self.id).to_string(),
             _ => self.id.clone(),
         }
     }
@@ -1709,7 +1711,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                apps.push(tile_app_id(&tab.tile));
+                apps.extend(tilo_desktop_model::apps::canonical_app_id(&tab.tile));
             }
         }
     }
@@ -1725,21 +1727,6 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         id,
     }));
     out
-}
-
-/// The app id a tile belongs to, for subject discovery. `TileContent` has
-/// no variant without an app identity, so this never needs `Option`.
-fn tile_app_id(tile: &crate::shell::state::TileContent) -> String {
-    use crate::shell::state::TileContent;
-    match tile {
-        TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
-        TileContent::Foreign { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::LocalApp { app_id, .. } => app_id.clone(),
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            kind.as_str().to_string()
-        }
-    }
 }
 
 /// Build the capability `draft` currently names against `ws`, or `None`
@@ -4344,7 +4331,7 @@ mod members_pane_tests {
         let (_, recipient_public) = collab_types::generate_keypair();
         let owner = hex::encode(owner_public.as_bytes());
         let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::test_default(WorkspaceId(91), "Research");
+        let mut ws = Workspace::new(WorkspaceId(91), "Research");
         ws.set_owner(owner.clone());
         ws.grant_capability(CapOverride::membership(
             Subject::person(recipient.clone()),
@@ -4394,7 +4381,7 @@ mod members_pane_tests {
 
     #[test]
     fn permission_profiles_publish_typed_admin_actions() {
-        let mut ws = Workspace::test_default(WorkspaceId(92), "Research");
+        let mut ws = Workspace::new(WorkspaceId(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
         ws.save_permission_profile_as(
