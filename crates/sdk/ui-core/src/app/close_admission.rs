@@ -1,6 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
-use super::{App, ResourceInvocation};
+use super::{App, BrokerReply, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
@@ -240,7 +240,7 @@ impl App {
     pub(super) fn close_broker_result(
         &mut self,
         request_id: u64,
-        result: &Result<(u64, tilo_actions::InvocationUpdate), String>,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) -> bool {
         if self.close_admission.save_broker_request != Some(request_id) {
             return false;
@@ -327,10 +327,14 @@ impl App {
                 self.close_admission.save_broker_id,
             ) {
                 self.close_admission.save_broker_request = Some(request_id);
+                self.actions
+                    .broker_requests
+                    .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
-                    crate::collaboration::CollabRequest::PublishedInvocationStatus {
-                        request_id,
-                        id,
+                    crate::collaboration::CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::Observe {
+                            invocation: id,
+                        },
                     },
                 );
             }

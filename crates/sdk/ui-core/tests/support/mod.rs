@@ -210,10 +210,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }
-            | CollabRequest::InvokePublishedAction { .. }
-            | CollabRequest::PublishedInvocationStatus { .. }
-            | CollabRequest::CancelPublishedInvocation { .. }
-            | CollabRequest::LaunchPublishedApplication { .. }
+            | CollabRequest::RemoteAction { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
             | CollabRequest::TaskRunCancellation { .. } => {

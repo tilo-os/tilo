@@ -225,41 +225,63 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
     })
     .unwrap();
 
-    // Publishing and catalogue delivery use separate Cap'n Proto streams.
-    // Observe the level-triggered replacement before a test launches an
-    // agent whose constructor consumes that broker snapshot.
+    // Publishing is one-way; ask the action host until it offers what
+    // was published before a test launches an agent that plans against it.
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_secs(5))
         .expect("five-second catalogue deadline fits in Instant");
     let mut deferred = Vec::new();
+    let mut correlation = 0_u64;
     while std::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        match peer
+        correlation = correlation.wrapping_add(1);
+        let link = peer
             .link
             .as_mut()
-            .expect("peer announced before publishing actions")
-            .recv(remaining.min(Duration::from_millis(100)))
-            .expect("receive the broker catalogue acknowledgement")
-        {
-            Some(CollabEvent::ActionCatalogue { surfaces })
-                if surfaces.iter().any(|surface| {
-                    surface.app_id == app_id
-                        && expected.iter().all(|(resource, action)| {
-                            surface.actions.iter().any(|published| {
-                                published.resource == resource.as_str()
-                                    && published.action == action.as_str()
-                            })
-                        })
-                }) =>
+            .expect("peer announced before publishing actions");
+        link.send(&CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation,
+                query: tilo_actions::remote::CatalogueQuery {
+                    provider: None,
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            },
+        })
+        .expect("ask the action host for its catalogue");
+        let answered = std::time::Instant::now()
+            .checked_add(Duration::from_millis(500))
+            .expect("half a second fits in Instant");
+        while std::time::Instant::now() < answered {
+            match link
+                .recv(Duration::from_millis(100))
+                .expect("receive the action host's answer")
             {
-                peer.link
-                    .as_mut()
-                    .expect("peer remains announced")
-                    .defer(deferred);
-                return;
+                Some(CollabEvent::RemoteAction {
+                    message:
+                        tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+                            correlation: answer,
+                            result: Ok(catalogue),
+                        },
+                }) if answer == correlation => {
+                    let offered = expected.iter().all(|(resource, action)| {
+                        catalogue.rows.iter().any(|row| {
+                            row.app_id == app_id
+                                && row.action.as_ref().is_some_and(|action_row| {
+                                    action_row.address.resource == resource.as_str()
+                                        && action_row.address.action == action.as_str()
+                                })
+                        })
+                    });
+                    if offered {
+                        link.defer(deferred);
+                        return;
+                    }
+                    break;
+                }
+                Some(event) => deferred.push(event),
+                None => {}
             }
-            Some(event) => deferred.push(event),
-            None => {}
         }
     }
     peer.link

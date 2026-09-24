@@ -8458,7 +8458,7 @@ mod tests {
                 matches!(
                     rejection,
                     test_control::Response::Err { ref code, ref message }
-                        if code == "action_failed" && message.contains("NotFound")
+                        if code == "action_failed" && message.contains("no such action is offered")
                 ),
                 "unexpected revoked-action response: {rejection:?}"
             );

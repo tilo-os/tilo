@@ -9,7 +9,9 @@
 //!   versioned [`RemoteActionFrame`] that any transport carries as opaque
 //!   bytes.
 //! - [`ActionHost`] — what a peer implements to answer them, and [`serve`],
-//!   which maps one request frame onto a host.
+//!   which maps one request frame onto a host. Answers that need an
+//!   application's help arrive later as a [`Pending`], so no caller blocks.
+//! - [`CatalogueQuery`] — paged, filtered browsing of what a host offers.
 //! - [`InvocationLedger`] — the idempotency rule every host shares: an
 //!   invocation is keyed by its caller-chosen [`InvocationId`], so a retry
 //!   after a lost reply observes the original invocation instead of running
@@ -28,8 +30,17 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+mod catalogue;
+mod pending;
+
+pub use catalogue::{
+    CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
+    CatalogueRow, MAX_CATALOGUE_PAGE, RowVisibility,
+};
+pub use pending::{Completer, Pending, PendingPoll, pending};
+
 use crate::context::ActionContext;
-use crate::door::{ActionAddress, ActionDescriptor};
+use crate::door::ActionAddress;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
@@ -47,83 +58,120 @@ pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
 /// Default number of invocations an [`InvocationLedger`] remembers.
 pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
 
-/// The authenticated principal behind a remote request.
+/// Who a request is from, as the host's policy knows them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CallerPrincipal {
+    /// A person, by their policy principal id. For a remote device this is
+    /// the hex encoding of the user root its certificate chains to, so two
+    /// devices of one person are the same principal.
+    Person(String),
+    /// A delegated agent, by its agent id.
+    Agent(String),
+}
+
+/// The authenticated principal behind a request.
 ///
-/// Built only by the transport, from the certificate chain it verified for
-/// the connection: the user root the device chains to, and the device key
-/// itself. It is deliberately not `Deserialize` — a payload cannot assert
-/// who sent it.
+/// Built only by the transport that authenticated the connection — from the
+/// certificate chain a peer presented, or from the admitted identity of a
+/// local connection. It is deliberately not `Deserialize`: a payload cannot
+/// assert who sent it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Caller {
-    user_public_key: [u8; 32],
-    device_public_key: [u8; 32],
+    principal: CallerPrincipal,
+    user_public_key: Option<[u8; 32]>,
+    device_public_key: Option<[u8; 32]>,
+    room: Option<String>,
 }
 
 impl Caller {
-    /// A caller whose device certificate the transport has verified to chain
-    /// to `user_public_key`.
+    /// A remote device whose certificate the transport verified to chain to
+    /// `user_public_key`.
     #[must_use]
-    pub const fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
+    pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            user_public_key,
-            device_public_key,
+            principal: CallerPrincipal::Person(hex(&user_public_key)),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
         }
     }
 
-    /// The user root the calling device chains to. Authority is decided on
-    /// this: two devices of one person are the same principal.
+    /// A person on a connection the host admitted itself, by the policy
+    /// principal id that admission established.
     #[must_use]
-    pub const fn user_public_key(&self) -> &[u8; 32] {
-        &self.user_public_key
+    pub fn local_person(principal: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::Person(principal.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+        }
     }
 
-    /// The device that sent the request.
+    /// A delegated agent on a connection the host admitted itself.
     #[must_use]
-    pub const fn device_public_key(&self) -> &[u8; 32] {
-        &self.device_public_key
+    pub fn local_agent(agent_id: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+        }
     }
+
+    /// Confine the caller to one room: the connection was admitted to that
+    /// room only, so nothing outside it is offered or reachable.
+    #[must_use]
+    pub fn in_room(mut self, room: impl Into<String>) -> Self {
+        self.room = Some(room.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> &CallerPrincipal {
+        &self.principal
+    }
+
+    /// The room this caller is confined to, if any.
+    #[must_use]
+    pub fn room(&self) -> Option<&str> {
+        self.room.as_deref()
+    }
+
+    /// The user root a remote device chains to.
+    #[must_use]
+    pub const fn user_public_key(&self) -> Option<&[u8; 32]> {
+        self.user_public_key.as_ref()
+    }
+
+    /// The remote device that sent the request.
+    #[must_use]
+    pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
+        self.device_public_key.as_ref()
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(
+        String::with_capacity(bytes.len().saturating_mul(2)),
+        |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        },
+    )
 }
 
 /// Which published action an invocation names on the host.
 ///
-/// `provider` is an opaque token the host issued in its [`Catalogue`] (which
-/// live app published the action); `address` is the app's own stable
+/// `provider` is an opaque token the host issued in a [`CataloguePage`]
+/// (which live app published the action); `address` is the app's own stable
 /// resource/action pair. A caller copies both from a catalogue entry and
 /// never constructs a provider itself.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RemoteActionTarget {
     pub provider: String,
     pub address: ActionAddress,
-}
-
-/// One action a host offers to this caller.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CatalogueEntry {
-    /// Host-issued token naming the publishing app instance.
-    pub provider: String,
-    /// Stable id of the publishing app.
-    pub app_id: String,
-    pub descriptor: ActionDescriptor,
-}
-
-impl CatalogueEntry {
-    /// The target an invocation of this entry names.
-    #[must_use]
-    pub fn target(&self) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: self.provider.clone(),
-            address: self.descriptor.address.clone(),
-        }
-    }
-}
-
-/// The actions a host offers one caller at one revision. An action the
-/// caller may not invoke is absent, not flagged.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Catalogue {
-    /// Opaque host revision; changes whenever the offered set may have.
-    pub revision: String,
-    pub entries: Vec<CatalogueEntry>,
 }
 
 /// What an invocation carries for the action's declared input.
@@ -166,6 +214,67 @@ pub struct InvokeRequest {
     /// Human provenance carried into history. It never grants authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ActionContext>,
+    /// The caller's explicit confirmation, for an action whose contract
+    /// requires one. The host checks it against the contract; it is
+    /// evidence, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<Confirmation>,
+    /// The catalogue revision the caller chose the target from, for a
+    /// provider whose actions are resolved live at that revision. A host
+    /// refuses a target that no longer exists at it rather than guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+/// Explicit confirmation carried with an invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confirmation {
+    /// The caller confirmed the action.
+    Confirmed,
+    /// The caller typed the phrase the contract asks for.
+    Phrase(String),
+}
+
+/// Provider token naming the calling application's own connection, for an
+/// app that routes one of its own actions through the host.
+pub const OWN_PROVIDER: &str = "self";
+
+/// Prefix of the provider token for actions a workspace itself offers
+/// rather than an application; see [`workspace_provider`].
+pub const WORKSPACE_PROVIDER: &str = "workspace";
+
+/// Resource prefix of a workspace's "open this application" actions.
+pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
+
+/// Action id that opens an application into a workspace.
+pub const APPLICATION_OPEN_ACTION: &str = "open";
+
+/// The provider token for the actions workspace `room` itself offers.
+#[must_use]
+pub fn workspace_provider(room: &str) -> String {
+    format!("{WORKSPACE_PROVIDER}:{room}")
+}
+
+/// The room a workspace provider token names, or `None` for an application
+/// provider.
+#[must_use]
+pub fn workspace_provider_room(provider: &str) -> Option<&str> {
+    provider
+        .strip_prefix(WORKSPACE_PROVIDER)
+        .and_then(|rest| rest.strip_prefix(':'))
+}
+
+/// The target that opens `app_id` into workspace `room`. An invocation may
+/// carry the content hash of bytes to open read-only as its text argument.
+#[must_use]
+pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: workspace_provider(room),
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{app_id}"),
+            APPLICATION_OPEN_ACTION,
+        ),
+    }
 }
 
 /// Where an invocation stands, as reported to its caller.
@@ -308,25 +417,23 @@ impl ActionHostError {
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
 /// implements that rule.
 pub trait ActionHost {
-    /// The actions offered to `caller`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionHostError::Unavailable`] when the host cannot serve
-    /// actions at all.
-    fn catalogue(&self, caller: &Caller) -> Result<Catalogue, ActionHostError>;
+    /// One page of what `caller` is offered. An action the caller may not
+    /// invoke is absent, not flagged.
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>>;
 
     /// Admit and start one invocation, or report the one already admitted
-    /// under the same id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ActionHostError`] when the invocation was not admitted.
+    /// under the same id. Never blocks: the answer is the admission (an
+    /// accepted receipt, an immediate outcome, or a refusal) once the host
+    /// has it; completion is followed with [`Self::observe`].
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError>;
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>>;
 
     /// The latest state of an invocation `caller` started, or `None` for an
     /// id this caller does not own.
@@ -348,12 +455,16 @@ pub trait ActionHost {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
-    /// Ask for the actions offered to the caller.
-    CatalogueRequest { correlation: u64 },
+    /// Ask for one page of the actions offered to the caller.
+    CatalogueRequest {
+        correlation: u64,
+        #[serde(default)]
+        query: CatalogueQuery,
+    },
     /// Answer to a [`Self::CatalogueRequest`] with the same correlation.
     CatalogueResponse {
         correlation: u64,
-        result: Result<Catalogue, ActionHostError>,
+        result: Result<CataloguePage, ActionHostError>,
     },
     /// Run one action.
     Invoke(InvokeRequest),
@@ -470,35 +581,83 @@ impl RemoteActionFrame {
 /// Returns `None` for a message that is not a request (a response arriving
 /// at a host is dropped, never answered). A refused invocation becomes a
 /// [`ReceiptStatus::Rejected`] receipt so the caller always learns the fate
-/// of the id it chose.
+/// of the id it chose; an answer the host abandons becomes a refusal too.
 pub fn serve<H: ActionHost + ?Sized>(
     host: &H,
     caller: &Caller,
     message: RemoteActionMessage,
-) -> Option<RemoteActionMessage> {
-    Some(match message {
-        RemoteActionMessage::CatalogueRequest { correlation } => {
-            RemoteActionMessage::CatalogueResponse {
+) -> Option<Pending<RemoteActionMessage>> {
+    let abandoned = refuse(
+        &message,
+        ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    )?;
+    let answer = match message {
+        RemoteActionMessage::CatalogueRequest { correlation, query } => host
+            .query(caller, query)
+            .map(move |result| RemoteActionMessage::CatalogueResponse {
                 correlation,
-                result: host.catalogue(caller),
-            }
-        }
+                result,
+            }),
         RemoteActionMessage::Invoke(request) => {
             let invocation = request.invocation;
-            RemoteActionMessage::Receipt(host.invoke(caller, request).unwrap_or_else(|error| {
-                InvocationReceipt {
+            host.invoke(caller, request).map(move |result| {
+                RemoteActionMessage::Receipt(result.unwrap_or_else(|error| InvocationReceipt {
                     invocation,
                     status: ReceiptStatus::Rejected { error },
-                }
-            }))
+                }))
+            })
         }
+        RemoteActionMessage::Observe { invocation } => {
+            Pending::ready(RemoteActionMessage::Update {
+                invocation,
+                state: host.observe(caller, &invocation),
+            })
+        }
+        RemoteActionMessage::Cancel { invocation } => {
+            Pending::ready(RemoteActionMessage::CancelResponse {
+                invocation,
+                result: host.cancel(caller, &invocation),
+            })
+        }
+        RemoteActionMessage::CatalogueResponse { .. }
+        | RemoteActionMessage::Receipt(_)
+        | RemoteActionMessage::Update { .. }
+        | RemoteActionMessage::CancelResponse { .. } => return None,
+    };
+    // An abandoned answer still answers: the caller hears a refusal.
+    let (completer, answered) = pending();
+    answer.then(move |answer| completer.complete(answer.unwrap_or(abandoned)));
+    Some(answered)
+}
+
+/// The answer that refuses request `message` with `error` — for a host that
+/// cannot be reached or is not running. Returns `None` for a message that
+/// is not a request.
+#[must_use]
+pub fn refuse(
+    message: &RemoteActionMessage,
+    error: ActionHostError,
+) -> Option<RemoteActionMessage> {
+    Some(match message {
+        RemoteActionMessage::CatalogueRequest { correlation, .. } => {
+            RemoteActionMessage::CatalogueResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::Invoke(request) => RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Rejected { error },
+        }),
         RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
-            invocation,
-            state: host.observe(caller, &invocation),
+            invocation: *invocation,
+            state: None,
         },
         RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
-            invocation,
-            result: host.cancel(caller, &invocation),
+            invocation: *invocation,
+            result: Err(error),
         },
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
@@ -510,7 +669,9 @@ pub fn serve<H: ActionHost + ?Sized>(
 struct LedgerEntry<T> {
     caller: Caller,
     request: InvokeRequest,
-    handle: T,
+    /// `None` while a start begun with [`InvocationLedger::reserve`] is in
+    /// flight.
+    handle: Option<T>,
 }
 
 /// The idempotency ledger behind [`ActionHost::invoke`].
@@ -531,6 +692,15 @@ impl<T> Default for InvocationLedger<T> {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_LEDGER_CAPACITY)
     }
+}
+
+/// What [`InvocationLedger::reserve`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reservation {
+    /// The id is newly claimed; the caller must now start the job.
+    Reserved,
+    /// The same caller and request were already admitted.
+    Admitted,
 }
 
 /// Whether [`InvocationLedger::admit`] started a job or found one.
@@ -564,36 +734,89 @@ impl<T> InvocationLedger<T> {
         start: impl FnOnce() -> Result<T, ActionHostError>,
     ) -> Result<(&T, Admission), ActionHostError> {
         let id = request.invocation;
+        let admission = match self.reserve(caller, request)? {
+            Reservation::Admitted => Admission::Retried,
+            Reservation::Reserved => match start() {
+                Ok(handle) => {
+                    self.complete(&id, handle);
+                    Admission::Started
+                }
+                Err(error) => {
+                    self.abandon(&id);
+                    return Err(error);
+                }
+            },
+        };
+        self.entries
+            .get(&id)
+            .and_then(|entry| entry.handle.as_ref())
+            .map(|handle| (handle, admission))
+            .ok_or(ActionHostError::UnknownInvocation)
+    }
+
+    /// First half of an admission whose start completes later (for example
+    /// across an asynchronous resolution): claim the id for `caller` and
+    /// `request`, then [`complete`](Self::complete) or
+    /// [`abandon`](Self::abandon) it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::InvocationConflict`] when the id belongs to
+    /// another caller or request, and [`ActionHostError::Unavailable`] while
+    /// an earlier start of the same invocation is still in flight.
+    pub fn reserve(
+        &mut self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Reservation, ActionHostError> {
+        let id = request.invocation;
         if let Some(entry) = self.entries.get(&id) {
             if entry.caller != *caller || entry.request != *request {
                 return Err(ActionHostError::InvocationConflict);
             }
-        } else {
-            let handle = start()?;
-            while self.order.len() >= self.capacity {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.entries.remove(&oldest);
-                }
-            }
-            self.order.push_back(id);
-            self.entries.insert(
-                id,
-                LedgerEntry {
-                    caller: caller.clone(),
-                    request: request.clone(),
-                    handle,
-                },
-            );
-            return self
-                .entries
-                .get(&id)
-                .map(|entry| (&entry.handle, Admission::Started))
-                .ok_or(ActionHostError::UnknownInvocation);
+            return if entry.handle.is_some() {
+                Ok(Reservation::Admitted)
+            } else {
+                Err(ActionHostError::Unavailable {
+                    reason: "the invocation is still being admitted; retry".into(),
+                })
+            };
         }
-        self.entries
-            .get(&id)
-            .map(|entry| (&entry.handle, Admission::Retried))
-            .ok_or(ActionHostError::UnknownInvocation)
+        while self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.order.push_back(id);
+        self.entries.insert(
+            id,
+            LedgerEntry {
+                caller: caller.clone(),
+                request: request.clone(),
+                handle: None,
+            },
+        );
+        Ok(Reservation::Reserved)
+    }
+
+    /// Record the host's handle for a reserved invocation.
+    pub fn complete(&mut self, id: &InvocationId, handle: T) {
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.handle = Some(handle);
+        }
+    }
+
+    /// Release a reservation whose start failed: nothing ran, so the id may
+    /// be admitted later.
+    pub fn abandon(&mut self, id: &InvocationId) {
+        if self
+            .entries
+            .get(id)
+            .is_some_and(|entry| entry.handle.is_none())
+        {
+            self.entries.remove(id);
+            self.order.retain(|candidate| candidate != id);
+        }
     }
 
     /// The handle for an invocation `caller` admitted.
@@ -602,7 +825,7 @@ impl<T> InvocationLedger<T> {
         self.entries
             .get(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| &entry.handle)
+            .and_then(|entry| entry.handle.as_ref())
     }
 
     /// Mutable access to the handle for an invocation `caller` admitted.
@@ -610,7 +833,7 @@ impl<T> InvocationLedger<T> {
         self.entries
             .get_mut(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| &mut entry.handle)
+            .and_then(|entry| entry.handle.as_mut())
     }
 }
 
@@ -619,7 +842,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
-    use crate::{ActionContract, ExecutionLocus, InputSpec, OperationKind};
+    use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
 
     fn alice() -> Caller {
         Caller::authenticated([1; 32], [2; 32])
@@ -670,33 +893,36 @@ mod tests {
     }
 
     impl ActionHost for CountingHost {
-        fn catalogue(&self, _caller: &Caller) -> Result<Catalogue, ActionHostError> {
-            Ok(Catalogue {
-                revision: "1".into(),
-                entries: vec![CatalogueEntry {
-                    provider: "7".into(),
-                    app_id: "notes".into(),
-                    descriptor: descriptor("note:1", "archive"),
-                }],
-            })
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            Pending::ready(Ok(CataloguePage::from_rows(
+                "1".into(),
+                vec![catalogue_row("note:1", "archive")],
+                &query,
+            )))
         }
 
         fn invoke(
             &self,
             caller: &Caller,
             request: InvokeRequest,
-        ) -> Result<InvocationReceipt, ActionHostError> {
-            if request.target.address != ActionAddress::new("note:1", "archive") {
-                return Err(ActionHostError::UnknownAction);
-            }
-            let mut ledger = self.ledger.borrow_mut();
-            let (update, _) = ledger.admit(caller, &request, || {
-                self.runs.set(self.runs.get().saturating_add(1));
-                Ok(RefCell::new(InvocationUpdate::Accepted {
-                    invocation: request.invocation,
-                }))
-            })?;
-            Ok(InvocationState::new(request.invocation, update.borrow().clone()).receipt())
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            Pending::ready((|| {
+                if request.target.address != ActionAddress::new("note:1", "archive") {
+                    return Err(ActionHostError::UnknownAction);
+                }
+                let mut ledger = self.ledger.borrow_mut();
+                let (update, _) = ledger.admit(caller, &request, || {
+                    self.runs.set(self.runs.get().saturating_add(1));
+                    Ok(RefCell::new(InvocationUpdate::Accepted {
+                        invocation: request.invocation,
+                    }))
+                })?;
+                Ok(InvocationState::new(request.invocation, update.borrow().clone()).receipt())
+            })())
         }
 
         fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -724,6 +950,31 @@ mod tests {
         }
     }
 
+    fn catalogue_row(resource: &str, action: &str) -> CatalogueRow {
+        CatalogueRow {
+            provider: "7".into(),
+            app_id: "notes".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: resource.into(),
+                kind: "notes.note".into(),
+                label: "Groceries".into(),
+                presentation: None,
+            },
+            action: Some(descriptor(resource, action)),
+            has_children: false,
+            visibility: None,
+        }
+    }
+
+    /// The answer of a host that answers immediately.
+    fn now<T>(mut answer: Pending<T>) -> T {
+        match answer.poll_ready() {
+            PendingPoll::Ready(value) => value,
+            PendingPoll::Waiting | PendingPoll::Abandoned => panic!("the host answers at once"),
+        }
+    }
+
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
             invocation,
@@ -733,6 +984,8 @@ mod tests {
             },
             argument: InvokeArgument::None,
             context: None,
+            confirmation: None,
+            revision: None,
         }
     }
 
@@ -741,16 +994,35 @@ mod tests {
         RemoteActionFrame::decode(&bytes).unwrap().message
     }
 
-    #[test]
-    fn every_message_round_trips_through_a_frame() {
-        let invocation = InvocationId(uuid::Uuid::from_u128(7));
+    /// One of each catalogue and invoke message shape.
+    fn request_messages(invocation: InvocationId) -> Vec<RemoteActionMessage> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("title".into(), serde_json::json!("Weekly"));
-        let messages = vec![
-            RemoteActionMessage::CatalogueRequest { correlation: 3 },
+        vec![
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 3,
+                query: CatalogueQuery::default(),
+            },
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 5,
+                query: CatalogueQuery {
+                    provider: Some("7".into()),
+                    parent_resource: Some("folder:a".into()),
+                    needle: "gro".into(),
+                    cursor: vec![1, 2],
+                    revision: Some("r1".into()),
+                    max_results: 8,
+                    limits: Some(CatalogueLimits {
+                        max_bytes: Some(4096),
+                        max_work: None,
+                        max_depth: Some(1),
+                    }),
+                    ..CatalogueQuery::default()
+                },
+            },
             RemoteActionMessage::CatalogueResponse {
                 correlation: 3,
-                result: CountingHost::new().catalogue(&alice()),
+                result: now(CountingHost::new().query(&alice(), CatalogueQuery::default())),
             },
             RemoteActionMessage::CatalogueResponse {
                 correlation: 4,
@@ -772,6 +1044,16 @@ mod tests {
                 argument: InvokeArgument::Text("hello".into()),
                 ..archive(invocation)
             }),
+            RemoteActionMessage::Invoke(InvokeRequest {
+                confirmation: Some(Confirmation::Phrase("delete it".into())),
+                ..archive(invocation)
+            }),
+        ]
+    }
+
+    /// One of each receipt, update and cancel message shape.
+    fn outcome_messages(invocation: InvocationId) -> Vec<RemoteActionMessage> {
+        vec![
             RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
@@ -830,7 +1112,15 @@ mod tests {
                     reason: "finished".into(),
                 }),
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn every_message_round_trips_through_a_frame() {
+        let invocation = InvocationId(uuid::Uuid::from_u128(7));
+        let messages = request_messages(invocation)
+            .into_iter()
+            .chain(outcome_messages(invocation));
         for message in messages {
             assert_eq!(round_trip(message.clone()), message);
         }
@@ -839,7 +1129,10 @@ mod tests {
     #[test]
     fn frames_from_another_version_are_refused_not_misread() {
         let mut frame = serde_json::to_value(RemoteActionFrame::new(
-            RemoteActionMessage::CatalogueRequest { correlation: 1 },
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: CatalogueQuery::default(),
+            },
         ))
         .unwrap();
         frame["version"] = serde_json::json!(REMOTE_ACTIONS_VERSION + 1);
@@ -879,14 +1172,14 @@ mod tests {
     fn a_retried_invocation_reports_the_original_and_runs_once() {
         let host = CountingHost::new();
         let id = InvocationId::new();
-        let first = host.invoke(&alice(), archive(id)).unwrap();
+        let first = now(host.invoke(&alice(), archive(id))).unwrap();
         assert_eq!(first.status, ReceiptStatus::Accepted);
-        let retry = host.invoke(&alice(), archive(id)).unwrap();
+        let retry = now(host.invoke(&alice(), archive(id))).unwrap();
         assert_eq!(retry, first);
         assert_eq!(host.runs.get(), 1, "a retry never starts a second run");
 
         host.finish(&alice(), &id);
-        let after = host.invoke(&alice(), archive(id)).unwrap();
+        let after = now(host.invoke(&alice(), archive(id))).unwrap();
         assert!(matches!(after.status, ReceiptStatus::Completed { .. }));
         assert_eq!(host.runs.get(), 1, "a retry after completion reports it");
     }
@@ -895,16 +1188,16 @@ mod tests {
     fn an_invocation_id_cannot_be_reused_or_borrowed() {
         let host = CountingHost::new();
         let id = InvocationId::new();
-        host.invoke(&alice(), archive(id)).unwrap();
+        now(host.invoke(&alice(), archive(id))).unwrap();
 
         let mut different = archive(id);
         different.argument = InvokeArgument::Text("other".into());
         assert_eq!(
-            host.invoke(&alice(), different),
+            now(host.invoke(&alice(), different)),
             Err(ActionHostError::InvocationConflict)
         );
         assert_eq!(
-            host.invoke(&mallory(), archive(id)),
+            now(host.invoke(&mallory(), archive(id))),
             Err(ActionHostError::InvocationConflict),
             "another principal cannot attach to someone else's invocation"
         );
@@ -944,7 +1237,7 @@ mod tests {
         let host = CountingHost::new();
         let id = InvocationId::new();
         let Some(RemoteActionMessage::Receipt(receipt)) =
-            serve(&host, &alice(), RemoteActionMessage::Invoke(archive(id)))
+            serve(&host, &alice(), RemoteActionMessage::Invoke(archive(id))).map(now)
         else {
             panic!("an invoke is answered with a receipt");
         };
@@ -957,7 +1250,8 @@ mod tests {
                 &host,
                 &alice(),
                 RemoteActionMessage::Invoke(unknown.clone())
-            ),
+            )
+            .map(now),
             Some(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: unknown.invocation,
                 status: ReceiptStatus::Rejected {
@@ -970,7 +1264,8 @@ mod tests {
                 &host,
                 &alice(),
                 RemoteActionMessage::Cancel { invocation: id }
-            ),
+            )
+            .map(now),
             Some(RemoteActionMessage::CancelResponse {
                 invocation: id,
                 result: Ok(()),
@@ -983,6 +1278,7 @@ mod tests {
             &alice(),
             RemoteActionMessage::Observe { invocation: id },
         )
+        .map(now)
         else {
             panic!("an observe is answered with the invocation state");
         };
@@ -990,10 +1286,7 @@ mod tests {
             state.receipt().status,
             ReceiptStatus::Cancelled { .. }
         ));
-        assert_eq!(
-            serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)),
-            None
-        );
+        assert!(serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)).is_none());
     }
 
     #[test]
@@ -1008,6 +1301,95 @@ mod tests {
         assert_eq!(
             InvokeArgument::Json(object).to_slot(),
             Some(format!("{ARGUMENTS_JSON_PREFIX}{{\"n\":2}}"))
+        );
+    }
+
+    #[test]
+    fn a_remote_device_is_the_person_its_root_names() {
+        let caller = Caller::authenticated([0xAB; 32], [1; 32]);
+        assert_eq!(
+            caller.principal(),
+            &CallerPrincipal::Person("ab".repeat(32)),
+            "every device of one person is the same principal"
+        );
+        assert_eq!(caller.room(), None);
+        let agent = Caller::local_agent("helper").in_room("room-1");
+        assert_eq!(agent.principal(), &CallerPrincipal::Agent("helper".into()));
+        assert_eq!(agent.room(), Some("room-1"));
+        assert_eq!(agent.device_public_key(), None);
+    }
+
+    #[test]
+    fn a_refusal_answers_every_request_and_nothing_else() {
+        let error = ActionHostError::Unavailable {
+            reason: "down".into(),
+        };
+        let id = InvocationId::new();
+        assert_eq!(
+            refuse(&invoke_message(id), error.clone()),
+            Some(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: id,
+                status: ReceiptStatus::Rejected {
+                    error: error.clone()
+                },
+            }))
+        );
+        assert_eq!(
+            refuse(
+                &RemoteActionMessage::Observe { invocation: id },
+                error.clone()
+            ),
+            Some(RemoteActionMessage::Update {
+                invocation: id,
+                state: None
+            })
+        );
+        assert_eq!(
+            refuse(
+                &RemoteActionMessage::Update {
+                    invocation: id,
+                    state: None
+                },
+                error
+            ),
+            None
+        );
+    }
+
+    fn invoke_message(id: InvocationId) -> RemoteActionMessage {
+        RemoteActionMessage::Invoke(archive(id))
+    }
+
+    #[test]
+    fn a_reservation_holds_the_id_until_the_start_completes() {
+        let mut ledger = InvocationLedger::<u32>::default();
+        let request = archive(InvocationId::new());
+        assert_eq!(
+            ledger.reserve(&alice(), &request),
+            Ok(Reservation::Reserved)
+        );
+        assert!(
+            matches!(
+                ledger.reserve(&alice(), &request),
+                Err(ActionHostError::Unavailable { .. })
+            ),
+            "a retry during the start neither runs twice nor pretends to be admitted"
+        );
+        assert_eq!(ledger.get(&alice(), &request.invocation), None);
+        ledger.complete(&request.invocation, 9);
+        assert_eq!(
+            ledger.reserve(&alice(), &request),
+            Ok(Reservation::Admitted)
+        );
+        assert_eq!(ledger.get(&alice(), &request.invocation), Some(&9));
+
+        let failed = archive(InvocationId::new());
+        assert_eq!(ledger.reserve(&alice(), &failed), Ok(Reservation::Reserved));
+        ledger.abandon(&failed.invocation);
+        assert_eq!(
+            ledger.reserve(&alice(), &failed),
+            Ok(Reservation::Reserved),
+            "an abandoned start ran nothing and may be admitted again"
         );
     }
 }
