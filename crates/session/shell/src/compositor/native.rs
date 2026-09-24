@@ -4083,6 +4083,8 @@ fn install_wifi_secret_bridge(
     }));
 }
 
+/// Start peer sync before the compositor loop runs, while nothing can launch
+/// yet. A failure leaves the session without sync.
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
@@ -4092,94 +4094,130 @@ fn spawn_session_peer_sync(
         tree_handle.clone(),
         &crate::shell::network::peer_key_path(),
     ) {
-        Ok(handle) => {
-            let _ = handle.join_default_workspace();
-            tracing::info!("peer-sync: actor spawned, default workspace joined");
-            let net = Arc::new(handle);
-            install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
-            install_device_fabric_bridge(
-                frame_builder.host_mut(),
-                Arc::clone(&net),
-                tree_handle.clone(),
-            );
-            let stream_net = Arc::clone(&net);
-            state.set_legacy_stream_publisher(Arc::new(move |message| {
-                stream_net.publish_legacy_active(message)
-            }));
-            let bridge_net = Arc::clone(&net);
-            frame_builder
-                .host_mut()
-                .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-                    let active = tree_handle.read().desktop.active;
-                    match req {
-                        PeerSyncRequest::IssueInvite => bridge_net
-                            .issue_invite(active, INVITE_EXPIRY_SECONDS)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::ExportIdentity => bridge_net
-                            .person_identity_card(active)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::IssueInviteFor {
-                            name,
-                            role,
-                            recipient_user_public_key,
-                        } => bridge_net
-                            .issue_invite_bound_with_role(
-                                active,
-                                INVITE_EXPIRY_SECONDS,
-                                &name,
-                                recipient_user_public_key,
-                                role,
-                            )
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::AcceptInvite(token) => bridge_net
-                            .accept_invite(active, &token)
-                            .map(|room| room.to_string())
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::ListPendingInvitations => {
-                            let room = tree_handle
-                                .read()
-                                .desktop
-                                .active_workspace()
-                                .map(|workspace| workspace.room)
-                                .ok_or_else(|| "no active workspace".to_string())?;
-                            Ok(
-                                crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                                    bridge_net
-                                        .pending_invitations(room)
-                                        .into_iter()
-                                        .map(|invite| {
-                                            crate::shell::overlay_host::PendingInvitationSummary {
-                                                id: invite.id,
-                                                name: invite.name,
-                                                role: invite.role,
-                                                expiry_unix_seconds: invite.expiry_unix_seconds,
-                                            }
-                                        })
-                                        .collect(),
-                                ),
-                            )
-                        }
-                        PeerSyncRequest::ResendInvitation(id) => bridge_net
-                            .resend_invitation(&id)
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::CancelInvitation(id) => {
-                            if bridge_net.cancel_invitation(&id) {
-                                Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                                    "canceled".into(),
-                                ))
-                            } else {
-                                Err("invitation is no longer pending".into())
-                            }
-                        }
-                    }
-                }));
-            Some(net)
-        }
+        Ok(handle) => Some(install_session_peer_sync(
+            frame_builder,
+            state,
+            tree_handle,
+            handle,
+        )),
         Err(error) => {
             tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
             None
         }
     }
+}
+
+/// Start peer sync from inside the running compositor loop. Building its
+/// runtime, reading the device key and binding the endpoint block, so they
+/// run on the session runtime; the finished network is delivered back
+/// through `wake` and installed with [`install_session_peer_sync`].
+fn start_session_peer_sync(
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    wake: crate::session_runtime::Wake,
+) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
+            crate::shell::network::ShellNetwork::spawn(
+                tree_handle,
+                &crate::shell::network::peer_key_path(),
+            )
+            .map_err(|error| error.to_string())
+        }),
+        Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
+            "the session runtime is unavailable: {error}"
+        ))),
+    }
+}
+
+/// Join the default workspace with a freshly started network and install
+/// the chrome commands that use it.
+fn install_session_peer_sync(
+    frame_builder: &mut FrameBuilder,
+    state: &mut State,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    handle: crate::shell::network::ShellNetwork,
+) -> Arc<crate::shell::network::ShellNetwork> {
+    let _ = handle.join_default_workspace();
+    tracing::info!("peer-sync: actor spawned, default workspace joined");
+    let net = Arc::new(handle);
+    install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    install_device_fabric_bridge(
+        frame_builder.host_mut(),
+        Arc::clone(&net),
+        tree_handle.clone(),
+    );
+    let stream_net = Arc::clone(&net);
+    state.set_legacy_stream_publisher(Arc::new(move |message| {
+        stream_net.publish_legacy_active(message)
+    }));
+    let bridge_net = Arc::clone(&net);
+    frame_builder
+        .host_mut()
+        .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
+            let active = tree_handle.read().desktop.active;
+            match req {
+                PeerSyncRequest::IssueInvite => bridge_net
+                    .issue_invite(active, INVITE_EXPIRY_SECONDS)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::ExportIdentity => bridge_net
+                    .person_identity_card(active)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::IssueInviteFor {
+                    name,
+                    role,
+                    recipient_user_public_key,
+                } => bridge_net
+                    .issue_invite_bound_with_role(
+                        active,
+                        INVITE_EXPIRY_SECONDS,
+                        &name,
+                        recipient_user_public_key,
+                        role,
+                    )
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::AcceptInvite(token) => bridge_net
+                    .accept_invite(active, &token)
+                    .map(|room| room.to_string())
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::ListPendingInvitations => {
+                    let room = tree_handle
+                        .read()
+                        .desktop
+                        .active_workspace()
+                        .map(|workspace| workspace.room)
+                        .ok_or_else(|| "no active workspace".to_string())?;
+                    Ok(
+                        crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                            bridge_net
+                                .pending_invitations(room)
+                                .into_iter()
+                                .map(|invite| {
+                                    crate::shell::overlay_host::PendingInvitationSummary {
+                                        id: invite.id,
+                                        name: invite.name,
+                                        role: invite.role,
+                                        expiry_unix_seconds: invite.expiry_unix_seconds,
+                                    }
+                                })
+                                .collect(),
+                        ),
+                    )
+                }
+                PeerSyncRequest::ResendInvitation(id) => bridge_net
+                    .resend_invitation(&id)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::CancelInvitation(id) => {
+                    if bridge_net.cancel_invitation(&id) {
+                        Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                            "canceled".into(),
+                        ))
+                    } else {
+                        Err("invitation is no longer pending".into())
+                    }
+                }
+            }
+        }));
+    net
 }
 
 fn attach_collab_broker_bridges(
@@ -5612,6 +5650,25 @@ pub fn run() {
         std::process::exit(1);
     }
     let mut native_accessibility = NativeAccessibility::new(initial_size, a11y_ping);
+    // Work handed to the session runtime from this loop (the network start
+    // after first-login setup, media-player replies) reports back through
+    // mailboxes; this ping wakes an idle loop when one is filled.
+    let session_wake: crate::session_runtime::Wake = match calloop::ping::make_ping() {
+        Ok((ping, source)) => {
+            if let Err(error) = event_loop.handle().insert_source(source, |(), (), _| {}) {
+                eprintln!("tilo compositor: insert session wake source failed: {error}");
+                std::process::exit(1);
+            }
+            Arc::new(move || ping.ping())
+        }
+        Err(error) => {
+            eprintln!("tilo compositor: create session wake source failed: {error}");
+            std::process::exit(1);
+        }
+    };
+    let mut network_start: Option<
+        crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
+    > = None;
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -7311,11 +7368,36 @@ pub fn run() {
             frame_builder.host().onboarding_active(),
         ) {
             // `pump_apps` just observed the trusted onboarding completion.
-            // Apps were withheld until this edge, so their first service
-            // descriptor always sees the live transport-backed broker.
+            // Apps were withheld until this edge. The network starts off the
+            // loop; launches wait until it and the broker over it exist, so
+            // an app's first service descriptor sees the live broker.
             frame_builder.host_mut().set_peer_sync_enabled(true);
-            peer_sync =
-                spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone());
+            crate::shell::launcher::hold_launches();
+            network_start = Some(start_session_peer_sync(
+                tree_handle.clone(),
+                Arc::clone(&session_wake),
+            ));
+        }
+        if let Some(outcome) = network_start
+            .as_ref()
+            .and_then(crate::session_runtime::PendingStart::poll)
+        {
+            network_start = None;
+            let start_failure = match outcome {
+                Ok(network) => {
+                    peer_sync = Some(install_session_peer_sync(
+                        &mut frame_builder,
+                        &mut state,
+                        tree_handle.clone(),
+                        network,
+                    ));
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+                    Some(error)
+                }
+            };
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
@@ -7347,6 +7429,16 @@ pub fn run() {
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
                 }
+            }
+            // The broker now exists (local-only if the network failed).
+            // Launches that waited for a network that never came are
+            // reported, not silently started without it; later launches
+            // run normally.
+            match start_failure {
+                None => crate::shell::launcher::release_held_launches(),
+                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
+                    "the desktop's network could not start ({error})"
+                )),
             }
             apps_changed = true;
         }
