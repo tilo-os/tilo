@@ -49,7 +49,6 @@ pub mod path_bar;
 pub mod places_sidebar;
 pub mod received_shares;
 pub mod remote_accounts;
-pub mod remote_dav;
 pub mod search_provider;
 pub mod sharing;
 pub mod sidebar;

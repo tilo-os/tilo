@@ -131,6 +131,8 @@ pub struct PlacesSidebar {
     favs: FavStore,
     active: PathBuf,
     system: Vec<(Icon, String, PathBuf)>,
+    /// Status badges of system places (a remote account's health).
+    badges: HashMap<PathBuf, String>,
     sink: CommandSink,
     rect: Rect,
     text_scale: f64,
@@ -155,6 +157,7 @@ impl PlacesSidebar {
             favs,
             active,
             system,
+            badges: HashMap::new(),
             sink,
             rect: Rect::ZERO,
             text_scale: 1.0,
@@ -192,6 +195,35 @@ impl PlacesSidebar {
         // follow.
         entries.append(&mut self.system);
         self.system = entries;
+        self
+    }
+
+    /// Surface mounted cloud accounts (`~/Remote/<label>`) as System places
+    /// after the workspaces, each with its health badge when not up to date.
+    #[must_use]
+    pub fn with_remote_accounts(
+        mut self,
+        accounts: Vec<(String, PathBuf, Option<String>)>,
+    ) -> Self {
+        let at = self
+            .system
+            .iter()
+            .take_while(|(icon, _, _)| *icon == Icon::CloudDownload)
+            .count();
+        for (offset, (label, path, badge)) in accounts.into_iter().enumerate() {
+            if let Some(badge) = badge {
+                self.badges.insert(path.clone(), badge);
+            }
+            let icon = if self.badges.get(&path).is_some_and(|b| b == "Offline") {
+                Icon::WifiOff
+            } else {
+                Icon::CloudDownload
+            };
+            self.system.insert(
+                at.saturating_add(offset).min(self.system.len()),
+                (icon, label, path),
+            );
+        }
         self
     }
 
@@ -912,7 +944,36 @@ impl PlacesSidebar {
                     ghost: false,
                 },
             );
+            if let Some(badge) = self.badges.get(path) {
+                Self::draw_badge(scene, transform, tr, theme, rect, badge);
+            }
         }
+    }
+
+    /// A status badge at the trailing edge of a row, in the dim ink the
+    /// section captions use.
+    fn draw_badge(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        badge: &str,
+    ) {
+        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        let (width, height) = tr.measure(badge, size, None);
+        tr.draw_text(
+            scene,
+            badge,
+            size,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.x1 - ROW_CONTENT_INSET - f64::from(width),
+                    rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+                )),
+            None,
+        );
     }
 
     /// Floating ghost of the dragged favourite, if a drag is active. Reads
@@ -1253,6 +1314,37 @@ mod tests {
             assert_eq!(*icon, Icon::Trash2, "the trash uses a trash-can glyph");
             assert_eq!(*path, trash, "and points at the home-trash files dir");
         }
+    }
+
+    #[test]
+    fn mounted_cloud_accounts_are_system_places_with_badges() {
+        let sb = PlacesSidebar::new(new_store(Vec::new()), PathBuf::from("/"), new_sink())
+            .with_workspaces(vec![PathBuf::from("/var/workspace")])
+            .with_remote_accounts(vec![
+                ("Cloud".into(), PathBuf::from("/home/a/Remote/Cloud"), None),
+                (
+                    "Work".into(),
+                    PathBuf::from("/home/a/Remote/Work"),
+                    Some("Offline".into()),
+                ),
+            ]);
+        let labels: Vec<&str> = sb
+            .system
+            .iter()
+            .map(|(_, label, _)| label.as_str())
+            .collect();
+        assert_eq!(&labels[..3], ["workspace", "Cloud", "Work"]);
+        assert_eq!(sb.system[2].0, Icon::WifiOff);
+        assert_eq!(
+            sb.badges
+                .get(&PathBuf::from("/home/a/Remote/Work"))
+                .map(String::as_str),
+            Some("Offline")
+        );
+        assert!(
+            !sb.badges
+                .contains_key(&PathBuf::from("/home/a/Remote/Cloud"))
+        );
     }
 
     #[test]
