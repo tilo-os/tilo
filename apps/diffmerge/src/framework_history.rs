@@ -58,7 +58,7 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
         return Err("Merged output must be Text".into());
     }
     if let Some((value, _)) = doc.get(ROOT, "session").map_err(|e| e.to_string())?
-        && value.to_str().is_none()
+        && value.as_str().is_none()
     {
         return Err("Session must be a string".into());
     }

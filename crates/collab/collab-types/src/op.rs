@@ -23,16 +23,19 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
 
-const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
-const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
-const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
-const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
-/// Maximum Automerge bytes carried by one snapshot or incremental mutation.
-/// This leaves headroom for signing, encryption and queue metadata below the
-/// UI bridge's 4 MiB retained-allocation ceiling.
+pub(crate) const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
+pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
+pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
+pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
+/// One piece of a mutation too large for a single frame; see
+/// [`crate::document_transfer`].
+pub(crate) const DOCUMENT_SEGMENT_TAG: u8 = 3;
+/// Maximum Automerge bytes carried by one signed frame. Larger mutations are
+/// split into segments (see [`crate::document_transfer`]) up to
+/// [`crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES`].
 pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
 const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
-    DOCUMENT_MUTATION_V2_PREFIX.len() + MAX_DOCUMENT_MUTATION_BYTES + 16;
+    DOCUMENT_MUTATION_V2_PREFIX.len() + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + 16;
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
 const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
@@ -68,6 +71,13 @@ pub enum DocumentMutationError {
     /// The payload exceeds the collaboration transport's per-mutation budget.
     #[error("document mutation is {actual} bytes; maximum is {max}")]
     TooLarge { actual: usize, max: usize },
+    /// The payload is one segment of a larger mutation; it must be
+    /// reassembled before it can be decoded as a complete mutation.
+    #[error("payload is one segment of a larger document mutation")]
+    Segmented,
+    /// A segment header is inconsistent with the bytes it carries.
+    #[error("document segment is invalid: {0}")]
+    InvalidSegment(&'static str),
     /// The versioned payload body is malformed.
     #[error("typed document mutation is malformed: {0}")]
     Malformed(postcard::Error),
@@ -81,8 +91,9 @@ pub enum DocumentMutationEncodeError {
 }
 
 impl DocumentMutation {
-    /// Encode the kind and Automerge bytes into the payload carried by a
-    /// [`SignedOp`].
+    /// Encode the kind and Automerge bytes into the payload carried by one
+    /// [`SignedOp`]. Use [`Self::encode_frames`] for mutations that may
+    /// exceed a single frame.
     ///
     /// # Errors
     ///
@@ -111,13 +122,18 @@ impl DocumentMutation {
         Ok(encoded)
     }
 
-    /// Decode a versioned document mutation. Raw pre-migration payloads fail
-    /// explicitly rather than being guessed to be an incremental update.
+    /// Decode a complete versioned document mutation, either a single frame
+    /// or a payload reassembled from segments. Raw pre-migration payloads
+    /// fail explicitly rather than being guessed to be an incremental update.
+    /// Wire frames are checked with the tighter
+    /// [`crate::document_transfer::DocumentFrame::decode`].
     ///
     /// # Errors
     ///
     /// Returns [`DocumentMutationError::MissingPrefix`] for legacy raw bytes,
-    /// or [`DocumentMutationError::Malformed`] for a corrupt typed body.
+    /// [`DocumentMutationError::Segmented`] for one segment of a larger
+    /// mutation, or [`DocumentMutationError::Malformed`] for a corrupt typed
+    /// body.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
         if payload.len() > MAX_ENCODED_DOCUMENT_MUTATION_BYTES {
             return Err(DocumentMutationError::TooLarge {
@@ -130,6 +146,7 @@ impl DocumentMutation {
             match kind {
                 DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
                 DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
+                DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
                 other => return Err(DocumentMutationError::UnknownKind(other)),
             }
         } else if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX) {
@@ -138,10 +155,10 @@ impl DocumentMutation {
             return Err(DocumentMutationError::MissingPrefix);
         };
         let actual = mutation.data().len();
-        if actual > MAX_DOCUMENT_MUTATION_BYTES {
+        if actual > crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES {
             return Err(DocumentMutationError::TooLarge {
                 actual,
-                max: MAX_DOCUMENT_MUTATION_BYTES,
+                max: crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES,
             });
         }
         Ok(mutation)
@@ -203,7 +220,13 @@ pub fn document_channel_id(app_id: &str, workspace_id: &str, record_id: &str) ->
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoutedDocumentPayload {
     Cleartext(DocumentMutation),
-    Encrypted { channel: ChannelId, epoch: u64 },
+    /// One cleartext segment of a larger mutation. Brokers route it like any
+    /// other validated envelope; endpoints reassemble it.
+    CleartextSegment(crate::document_transfer::DocumentSegment),
+    Encrypted {
+        channel: ChannelId,
+        epoch: u64,
+    },
 }
 
 /// Validate the fields a broker is allowed to inspect for a document route.
@@ -231,7 +254,14 @@ pub fn validate_document_payload_route(
         return Err(DocumentMutationError::RouteMismatch);
     }
     match op.encryption {
-        None => DocumentMutation::decode(&op.payload).map(RoutedDocumentPayload::Cleartext),
+        None => match crate::document_transfer::DocumentFrame::decode(&op.payload)? {
+            crate::document_transfer::DocumentFrame::Whole(mutation) => {
+                Ok(RoutedDocumentPayload::Cleartext(mutation))
+            }
+            crate::document_transfer::DocumentFrame::Segment(segment) => {
+                Ok(RoutedDocumentPayload::CleartextSegment(segment))
+            }
+        },
         Some(meta)
             if meta.channel == document_channel_id(app_id, workspace_id, record_id)
                 && !op.payload.is_empty() =>
@@ -577,6 +607,27 @@ mod tests {
             DocumentMutation::decode(&oversized_wire),
             Err(DocumentMutationError::TooLarge { actual, max })
                 if actual == oversized_wire.len() && max == MAX_ENCODED_DOCUMENT_MUTATION_BYTES
+        ));
+
+        // A single signed frame above the frame limit is refused by the
+        // routing layer even though a reassembled payload of that size is a
+        // valid endpoint mutation.
+        let mut frame = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
+        frame.push(DOCUMENT_INCREMENTAL_TAG);
+        frame.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
+        let (app, workspace, record) = ("notes", "workspace", "record");
+        let op = SignedOp::new_unsigned(
+            frame,
+            document_artifact_id(app, workspace, record),
+            Ed25519PublicKey::from_bytes([7; 32]),
+            document_attestation_id(app, workspace, record),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            1,
+        );
+        assert!(matches!(
+            validate_document_payload_route(app, workspace, record, &op),
+            Err(DocumentMutationError::TooLarge { .. })
         ));
     }
 

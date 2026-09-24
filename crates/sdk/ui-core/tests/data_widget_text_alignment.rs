@@ -3,16 +3,17 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    reason = "migration stack lint debt is scoped to this target"
+    reason = "pixel geometry over bounded fixture canvases"
 )]
 
-//! F3 composition/data-display fixtures: renders the immediate-mode data
+//! Composition and data-display widgets: renders the immediate-mode data
 //! widgets through the shared `FrameHarness` at 1x and 2x text scale and
 //! checks the alignment contract each widget paints against, on the pixels
 //! it actually produced.
 //!
-//! PNGs land in `target/ui-review/ui/f3_fixture/<F3_FIXTURE_TAG>/` so the
-//! same run doubles as visual evidence; the assertions are the regression.
+//! With `QUICK_UI_SCREENSHOT_DIR` set, each frame is also written under
+//! `data_widget_text_alignment/` there as visual evidence; the assertions
+//! are the regression.
 //!
 //! Two properties are checked per widget:
 //! - at 1x, a single line of descender-free text sits on the centre line of
@@ -23,7 +24,6 @@
 //!   renderer, which scales once more.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -63,15 +63,6 @@ const ICON_GLYPH: f64 = 40.0;
 // padding — so the expectations below cannot drift from the widgets.
 use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
 
-fn out_dir() -> PathBuf {
-    let tag = std::env::var("F3_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/ui-review/ui/f3_fixture")
-        .join(tag);
-    std::fs::create_dir_all(&dir).expect("fixture output directory");
-    dir
-}
-
 struct Capture {
     harness: FrameHarness,
     image: image::RgbaImage,
@@ -81,22 +72,25 @@ fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Captu
     capture_with_theme(name, root, viewport, Theme::dark().with_text_scale(scale))
 }
 
-/// [`capture`] under an explicit theme. The dark preset keeps the historical
-/// `<name>-<scale>x.png` file name; any other theme writes
-/// `<name>-<theme>-<scale>x.png` beside it.
+/// [`capture`] under an explicit theme. Evidence for the dark preset is named
+/// `<name>-<scale>x`; any other theme adds its name, `<name>-<theme>-<scale>x`.
 fn capture_with_theme(name: &str, root: Element, viewport: (u32, u32), theme: Theme) -> Capture {
     let scale = theme.text_scale;
     let stem = if theme.name == Theme::dark().name {
-        format!("{name}-{scale}x.png")
+        format!("{name}-{scale}x")
     } else {
-        format!("{name}-{}-{scale}x.png", theme.name)
+        format!("{name}-{}-{scale}x", theme.name)
     };
     let harness = FrameHarness::new_with_theme(State::new(), root, viewport, theme);
-    let path = out_dir().join(stem);
-    harness.render_window_png(&path);
-    let image = image::open(&path)
-        .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
-        .to_rgba8();
+    let rgba = harness.render_window_rgba();
+    crate::support::evidence::save_png(
+        &format!("data_widget_text_alignment/{stem}"),
+        viewport.0,
+        viewport.1,
+        &rgba,
+    );
+    let image =
+        image::RgbaImage::from_raw(viewport.0, viewport.1, rgba).expect("viewport-sized frame");
     Capture { harness, image }
 }
 

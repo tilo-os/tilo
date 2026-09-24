@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registry;
-use launcher::run::{LaunchMode, RunError, RunOptions, run};
+use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
 
 const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
@@ -37,6 +37,10 @@ fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     gate.read_exact(&mut release)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
+)]
 fn wait_for_shell_registration() -> Result<(), String> {
     let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
         return Ok(());
@@ -415,7 +419,10 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
-        identity_host_path: args.identity,
+        identity: args
+            .identity
+            .map_or(IdentitySource::UserStore, IdentitySource::Record),
+        data_home: None,
         wayland_socket: args.wayland_socket,
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
@@ -823,7 +830,8 @@ fn run_installed(
         require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
-        identity_host_path: None,
+        identity: IdentitySource::UserStore,
+        data_home: None,
         trusted_identities_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.

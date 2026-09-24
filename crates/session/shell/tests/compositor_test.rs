@@ -411,9 +411,11 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
 
     // Connect to the freshly-bound socket via `WAYLAND_DISPLAY`, which
     // `wayland-client` reads, set just for the connection scope.
-    // SAFETY: tests run single-threaded; the env is restored after.
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", socket_name) };
-    let conn = Connection::connect_to_env().expect("connect to compositor socket");
+    let conn = {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("WAYLAND_DISPLAY", socket_name);
+        Connection::connect_to_env().expect("connect to compositor socket")
+    };
     let mut queue: EventQueue<TestClient> = conn.new_event_queue();
     let qh = queue.handle();
     let display = conn.display();

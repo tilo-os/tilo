@@ -12,4 +12,9 @@ disallowed-methods = [
     { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()" },
     { path = "reqwest::get", reason = "use tilo_net::http::client()" },
     { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()" },
+    # The environment is process-global: parallel tests race on it and a bare
+    # remove_var discards the value that was there before. Pass the directory
+    # explicitly (`*_at(root)`/`*_in(root)`), or in tests use tilo-test-env.
+    { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
 ]

@@ -1163,6 +1163,9 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Local record ids behind the sealed wire names this device publishes
+    /// and accepts; path-bearing record ids never leave the device.
+    wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
@@ -1528,6 +1531,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
@@ -2061,14 +2065,16 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_documents)
     }
 
-    /// Publish one validated signed document mutation.
+    /// Publish one validated signed document mutation. A record id that
+    /// embeds a local path is replaced by its sealed, room-scoped wire name.
     pub fn publish_document(
         &self,
         app_id: String,
         cluster_id: String,
-        record_id: String,
+        record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        let record_id = self.register_local_record(&app_id, &cluster_id, record_id);
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -2077,6 +2083,30 @@ impl ShellNetwork {
             envelope: Box::new(envelope),
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Remember that a local app holds `record_id`, so peers' traffic for
+    /// its sealed wire name can be routed to it. Returns the wire name.
+    pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
+        match self.wire_records.lock() {
+            Ok(mut records) => records.register(cluster_id, app_id, record_id),
+            Err(_) => crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
+        }
+    }
+
+    /// The local record id an inbound wire record id names, if this device
+    /// holds that record.
+    fn local_record_for_wire(&self, app_id: &str, cluster_id: &str, wire: &str) -> Option<String> {
+        if crate::network::wire_record::embeds_local_path(wire) {
+            // A current peer never sends a path; refuse one that does rather
+            // than route by a leaked name.
+            tracing::warn!(app_id, "peer document names a local path; dropping");
+            return None;
+        }
+        self.wire_records
+            .lock()
+            .ok()?
+            .resolve(cluster_id, app_id, wire)
     }
 
     /// Queue a received signed document for the broker's drainer.
@@ -4899,6 +4929,14 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } => {
+                let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
+                else {
+                    tracing::debug!(
+                        app_id,
+                        "peer document for a record no local app holds; dropping"
+                    );
+                    return;
+                };
                 let role = if self.require_peer_identity {
                     self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
                 } else {
@@ -5780,6 +5818,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
@@ -6685,9 +6724,8 @@ mod tests {
             serde_json::to_vec(&vec![registration]).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
 
         assert!(net.refresh_home_peer_hosts());
         net.share_wifi_credential("Home", os_actions::WifiSecurity::Wpa2, "correct horse")
@@ -6740,14 +6778,6 @@ mod tests {
                 .is_err(),
             "removed devices must be excluded from the next envelope"
         );
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     fn fabric_snapshot(
@@ -8151,17 +8181,24 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invite is redeemed, exercised and revoked end to end"
+    )]
     fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
         };
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
         let device = iroh::SecretKey::from_bytes(&[62; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Guest laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8169,7 +8206,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut workspace =
@@ -8510,7 +8547,7 @@ mod tests {
             reason: RevocationReason::Compromised,
             signature: [0; 64],
         };
-        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        sign_revocation_entry(&mut revoked, &user_root).expect("revocation");
         net.accept_identity_hello(
             room_topic_id(room),
             &origin,
@@ -8533,14 +8570,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let device = iroh::SecretKey::from_bytes(&[82; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Viewer laptop".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8548,7 +8588,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut workspace =
@@ -8619,14 +8659,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(identity_env)]
     fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        // The room identity is read from the configuration directory; keep
+        // tests that repoint it from doing so halfway through this one.
+        let _env = tilo_test_env::lock();
+
+        let user_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = iroh::SecretKey::from_bytes(&[92; 32]);
         let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: user_root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Inviting device".into(),
             capabilities: DeviceCapabilities::member(),
@@ -8634,7 +8677,7 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).expect("certificate");
+        sign_device_cert(&mut cert, &user_root).expect("certificate");
 
         let room = RoomId::new();
         let mut tree = WorkspaceTree::default();
@@ -8723,23 +8766,14 @@ mod tests {
             .expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let rooms = std::collections::BTreeSet::from([42]);
         let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         assert_eq!(first_boot, restarted, "registry is durable across restart");
         assert_eq!(first_boot.len(), 1);
         assert_eq!(first_boot[0].addr.id, service);
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8780,9 +8814,8 @@ mod tests {
             serde_json::to_vec(&registrations).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         let hosts =
             registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
                 .expect("registry parses");
@@ -8792,13 +8825,6 @@ mod tests {
                 .iter()
                 .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8806,29 +8832,14 @@ mod tests {
     fn home_peer_registry_defaults_to_the_active_identity_root() {
         let temp = tempfile::tempdir().expect("temp");
         let identity_root = temp.path().join("user-data/tilo");
-        let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
-            std::env::remove_var("TILO_HOME_PEERS_PATH");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", &identity_root);
+        env.remove("TILO_HOME_PEERS_PATH");
         assert_eq!(
             home_peer_registry_path(),
             identity_root.join("home-peers.json"),
             "the shell must read the approval registry beside its own user key, never a system copy"
         );
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_identity_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
-            }
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     #[test]
@@ -8845,9 +8856,8 @@ mod tests {
         assert!(tree.set_room(workspace, room));
         let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
         net.personal_continuity_user = Some(own_user);
-        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
         std::fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!([{
@@ -8881,14 +8891,6 @@ mod tests {
         };
         assert_eq!(id, service);
         assert!(net.host_addrs.lock().unwrap().is_empty());
-
-        // SAFETY: guarded by the process_env serial group.
-        unsafe {
-            match old_registry {
-                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
-            }
-        }
     }
 
     /// Two rooms this machine governs, and the network that holds
@@ -9173,8 +9175,20 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
+        app_document_event_for(cluster_id, "note-1", "note-1", from_peer_hash, peer, device)
+    }
+
+    /// As [`app_document_event`], for a local record id sent under
+    /// `wire_record_id`.
+    fn app_document_event_for(
+        cluster_id: &str,
+        record_id: &str,
+        wire_record_id: &str,
+        from_peer_hash: u64,
+        peer: iroh::PublicKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> NetEvent {
         let app_id = "so.tilo.notes";
-        let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
                 .encode()
@@ -9197,18 +9211,19 @@ mod tests {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
                 cluster_id: cluster_id.to_string(),
-                record_id: record_id.to_string(),
+                record_id: wire_record_id.to_string(),
                 envelope: Box::new(envelope),
             },
         }
     }
 
-    /// A peer's app document reaches local apps only for a room this
-    /// machine is in. Driven through the real receive path (`tick`),
-    /// not the helper directly, with a positive control so the two
-    /// refusals prove something rather than just "nothing arrives".
-    #[test]
-    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+    /// A shell whose room has admitted one certified peer device.
+    fn network_with_admitted_peer() -> (
+        ShellNetwork,
+        crate::shell::state::RoomId,
+        iroh::SecretKey,
+        ed25519_dalek::SigningKey,
+    ) {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
@@ -9218,11 +9233,7 @@ mod tests {
             .find(|workspace| workspace.id == local)
             .expect("workspace")
             .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
-        let handle = tree.shared();
-        let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
-
-        // Documents are accepted only after the sender has proven an
-        // identity-to-device chain and received membership.
+        let (net, _cmd_rx) = shell_network_for_test(tree.shared(), 0xAAAAu64);
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
         let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
@@ -9265,6 +9276,129 @@ mod tests {
             .expect("queue identity proof");
         net.tick();
         net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
+        (net, our_room, device, device_signing)
+    }
+
+    /// The SDK guide promises a path-bearing record id never leaves the
+    /// device. Check the exact bytes the actor would put on gossip and the
+    /// host link, for a file record and a record derived from one.
+    #[test]
+    fn file_backed_records_never_put_a_path_on_the_wire() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        // Same routing as `publish_document_emits_a_publish_command`.
+        let room = "cluster-7".to_string();
+        let secret = "/home/alice/Secret Plans/merger-2026.odt";
+        for record_id in [
+            format!("file:{secret}"),
+            format!("derived:annotations@file:{secret}"),
+        ] {
+            let envelope = collab_types::SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(vec![7; 32])
+                    .encode()
+                    .expect("typed mutation"),
+                collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
+                collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            net.publish_document("so.tilo.writer".into(), room.clone(), &record_id, envelope);
+            let Ok(NetCmd::Publish { msg, .. }) = cmd_rx.try_recv() else {
+                panic!("publish_document must enqueue a publish");
+            };
+            let NeighbourMsg::AppDocument {
+                record_id: wire, ..
+            } = &msg
+            else {
+                panic!("expected AppDocument, got {msg:?}");
+            };
+            assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
+            let encoded = postcard::to_allocvec(&msg).expect("wire encoding");
+            for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
+                assert!(
+                    !encoded.windows(needle.len()).any(|window| window == needle),
+                    "{:?} leaked onto the wire for {record_id}",
+                    String::from_utf8_lossy(needle)
+                );
+            }
+        }
+    }
+
+    /// A peer holding the same file record in the same room still meets
+    /// this device on one route: its sealed name resolves to the local id
+    /// of the record a local app joined, and the envelope validates against
+    /// that id. A sealed name nobody here holds is refused.
+    #[test]
+    fn a_sealed_record_name_reaches_the_local_app_holding_that_record() {
+        let (net, room, device, device_signing) = network_with_admitted_peer();
+        let cluster = room.to_string();
+        let local = "file:/var/workspace/shared/report.odt";
+        let wire = crate::network::wire_record::wire_record_id(&cluster, "so.tilo.notes", local);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert!(
+            net.inbound_documents_handle().lock().unwrap().is_empty(),
+            "no local app holds the record yet, so its sealed name cannot be routed"
+        );
+
+        net.register_local_record("so.tilo.notes", &cluster, local);
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        let inbound = net.inbound_documents_handle();
+        let delivered = inbound.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].record_id, local,
+            "the local app sees its own record id"
+        );
+        drop(delivered);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                local,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert_eq!(
+            net.inbound_documents_handle().lock().unwrap().len(),
+            1,
+            "a peer that names a raw path is refused"
+        );
+    }
+
+    /// A peer's app document reaches local apps only for a room this
+    /// machine is in. Driven through the real receive path (`tick`),
+    /// not the helper directly, with a positive control so the two
+    /// refusals prove something rather than just "nothing arrives".
+    #[test]
+    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+        let (net, our_room, device, device_signing) = network_with_admitted_peer();
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
@@ -9640,7 +9774,7 @@ mod tests {
         net.publish_document(
             "notes".to_string(),
             "cluster-7".to_string(),
-            "uuid:9f".to_string(),
+            "uuid:9f",
             envelope.clone(),
         );
         let cmd = cmd_rx
@@ -9772,9 +9906,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn network_announcement_governs_and_republishes_files_projection() {
         let runtime = tempfile::tempdir().unwrap();
-        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: guarded by the process_env serial group shared with launcher tests.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let mut state = WorkspaceTree::default();
         let workspace = state.append_empty_workspace("Identity workflow");
@@ -9852,14 +9985,6 @@ mod tests {
                 .humans
                 .is_empty()
         );
-
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous_runtime {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]

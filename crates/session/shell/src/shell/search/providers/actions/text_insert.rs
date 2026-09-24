@@ -216,7 +216,7 @@ mod tests {
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
-        ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
+        ws.set_owner(FIXTURE_USER);
         ws.strips = vec![strip];
         let mut active_strip = StdMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -232,12 +232,20 @@ mod tests {
             },
             ..WorkspaceTree::default()
         }));
-        let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(handle);
+        // An explicit identity: the session registry lives under the user's
+        // configuration directory, which is not this test's to read.
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            handle,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
         let store = RecordStore::in_memory();
         store.open_record(&crate::shell::tab_documents::scratch_tab_record(TAB));
         chrome.borrow_mut().set_records(store.clone());
         (chrome, store)
     }
+
+    /// The principal a fixture chrome speaks for.
+    const FIXTURE_USER: &str = "shell-fixture";
 
     fn args(mut pairs: Vec<(&str, ArgValue)>) -> ActionArgs {
         if !pairs.iter().any(|(name, _)| *name == "resource") {
@@ -337,7 +345,7 @@ mod tests {
                     .iter()
                     .filter(|hash| !entry.before.contains(hash))
                     .filter_map(|hash| doc.get_change_by_hash(hash))
-                    .find_map(|change| change.message().cloned())
+                    .find_map(|change| change.message().map(str::to_owned))
                     .and_then(|message| tilo_actions::ActionContext::from_change_message(&message))
                     .expect("semantic action provenance");
                 assert_eq!(context.action_label, "Insert text");
@@ -571,7 +579,7 @@ mod tests {
             let mut tree = state.tree_mut();
             tree.desktop.workspaces[0].set_owner("another-person");
             let mut active = Workspace::new(WorkspaceId::new(), "Authorized elsewhere");
-            active.set_owner(crate::shell::state::local_user_id_for_room(&active.room));
+            active.set_owner(FIXTURE_USER);
             let active_id = active.id;
             tree.desktop.workspaces.push(active);
             tree.set_active(active_id);

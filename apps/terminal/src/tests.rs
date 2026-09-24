@@ -4297,27 +4297,27 @@ fn service_fd_is_detected_only_when_the_descriptor_is_actually_open() {
     let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     assert_eq!(rc, 0, "socketpair for a live test fd");
 
-    // SAFETY (env): serialised via `#[serial]`; no other thread reads this
-    // var concurrently. `set_var`/`remove_var` are `unsafe` in edition 2024.
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", fds[0].to_string()) };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_SVC_USH_FD", fds[0].to_string());
     assert_eq!(
         ush_service_fd(),
         Some(fds[0]),
         "an open descriptor is the service"
     );
 
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", "999999") };
+    env.set("TILO_SVC_USH_FD", "999999");
     assert_eq!(
         ush_service_fd(),
         None,
         "a closed descriptor is not the service"
     );
 
-    unsafe { std::env::set_var("TILO_SVC_USH_FD", "not-a-number") };
+    env.set("TILO_SVC_USH_FD", "not-a-number");
     assert_eq!(ush_service_fd(), None, "garbage is not the service");
 
-    unsafe { std::env::remove_var("TILO_SVC_USH_FD") };
+    env.remove("TILO_SVC_USH_FD");
     assert_eq!(ush_service_fd(), None, "unset is not the service");
+    drop(env);
 
     // SAFETY: closing the two fds we own.
     unsafe {
@@ -4623,17 +4623,11 @@ fn native_terminal_action_runs_a_command_and_child_observes_resize() {
 #[test]
 #[serial_test::serial]
 fn windows_claimed_hosted_service_never_starts_an_unconfined_shell() {
-    let previous = std::env::var_os(crate::inner::USH_SERVICE_FD_ENV);
-    // SAFETY: run environment-mutating terminal tests serially.
-    unsafe { std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, "3") };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(crate::inner::USH_SERVICE_FD_ENV, "3");
     let result = TerminalWidget::spawn_default();
     // Restore before asserting, including when the result is unexpected.
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, value),
-            None => std::env::remove_var(crate::inner::USH_SERVICE_FD_ENV),
-        }
-    }
+    drop(env);
     assert!(
         result.is_err(),
         "a hosted grant must never fall back to COMSPEC"

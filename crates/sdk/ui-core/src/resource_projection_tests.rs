@@ -116,15 +116,24 @@ fn lazy_control_projection_does_not_commit_pending_document_transaction() {
         .doc
         .put(ROOT, "typing", "pending")
         .unwrap();
+    // Read without closing the open transaction: `get_heads` would commit
+    // it, which is the very thing under test.
+    let committed = |doc: &AutoCommit| doc.stats().num_changes;
     let pending = app.state.doc.pending_ops();
-    let before = format!("{:?}", app.state.doc);
+    let changes = committed(&app.state.doc);
+    let value = app.state.doc.hydrate(ROOT, None).unwrap();
     app.refresh_control_action_availability();
     assert_eq!(counts[1].get(), 0);
     app.collect_resources();
     app.collect_local_resources();
     app.collect_declared_resources();
-    assert_eq!(app.state.doc.pending_ops(), pending);
-    assert_eq!(format!("{:?}", app.state.doc), before);
+    assert_eq!(
+        app.state.doc.pending_ops(),
+        pending,
+        "transaction left open"
+    );
+    assert_eq!(committed(&app.state.doc), changes, "nothing committed");
+    assert_eq!(app.state.doc.hydrate(ROOT, None).unwrap(), value);
     assert_eq!(counts[1].get(), 1);
 }
 

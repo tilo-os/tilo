@@ -73,6 +73,7 @@ tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = tru
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

@@ -516,6 +516,10 @@ pub fn host_identity_root(
 ///
 /// Returns an error if the configured identity root is relative or its
 /// user-private directory tree cannot be safely prepared.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "called from `main` before the warm-up thread or any other thread is spawned; the variable must be inherited by launcher and broker children"
+)]
 pub fn configure_host_identity_root() -> io::Result<PathBuf> {
     let root = match std::env::var_os("TILO_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
         Some(root) => PathBuf::from(root),

@@ -609,6 +609,14 @@ impl DeviceMeshPane {
         pane.roaming_provenance_path =
             Some(path.with_file_name(settings_store::roaming_provenance::FILE_NAME));
         pane.refresh_roaming_provenance();
+        // Swapping the per-user provenance file read above for the fixture's
+        // is construction, not a change the host must rebuild for; left set,
+        // the flag depended on whether the developer's own file exists.
+        pane.structure_dirty = false;
+        // The periodic runtime-status poll is wall-clock driven; on a loaded
+        // machine its interval can elapse between construction and the first
+        // sync and flag a rebuild no test action caused.
+        pane.next_status_refresh = Instant::now() + Duration::from_secs(24 * 60 * 60);
         pane
     }
 
@@ -2472,15 +2480,14 @@ mod tests {
     fn pairing_process_transitions_to_success_and_allows_another_pairing() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.pairing_child = Some(
-            bounded_command::spawn_prepared(Command::new("true"), None, 64, Duration::from_secs(1))
-                .unwrap(),
-        );
-        for _ in 0..100 {
+        // The child's own timeout bounds the wait; how quickly a loaded
+        // machine schedules `true` is not what this test is about.
+        let timeout = Duration::from_secs(30);
+        pane.pairing_child =
+            Some(bounded_command::spawn_prepared(Command::new("true"), None, 64, timeout).unwrap());
+        let deadline = Instant::now() + timeout;
+        while pane.pairing_child.is_some() && Instant::now() < deadline {
             pane.poll_background_tasks();
-            if pane.pairing_child.is_none() {
-                break;
-            }
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(pane.pairing_child.is_none());

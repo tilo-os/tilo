@@ -980,55 +980,73 @@ impl SystemPrefs {
     }
 }
 
-/// RAII config-directory isolation for the in-crate unit tests that drive a
-/// pane's real persist path. Pointing `XDG_CONFIG_HOME` at a throwaway
-/// directory keeps those tests from writing the developer's (or a Tilo user's)
-/// real `~/.config/tilo/settings.json` — running the suite must never mutate
-/// live settings. A process-wide lock serialises the env mutation; the guard
-/// restores the environment and removes the temp directory on drop.
+/// Config-directory isolation for the in-crate unit tests that construct the
+/// app or drive a pane's real persist path. Running the suite must never read
+/// or mutate the developer's (or a Tilo user's) live settings, accounts or
+/// identity, and two tests must never see each other's files.
+///
+/// The guard points `XDG_CONFIG_HOME` at a fresh directory through
+/// [`tilo_test_env::ScopedEnv`], which serialises on the process-wide
+/// environment lock and restores the prior value on drop, also while
+/// unwinding from a failed assertion. `HOME` and the cache directory stay put
+/// so the text stack keeps its font cache instead of rebuilding it per test.
 #[cfg(test)]
 pub(crate) mod test_env {
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard};
 
-    static LOCK: Mutex<()> = Mutex::new(());
+    use crate::settings_app::SettingsApp;
 
-    /// Holds the serialisation lock and the redirected config dir for a test's
-    /// duration. Drop it (let it fall out of scope) to restore the env.
+    /// Holds the redirected environment for a test's duration.
     pub(crate) struct ConfigGuard {
-        _lock: MutexGuard<'static, ()>,
-        dir: PathBuf,
+        // Field order is drop order: restore the environment before the
+        // directory it points at disappears.
+        _env: tilo_test_env::ScopedEnv,
+        dir: tempfile::TempDir,
     }
 
     impl ConfigGuard {
-        /// Redirect `XDG_CONFIG_HOME` to a fresh, unique temp dir for this test.
-        pub(crate) fn new(name: &str) -> Self {
-            let lock = LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let dir = std::env::temp_dir().join(format!(
-                "tilo-settings-libtest-{}-{}",
-                std::process::id(),
-                name
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create temp config dir");
-            // SAFETY: serialised by LOCK against other guards; the surrounding
-            // suite tolerates a redirected (empty → defaults) config on any
-            // read, so a concurrent reader observing the temp dir is harmless.
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", &dir);
-            }
-            Self { _lock: lock, dir }
+        pub(crate) fn new() -> Self {
+            let dir = tempfile::Builder::new()
+                .prefix("tilo-settings-config-")
+                .tempdir()
+                .expect("create test config dir");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", dir.path());
+            Self { _env: env, dir }
+        }
+
+        /// The Tilo config root inside the redirected `XDG_CONFIG_HOME`.
+        pub(crate) fn config_root(&self) -> PathBuf {
+            self.dir.path().join("tilo")
+        }
+
+        /// The app over this guard's config root.
+        pub(crate) fn app(&self) -> SettingsApp {
+            SettingsApp::with_config_root(self.config_root())
         }
     }
 
-    impl Drop for ConfigGuard {
-        fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var("XDG_CONFIG_HOME");
+    /// A private config root handed to the app explicitly, leaving the
+    /// environment alone: for tests that construct and lay out the app but
+    /// persist nothing through the per-user settings file, so they run in
+    /// parallel with each other and with [`ConfigGuard`] tests.
+    pub(crate) struct ScratchConfig {
+        dir: tempfile::TempDir,
+    }
+
+    impl ScratchConfig {
+        pub(crate) fn new() -> Self {
+            Self {
+                dir: tempfile::Builder::new()
+                    .prefix("tilo-settings-config-")
+                    .tempdir()
+                    .expect("create test config dir"),
             }
-            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+
+        /// The app over this scratch config root.
+        pub(crate) fn app(&self) -> SettingsApp {
+            SettingsApp::with_config_root(self.dir.path().join("tilo"))
         }
     }
 }

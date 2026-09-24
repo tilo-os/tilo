@@ -1500,7 +1500,7 @@ impl PhotosDoc {
         values
             .into_iter()
             .filter_map(|(value, _)| match value {
-                Value::Scalar(s) => s.to_str().and_then(|raw| serde_json::from_str(raw).ok()),
+                Value::Scalar(s) => s.as_str().and_then(|raw| serde_json::from_str(raw).ok()),
                 Value::Object(_) => None,
             })
             .collect()

@@ -66,10 +66,9 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 sandbox-core = { path = "../../system/sandbox-core" }
 
 [dev-dependencies]
-# `HOME` / `XDG_CONFIG_HOME` are process-wide, so the tests that set them
-# have to be serialised against each other across modules. Same pattern
-# (and same crate) the shell uses for its static-state tests.
-serial_test.workspace = true
+# Tests whose subject is the environment itself (session variables, service
+# and store lookups) scope their changes through it and restore them.
+tilo-test-env = { path = "../../dev/test-env" }
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.

@@ -484,7 +484,7 @@ mod tests {
     }
     #[test]
     fn conflicting_edit_is_rolled_back() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_conflict");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = ShortcutPane::default();
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn vim_mode_toggle_persists_to_the_shell_contract() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_vim_mode");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = ShortcutPane::default();
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);

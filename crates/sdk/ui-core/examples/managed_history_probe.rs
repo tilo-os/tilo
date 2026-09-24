@@ -67,7 +67,7 @@ fn committed_change_count(doc: &AutoCommit) -> usize {
 fn body(doc: &AutoCommit) -> String {
     doc.get(ROOT, "body")
         .unwrap()
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .and_then(|(value, _)| value.as_str().map(str::to_owned))
         .unwrap_or_default()
 }
 fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {

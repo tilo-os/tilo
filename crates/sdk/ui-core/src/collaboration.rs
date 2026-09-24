@@ -9,7 +9,9 @@
 //! [`CollabTransport::drain`]. The transport owns authentication, signing
 //! and verification; the manager never holds a transport key. Durable
 //! traffic fails the transport closed on overload; only transient presence
-//! may be shed. Without a transport the manager is "disabled" — `poll()`
+//! may be shed; a document change the transport cannot take is refused
+//! with a [`CollabSendError`] instead. Without a transport the manager is
+//! "disabled" — `poll()`
 //! returns empty and `send()` is a no-op.
 //!
 //! The default transport (feature `broker-transport`) delegates to the
@@ -90,6 +92,38 @@ pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<Continuatio
         schema_version,
         bytes,
     })
+}
+
+/// Why a request did not reach the collaboration transport.
+///
+/// A document change that returns an error was **not** handed off: callers
+/// that track what peers have received must leave their frontier unchanged
+/// so the change is offered again.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CollabSendError {
+    /// No live transport; collaboration is disabled or has failed.
+    #[error("collaboration is unavailable")]
+    Unavailable,
+    /// Document traffic already queued fills the transport budget. Retry
+    /// once earlier changes have been sent.
+    #[error("collaboration transport is busy; the change will be retried")]
+    Busy,
+    /// The document change can never be sent: it exceeds the collaboration
+    /// transport's per-change limit.
+    #[error(
+        "this change is {actual} bytes, above the {max}-byte collaboration limit; it stays on this device"
+    )]
+    TooLarge { actual: usize, max: usize },
+}
+
+impl From<TransportError> for CollabSendError {
+    fn from(error: TransportError) -> Self {
+        match error {
+            TransportError::Shed | TransportError::Busy => Self::Busy,
+            TransportError::Closed | TransportError::Unsupported => Self::Unavailable,
+            TransportError::TooLarge { actual, max } => Self::TooLarge { actual, max },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -383,13 +417,18 @@ pub enum CollabEvent {
     /// routes the mutation kind is inside the outer signed payload. For an
     /// MLS route, `envelope.payload` remains the original signed ciphertext
     /// and `decrypted_payload` holds endpoint-only plaintext after the inner
-    /// MLS authentication succeeds.
+    /// MLS authentication succeeds. A mutation too large for one frame
+    /// arrives as several signed segments; the SDK delivers it once, after
+    /// every segment arrived and the reassembled bytes matched their signed
+    /// digest, with `envelope` set to the final segment.
     Document {
         envelope: Box<SignedOp>,
         from_user_id: String,
-        /// Endpoint-decrypted typed mutation bytes. `None` for cleartext
-        /// envelopes (read directly from `envelope.payload`) and for broker
-        /// events, which never possess MLS keys.
+        /// Endpoint-verified typed mutation bytes when they differ from
+        /// `envelope.payload`: MLS plaintext, or a mutation reassembled from
+        /// segments. `None` for single-frame cleartext envelopes (read
+        /// directly from `envelope.payload`) and for broker events, which
+        /// never possess MLS keys.
         decrypted_payload: Option<Vec<u8>>,
     },
     /// Response to a [`CollabRequest::FetchScrollback`]: a page of
@@ -833,9 +872,24 @@ impl CollaborationManager {
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
-    /// shed under saturation; any durable enqueue failure visibly disconnects
-    /// the manager, so callers never continue under the illusion it was sent.
+    /// shed under saturation; any other durable enqueue failure visibly
+    /// disconnects the manager, so callers never continue under the illusion
+    /// it was sent. Document mutations never disconnect: see
+    /// [`Self::try_send`] for why one was not sent.
     pub fn send(&mut self, req: CollabRequest) -> bool {
+        self.try_send(req).is_ok()
+    }
+
+    /// [`Self::send`] with the reason a request was not handed off. A
+    /// document mutation larger than one signed frame is split into signed
+    /// segments by the transport; one above
+    /// [`collab_types::MAX_DOCUMENT_TRANSFER_BYTES`] is refused with
+    /// [`CollabSendError::TooLarge`] and nothing is sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollabSendError`] when the request was not queued.
+    pub fn try_send(&mut self, req: CollabRequest) -> Result<(), CollabSendError> {
         if let CollabRequest::Hello {
             app_id,
             cluster_id,
@@ -850,7 +904,7 @@ impl CollaborationManager {
             });
             self.action_directory_published = false;
         }
-        self.submit(TransportCommand::Primary(req)).is_ok()
+        Ok(self.submit(TransportCommand::Primary(req))?)
     }
 
     /// Ask the transport for a completion receipt covering every document
@@ -952,11 +1006,24 @@ impl CollaborationManager {
     /// lazily and retained, and its inbound streams feed this manager's normal
     /// [`Self::poll`] queue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: CollabRequest) {
+        let _ = self.try_send_to_route(route, req);
+    }
+
+    /// [`Self::send_to_route`] with the reason a request was not handed off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollabSendError`] when the request was not queued.
+    pub fn try_send_to_route(
+        &mut self,
+        route: RouteSpec,
+        req: CollabRequest,
+    ) -> Result<(), CollabSendError> {
         if matches!(req, CollabRequest::Hello { .. }) {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
-            return;
+            return Err(CollabSendError::Unavailable);
         }
-        let _ = self.submit(TransportCommand::ToRoute(route, req));
+        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
     }
 
     /// Drain every event pending on the current backend. Non-blocking.

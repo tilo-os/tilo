@@ -607,7 +607,13 @@ impl Theme {
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
-        let text = settings_store::settings_path()
+        Self::configured_from(settings_store::settings_path().as_deref())
+    }
+
+    /// [`Theme::configured`] from an explicit settings file; `None` or an
+    /// unreadable path yields the dark default.
+    pub fn configured_from(settings: Option<&std::path::Path>) -> Self {
+        let text = settings
             .and_then(|path| std::fs::read_to_string(path).ok())
             .unwrap_or_default();
         let mut theme = Self::from_settings_json(&text).unwrap_or_else(Self::dark);
@@ -1614,33 +1620,18 @@ mod tests {
 mod configured_theme {
     use super::*;
 
-    /// `XDG_CONFIG_HOME` is pointed at a temp directory for this process
-    /// only, so the check runs against a real file without touching the
-    /// operator's.
     #[test]
     fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
-        let dir = std::env::temp_dir().join(format!("tilo-theme-{}", std::process::id()));
-        let tilo = dir.join("tilo");
-        std::fs::create_dir_all(&tilo).expect("temp config dir");
+        let dir = tempfile::tempdir().expect("temp config dir");
+        let settings = dir.path().join("settings.json");
         std::fs::write(
-            tilo.join("settings.json"),
+            &settings,
             r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
         )
         .expect("write settings");
 
-        // SAFETY: single-threaded within this test, and the value is put back
-        // before it returns.
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        let picked = Theme::configured();
-        match prev {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-
         assert_eq!(
-            picked.name,
+            Theme::configured_from(Some(&settings)).name,
             Theme::high_contrast().name,
             "a settings file asking for high contrast must produce it",
         );
@@ -1649,14 +1640,12 @@ mod configured_theme {
     /// No preference is not an error, and must not stop a desktop starting.
     #[test]
     fn an_absent_settings_file_still_yields_a_usable_theme() {
-        let dir = std::env::temp_dir().join(format!("tilo-theme-none-{}", std::process::id()));
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        let picked = Theme::configured();
-        match prev {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        assert_eq!(picked.name, Theme::dark().name);
+        let dir = tempfile::tempdir().expect("temp config dir");
+        let missing = dir.path().join("settings.json");
+        assert_eq!(
+            Theme::configured_from(Some(&missing)).name,
+            Theme::dark().name
+        );
+        assert_eq!(Theme::configured_from(None).name, Theme::dark().name);
     }
 }

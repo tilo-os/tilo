@@ -2082,8 +2082,8 @@ fn a_project_whose_footage_is_not_here_says_which_in_the_words_the_app_already_u
     // Media is referenced, not copied, so this is the ordinary case after
     // opening a project somewhere else — and it must be disclosed in the
     // same vocabulary the bin and the timeline use, not a third phrasing.
-    // Safety: single-threaded test mutation of process env.
-    unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_VE_MEDIA_DIR");
     let dir = scratch("moved");
     let path = dir.join("Moved.qvp");
     let mut p = Project::new("Moved");

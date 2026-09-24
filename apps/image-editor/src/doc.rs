@@ -398,7 +398,7 @@ impl ProjectDoc {
             .ok()
             .flatten()
             .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.to_str().map(str::to_owned))
+            .and_then(|value| value.as_str().map(str::to_owned))
             .and_then(|json| serde_json::from_str(&json).ok())
     }
 

@@ -60,6 +60,11 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot(args).map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the one-shot capture handler runs on the main thread before the launcher \
+              has spawned any thread, and the capture reads the media directory afterwards"
+)]
 fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
     let out = args.shots.as_deref().ok_or("missing screenshot output")?;
     let theme = ui::launch::shot_theme(args);

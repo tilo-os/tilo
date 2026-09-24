@@ -326,6 +326,12 @@ fn read_received_share_stdin(args: &[String]) -> Option<Result<String, String>> 
 /// extended attributes, and point `TILO_WORKSPACE_ROOTS` at it, so a `--shots
 /// --scenario sync` frame exercises the genuine badge path (`read_dir_sync` →
 /// `getxattr` → `Entry.sync_state`) rather than any mock. Returns the dir.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only called from the --shots handler on the main thread before the \
+              widget or any of its worker threads exist, so nothing reads the \
+              environment concurrently"
+)]
 fn seed_sync_demo() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("tilo-files-sync-demo");
     let _ = std::fs::remove_dir_all(&dir);
@@ -351,6 +357,12 @@ fn seed_sync_demo() -> std::path::PathBuf {
     dir
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only called from the --shots handler on the main thread before the \
+              widget or any of its worker threads exist, so nothing reads the \
+              environment concurrently"
+)]
 fn seed_history_demo() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("tilo-files-history-demo");
     let _ = std::fs::remove_dir_all(&dir);
@@ -485,6 +497,12 @@ fn seed_thumbnails_demo() -> std::path::PathBuf {
 /// `--shots --scenario thumbnails-fs` grid exercises the FS-metadata path: the
 /// file manager paints the host's gossiped preview (via the xattr), even for a
 /// file whose content is only *projected*. Sets `TILO_WORKSPACE_ROOTS`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only called from the --shots handler on the main thread before the \
+              widget or any of its worker threads exist, so nothing reads the \
+              environment concurrently"
+)]
 fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("tilo-files-thumbnails-fs-demo");
     let _ = std::fs::remove_dir_all(&dir);

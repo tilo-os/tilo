@@ -36,6 +36,7 @@ postcard = { workspace = true, features = ["use-std"] }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

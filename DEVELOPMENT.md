@@ -1026,6 +1026,40 @@ cargo test -p shell --lib room_activity      # scope it; the compile dominates
 cargo check -p shell --tests                 # before finishing
 ```
 
+### Tests and the process environment
+
+`cargo test` runs a binary's tests as threads of one process, so an
+environment variable one test sets is visible to every test running beside it.
+A test that points `XDG_DATA_HOME` at a temporary directory and removes it
+afterwards also removes whatever value was there before, and a reader on another
+thread sees whichever value was set last.
+
+- **Inject the path or store.** A function that resolves a directory from the
+  environment should delegate to a variant that takes the directory or the
+  store as an argument — `cli::standalone_state_dir_in(home, package)`,
+  `DocStore::shared(store, key)`, `RecordSet::open_in(store, package, room)`,
+  `persist::open_room_in(store, …)`, `RecordOwners::new(root)`. Tests call that
+  variant with an `FsStore` over their own temporary directory and run in
+  parallel with no shared state. This is the default for new code.
+- **Use `tilo-test-env` only where the environment is the interface** — the
+  resolver itself, or a launcher contract such as `TILO_PACKAGE_ID`. Add it as a
+  dev-dependency (`tilo-test-env = { path = "…/crates/dev/test-env" }`).
+  `ScopedEnv` sets and removes variables and restores each prior value on drop,
+  also when an assertion fails; `TestHome` points `HOME` and every XDG base
+  directory at a fresh temporary tree. Both hold one process-wide, re-entrant
+  lock, so scopes nest and never interleave.
+- **Fixture scripts** are written with `tilo_test_env::script(path, body)` and
+  run through `Script::exec_argv()` (`/bin/sh <path>`) or `Script::command()`.
+  Executing a freshly written file directly fails intermittently with `ETXTBSY`
+  when a sibling test forks while the file is still open for writing.
+
+Clippy's `disallowed_methods` (configured in `clippy.toml`, and repeated in
+`crates/sdk/ui-core/clippy.toml`) rejects `std::env::set_var`/`remove_var`
+calls outside `tilo-test-env`, and the PR lint gate fails on any new site. Use an
+injected path or `ScopedEnv`; only production code that must change its own
+environment (for example clearing systemd's `LISTEN_*` before any thread starts)
+takes a narrow `#[allow]` whose reason says why that is safe there.
+
 Full OS image, which needs rootless `podman` for the container step and `sudo`
 for the disk-image step:
 

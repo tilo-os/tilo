@@ -137,7 +137,7 @@ impl WeatherDoc {
         }
         let selected = match doc.get(&ROOT, "selected") {
             Ok(Some((Value::Scalar(value), _))) => {
-                legacy.get(value.to_i64().unwrap_or(0).max(0) as usize)
+                legacy.get(value.as_i64().unwrap_or(0).max(0) as usize)
             }
             _ => legacy.first(),
         };
@@ -407,7 +407,7 @@ impl WeatherDoc {
             })
             .or_else(|| match doc.get(&ROOT, "selected") {
                 Ok(Some((Value::Scalar(value), _))) => {
-                    Some(value.to_i64().unwrap_or(0).max(0) as usize)
+                    Some(value.as_i64().unwrap_or(0).max(0) as usize)
                 }
                 _ => None,
             })

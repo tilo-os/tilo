@@ -70,6 +70,7 @@ accesskit_consumer = "0.39"
 tempfile.workspace = true
 # block_on for the headless dmabuf probe examples
 pollster.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # Zero-copy composite probe — needs the WPE engine's dmabuf import.
 [[example]]

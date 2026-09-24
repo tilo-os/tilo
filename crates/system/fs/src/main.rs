@@ -2342,6 +2342,14 @@ async fn recipient_service(
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to supervised mount \
+              children; cleared right after fd 3 is taken, at the start of the \
+              recipient service before it spawns any task or child, while the \
+              runtime's worker threads are still idle and nothing else reads the \
+              environment"
+)]
 fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
     const SYSTEMD_LISTEN_FD: libc::c_int = 3;
     let pid_matches = std::env::var("LISTEN_PID")

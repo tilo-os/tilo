@@ -26,13 +26,21 @@ thread_local! {
     pub(crate) static FONT_SYSTEM_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// This crate's unit tests get the checked-in controlled catalog instead of
+/// the host's fonts, so their shaping and pixels never depend on which fonts
+/// the machine running them has installed.
+#[cfg(test)]
+pub fn configured_font_system() -> FontSystem {
+    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+    crate::font_catalog::fixture_font_system()
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
 /// other characters not covered by the selected primary face.
+#[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    #[cfg(test)]
-    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
     #[cfg(windows)]
     if let Some(font_system) =
         crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())

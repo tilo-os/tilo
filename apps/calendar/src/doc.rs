@@ -1408,7 +1408,7 @@ fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result
                 .get(&block, "nesting")
                 .ok()
                 .flatten()
-                .and_then(|(v, _)| v.to_u64())
+                .and_then(|(v, _)| v.as_u64())
                 .unwrap_or(0) as u8;
             let text = match doc.get(&block, "text") {
                 Ok(Some((Value::Object(ObjType::Text), text))) => {

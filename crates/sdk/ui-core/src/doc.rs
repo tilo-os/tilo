@@ -237,14 +237,14 @@ pub fn read_number<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> O
 /// (values above `i64::MAX` wrap), and `F64` truncated toward zero
 /// (saturating, `NaN` as 0).
 pub fn read_i64_coerced<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<i64> {
-    read_scalar(doc, obj, prop)?.to_i64()
+    read_scalar(doc, obj, prop)?.as_i64()
 }
 
 /// A number through Automerge's own [`ScalarValue::to_f64`] coercion:
 /// `F64` as stored, and `Int`, `Uint`, `Counter` and `Timestamp` widened to
 /// `f64`. See [`read_number`] for plain numbers only.
 pub fn read_f64_coerced<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<f64> {
-    read_scalar(doc, obj, prop)?.to_f64()
+    read_scalar(doc, obj, prop)?.as_f64()
 }
 
 /// An unsigned integer stored as `Uint`, or as a non-negative `Int`.
@@ -499,7 +499,7 @@ mod tests {
             "changed value writes"
         );
         let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
-            Value::Scalar(v) => v.to_i64(),
+            Value::Scalar(v) => v.as_i64(),
             Value::Object(_) => None,
         };
         assert_eq!(got, Some(2));
