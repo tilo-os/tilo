@@ -342,6 +342,7 @@ struct AclVisibleRecordIndex {
 mod checked_restore;
 #[path = "history_read.rs"]
 mod history_read;
+pub mod native_ops;
 
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
@@ -1711,6 +1712,19 @@ impl QuickFS {
         provenance: collab_types::FileProvenance,
         timestamp_ms: u64,
     ) -> Result<collab_types::FileVersionId, crate::history::HistoryError> {
+        self.append_version_at(snapshot, provenance, timestamp_ms, timestamp_ms)
+    }
+
+    /// [`Self::append_version`] with the signed metadata stamped at
+    /// `observed_at_ms`, the version's modification time, which peers
+    /// materialise as the file's mtime.
+    fn append_version_at(
+        &self,
+        snapshot: VersionSnapshot,
+        provenance: collab_types::FileProvenance,
+        timestamp_ms: u64,
+        observed_at_ms: u64,
+    ) -> Result<collab_types::FileVersionId, crate::history::HistoryError> {
         let Some((history, actor)) = &self.history else {
             return Ok(collab_types::FileVersionId::new());
         };
@@ -1734,7 +1748,7 @@ impl QuickFS {
             } else {
                 publisher
                     .publish(
-                        &self.record_metadata(&snapshot, timestamp_ms, *actor),
+                        &self.record_metadata(&snapshot, observed_at_ms, *actor),
                         std::slice::from_ref(&version),
                     )
                     .map(|_| ())
@@ -3906,11 +3920,18 @@ impl QuickFS {
     /// Ingest `data` as the new content of `ino` and broadcast the change.
     /// Aborts WITHOUT mutating the entry if ingest fails, preserving the
     /// previously-committed content.
+    fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
+        self.commit_content_at(ino, data, now_ms())
+    }
+
+    /// [`Self::commit_content`] with the version's modification time given by
+    /// the caller: the native data plane publishes the time the file was
+    /// written, which peers then materialise.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
     )]
-    fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
+    fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
         #[cfg(test)]
         if let Some((fault_ino, errno)) = *self
             .commit_fault
@@ -3922,29 +3943,39 @@ impl QuickFS {
         }
         let hash = self.write_content_blocking(data)?;
         let byte_len = data.len() as u64;
-        let (expected_hash, expected_len) = {
+        let (expected_hash, expected_len, stamp) = {
             let ns = self.ns();
             let expected_hash = ns.hash_for(ino);
-            let expected_len = ns
+            let attr = ns
                 .getattr(ino)
-                .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?
-                .size;
-            if expected_hash == hash && expected_len == byte_len {
+                .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
+            if expected_hash == hash && attr.size == byte_len {
                 return Ok(());
             }
-            (expected_hash, expected_len)
+            // Signed metadata times never go backwards; a file given an
+            // older mtime than its current version keeps the current one.
+            let current_ms = attr
+                .mtime
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            (expected_hash, attr.size, mtime_ms.max(current_ms))
         };
         let snapshot = self
             .replacement_snapshot(ino, hash, byte_len)
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
-        self.append_version(snapshot, collab_types::FileProvenance::Edit, now_ms())
-            .map_err(|error| match error {
-                crate::history::HistoryError::CapacityExhausted(detail) => {
-                    eprintln!("inode {ino}: {detail}");
-                    io::Error::from_raw_os_error(EDQUOT)
-                }
-                error => io::Error::other(error.to_string()),
-            })?;
+        self.append_version_at(
+            snapshot,
+            collab_types::FileProvenance::Edit,
+            now_ms(),
+            stamp,
+        )
+        .map_err(|error| match error {
+            crate::history::HistoryError::CapacityExhausted(detail) => {
+                eprintln!("inode {ino}: {detail}");
+                io::Error::from_raw_os_error(EDQUOT)
+            }
+            error => io::Error::other(error.to_string()),
+        })?;
         let revision = match &self.record_publisher {
             Some(publisher) => publisher
                 .snapshot(snapshot.record_id)
@@ -3956,19 +3987,21 @@ impl QuickFS {
         };
         let delta = {
             let mut ns = self.ns();
-            if ns.hash_for(ino) != expected_hash
-                || ns.getattr(ino).is_none_or(|attr| attr.size != expected_len)
+            let current_len = ns.getattr(ino).map(|attr| attr.size);
+            let installed = ns.hash_for(ino) == hash && current_len == Some(byte_len);
+            if !installed
+                && (ns.hash_for(ino) != expected_hash || current_len != Some(expected_len))
             {
                 return Err(io::Error::from_raw_os_error(EBUSY));
             }
             if let Some(revision) = &revision {
-                if !ns.set_content_revision(ino, revision, now_ms()) {
+                if !ns.set_content_revision(ino, revision, stamp) {
                     return Err(io::Error::other(
                         "could not install signed content revision",
                     ));
                 }
             } else {
-                ns.set_content(ino, hash.as_ref(), data.len() as u64, now_ms());
+                ns.set_content(ino, hash.as_ref(), data.len() as u64, stamp);
             }
             ns.save_incremental()
         };
@@ -3979,14 +4012,25 @@ impl QuickFS {
     /// Create an empty regular file. Signed mounts publish the immutable
     /// baseline before exposing the move-tree node; a failed publication can
     /// leave an unreachable repository record, but never an unsigned live file.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "signed baseline publication must complete before the new file becomes visible in the namespace"
-    )]
     fn create_empty_file(
         &self,
         parent: u64,
         name: impl AsRef<[u8]>,
+    ) -> Result<(u64, Vec<u8>), i32> {
+        self.create_empty_file_stamped(parent, name, now_ms())
+    }
+
+    /// [`Self::create_empty_file`] whose binding and metadata are stamped at
+    /// `observed_at_ms` (the file's own time) rather than now.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "signed baseline publication must complete before the new file becomes visible in the namespace"
+    )]
+    fn create_empty_file_stamped(
+        &self,
+        parent: u64,
+        name: impl AsRef<[u8]>,
+        observed_at_ms: u64,
     ) -> Result<(u64, Vec<u8>), i32> {
         let name: &[u8] = name.as_ref();
         let timestamp_ms = now_ms();
@@ -4037,12 +4081,12 @@ impl QuickFS {
                     kind: collab_types::FileNodeKind::File,
                     tombstoned: false,
                     actor: *actor,
-                    observed_at_ms: timestamp_ms,
+                    observed_at_ms,
                 })
                 .map_err(|_| EIO)?;
             publisher
                 .publish(
-                    &self.record_metadata(&snapshot, timestamp_ms, *actor),
+                    &self.record_metadata(&snapshot, observed_at_ms, *actor),
                     std::slice::from_ref(&version),
                 )
                 .map_err(|_| EIO)?;
@@ -4057,7 +4101,7 @@ impl QuickFS {
                 return Err(EEXIST);
             }
             let ino = namespace
-                .create_projected_file(parent, name, record_id, None, 0, timestamp_ms)
+                .create_projected_file(parent, name, record_id, None, 0, observed_at_ms)
                 .ok_or(EIO)?;
             if !namespace.install_verified_content_revision(revision) {
                 let _ = namespace.remove(ino);
@@ -4068,7 +4112,7 @@ impl QuickFS {
 
         let mut namespace = self.ns();
         let ino = namespace
-            .create_file(parent, name, None, 0, timestamp_ms)
+            .create_file(parent, name, None, 0, observed_at_ms)
             .ok_or(ENOENT)?;
         Ok((ino, namespace.save_incremental()))
     }
