@@ -21,7 +21,7 @@
 //! any entry whose bytes hash matches its content-address is welcome.
 
 use thiserror::Error;
-use tilo_app_package::blobs::BlobStore;
+use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::id::PackageId;
 
 use crate::registry::{Pinning, RegistryEntry};
@@ -120,14 +120,20 @@ pub fn install_tapp(
     // Parse every tar entry into a scratch store before touching durable
     // state. The shared parser is also the single authority for archive-layout
     // version checks.
-    let app_registry::tapp::TappMeta {
-        package_id: id,
-        store: mem,
-        ..
-    } = app_registry::tapp::load(bytes).map_err(|error| InstallError::Parse(error.to_string()))?;
+    let mut mem = std::collections::BTreeMap::new();
+    let tapp = tilo_app_package::tapp::read(bytes, &mut mem)
+        .map_err(|error| InstallError::Parse(error.to_string()))?;
+    if !tapp.is_complete() {
+        return Err(InstallError::Parse(format!(
+            ".tapp lacks {} payload blob(s)",
+            tapp.missing().len()
+        )));
+    }
+    let meta = tapp.meta;
+    let id = meta.id;
 
     // Verify — self-signed acceptable (empty trust set → UntrustedPublisher).
-    let manifest = match tilo_app_package::verify(id, &mem, &[]) {
+    let manifest = match tilo_app_package::verify(&meta, &[]) {
         tilo_app_package::Verification::Trusted { manifest }
         | tilo_app_package::Verification::UntrustedPublisher { manifest, .. } => manifest,
         other => {
@@ -137,10 +143,19 @@ pub fn install_tapp(
 
     // Flush the scratch memory store into the on-disk store.
     store.with_blobs(|fs_store| -> Result<(), InstallError> {
-        for (h, bytes) in mem.iter() {
+        let metadata = [
+            meta.signed_root_bytes().to_vec(),
+            meta.manifest_bytes.clone(),
+            meta.collection_bytes.clone(),
+        ];
+        for (h, bytes) in mem.iter().map(|(h, bytes)| (*h, bytes.as_slice())).chain(
+            metadata
+                .iter()
+                .map(|bytes| (BlobHash::of(bytes), bytes.as_slice())),
+        ) {
             // FsBlobStore is idempotent — re-inserting the same
             // content-addressed bytes is a no-op.
-            if !fs_store.has(h) {
+            if !fs_store.has(&h) {
                 fs_store
                     .put(bytes)
                     .map_err(|e| InstallError::Parse(format!("fs blob-store: {e}")))?;
@@ -154,11 +169,7 @@ pub fn install_tapp(
     if payload_root.exists() {
         std::fs::remove_dir_all(&payload_root)?;
     }
-    std::fs::create_dir_all(&payload_root)?;
-    // Unpack directly out of the scratch memory store — the fs store
-    // has the same content, but tilo_app_package::unpack takes `&impl BlobStore`
-    // and the memory store is Send + Sync-friendly.
-    tilo_app_package::unpack(id, &mem, &payload_root)
+    tilo_app_package::unpack(&meta, &mem, &payload_root)
         .map_err(|e| InstallError::Unpack(e.to_string()))?;
 
     let manifest_text = manifest

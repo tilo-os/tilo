@@ -24,7 +24,7 @@ use app_registry::transport::BlobNode;
 use app_registry::{publish_to_dir, registry_dir};
 
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, MemoryBlobStore, PackageId};
+use tilo_app_package::{Manifest, PackageId};
 
 /// Author a tiny signed `.tapp` for `so.tilo.editor@1.0.0`.
 fn author_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
@@ -62,10 +62,9 @@ type = "gui"
 "#
     );
     let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-    let bytes = app_registry::tapp::write_bytes(id, &store).unwrap();
-    (bytes, id)
+    let packed = pack(&payload, &manifest, identity).unwrap();
+    let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+    (bytes, packed.id())
 }
 
 fn file_url(dir: &std::path::Path) -> String {

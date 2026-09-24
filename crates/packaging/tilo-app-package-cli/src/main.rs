@@ -1,20 +1,14 @@
-//! `tilo-app-package` — CLI driver for the `tilo-app-package` foundation crate.
+//! `tilo-app-package` — CLI driver for the `tilo-app-package` format crate.
 //!
-//! A `.tapp` is a plain (uncompressed) tar archive:
-//!
-//! ```text
-//! tapp.toml          # tiny header: package_id (tapp:<hex>) + format version
-//! signed-root        # the 173-byte signed-root blob (binary)
-//! manifest.toml      # the manifest, UTF-8 TOML
-//! collection.qcl     # the encoded payload Collection
-//! blobs/<hex>        # each payload blob, named by its BLAKE3 hex hash
-//! ```
+//! A `.tapp` is a plain (uncompressed) tar archive; see
+//! [`tilo_app_package::tapp`] for the layout. `pack` writes the full form,
+//! which carries every payload blob for offline transfer; `pack --thin` and
+//! `thin` write the thin form (signed root, manifest and collection only),
+//! whose payload an installer fetches from whoever holds the bytes.
 //!
 //! Uncompressed because each blob is already content-addressed and,
-//! deployed, lives in an iroh-blobs store doing chunk-level
-//! dedup/streaming — gzip would only waste CPU. `tapp.toml` is
-//! convention-only (duplicates what's in signed-root) so `tar tf` shows
-//! the `PackageId` without decoding binary.
+//! deployed, lives in a content store doing dedup/streaming — gzip would
+//! only waste CPU.
 
 #![cfg_attr(
     test,
@@ -30,8 +24,9 @@
 )]
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -39,23 +34,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use tilo_app_package::blobs::{BlobHash, BlobStore, Collection};
 use tilo_app_package::signed::SignedRoot;
 use tilo_app_package::{
-    Manifest, MemoryBlobStore, PackageId, SigningIdentity, Verification, pack, unpack, verify,
+    BlobHash, BlobSource, DiscardBlobs, Manifest, PackageMeta, SigningIdentity, Tapp, Verification,
+    pack, unpack, verify,
 };
-
-/// The header entry inside a .tapp tar. Tiny and minimal so it can be
-/// deserialised without pulling in the rest of the crate.
-#[derive(Debug, Serialize, Deserialize)]
-struct TappHeader {
-    /// `tapp:<hex>` form.
-    package_id: String,
-    /// Format version of the .tapp layout itself; bumped independently from tilo-app-package's signed-root version.
-    format: u32,
-}
-
-const TAPP_FORMAT: u32 = 1;
 
 #[derive(Parser)]
 #[command(
@@ -119,6 +102,19 @@ enum Command {
         /// its public key replaces `publisher.identity` in the embedded manifest copy.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Write the thin form: signed root, manifest and payload collection
+        /// only. An installer fetches the payload bytes from its store, a
+        /// peer or a registry.
+        #[arg(long)]
+        thin: bool,
+    },
+    /// Write the thin form of an existing .tapp (metadata only) to `output`.
+    Thin {
+        /// Output path for the thin .tapp.
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// The .tapp to thin.
+        file: PathBuf,
     },
     /// Re-sign an existing .tapp with the given identity, writing the result back into the same file.
     Sign {
@@ -224,7 +220,9 @@ fn main() -> Result<()> {
             payload,
             output,
             identity,
-        } => cmd_pack(&manifest, &payload, &output, identity.as_deref()),
+            thin,
+        } => cmd_pack(&manifest, &payload, &output, identity.as_deref(), thin),
+        Command::Thin { output, file } => cmd_thin(&file, &output),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -274,6 +272,7 @@ fn cmd_pack(
     payload_dir: &Path,
     output: &Path,
     identity_path: Option<&Path>,
+    thin: bool,
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
@@ -291,23 +290,30 @@ fn cmd_pack(
     let pub_hex = hex::encode(identity.public_key_bytes());
     manifest.publisher.identity = format!("ed25519:{pub_hex}");
 
-    let mut store = MemoryBlobStore::new();
-    let id = pack(payload_dir, &manifest, &identity, &mut store)
-        .map_err(|e| anyhow!("pack failed: {e}"))?;
-    write_tapp(output, id, &store)?;
-    eprintln!("packed {} ({} blobs)", id, store.len());
+    let packed =
+        pack(payload_dir, &manifest, &identity).map_err(|e| anyhow!("pack failed: {e}"))?;
+    let payload: Option<&dyn BlobSource> = if thin { None } else { Some(&packed) };
+    write_tapp(output, &packed.meta, payload)?;
+    eprintln!(
+        "packed {} ({} form, {} payload blobs)",
+        packed.id(),
+        if thin { "thin" } else { "full" },
+        packed.meta.payload_hashes().len()
+    );
+    Ok(())
+}
+
+fn cmd_thin(file: &Path, output: &Path) -> Result<()> {
+    let (tapp, _) = read_tapp(file, false)?;
+    write_tapp(output, &tapp.meta, None)?;
+    eprintln!("wrote thin {} -> {}", tapp.meta.id, output.display());
     Ok(())
 }
 
 fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
     let identity = load_identity(identity_path)?;
-    let (id, store) = read_tapp(file)?;
-    // Re-construct the signed-root with a new signature.
-    let signed_bytes = store
-        .get(&BlobHash(*id.as_bytes()))
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-    let signed = SignedRoot::decode(&signed_bytes)?;
+    let (tapp, blobs) = read_tapp(file, true)?;
+    let signed = &tapp.meta.root;
     if signed.publisher_identity != identity.public_key_bytes() {
         bail!(
             "identity does not match the package's publisher identity (pkg={}, ours={})",
@@ -316,28 +322,26 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
         );
     }
     // Sign with the has_signature bit already set so verify recomputes the same bytes.
-    let mut pre_signed = signed;
+    let mut pre_signed = signed.clone();
     pre_signed.signature = Some([0u8; 64]);
     let sig = identity
         .sign_signed_root(&pre_signed)
         .map_err(|e| anyhow!("sign: {e}"))?;
-    let new_signed = SignedRoot {
-        signature: Some(sig),
-        ..pre_signed
+    let new_meta = PackageMeta::from_root(
+        SignedRoot {
+            signature: Some(sig),
+            ..pre_signed
+        },
+        tapp.meta.manifest_bytes.clone(),
+        tapp.meta.collection_bytes.clone(),
+    )?;
+    let payload: Option<&dyn BlobSource> = if tapp.carried.is_empty() {
+        None
+    } else {
+        Some(&blobs)
     };
-    let mut new_store = MemoryBlobStore::new();
-    for (h, b) in store.iter() {
-        if h == &BlobHash(*id.as_bytes()) {
-            continue;
-        }
-        new_store.put(b).map_err(|e| anyhow!("store: {e}"))?;
-    }
-    new_store
-        .put(&new_signed.encode())
-        .map_err(|e| anyhow!("store: {e}"))?;
-    let new_id = new_signed.package_id();
-    write_tapp(file, new_id, &new_store)?;
-    eprintln!("re-signed {id} -> {new_id}");
+    write_tapp(file, &new_meta, payload)?;
+    eprintln!("re-signed {} -> {}", tapp.meta.id, new_meta.id);
     Ok(())
 }
 
@@ -349,7 +353,23 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
               that needs Drop-based cleanup"
 )]
 fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
-    let (id, store) = read_tapp(file)?;
+    // Decoding checks the hash chain and every carried payload blob.
+    let tapp = match read_tapp(file, false) {
+        Ok((tapp, _)) => tapp,
+        Err(error) => {
+            println!("FAILED: {error:#}");
+            std::process::exit(1);
+        }
+    };
+    let id = tapp.meta.id;
+    let missing = tapp.missing();
+    if !tapp.carried.is_empty() && !missing.is_empty() {
+        println!(
+            "FAILED: {id} carries some payload blobs but lacks {} others",
+            missing.len()
+        );
+        std::process::exit(1);
+    }
     // Trust set: caller's keys + (if empty) the embedded publisher key for convenience.
     let mut keys: Vec<[u8; 32]> = Vec::new();
     for hex in trusted_hex {
@@ -361,18 +381,16 @@ fn cmd_verify(trusted_hex: &[String], file: &Path) -> Result<()> {
         keys.push(arr);
     }
     if keys.is_empty() {
-        // Auto-trust the embedded publisher.
-        let signed_bytes = store
-            .get(&BlobHash(*id.as_bytes()))
-            .map_err(|e| anyhow!("store: {e}"))?
-            .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-        let signed = SignedRoot::decode(&signed_bytes)?;
-        keys.push(signed.publisher_identity);
+        keys.push(tapp.meta.publisher());
     }
-    let outcome = verify(id, &store, &keys);
-    match outcome {
+    let form = if missing.is_empty() {
+        "full"
+    } else {
+        "thin: payload bytes are fetched on install"
+    };
+    match verify(&tapp.meta, &keys) {
         Verification::Trusted { .. } => {
-            println!("ok: {id} verifies and publisher is trusted");
+            println!("ok: {id} verifies and publisher is trusted ({form})");
             Ok(())
         }
         Verification::UntrustedPublisher { identity, .. } => {
@@ -393,70 +411,77 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     let archive_size = std::fs::metadata(file)
         .with_context(|| format!("stat {}", file.display()))?
         .len();
-    let (id, store) = read_tapp(file)?;
-    println!("package-id: {id}");
+    let (tapp, _) = read_tapp(file, false)?;
+    let meta = &tapp.meta;
+    println!("package-id: {}", meta.id);
     println!("archive-size: {archive_size} bytes");
-    let signed_bytes = store
-        .get(&BlobHash(*id.as_bytes()))
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-    let signed = SignedRoot::decode(&signed_bytes)?;
-    println!("manifest-hash: blake3:{}", signed.manifest_hash);
-    println!("payload-root-hash: blake3:{}", signed.payload_root_hash);
+    println!(
+        "form: {}",
+        if tapp.is_complete() {
+            "full"
+        } else if tapp.carried.is_empty() {
+            "thin"
+        } else {
+            "partial"
+        }
+    );
+    println!("manifest-hash: blake3:{}", meta.root.manifest_hash);
+    println!("payload-root-hash: blake3:{}", meta.root.payload_root_hash);
     println!(
         "publisher-identity: ed25519:{}",
-        hex::encode(signed.publisher_identity)
+        hex::encode(meta.publisher())
     );
     println!(
         "signed: {}",
-        if signed.signature.is_some() {
+        if meta.root.signature.is_some() {
             "yes"
         } else {
             "NO"
         }
     );
-    let manifest_bytes = store
-        .get(&signed.manifest_hash)
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("manifest blob missing"))?;
-    let manifest_str = std::str::from_utf8(&manifest_bytes).context("manifest is not UTF-8")?;
+    let manifest_str =
+        std::str::from_utf8(&meta.manifest_bytes).context("manifest is not UTF-8")?;
     println!("\n--- manifest.toml ---");
     println!("{manifest_str}");
-    let collection_bytes = store
-        .get(&signed.payload_root_hash)
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("collection blob missing"))?;
-    let collection = Collection::decode(&collection_bytes)?;
-    let payload_size: u64 = collection
-        .entries
-        .values()
-        .filter_map(|hash| store.get(hash).ok().flatten())
-        .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-        .sum();
-    println!("payload-size: {payload_size} bytes");
-    println!(
-        "package-overhead: {} bytes",
-        archive_size.saturating_sub(payload_size)
-    );
-    println!("--- payload ({} files) ---", collection.entries.len());
-    for (p, h) in &collection.entries {
-        let size = store.get(h).ok().flatten().map_or(0, |b| b.len());
-        println!("  {p}  (blake3:{h}, {size} bytes)");
+    if tapp.is_complete() {
+        let payload_size: u64 = meta
+            .collection
+            .entries
+            .values()
+            .filter_map(|hash| tapp.carried.get(hash))
+            .sum();
+        println!("payload-size: {payload_size} bytes");
+        println!(
+            "package-overhead: {} bytes",
+            archive_size.saturating_sub(payload_size)
+        );
+    }
+    println!("--- payload ({} files) ---", meta.collection.entries.len());
+    for (p, h) in &meta.collection.entries {
+        match tapp.carried.get(h) {
+            Some(size) => println!("  {p}  (blake3:{h}, {size} bytes)"),
+            None => println!("  {p}  (blake3:{h}, not carried)"),
+        }
     }
     Ok(())
 }
 
 fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
-    let (id, store) = read_tapp(file)?;
-    let manifest = unpack(id, &store, dest).map_err(|e| anyhow!("unpack: {e}"))?;
+    let (tapp, blobs) = read_tapp(file, true)?;
+    if !tapp.is_complete() {
+        bail!(
+            "{} is thin: {} payload blob(s) are not in the archive; install it instead",
+            file.display(),
+            tapp.missing().len()
+        );
+    }
+    unpack(&tapp.meta, &blobs, dest).map_err(|e| anyhow!("unpack: {e}"))?;
     // Also drop a manifest.toml at the destination root for convenience —
     // unpack only writes the payload tree, but a developer inspecting it
     // expects to see the manifest too.
-    let toml = manifest
-        .to_toml_string()
-        .map_err(|e| anyhow!("re-encode manifest: {e}"))?;
-    std::fs::write(dest.join("manifest.toml"), toml).context("write manifest.toml")?;
-    eprintln!("unpacked {id} -> {}", dest.display());
+    std::fs::write(dest.join("manifest.toml"), &tapp.meta.manifest_bytes)
+        .context("write manifest.toml")?;
+    eprintln!("unpacked {} -> {}", tapp.meta.id, dest.display());
     Ok(())
 }
 
@@ -575,7 +600,9 @@ impl Drop for PendingTapp {
     }
 }
 
-fn write_tapp(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()> {
+/// Write `meta` (full when `payload` is given, thin otherwise) to `path`
+/// atomically, enforcing the application size ceiling on the result.
+fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>) -> Result<()> {
     let temp = path.with_extension(format!("tapp.tmp.{}", std::process::id()));
     let file = File::options()
         .write(true)
@@ -583,135 +610,38 @@ fn write_tapp(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
         .open(&temp)
         .with_context(|| format!("create temporary package {}", temp.display()))?;
     let mut pending = PendingTapp(temp.clone());
-    let mut tar = tar::Builder::new(file);
-
-    let header = TappHeader {
-        package_id: id.to_string(),
-        format: TAPP_FORMAT,
-    };
-    let header_toml = toml_to_string(&header)?;
-    tar_append_str(&mut tar, "tapp.toml", &header_toml)?;
-
-    // signed-root
-    let signed = store
-        .get(&BlobHash(*id.as_bytes()))
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-    tar_append_bytes(&mut tar, "signed-root", &signed)?;
-
-    // manifest + collection named for the human reader — the verifier
-    // actually walks via the hashes in signed-root, not these names.
-    let signed_decoded = SignedRoot::decode(&signed)?;
-    let manifest = store
-        .get(&signed_decoded.manifest_hash)
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("manifest blob missing"))?;
-    let package_kind = std::str::from_utf8(&manifest)
-        .context("manifest is not UTF-8")
-        .and_then(|source| Manifest::from_toml_str(source).context("decode package manifest"))?
-        .package
-        .kind;
-    tar_append_bytes(&mut tar, "manifest.toml", &manifest)?;
-    let collection = store
-        .get(&signed_decoded.payload_root_hash)
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("collection blob missing"))?;
-    tar_append_bytes(&mut tar, "collection.qcl", &collection)?;
-
-    // Per-file blobs.
-    for (h, b) in store.iter() {
-        // Skip the three blobs already written under human-readable names;
-        // readers ingest those names into the same content-addressed store.
-        if *h == BlobHash(*id.as_bytes())
-            || *h == signed_decoded.manifest_hash
-            || *h == signed_decoded.payload_root_hash
-        {
-            continue;
-        }
-        let name = format!("blobs/{h}");
-        tar_append_bytes(&mut tar, &name, b)?;
-    }
-    if let Err(error) = tar.finish().context("finalise tar") {
-        drop(tar);
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
-    drop(tar);
+    let mut file = tilo_app_package::tapp::write(std::io::BufWriter::new(file), meta, payload)
+        .context("write package archive")?;
+    file.flush().context("flush package archive")?;
+    drop(file);
     let archive_size = std::fs::metadata(&temp)
         .with_context(|| format!("stat temporary package {}", temp.display()))?
         .len();
-    if !tilo_app_package::tapp_size_allowed(package_kind, archive_size) {
-        let _ = std::fs::remove_file(&temp);
+    if !tilo_app_package::tapp_size_allowed(meta.manifest.package.kind, archive_size) {
         bail!(
             "application tapp is {archive_size} bytes; limit is {} bytes",
             tilo_app_package::MAX_APP_TAPP_BYTES
         );
     }
-    if let Err(error) =
-        std::fs::rename(&temp, path).with_context(|| format!("install package {}", path.display()))
-    {
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
+    std::fs::rename(&temp, path).with_context(|| format!("install package {}", path.display()))?;
     pending.0.clear();
     Ok(())
 }
 
-fn read_tapp(path: &Path) -> Result<(PackageId, MemoryBlobStore)> {
+/// Decode the archive at `path`. With `keep_blobs` the carried payload is
+/// returned in memory (applications are capped at a few MiB); otherwise it
+/// is verified and dropped.
+fn read_tapp(path: &Path, keep_blobs: bool) -> Result<(Tapp, BTreeMap<BlobHash, Vec<u8>>)> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut ar = tar::Archive::new(file);
-    let mut header: Option<TappHeader> = None;
-    let mut store = MemoryBlobStore::new();
-    for entry in ar.entries().context("read tar entries")? {
-        let mut entry = entry?;
-        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
-        let name = entry_path.to_string_lossy().to_string();
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf).context("read tar entry")?;
-        match name.as_str() {
-            "tapp.toml" => {
-                let s = String::from_utf8(buf).context("tapp.toml not UTF-8")?;
-                header = Some(toml_from_str(&s)?);
-            }
-            n if n.starts_with("blobs/") => {
-                store.put(&buf).map_err(|e| anyhow!("store: {e}"))?;
-            }
-            // signed-root/manifest.toml/collection.qcl are usually duplicated
-            // under blobs/<hex>; ingest them here too in case a packager omitted the duplicate.
-            "signed-root" | "manifest.toml" | "collection.qcl" => {
-                store.put(&buf).map_err(|e| anyhow!("store: {e}"))?;
-            }
-            _ => { /* unknown entry — ignore */ }
-        }
+    let reader = std::io::BufReader::new(file);
+    let mut blobs = BTreeMap::new();
+    let tapp = if keep_blobs {
+        tilo_app_package::tapp::read(reader, &mut blobs)
+    } else {
+        tilo_app_package::tapp::read(reader, &mut DiscardBlobs)
     }
-    let header = header.ok_or_else(|| anyhow!(".tapp is missing tapp.toml"))?;
-    let id: PackageId = header
-        .package_id
-        .parse()
-        .map_err(|e| anyhow!("bad package id {:?}: {e}", header.package_id))?;
-    Ok((id, store))
-}
-
-fn tar_append_bytes<W: Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut header = tar::Header::new_gnu();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append_data(&mut header, name, bytes)
-        .with_context(|| format!("write tar entry {name}"))?;
-    Ok(())
-}
-
-fn tar_append_str<W: Write>(tar: &mut tar::Builder<W>, name: &str, s: &str) -> Result<()> {
-    tar_append_bytes(tar, name, s.as_bytes())
-}
-
-fn toml_to_string<T: serde::Serialize>(v: &T) -> Result<String> {
-    toml::to_string_pretty(v).context("toml encode tapp.toml")
-}
-
-fn toml_from_str(s: &str) -> Result<TappHeader> {
-    toml::from_str(s).context("toml decode tapp.toml")
+    .with_context(|| format!("decode {}", path.display()))?;
+    Ok((tapp, blobs))
 }
 
 // identity I/O

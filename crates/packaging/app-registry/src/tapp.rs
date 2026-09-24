@@ -1,229 +1,95 @@
-//! Reading + verifying `.tapp` tar bytes.
+//! Reading + verifying `.tapp` bytes on the registry protocol's edges.
 //!
 //! Both the publish side (build an index entry from a tapp's manifest)
 //! and the fetch side (verify downloaded bytes before install) need to
-//! crack open the `.tapp` tar, so the logic lives here once. The wire
-//! format is the one `tilo-app-package-cli` writes:
-//!
-//! ```text
-//! tapp.toml          # header: package_id (tapp:<hex>) + format
-//! signed-root        # the signed-root blob
-//! manifest.toml      # the manifest (UTF-8 TOML)
-//! collection.qcl     # the encoded payload Collection
-//! blobs/<hex>        # each payload blob, named by its BLAKE3 hex
-//! ```
-
-use std::io::Read;
-use std::path::{Component, PathBuf};
+//! open a `.tapp`; the archive format itself lives in
+//! [`tilo_app_package::tapp`], and this module adds the registry's
+//! checks on top of it.
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
 
-use tilo_app_package::blobs::{BlobHash, BlobStore};
-use tilo_app_package::signed::SignedRoot;
-use tilo_app_package::{Manifest, MemoryBlobStore, PackageId, Verification, verify};
+use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Tapp, Verification, verify};
 
-#[derive(Debug, Deserialize)]
-struct TappHeader {
-    package_id: String,
-    format: u32,
-}
-
-/// Current version of the `.tapp` tar layout.
-pub const TAPP_FORMAT_VERSION: u32 = 1;
+pub use tilo_app_package::tapp::TAPP_FORMAT_VERSION;
 
 /// The pieces of a `.tapp` a caller commonly needs.
 pub struct TappMeta {
-    /// Content-addressed package identity (from the header, matched
-    /// against the signed-root during [`verify_bytes`]).
+    /// Content-addressed package identity.
     pub package_id: PackageId,
     /// The decoded manifest.
     pub manifest: Manifest,
-    /// Every in-band blob, ready to hand to [`tilo_app_package::verify`].
-    pub store: MemoryBlobStore,
+    /// The decoded archive: metadata plus the sizes of carried blobs, each
+    /// already checked against its hash.
+    pub tapp: Tapp,
 }
 
 /// Enforce the application materialization and entry-count budgets without
-/// writing the payload to disk.
+/// writing the payload to disk. Needs the full form, which carries every
+/// payload size.
 ///
 /// # Errors
 ///
-/// Returns an error when the package root or payload collection is missing or
-/// malformed, the blob store cannot be read, or the decoded application
-/// exceeds the materialization limits enforced by [`pkg`].
+/// Returns an error when the archive lacks payload blobs or the decoded
+/// application exceeds the materialization limits.
 pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
-    let signed_bytes = meta
-        .store
-        .get(&BlobHash(*meta.package_id.as_bytes()))?
-        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-    let signed = SignedRoot::decode(&signed_bytes)?;
-    let collection_bytes = meta
-        .store
-        .get(&signed.payload_root_hash)?
-        .ok_or_else(|| anyhow!("payload collection missing"))?;
-    let collection = tilo_app_package::Collection::decode(&collection_bytes)?;
-    let payload_paths: Vec<PathBuf> = collection.entries.keys().map(PathBuf::from).collect();
-    if payload_paths.iter().any(|path| {
-        path.is_absolute()
-            || path.components().any(|component| {
-                matches!(
-                    component,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )
-            })
-    }) {
-        bail!("payload collection contains an unsafe path");
-    }
-    tilo_app_package::validate_manifest_with_payload(&meta.manifest, &payload_paths)
-        .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
-    tilo_app_package::validate_materialized_payload(&meta.manifest, &collection, &meta.store)?;
-    Ok(())
-}
-
-/// Parse a `.tapp` tar into its blobs + manifest. Does NOT verify the
-/// signature — call [`verify_bytes`] for that.
-///
-/// # Errors
-///
-/// Returns an error if the tar can't be read, `tapp.toml` is missing
-/// or malformed, or the signed-root / manifest blobs are missing or
-/// fail to decode.
-pub fn load(bytes: &[u8]) -> Result<TappMeta> {
-    let mut store = MemoryBlobStore::new();
-    let mut header: Option<TappHeader> = None;
-
-    let mut ar = tar::Archive::new(bytes);
-    for entry in ar.entries().context("read tapp tar entries")? {
-        let mut entry = entry.context("read tapp tar entry")?;
-        let name = entry
-            .path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
-            .context("read tapp tar entry body")?;
-        match name.as_str() {
-            "tapp.toml" => {
-                let s = String::from_utf8(buf).context("tapp.toml not UTF-8")?;
-                header = Some(toml::from_str(&s).context("decode tapp.toml")?);
-            }
-            n if n.starts_with("blobs/") => {
-                store.put(&buf).map_err(|e| anyhow!("blob store: {e}"))?;
-            }
-            "signed-root" | "manifest.toml" | "collection.qcl" => {
-                store.put(&buf).map_err(|e| anyhow!("blob store: {e}"))?;
-            }
-            _ => {}
-        }
-    }
-
-    let header = header.ok_or_else(|| anyhow!(".tapp is missing tapp.toml"))?;
-    if header.format != TAPP_FORMAT_VERSION {
+    let tapp = &meta.tapp;
+    let missing = tapp.missing();
+    if !missing.is_empty() {
         bail!(
-            "unsupported tapp format {}; expected {}",
-            header.format,
-            TAPP_FORMAT_VERSION
+            "the payload shape needs the full .tapp; {} payload blob(s) are not carried",
+            missing.len()
         );
     }
-    let package_id: PackageId = header
-        .package_id
-        .parse()
-        .map_err(|e| anyhow!("bad package id {:?}: {e:?}", header.package_id))?;
-
-    let signed_bytes = store
-        .get(&BlobHash(*package_id.as_bytes()))
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-    let signed = SignedRoot::decode(&signed_bytes).context("decode signed-root")?;
-    let manifest_bytes = store
-        .get(&signed.manifest_hash)
-        .map_err(|e| anyhow!("store: {e}"))?
-        .ok_or_else(|| anyhow!("manifest blob missing"))?;
-    let manifest_str = std::str::from_utf8(&manifest_bytes).context("manifest not UTF-8")?;
-    let manifest = Manifest::from_toml_str(manifest_str).context("decode manifest")?;
-
-    Ok(TappMeta {
-        package_id,
-        manifest,
-        store,
-    })
+    let payload_paths: Vec<std::path::PathBuf> = tapp
+        .meta
+        .collection
+        .entries
+        .keys()
+        .map(std::path::PathBuf::from)
+        .collect();
+    tilo_app_package::validate_manifest_with_payload(&meta.manifest, &payload_paths)
+        .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
+    tilo_app_package::validate_materialized_payload(
+        &meta.manifest,
+        &tapp.meta.collection,
+        |hash| tapp.carried.get(hash).copied(),
+    )?;
+    Ok(())
 }
 
-/// Serialise the blobs of a packed bundle into `.tapp` tar bytes —
-/// the inverse of [`load`], matching the layout `tilo-app-package pack` writes.
-/// Used by publish tooling + tests that build a bundle in memory.
+/// Decode a `.tapp`, checking the metadata hash chain and every carried
+/// payload blob. Does NOT check the signature — call [`verify_bytes`] for
+/// that.
 ///
 /// # Errors
 ///
-/// Returns an error if the signed-root, manifest, or collection blobs
-/// are missing from `store`, or writing the tar fails.
-pub fn write_bytes(id: PackageId, store: &MemoryBlobStore) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    {
-        let mut tar = tar::Builder::new(&mut buf);
-
-        let header = format!("package_id = \"{id}\"\nformat = {TAPP_FORMAT_VERSION}\n");
-        append(&mut tar, "tapp.toml", header.as_bytes())?;
-
-        let signed_bytes = store
-            .get(&BlobHash(*id.as_bytes()))
-            .map_err(|e| anyhow!("store: {e}"))?
-            .ok_or_else(|| anyhow!("signed-root blob missing"))?;
-        append(&mut tar, "signed-root", &signed_bytes)?;
-        let signed = SignedRoot::decode(&signed_bytes).context("decode signed-root")?;
-
-        let manifest = store
-            .get(&signed.manifest_hash)
-            .map_err(|e| anyhow!("store: {e}"))?
-            .ok_or_else(|| anyhow!("manifest blob missing"))?;
-        append(&mut tar, "manifest.toml", &manifest)?;
-        let collection = store
-            .get(&signed.payload_root_hash)
-            .map_err(|e| anyhow!("store: {e}"))?
-            .ok_or_else(|| anyhow!("collection blob missing"))?;
-        append(&mut tar, "collection.qcl", &collection)?;
-
-        for (h, b) in store.iter() {
-            if *h == BlobHash(*id.as_bytes())
-                || *h == signed.manifest_hash
-                || *h == signed.payload_root_hash
-            {
-                continue;
-            }
-            append(&mut tar, &format!("blobs/{h}"), b)?;
-        }
-        tar.finish().context("finalise tapp tar")?;
-    }
-    Ok(buf)
-}
-
-fn append<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut header = tar::Header::new_gnu();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append_data(&mut header, name, bytes)
-        .with_context(|| format!("write tar entry {name}"))?;
-    Ok(())
+/// Returns an error if the archive is malformed, its metadata links are
+/// broken, or a carried blob does not match its hash.
+pub fn load(bytes: &[u8]) -> Result<TappMeta> {
+    let tapp = tilo_app_package::tapp::read(bytes, &mut DiscardBlobs).context("decode .tapp")?;
+    Ok(TappMeta {
+        package_id: tapp.meta.id,
+        manifest: tapp.meta.manifest.clone(),
+        tapp,
+    })
 }
 
 /// Verify downloaded `.tapp` bytes fail-closed:
 ///
-/// - the header package-id must equal `expected_id`;
-/// - [`tilo_app_package::verify`] against `[expected_publisher]` must return
-///   `Trusted` (or `AttestedBy`) — i.e. every hash re-derives, the
-///   signed-root signature validates, AND the tapp's embedded
-///   publisher key equals the one the registry entry vouched for.
+/// - the package id must equal `expected_id`;
+/// - the metadata hash chain and every carried payload blob must check;
+/// - the signature must be valid and made by `expected_publisher`, the
+///   key the registry entry vouched for.
 ///
-/// Any other outcome (missing/tampered blob, bad signature, publisher
-/// mismatch) is a hard error — the bytes are never accepted.
+/// A thin archive passes on its metadata; its payload is checked blob by
+/// blob by whoever fetches it. Any other outcome is a hard error — the
+/// bytes are never accepted.
 ///
 /// # Errors
 ///
-/// Returns an error if `bytes` fails to load, the header package-id
-/// doesn't match `expected_id`, or verification against
-/// `expected_publisher` doesn't come back `Trusted`/`AttestedBy`.
+/// Returns an error if `bytes` fails to decode, the package id doesn't
+/// match `expected_id`, or verification against `expected_publisher`
+/// doesn't come back `Trusted`/`AttestedBy`.
 pub fn verify_bytes(
     bytes: &[u8],
     expected_id: PackageId,
@@ -237,7 +103,10 @@ pub fn verify_bytes(
             expected_id
         );
     }
-    match verify(meta.package_id, &meta.store, &[expected_publisher]) {
+    if !meta.tapp.carried.is_empty() && !meta.tapp.is_complete() {
+        bail!("tapp carries only part of its payload");
+    }
+    match verify(&meta.tapp.meta, &[expected_publisher]) {
         Verification::Trusted { .. } | Verification::AttestedBy { .. } => Ok(meta.package_id),
         Verification::UntrustedPublisher { identity, .. } => bail!(
             "tapp publisher ed25519:{} does not match the registry entry's publisher",
@@ -251,15 +120,24 @@ pub fn verify_bytes(
 pub(crate) mod test_fixture {
     //! Shared fixture builder for a signed `.tapp`. Also used
     //! by the crate's integration tests.
-    use super::*;
     use tilo_app_package::pack::{SigningIdentity, pack};
+    use tilo_app_package::{Manifest, PackageId};
 
-    /// A signed `.tapp` for `so.tilo.editor@1.0.0`. Returns the bytes,
-    /// its [`PackageId`], and the publisher's public key.
+    /// A signed, full `.tapp` for `so.tilo.editor@1.0.0`. Returns the bytes
+    /// and its [`PackageId`].
     pub fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
+        let packed = signed_package(identity);
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+        (bytes, packed.id())
+    }
+
+    /// The packed fixture itself, for tests that re-sign or rewrite it.
+    /// The payload directory lives in a leaked temp dir so the result can
+    /// still stream its files.
+    pub fn signed_package(identity: &SigningIdentity) -> tilo_app_package::Packed {
         let pubhex = hex::encode(identity.public_key_bytes());
-        let dir = tempfile::tempdir().unwrap();
-        let payload = dir.path().join("payload");
+        let dir = tempfile::tempdir().unwrap().keep();
+        let payload = dir.join("payload");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
         let manifest_toml = format!(
@@ -290,17 +168,15 @@ type = "gui"
 "#
         );
         let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
-        let mut store = MemoryBlobStore::new();
-        let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-        let bytes = write_bytes(id, &store).unwrap();
-        (bytes, id)
+        pack(&payload, &manifest, identity).unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixture::signed_tapp;
+    use super::test_fixture::{signed_package, signed_tapp};
     use super::*;
+    use tilo_app_package::PackageMeta;
     use tilo_app_package::pack::SigningIdentity;
 
     #[test]
@@ -311,58 +187,7 @@ mod tests {
         assert_eq!(meta.package_id, id);
         assert_eq!(meta.manifest.package.id, "so.tilo.editor");
         assert_eq!(meta.manifest.package.version, "1.0.0");
-    }
-
-    #[test]
-    fn load_rejects_an_unsupported_archive_format() {
-        let identity = SigningIdentity::generate();
-        let (mut bytes, _) = signed_tapp(&identity);
-        let marker = b"format = 1\n";
-        let offset = bytes
-            .windows(marker.len())
-            .position(|window| window == marker)
-            .expect("fixture contains the format header");
-        bytes[offset + marker.len() - 2] = b'2';
-
-        let error = load(&bytes)
-            .err()
-            .expect("future archive formats must fail closed");
-        assert!(error.to_string().contains("unsupported tapp format 2"));
-    }
-
-    #[test]
-    fn writer_does_not_duplicate_named_metadata_under_blobs() {
-        let identity = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&identity);
-        let meta = load(&bytes).unwrap();
-        let signed_bytes = meta.store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-        let signed = SignedRoot::decode(&signed_bytes).unwrap();
-        let forbidden = [
-            format!("blobs/{}", BlobHash(*id.as_bytes())),
-            format!("blobs/{}", signed.manifest_hash),
-            format!("blobs/{}", signed.payload_root_hash),
-        ];
-        let names: Vec<String> = tar::Archive::new(bytes.as_slice())
-            .entries()
-            .unwrap()
-            .map(|entry| {
-                entry
-                    .unwrap()
-                    .path()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        for duplicate in forbidden {
-            assert!(
-                !names.contains(&duplicate),
-                "duplicated {duplicate}: {names:?}"
-            );
-        }
-        for named in ["signed-root", "manifest.toml", "collection.qcl"] {
-            assert!(names.iter().any(|name| name == named), "missing {named}");
-        }
+        assert!(meta.tapp.is_complete());
     }
 
     #[test]
@@ -373,6 +198,18 @@ mod tests {
             verify_bytes(&bytes, id, identity.public_key_bytes()).unwrap(),
             id
         );
+    }
+
+    #[test]
+    fn verify_accepts_a_thin_archive_on_its_metadata() {
+        let identity = SigningIdentity::generate();
+        let packed = signed_package(&identity);
+        let thin = tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap();
+        assert_eq!(
+            verify_bytes(&thin, packed.id(), identity.public_key_bytes()).unwrap(),
+            packed.id()
+        );
+        assert!(validate_payload_shape(&load(&thin).unwrap()).is_err());
     }
 
     #[test]
@@ -395,30 +232,22 @@ mod tests {
     #[test]
     fn verify_rejects_a_tampered_signature() {
         let identity = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&identity);
+        let packed = signed_package(&identity);
 
-        // Rebuild the bundle with one bit of the signature flipped and
-        // its (now different) package-id in the header. The id matches
-        // the header, so verify reaches — and fails — the signature
-        // check.
-        let meta = load(&bytes).unwrap();
-        let signed_bytes = meta.store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-        let mut signed = SignedRoot::decode(&signed_bytes).unwrap();
-        let mut sig = signed.signature.unwrap();
+        // Rebuild the package with one bit of the signature flipped. Its
+        // (now different) package id is consistent throughout, so verify
+        // reaches — and fails — the signature check.
+        let mut root = packed.meta.root.clone();
+        let mut sig = root.signature.unwrap();
         sig[0] ^= 0xff;
-        signed.signature = Some(sig);
-
-        let mut store = MemoryBlobStore::new();
-        for (h, b) in meta.store.iter() {
-            if h != &BlobHash(*id.as_bytes()) {
-                store.put(b).unwrap();
-            }
-        }
-        let tampered_signed = signed.encode();
-        store.put(&tampered_signed).unwrap();
-        let new_id = signed.package_id();
-
-        let tampered = write_bytes(new_id, &store).unwrap();
-        assert!(verify_bytes(&tampered, new_id, identity.public_key_bytes()).is_err());
+        root.signature = Some(sig);
+        let tampered = PackageMeta::from_root(
+            root,
+            packed.meta.manifest_bytes.clone(),
+            packed.meta.collection_bytes.clone(),
+        )
+        .unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&tampered, Some(&packed)).unwrap();
+        assert!(verify_bytes(&bytes, tampered.id, identity.public_key_bytes()).is_err());
     }
 }

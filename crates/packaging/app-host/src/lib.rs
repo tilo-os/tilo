@@ -8,7 +8,7 @@
 //! ## Crate layout
 //!
 //! - [`store`] — on-disk content-addressed blob store + per-package
-//!   eagerly-extracted payload tree. Wraps [`tilo_app_package::BlobStore`].
+//!   eagerly-extracted payload tree.
 //! - [`registry`] — `Pinned` / `Tried` index, persisted as TOML.
 //! - [`gc`] — LRU + size-pressure eviction.
 //! - [`fetch`] — remote fetch: resolve an app-id through the registry

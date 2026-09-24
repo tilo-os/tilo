@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use crate::registry::RegistryEntry;
     use std::fs;
-    use tilo_app_package::blobs::{BlobStore, Collection};
+    use tilo_app_package::blobs::Collection;
     use tilo_app_package::id::PackageId;
     use tilo_app_package::signed::SignedRoot;
 

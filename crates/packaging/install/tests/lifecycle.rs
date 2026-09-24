@@ -24,10 +24,7 @@ use std::process::Command;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use serde::Serialize;
-use tilo_app_package::blobs::{BlobHash, BlobStore};
-use tilo_app_package::signed::SignedRoot;
-use tilo_app_package::{Manifest, MemoryBlobStore, SigningIdentity, pack};
+use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 fn install_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
@@ -80,46 +77,10 @@ fn fresh_key() -> (SigningKey, String) {
 
 /// Build a `.tapp` with the layout `tilo-app-package pack` writes.
 fn build_tapp(tapp_path: &Path, manifest: &Manifest, sk: &SigningKey, payload_dir: &Path) {
-    #[derive(Serialize)]
-    struct TappHeader {
-        package_id: String,
-        format: u32,
-    }
-
-    let mut store = MemoryBlobStore::new();
     let identity = SigningIdentity::from_signing_key(sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
-    let header_toml = toml::to_string(&TappHeader {
-        package_id: id.to_string(),
-        format: 1,
-    })
-    .unwrap();
-
-    let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-    let signed = SignedRoot::decode(&signed_bytes).unwrap();
-    let manifest_bytes = store.get(&signed.manifest_hash).unwrap().unwrap();
-    let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
-
+    let packed = pack(payload_dir, manifest, &identity).expect("pack");
     let file = std::fs::File::create(tapp_path).unwrap();
-    let mut tar = tar::Builder::new(file);
-    append(&mut tar, "tapp.toml", header_toml.as_bytes());
-    append(&mut tar, "signed-root", &signed_bytes);
-    append(&mut tar, "manifest.toml", &manifest_bytes);
-    append(&mut tar, "collection.qcl", &collection_bytes);
-    for (h, b) in store.iter() {
-        append(&mut tar, &format!("blobs/{h}"), b);
-    }
-    tar.finish().unwrap();
-}
-
-fn append(tar: &mut tar::Builder<std::fs::File>, name: &str, bytes: &[u8]) {
-    let mut header = tar::Header::new_gnu();
-    header.set_path(name).unwrap();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append(&header, bytes).unwrap();
+    tilo_app_package::tapp::write(file, &packed.meta, Some(&packed)).unwrap();
 }
 
 struct Env {

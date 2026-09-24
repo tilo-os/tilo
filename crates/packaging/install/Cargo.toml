@@ -38,7 +38,6 @@ tilo-rt.workspace = true
 
 [dev-dependencies]
 getrandom.workspace = true
-tar.workspace = true
 tempfile.workspace = true
 
 [[test]]
