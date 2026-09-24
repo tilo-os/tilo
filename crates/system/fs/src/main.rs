@@ -3002,11 +3002,25 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
 }
 
 /// Persist the namespace to disk every few seconds.
+/// Persists the namespace shortly after it changes. Signed records are
+/// durable the moment they are published; a namespace persisted only every
+/// few seconds could lose the placements of records a crash left published,
+/// which a restart then reads as deletions. Checking the document's heads
+/// is cheap, so an idle namespace costs nothing and a burst of changes one
+/// save per interval.
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut persisted = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            persist_now(&namespace, &path);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let heads = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .heads();
+            if persisted.as_ref() != Some(&heads) {
+                persist_now(&namespace, &path);
+                persisted = Some(heads);
+            }
         }
     })
 }
