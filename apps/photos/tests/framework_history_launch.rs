@@ -182,7 +182,7 @@ fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind
 fn binary(
     store: &content_store::Server,
     dir: &std::path::Path,
-    actions: serde_json::Value,
+    actions: &serde_json::Value,
     import: bool,
 ) {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_photos"));
@@ -216,6 +216,10 @@ fn binary(
     );
 }
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end launch scenario whose steps depend on each other in order"
+)]
 fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import() {
     if let Ok(stage) = std::env::var("QOS_PHOTOS_LAUNCH_STAGE") {
         assert!(
@@ -367,7 +371,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
         binary(
             &store,
             dir,
-            serde_json::json!([{"click_named":"history-open"}]),
+            &serde_json::json!([{"click_named":"history-open"}]),
             false,
         );
         child(&store, "verify_unchanged", dir, kind);
@@ -380,11 +384,11 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
         binary(
             &store,
             dir,
-            serde_json::json!([{"click_named":"history-open"},{"perform":{"target":"activity_timeline","semantic_target":target,"action":"activate"}},{"click_named":"history-restore"},{"key":"Enter"}]),
+            &serde_json::json!([{"click_named":"history-open"},{"perform":{"target":"activity_timeline","semantic_target":target,"action":"activate"}},{"click_named":"history-restore"},{"key":"Enter"}]),
             false,
         );
         child(&store, "verify_restored", dir, kind);
-        binary(&store, dir, serde_json::json!([]), true);
+        binary(&store, dir, &serde_json::json!([]), true);
         child(&store, "verify_import", dir, kind);
     }
 }

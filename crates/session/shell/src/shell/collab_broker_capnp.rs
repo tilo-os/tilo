@@ -1966,6 +1966,10 @@ impl RealtimeFabricAppBridge {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the consent flow checks policy, grant, audit and reply in one ordered sequence"
+    )]
     fn resolve_consent_with_policy(
         &self,
         session: &str,
@@ -5054,6 +5058,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         Promise::ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one command dispatcher; each arm validates and forwards a single transfer command"
+    )]
     fn nearby_transfer_command(
         self: Rc<Self>,
         params: channel_handle::NearbyTransferCommandParams,

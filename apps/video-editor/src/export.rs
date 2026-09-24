@@ -795,6 +795,10 @@ mod gst_pipeline {
     /// file. Blocks until the pipeline reaches EOS (or errors), then returns the
     /// written path. Any failure is surfaced verbatim — nothing claims success
     /// unless a real file was produced.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
+    )]
     pub fn run(
         project: &Project,
         settings: &ExportSettings,

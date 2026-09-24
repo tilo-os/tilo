@@ -2366,6 +2366,10 @@ impl Widget for DbClientApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one window-event dispatcher; each arm is a short hand-off to the owning pane"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
