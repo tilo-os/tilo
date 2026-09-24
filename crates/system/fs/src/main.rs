@@ -2941,7 +2941,7 @@ async fn run_mount(
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let predictive_policy_task =
-        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
+        fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it must
     // never fall back to Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
@@ -3011,6 +3011,35 @@ async fn run_mount(
         None => fs,
     };
     fs.resume_pending_evictions();
+    // Bytes accepted by fsync, or whose commit failed, are staged per
+    // workspace so they survive a crash or unmount and are replayed here.
+    let unsaved_dir = predictive_cache_root
+        .as_ref()
+        .filter(|_| !read_only)
+        .map(|root| {
+            root.join("unsaved-writes")
+                .join(checked_history_workspace.to_string())
+        });
+    let fs = match unsaved_dir {
+        Some(dir) => match fs::unsaved::UnsavedStore::open(&dir) {
+            Ok(store) => {
+                let fs = fs.with_unsaved_store(store);
+                let placed = fs.recover_unsaved_writes();
+                if placed > 0 {
+                    println!("Recovered {placed} staged unsaved file(s)");
+                }
+                fs
+            }
+            Err(error) => {
+                eprintln!(
+                    "unsaved-write staging unavailable at {} ({error}); fsync commits directly",
+                    dir.display()
+                );
+                fs
+            }
+        },
+        None => fs,
+    };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
         fs::storage::StorageAuthority::new(
