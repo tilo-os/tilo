@@ -130,6 +130,9 @@ for entry in checked.get("entry", []):
             raise SystemExit(f"normalised {field} is not under {final}: {value}") from error
 PY
 rm -- "$store/registry.toml"
+# The payload trees are materialised; the system store is read-only and never
+# installs again, so its content store, staging and writer lock do not ship.
+rm -rf -- "$store/content" "$store/tmp" "$store/.lock"
 
 # The launcher refuses unsigned bundles and pins the system bundle to this
 # collection's publisher.  This is package data, not mutable user state: an
@@ -149,7 +152,7 @@ PY
 find "$stage" -type d -exec chmod 0755 {} +
 find "$stage/usr/share/tilo-apps" "$stage/etc/tilo" -type f -exec chmod 0644 {} +
 find "$stage/usr/lib/tilo-apps" -type f -exec chmod 0644 {} +
-find "$stage/usr/lib/tilo-apps/payloads" -type f -path '*/bin/*' -exec chmod 0755 {} +
+find "$stage/usr/lib/tilo-apps/pkgs" -type f -path '*/bin/*' -exec chmod 0755 {} +
 find "$stage/usr/lib/tilo-apps/bin" -type f ! -name '*.tilo-shim' -exec chmod 0755 {} + 2>/dev/null || true
 # Signed runtime metadata remains data, while loaders and shared objects need
 # execute permission. Signatures cover bytes, not modes.

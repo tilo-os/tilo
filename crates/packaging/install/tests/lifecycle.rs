@@ -107,8 +107,17 @@ impl Env {
         self.xdg_data().join("tilo-apps")
     }
 
+    /// The installed tree, as the registry records it; a path that does not
+    /// exist when the package is not installed.
     fn payload_root(&self) -> PathBuf {
-        self.tilo_apps().join("payloads/so.tilo.lifecycle")
+        package_store::Registry::load(&self.tilo_apps().join("registry.toml"))
+            .ok()
+            .and_then(|registry| {
+                registry
+                    .find("so.tilo.lifecycle")
+                    .map(|row| row.payload_root.clone())
+            })
+            .unwrap_or_else(|| self.tilo_apps().join("pkgs/not-installed"))
     }
 
     fn registry_toml(&self) -> String {
@@ -231,13 +240,14 @@ fn install_list_verify_update_uninstall() {
     assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
 
     // --- uninstall ---------------------------------------------------
+    let installed_tree = env.payload_root();
     let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
     assert!(ok, "uninstall failed: {out}{err}");
     assert!(
         out.contains("uninstalled: so.tilo.lifecycle 1.1.0"),
         "{out}"
     );
-    assert!(!env.payload_root().exists(), "the payload must be gone");
+    assert!(!installed_tree.exists(), "the payload must be gone");
     assert!(
         !env.registry_toml().contains("so.tilo.lifecycle"),
         "the registry entry must be gone: {}",
@@ -351,7 +361,12 @@ fn verify_catches_a_modified_payload() {
     assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
     assert!(env.cmd(&["verify"]).0);
 
-    std::fs::write(env.payload_root().join("bin/app"), b"malicious").unwrap();
+    // Installed files are read-only; whoever tampers makes them writable.
+    let target = env.payload_root().join("bin/app");
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    std::fs::write(&target, b"malicious").unwrap();
 
     let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
     assert!(!ok, "a tampered payload must fail verification: {out}{err}");
