@@ -1923,6 +1923,21 @@ impl Namespace {
         Some(format!("/{}", parts.join("/")))
     }
 
+    /// Every live node's path with its content manifest and thumbnail, in
+    /// one pass: what a reader of that path may fetch.
+    pub fn live_blob_roots_by_path(&self) -> Vec<(String, Option<Hash>, Option<Hash>)> {
+        self.live_node_ids()
+            .into_iter()
+            .filter_map(|id| {
+                Some((
+                    self.path_for_id(&id)?,
+                    self.node_hash(&id),
+                    self.thumbnail_for_id(&id),
+                ))
+            })
+            .collect()
+    }
+
     /// Every live path whose file content or generated thumbnail has `hash`.
     ///
     /// A content hash is not an authority token: peers can learn hashes from
