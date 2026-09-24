@@ -41,16 +41,14 @@ def blend(first, second, amount):
 
 
 def logo_pixel(x, y):
-    center = 110.0
-    distance = math.hypot(x + 0.5 - center, y + 0.5 - center)
-    ring = smoothstep(65, 69, distance) * (1.0 - smoothstep(82, 86, distance))
-    ax, ay, bx, by = 157.0, 157.0, 196.0, 196.0
-    dx, dy = bx - ax, by - ay
-    amount = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
-    tail_distance = math.hypot(x - (ax + amount * dx), y - (ay + amount * dy))
-    tail = 1.0 - smoothstep(8, 12, tail_distance)
-    alpha = max(ring, tail)
-    color = blend((130, 96, 255), (49, 198, 181), min(1.0, (x + y) / 440.0))
+    alpha = 0.0
+    color = (130, 96, 255)
+    for index, center_x in enumerate((56.0, 110.0, 164.0)):
+        distance = math.hypot(x + 0.5 - center_x, y + 0.5 - 110.0)
+        dot = 1.0 - smoothstep(15.0, 18.0, distance)
+        if dot > alpha:
+            alpha = dot
+            color = blend((130, 96, 255), (49, 198, 181), index / 2)
     return (*color, round(alpha * 255))
 
 

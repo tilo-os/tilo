@@ -638,14 +638,14 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     // Fall back to the "no room identity" topic rather than panic on this
     // hot path — `room_workspace_id` never returns 0 on success, so a real
     // topic id can't collide with the fallback.
-    tilo_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// Stable private shard shared only by certified devices rooted in the same
 /// person identity. The full root key is also carried in and authenticated on
 /// every message; this 64-bit value is routing, never authority.
 pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
-    tilo_relay::personal_continuity_workspace_id(user_public_key)
+    tilo_relay_protocol::personal_continuity_workspace_id(user_public_key)
 }
 
 /// Default on-disk path of the machine's device key, from which the
@@ -759,9 +759,9 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Err("home-peer registry exceeds its bounded schema".into());
     }
-    let registrations: Vec<tilo_relay::HomePeerRegistration> =
+    let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
         match std::fs::read(&path).ok().and_then(|bytes| {
-            serde_json::from_slice::<Vec<tilo_relay::HomePeerRegistration>>(&bytes).ok()
+            serde_json::from_slice::<Vec<tilo_relay_protocol::HomePeerRegistration>>(&bytes).ok()
         }) {
             Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
             _ => {
@@ -1608,33 +1608,33 @@ impl ShellNetwork {
             .unwrap_or_default();
         let candidates = relay_ids
             .iter()
-            .map(|relay| tilo_relay::ServerAdvertisement {
+            .map(|relay| tilo_relay_protocol::ServerAdvertisement {
                 device: *relay.as_bytes(),
-                role: tilo_relay::DeviceRole::AlwaysOnServer,
-                services: tilo_relay::ServiceCapabilities::relay_only(),
+                role: tilo_relay_protocol::DeviceRole::AlwaysOnServer,
+                services: tilo_relay_protocol::ServiceCapabilities::relay_only(),
                 workspaces: std::collections::BTreeSet::from([workspace]),
                 apps: std::collections::BTreeSet::new(),
                 accelerators: std::collections::BTreeSet::new(),
                 priority: 0,
                 latency_ms: 0,
-                power: tilo_relay::PowerAvailability::Unknown,
+                power: tilo_relay_protocol::PowerAvailability::Unknown,
                 energy_saver: false,
                 active_assignments: 0,
                 assignment_capacity: u32::MAX,
                 online: true,
             })
             .collect::<Vec<_>>();
-        let route = match tilo_relay::route_remote_control(
+        let route = match tilo_relay_protocol::route_remote_control(
             *self.local_peer_id.as_bytes(),
             *target.as_bytes(),
             workspace,
             direct_reachable,
             &candidates,
         ) {
-            tilo_relay::RemoteControlRoute::Direct { .. } => {
+            tilo_relay_protocol::RemoteControlRoute::Direct { .. } => {
                 WorkspaceControlRoute::Direct { target }
             }
-            tilo_relay::RemoteControlRoute::Relayed { via, .. } => {
+            tilo_relay_protocol::RemoteControlRoute::Relayed { via, .. } => {
                 let _via = iroh::EndpointId::from_bytes(&via)
                     .map_err(|_| "mesh selected an invalid relay identity")?;
                 return Err(
@@ -1642,7 +1642,7 @@ impl ShellNetwork {
                         .into(),
                 );
             }
-            tilo_relay::RemoteControlRoute::Unavailable => {
+            tilo_relay_protocol::RemoteControlRoute::Unavailable => {
                 return Err("no authenticated direct workspace-control path is online".into());
             }
         };
@@ -6716,8 +6716,8 @@ mod tests {
             .upsert(fabric_snapshot(local_device.clone(), 1))
             .expect("local presence");
 
-        let registration = tilo_relay::HomePeerRegistration {
-            schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+        let registration = tilo_relay_protocol::HomePeerRegistration {
+            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: remote_device.as_str().to_owned(),
             relay_service_node_id: relay_service.as_str().to_owned(),
             relay_endpoint: None,
@@ -8820,8 +8820,8 @@ mod tests {
         let hint = iroh::EndpointAddr::new(hinted_service)
             .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
         let registrations = vec![
-            tilo_relay::HomePeerRegistration {
-                schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            tilo_relay_protocol::HomePeerRegistration {
+                schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(hinted_service.as_bytes()),
                 relay_endpoint: Some(hint.clone()),
@@ -8830,7 +8830,7 @@ mod tests {
                 device_cert: None,
                 relay_workspace_ids: vec![42],
             },
-            tilo_relay::HomePeerRegistration {
+            tilo_relay_protocol::HomePeerRegistration {
                 schema_version: 1,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(legacy_service.as_bytes()),

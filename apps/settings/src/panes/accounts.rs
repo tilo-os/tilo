@@ -985,7 +985,7 @@ impl AccountsPane {
             return Err("enter a valid email address".into());
         }
         if kind != AccountKind::Mail {
-            let parsed = reqwest::Url::parse(server).map_err(|_| "enter a valid server URL")?;
+            let parsed = tilo_dav::Url::parse(server).map_err(|_| "enter a valid server URL")?;
             let localhost_http = cfg!(debug_assertions)
                 && parsed.scheme() == "http"
                 && parsed.host_str() == Some("localhost");
