@@ -9,13 +9,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use collab_types::{FileRecordId, FileVersionId};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 
 use crate::availability::{
@@ -112,7 +112,7 @@ impl EvictionCoordinator {
         if registry.records().cloned().collect::<Vec<_>>() != records {
             anyhow::bail!("availability changed during eviction planning");
         }
-        let plans = batch_plan_safe(&registry, &catalog, targets, coordinator_now_ms());
+        let plans = batch_plan_safe(&registry, &catalog, targets, unix_now_ms());
         drop(registry);
         Ok(plans)
     }
@@ -246,7 +246,7 @@ impl EvictionCoordinator {
                 &mut queue_guard,
                 &registry_guard,
                 &catalog,
-                coordinator_now_ms(),
+                unix_now_ms(),
             )?;
             Ok((request_id, plan))
         })
@@ -274,7 +274,7 @@ impl EvictionCoordinator {
         let observation = self
             .hydrator
             .store
-            .observe_eviction_request(&mut queue, id, coordinator_now_ms())
+            .observe_eviction_request(&mut queue, id, unix_now_ms())
             .await?;
         drop(queue);
         let EvictionRequestState::Completed { observed_at_ms } = observation.state else {
@@ -414,26 +414,17 @@ fn plan_for_mode(
             registry,
             catalog,
             record_id,
-            coordinator_now_ms(),
+            unix_now_ms(),
             EvictionRequirements::default(),
         ),
         EvictionMode::DestructiveOverride => plan_destructive_eviction(
             registry,
             catalog,
             record_id,
-            coordinator_now_ms(),
+            unix_now_ms(),
             EvictionRequirements::default(),
         ),
     }
-}
-
-fn coordinator_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 /// One blob in a version payload, with locally verified byte accounting.
@@ -1496,7 +1487,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut registry =
             AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = coordinator_now_ms();
+        let now = unix_now_ms();
         let record = FileRecordId::new();
         let version = FileVersionId::new();
         registry.put(resident_file(record, version, now)).unwrap();
@@ -2094,7 +2085,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut registry =
             AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let now = coordinator_now_ms();
+        let now = unix_now_ms();
         let first = FileRecordId::new();
         let first_version = FileVersionId::new();
         let second = FileRecordId::new();

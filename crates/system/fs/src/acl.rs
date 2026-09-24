@@ -123,7 +123,7 @@ impl CapBinding {
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
-            Some(self.fixed_now.unwrap_or_else(unix_now)),
+            Some(self.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
         ) == CapDecision::Allow
     }
 
@@ -166,10 +166,6 @@ fn peer_actor(peer: &IdentityKey) -> Actor {
 }
 
 /// Seconds since the Unix epoch, saturating at 0 if the clock is before it.
-fn unix_now() -> u64 {
-    crate::clock::unix_now_secs()
-}
-
 /// A workspace's per-identity access-control list. Two sources, both
 /// fail-closed: **capability bindings**
 /// ([`WorkspaceAcl::from_capabilities`], the production path) delegate
@@ -373,7 +369,7 @@ impl WorkspaceAcl {
                 &resource,
                 Verb::Read,
                 &b.caps,
-                Some(b.fixed_now.unwrap_or_else(unix_now)),
+                Some(b.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
             ) == CapDecision::Allow
         })
     }

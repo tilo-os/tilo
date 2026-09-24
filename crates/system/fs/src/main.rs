@@ -14,6 +14,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
+use fs::clock::{unix_now_ms, unix_now_ns};
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
@@ -1195,7 +1196,7 @@ async fn replica_workspace(
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1448,7 +1449,7 @@ async fn serve(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
@@ -1800,7 +1801,7 @@ async fn serve(
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                let now = now_ms();
+                let now = unix_now_ms();
                 for entry in outbox.pending_at(now) {
                     let mut delivered = None;
                     for device in &entry.recipient_devices {
@@ -1820,7 +1821,8 @@ async fn serve(
                             break;
                         }
                     }
-                    let _ = outbox.record_attempt(entry.envelope.invite.id, delivered, now_ms());
+                    let _ =
+                        outbox.record_attempt(entry.envelope.invite.id, delivered, unix_now_ms());
                 }
             }
         })
@@ -1959,7 +1961,7 @@ async fn mount(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -2158,14 +2160,14 @@ async fn mount_share(
         SharedCredential::Named(_) => None,
     };
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let actor = collab_types::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
-    credential.validate_at(actor.person, now_ms())?;
+    credential.validate_at(actor.person, unix_now_ms())?;
     let replica_signing_key = credentials.signing_key().clone();
     let (endpoint, _lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let client =
@@ -2173,13 +2175,17 @@ async fn mount_share(
     let snapshot = match fetch_shared_snapshot(&client, &credential).await {
         Ok(snapshot) => {
             if let Some(subscriptions) = &subscriptions {
-                subscriptions.record_success(subscription_key, now_ms())?;
+                subscriptions.record_success(subscription_key, unix_now_ms())?;
             }
             snapshot
         }
         Err(error) => {
             if let Some(subscriptions) = &subscriptions {
-                subscriptions.record_error(subscription_key, error.failure_code(), now_ms())?;
+                subscriptions.record_error(
+                    subscription_key,
+                    error.failure_code(),
+                    unix_now_ms(),
+                )?;
             }
             return Err(error.into());
         }
@@ -2244,7 +2250,10 @@ async fn mount_share(
         interval.tick().await;
         loop {
             interval.tick().await;
-            if poll_credential.validate_at(actor.person, now_ms()).is_err() {
+            if poll_credential
+                .validate_at(actor.person, unix_now_ms())
+                .is_err()
+            {
                 break;
             }
             match fetch_shared_snapshot(&poll_client, &poll_credential).await {
@@ -2287,7 +2296,7 @@ async fn mount_share(
                             fs::ReplicaAckV1::signed(
                                 &request,
                                 actor,
-                                now_ms(),
+                                unix_now_ms(),
                                 &poll_replica_signing_key,
                             )
                         }) {
@@ -2312,7 +2321,8 @@ async fn mount_share(
                         }
                     }
                     if let Some(subscriptions) = &poll_subscriptions
-                        && let Err(error) = subscriptions.record_success(subscription_key, now_ms())
+                        && let Err(error) =
+                            subscriptions.record_success(subscription_key, unix_now_ms())
                     {
                         eprintln!("could not persist shared-record refresh status: {error}");
                         break;
@@ -2323,7 +2333,7 @@ async fn mount_share(
                         let _ = subscriptions.record_error(
                             subscription_key,
                             RecordSubscriptionFailureCode::InvalidResponse,
-                            now_ms(),
+                            unix_now_ms(),
                         );
                     }
                     break;
@@ -2333,7 +2343,7 @@ async fn mount_share(
                         let _ = subscriptions.record_error(
                             subscription_key,
                             error.failure_code(),
-                            now_ms(),
+                            unix_now_ms(),
                         );
                     }
                     eprintln!("shared record refresh failed: {error}");
@@ -2396,14 +2406,14 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let local_person = collab_types::Ed25519PublicKey::from_bytes(credentials.user_public_key());
     let inbox = Arc::new(fs::NamedShareInbox::open_at(
         cache_root.join("named-share-inbox.json"),
         local_person,
-        now_ms(),
+        unix_now_ms(),
     )?);
     let (inbox_endpoint, _inbox_lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let inbox_protocol = fs::NamedShareInboxProtocol::new(
@@ -2435,7 +2445,7 @@ async fn recipient_service(
             );
         }
     }
-    for envelope in inbox.entries_at(now_ms()) {
+    for envelope in inbox.entries_at(unix_now_ms()) {
         if let Err(error) = mounts.start_named(&envelope) {
             eprintln!(
                 "could not restart named received record {}: {error}",
@@ -2450,7 +2460,7 @@ async fn recipient_service(
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
-            for envelope in named_inbox.entries_at(now_ms()) {
+            for envelope in named_inbox.entries_at(unix_now_ms()) {
                 let _ = named_mounts.start_named(&envelope);
             }
         }
@@ -3448,14 +3458,6 @@ enum MountOutcome {
     RebindRequested,
 }
 
-fn now_ms() -> u64 {
-    fs::clock::unix_now_ms()
-}
-
-fn now_ns() -> u64 {
-    fs::clock::unix_now_ns()
-}
-
 /// Recursively ingest a directory's contents into the workspace.
 async fn seed_from_dir(
     namespace: &Arc<Mutex<Namespace>>,
@@ -3474,7 +3476,7 @@ async fn seed_from_dir(
                 let ino = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .create_dir(parent_ino, &name, now_ms())
+                    .create_dir(parent_ino, &name, unix_now_ms())
                     .ok_or_else(|| {
                         anyhow::anyhow!("seeding {name:?}: parent inode {parent_ino} vanished")
                     })?;
@@ -3491,8 +3493,8 @@ async fn seed_from_dir(
                     let mut ns = namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
-                        ns.import_document(ino, &registry, &data, now_ms());
+                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
+                        ns.import_document(ino, &registry, &data, unix_now_ms());
                     }
                 } else {
                     let size = data.len() as u64;
@@ -3500,7 +3502,7 @@ async fn seed_from_dir(
                     namespace
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
+                        .create_file(parent_ino, &name, hash.as_ref(), size, unix_now_ms());
                 }
             }
         }

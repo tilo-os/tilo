@@ -9,9 +9,9 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_ms;
 
 pub const RETAINED_GENERATIONS: usize = 3;
 pub const MAX_DURABLE_STATE_BYTES: u64 = 256 * 1024 * 1024;
@@ -113,7 +113,7 @@ pub fn read_or_recover(
     let receipt_path = backup_dir.join(format!("recovery-{generation:020}.json"));
     let mut receipt = RecoveryReceiptV1 {
         schema_version: RECEIPT_VERSION,
-        attempted_at_ms: now_ms(),
+        attempted_at_ms: unix_now_ms(),
         completed: false,
         primary_path: path.display().to_string(),
         damaged_blake3: damaged_hash,
@@ -348,15 +348,6 @@ fn file_name(path: &Path) -> io::Result<String> {
         .and_then(|name| name.to_str())
         .map(str::to_owned)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid backup filename"))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
