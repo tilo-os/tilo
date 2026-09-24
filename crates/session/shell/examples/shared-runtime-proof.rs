@@ -1,6 +1,6 @@
 //! Live macOS/Linux proof: two unmodified apps and one production service host.
-//! Run with isolated XDG_CONFIG_HOME, TILO_IDENTITY_ROOT, XDG_DATA_HOME and
-//! XDG_CACHE_HOME. See the proof runner script.
+//! Run with isolated `XDG_CONFIG_HOME`, `TILO_IDENTITY_ROOT`, `XDG_DATA_HOME` and
+//! `XDG_CACHE_HOME`. See the proof runner script.
 use serde_json::json;
 use shell::{
     runtime_host::Session,

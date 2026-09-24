@@ -1385,6 +1385,10 @@ impl WordProcessorWidget {
         OUTLINE_PANEL_W * self.text_scale
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor lists every child widget and its initial state in one place"
+    )]
     pub fn new() -> Self {
         Self {
             inner: WordProcessor::new(),
