@@ -218,6 +218,14 @@ pub enum NetCmd {
         msg: NeighbourMsg,
         route: WorkspaceControlRoute,
     },
+    /// Send a remote-action frame to one exact authenticated device of the
+    /// workspace over the direct surface/control plane. Never fanned out:
+    /// action arguments and results are private to the two devices.
+    PublishRemoteAction {
+        ws: WorkspaceId,
+        target: EndpointId,
+        msg: NeighbourMsg,
+    },
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -493,7 +501,9 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 };
                 if !matches!(
                     frame.message,
-                    NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::RemoteInput { .. }
+                    NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::RemoteInput { .. }
+                        | NeighbourMsg::RemoteAction { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -530,10 +540,12 @@ async fn enqueue_surface_event(
     input_tx: &mpsc::Sender<InternalEvent>,
     event: InternalEvent,
 ) -> bool {
+    // Remote-action frames are requests and answers, not media: they take
+    // the reliable queue with input.
     let is_input = matches!(
         &event,
         InternalEvent::SurfaceFrame {
-            msg: NeighbourMsg::RemoteInput { .. },
+            msg: NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. },
             ..
         }
     );
@@ -907,6 +919,16 @@ impl ActorState {
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
+            }
+            Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
+                if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+                    self.publish_direct(ws, target, msg).await;
+                } else {
+                    tracing::warn!(
+                        ws,
+                        "refused a non-action message on the remote-action route"
+                    );
+                }
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
@@ -1493,52 +1515,7 @@ impl ActorState {
             return;
         }
         match route {
-            WorkspaceControlRoute::Direct { target } => {
-                if !self.peers_seen.contains_key(&(ws, target)) {
-                    tracing::warn!(ws, peer = %target, "direct workspace-control route is no longer live");
-                    return;
-                }
-                let wire = SurfaceWireFrame {
-                    workspace: ws,
-                    message: msg,
-                };
-                let Ok(bytes) = postcard::to_allocvec(&wire) else {
-                    return;
-                };
-                let addr = self
-                    .peers
-                    .get(&target)
-                    .cloned()
-                    .unwrap_or_else(|| EndpointAddr::new(target));
-                let connection = if let Some(connection) = self.surface_connections.get(&target) {
-                    connection.clone()
-                } else {
-                    let Ok(Ok(connection)) = tokio::time::timeout(
-                        Duration::from_millis(300),
-                        self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
-                    )
-                    .await
-                    else {
-                        tracing::warn!(ws, peer = %target, "direct workspace-control connection failed");
-                        return;
-                    };
-                    self.surface_connections.insert(target, connection.clone());
-                    connection
-                };
-                let send = async {
-                    let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                    stream.write_all(&bytes).await.map_err(|_| ())?;
-                    stream.finish().map_err(|_| ())?;
-                    Ok::<(), ()>(())
-                };
-                if !matches!(
-                    tokio::time::timeout(Duration::from_millis(40), send).await,
-                    Ok(Ok(()))
-                ) {
-                    self.surface_connections.remove(&target);
-                    tracing::warn!(ws, peer = %target, "direct workspace-control publish failed");
-                }
-            }
+            WorkspaceControlRoute::Direct { target } => self.publish_direct(ws, target, msg).await,
             WorkspaceControlRoute::Relayed { via } => {
                 tracing::warn!(
                     ws,
@@ -1546,6 +1523,59 @@ impl ActorState {
                     "refused workspace-control input on a workspace-wide relay"
                 );
             }
+        }
+    }
+
+    /// Deliver one message to exactly `target` on the authenticated direct
+    /// surface/control plane. The peer must be live on this workspace.
+    async fn publish_direct(&mut self, ws: WorkspaceId, target: EndpointId, msg: NeighbourMsg) {
+        if !self.peers_seen.contains_key(&(ws, target)) {
+            tracing::warn!(ws, peer = %target, "direct route is no longer live");
+            return;
+        }
+        // Input must land within an interactive frame budget or not at all;
+        // an action frame (up to a catalogue page) is worth waiting for.
+        let budget = if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_millis(40)
+        };
+        let wire = SurfaceWireFrame {
+            workspace: ws,
+            message: msg,
+        };
+        let Ok(bytes) = postcard::to_allocvec(&wire) else {
+            return;
+        };
+        let addr = self
+            .peers
+            .get(&target)
+            .cloned()
+            .unwrap_or_else(|| EndpointAddr::new(target));
+        let connection = if let Some(connection) = self.surface_connections.get(&target) {
+            connection.clone()
+        } else {
+            let Ok(Ok(connection)) = tokio::time::timeout(
+                Duration::from_millis(300),
+                self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
+            )
+            .await
+            else {
+                tracing::warn!(ws, peer = %target, "direct connection failed");
+                return;
+            };
+            self.surface_connections.insert(target, connection.clone());
+            connection
+        };
+        let send = async {
+            let mut stream = connection.open_uni().await.map_err(|_| ())?;
+            stream.write_all(&bytes).await.map_err(|_| ())?;
+            stream.finish().map_err(|_| ())?;
+            Ok::<(), ()>(())
+        };
+        if !matches!(tokio::time::timeout(budget, send).await, Ok(Ok(()))) {
+            self.surface_connections.remove(&target);
+            tracing::warn!(ws, peer = %target, "direct publish failed");
         }
     }
 
@@ -1656,9 +1686,17 @@ impl ActorState {
                 };
                 // Input has no event id or timestamp, so two deliberate
                 // identical key/button events must not be content-deduped.
-                if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
-                    || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
-                    && let Some(tx) = self.subscribers.get(&ws)
+                // A remote-action retry is byte-identical on purpose; the
+                // receiving host deduplicates it by invocation id instead.
+                if (matches!(
+                    &msg,
+                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. }
+                ) || mark_new_message(
+                    ws,
+                    fingerprint,
+                    &mut self.recent,
+                    &mut self.recent_order,
+                )) && let Some(tx) = self.subscribers.get(&ws)
                 {
                     let _ = tx
                         .send(NetEvent::Msg {

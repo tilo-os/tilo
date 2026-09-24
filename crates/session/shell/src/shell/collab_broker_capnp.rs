@@ -788,10 +788,10 @@ pub struct PublishedSurface {
 #[derive(Clone, Debug)]
 pub(crate) struct InvocationEnvelope {
     id: u64,
-    resource: String,
+    pub(crate) resource: String,
     action: String,
     argument: Option<String>,
-    actor: String,
+    pub(crate) actor: String,
     context: Option<tilo_actions::ActionContext>,
 }
 

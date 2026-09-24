@@ -920,6 +920,11 @@ struct DrainQueues {
     documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// The action host remote requests are answered by, built once the
+    /// application broker is up; its invocation ledger lives as long as
+    /// the drainer so retries stay idempotent.
+    action_host: std::sync::OnceLock<crate::shell::remote_actions::BrokerActionHost>,
     table: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
     net: Arc<ShellNetwork>,
@@ -943,6 +948,29 @@ impl DrainQueues {
             && self.drain_documents(labels, announced)
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
+            && self.drain_remote_actions()
+    }
+
+    /// Answer remote-action requests through the same broker local callers
+    /// use, as the caller the transport authenticated.
+    fn drain_remote_actions(&self) -> bool {
+        let drained: Vec<_> = {
+            let Ok(mut buf) = self.remote_actions.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        if drained.is_empty() {
+            return true;
+        }
+        let host = self.action_host.get().or_else(|| {
+            let state = self.table.capnp_state()?;
+            Some(self.action_host.get_or_init(|| {
+                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker { state })
+            }))
+        });
+        answer_remote_actions(&self.net, host, drained);
+        true
     }
 
     /// Drain inbound presence, attributed to its sender. Cluster scope,
@@ -1274,6 +1302,8 @@ fn spawn_inner(
             documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
+            remote_actions: net.inbound_remote_actions_handle(),
+            action_host: std::sync::OnceLock::new(),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
             net: Arc::clone(net),
@@ -1325,6 +1355,72 @@ fn spawn_inner(
         mls_authority,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
+}
+
+/// Answer each request through `host` and send the answer back to the
+/// device that asked, on the topic it asked on.
+pub(crate) fn answer_remote_actions(
+    net: &ShellNetwork,
+    host: Option<&crate::shell::remote_actions::BrokerActionHost>,
+    requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
+) {
+    for request in requests {
+        let reply = match host {
+            Some(host) => tilo_actions::remote::serve(host, &request.caller, request.message),
+            None => unavailable_reply(request.message),
+        };
+        if let Some(reply) = reply {
+            net.send_remote_action(request.workspace_topic, request.from, reply);
+        }
+    }
+}
+
+/// The answer to a request that arrived before the application broker was
+/// up: every request is answered, so the caller never waits out a timeout.
+fn unavailable_reply(
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Option<tilo_actions::remote::RemoteActionMessage> {
+    struct Unavailable;
+    impl tilo_actions::remote::ActionHost for Unavailable {
+        fn catalogue(
+            &self,
+            _: &tilo_actions::remote::Caller,
+        ) -> Result<tilo_actions::remote::Catalogue, tilo_actions::remote::ActionHostError>
+        {
+            Err(Self::error())
+        }
+        fn invoke(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: tilo_actions::remote::InvokeRequest,
+        ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>
+        {
+            Err(Self::error())
+        }
+        fn observe(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+        fn cancel(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Result<(), tilo_actions::remote::ActionHostError> {
+            Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+        }
+    }
+    impl Unavailable {
+        fn error() -> tilo_actions::remote::ActionHostError {
+            tilo_actions::remote::ActionHostError::Unavailable {
+                reason: "the application broker is not running".into(),
+            }
+        }
+    }
+    let nobody = tilo_actions::remote::Caller::authenticated([0; 32], [0; 32]);
+    tilo_actions::remote::serve(&Unavailable, &nobody, message)
 }
 
 /// The id a remote peer's traffic is attributed under, announcing the
