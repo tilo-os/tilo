@@ -38,6 +38,11 @@ filesystem = [
     "dep:getrandom",
     "dep:fuser",
     "dep:fs-native",
+    "dep:accounts",
+    "dep:cloud-source",
+    "dep:cloud-source-dav",
+    "dep:notify",
+    "dep:zeroize",
 ]
 
 [[bin]]
@@ -83,6 +88,11 @@ required-features = ["filesystem"]
 [[test]]
 name = "native_sync_bench"
 path = "tests/native_sync_bench.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "cloud_mount"
+path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
@@ -139,11 +149,20 @@ postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
 redb.workspace = true
+# Cloud accounts as mounted folders: the account store and vault handoff,
+# the provider interface and the WebDAV/Nextcloud provider.
+accounts = { path = "../accounts", optional = true }
+cloud-source = { path = "../cloud-source", optional = true }
+cloud-source-dav = { path = "../cloud-source-dav", optional = true }
+notify = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+tracing.workspace = true
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 tilo-test-env = { path = "../../dev/test-env" }
+cloud-source-dav = { path = "../cloud-source-dav", features = ["fake-server"] }
 
 [lints]
 workspace = true
