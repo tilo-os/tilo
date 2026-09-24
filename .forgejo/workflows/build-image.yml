@@ -45,9 +45,13 @@ on:
 
 concurrency:
   # Generations are a single dense security series. This workflow can publish
-  # from a tag, a manual main run or the nightly main run. Every invocation
-  # shares the lock so concurrent releases cannot allocate the same generation.
-  group: tilo-os-image-series
+  # from a tag, a manual main run or the nightly main run. Every run that may
+  # publish shares the series lock so concurrent releases cannot allocate the
+  # same generation; a scheduled run holds it even when it then skips, so its
+  # freshness check sees a publication queued ahead of it. Validation builds
+  # allocate nothing and must not hold up a release, so they serialize per ref.
+  # Job outputs are unavailable here; this mirrors the plan job's rule.
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:

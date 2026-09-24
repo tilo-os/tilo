@@ -177,6 +177,11 @@ cost of that fallback is one redundant release. Because the check runs inside
 the generation lock, a nightly run queued behind a manual publication of the
 same commit also skips.
 
+Only runs that can publish (tags, manual `main` runs with `publish`, and
+scheduled `main` runs) share the `tilo-os-image-series` concurrency group.
+Non-publishing integration builds allocate no generation and serialize per
+ref instead, so a long branch rehearsal never delays a release.
+
 The nightly image carries `latest`, `genN` and `main-<sha7>` like a manual
 `main` publication, so anything triggered by a published OS release follows
 it without a separate schedule. Runner cost is bounded to at most one
