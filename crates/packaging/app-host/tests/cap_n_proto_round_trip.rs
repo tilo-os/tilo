@@ -18,10 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_host::app_host_capnp::{Pinning as WirePinning, app_host as capnp_app_host};
-use app_host::service::SystemCatalog;
-use app_host::store::Store;
 use app_host::transport;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use package_store::{Catalog, PackageStore, SystemStore};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 struct Harness {
@@ -33,12 +32,19 @@ impl Harness {
     fn new() -> anyhow::Result<Self> {
         let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("app-host.sock");
-        let store = Arc::new(Store::open(tmp.path())?);
+        let store_root = tmp.path().join("store");
+        let store = Arc::new(PackageStore::at(&store_root));
         // An empty image catalog: the host's own preinstalled packages must
         // not appear in what this store lists.
         let system_dir = tmp.path().join("system");
         std::fs::create_dir_all(&system_dir)?;
-        let catalog = Arc::new(SystemCatalog::at(&system_dir, &system_dir));
+        let catalog = Arc::new(Catalog::at(
+            &store_root,
+            Some(SystemStore {
+                data_dir: system_dir.clone(),
+                payload_dir: system_dir,
+            }),
+        ));
         let listener = transport::bind(&socket)?;
         // `serve` loops forever accepting connections; the handle is
         // deliberately not awaited, but must still be bound (not

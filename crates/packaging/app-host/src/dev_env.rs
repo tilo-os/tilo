@@ -1,8 +1,9 @@
 //! The single gate for developer-only environment overrides in the app host.
 //!
-//! `TILO_APPS_SYSTEM_DIR` and `TILO_APPS_SYSTEM_PAYLOAD_DIR` re-point the
-//! image's system app store, and `TILO_LAUNCHER_BIN` names the binary that
-//! builds every app's sandbox. The daemon's environment is seeded from the
+//! `TILO_LAUNCHER_BIN` names the binary that builds every app's sandbox.
+//! (`TILO_APPS_SYSTEM_DIR` and `TILO_APPS_SYSTEM_PAYLOAD_DIR`, which re-point
+//! the image's system app store, are gated where they are read, in
+//! `package_store::layout`.) The daemon's environment is seeded from the
 //! user's session (on systemd, `~/.config/environment.d/`), so a shipped
 //! build must not let it replace any of these. [`DEV_ENV_OVERRIDES`] is true
 //! for debug builds and for builds with the non-default `dev-overrides`
@@ -19,10 +20,6 @@ use std::sync::Mutex;
 /// Whether this build honours the developer environment overrides.
 pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
-/// Names the system app store (`/usr/share/tilo-apps`) instead.
-pub const APPS_SYSTEM_DIR_ENV: &str = "TILO_APPS_SYSTEM_DIR";
-/// Names the system payload root (`/usr/lib/tilo-apps`) instead.
-pub const APPS_SYSTEM_PAYLOAD_DIR_ENV: &str = "TILO_APPS_SYSTEM_PAYLOAD_DIR";
 /// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
 pub const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
 
@@ -94,20 +91,15 @@ mod tests {
 
     #[test]
     fn a_closed_gate_ignores_every_override() {
-        for name in [
-            APPS_SYSTEM_DIR_ENV,
-            APPS_SYSTEM_PAYLOAD_DIR_ENV,
-            LAUNCHER_BIN_ENV,
-        ] {
-            assert_eq!(
-                dev_override_from(false, name, Some("/attacker".into())),
-                None
-            );
-            assert_eq!(
-                dev_override_from(true, name, Some("/dev".into())),
-                Some(OsString::from("/dev"))
-            );
-        }
+        let name = LAUNCHER_BIN_ENV;
+        assert_eq!(
+            dev_override_from(false, name, Some("/attacker".into())),
+            None
+        );
+        assert_eq!(
+            dev_override_from(true, name, Some("/dev".into())),
+            Some(OsString::from("/dev"))
+        );
     }
 
     #[test]

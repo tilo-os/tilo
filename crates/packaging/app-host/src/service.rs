@@ -1,15 +1,12 @@
-//! Cap'n Proto `AppHost::Server` implementation. Wires the 8 RPC
-//! methods to the shared [`Store`] and the [`gc::sweep`] pass. The
-//! transport (Unix socket listener) lives in `transport.rs`.
+//! Cap'n Proto `AppHost::Server` implementation. Wires the RPC methods to
+//! the device's [`PackageStore`] and its [`Catalog`]. The transport (Unix
+//! socket listener) lives in `transport.rs`.
 //!
 //! capnp 0.26 generates async server methods on `capnp::capability::Rc<Self>`
 //! returning an `impl Future<Output = Result<(), capnp::Error>>`; blocking
-//! work (fs IO, blob-store puts, tar unpack) is routed through
+//! work (fs IO, content-store sessions, materialisation) is routed through
 //! `tokio::task::spawn_blocking` so the capnp event loop stays responsive.
 
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use capnp::Error;
@@ -18,213 +15,23 @@ use crate::app_host_capnp::{
     FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
     app_host,
 };
-use crate::gc;
 use crate::install::{InstallExpectation, install_verified_tapp};
-use crate::registry::{Pinning, RegistryEntry};
-use crate::store::Store;
+use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
-
-const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
-const SYSTEM_PAYLOAD_DIR: &str = "/usr/lib/tilo-apps";
-
-#[derive(Debug, serde::Deserialize)]
-struct SystemRegistry {
-    #[serde(default)]
-    entry: Vec<SystemRegistryEntry>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct SystemRegistryEntry {
-    id: String,
-    package_id_hex: String,
-    payload_root: PathBuf,
-    manifest_path: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-struct SystemPackage {
-    id: PackageId,
-    app_id: String,
-    payload_root: PathBuf,
-    manifest_path: PathBuf,
-    manifest_text: String,
-}
-
-/// Where the image's preinstalled packages are listed: the metadata
-/// directory holding `registry.toml` and the root every listed payload must
-/// lie under.
-///
-/// Resolved once when the daemon starts and shared by every connection, so
-/// a request never consults the process environment.
-#[derive(Clone, Debug)]
-pub struct SystemCatalog {
-    data_dir: PathBuf,
-    payload_dir: PathBuf,
-}
-
-impl SystemCatalog {
-    /// The catalog at explicit directories.
-    pub fn at(data_dir: impl Into<PathBuf>, payload_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            data_dir: data_dir.into(),
-            payload_dir: payload_dir.into(),
-        }
-    }
-
-    /// The image's catalog: `/usr/share/tilo-apps` and `/usr/lib/tilo-apps`,
-    /// unless `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` name
-    /// other directories in a developer build (see [`crate::dev_env`]).
-    pub fn from_env() -> Self {
-        Self::at(
-            path_or_default(
-                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV),
-                SYSTEM_DATA_DIR,
-            ),
-            path_or_default(
-                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_PAYLOAD_DIR_ENV),
-                SYSTEM_PAYLOAD_DIR,
-            ),
-        )
-    }
-
-    fn packages(&self) -> Result<Vec<SystemPackage>, Error> {
-        system_packages_from(&self.data_dir, &self.payload_dir)
-    }
-}
-
-/// The override the build's gate let through, else the image default.
-fn path_or_default(allowed_override: Option<std::ffi::OsString>, default: &str) -> PathBuf {
-    allowed_override.map_or_else(|| PathBuf::from(default), PathBuf::from)
-}
-
-fn is_within(root: &Path, path: &Path) -> bool {
-    let Ok(root) = fs::canonicalize(root) else {
-        return false;
-    };
-    let Ok(path) = fs::canonicalize(path) else {
-        return false;
-    };
-    path.starts_with(root)
-}
-
-fn system_packages_from(root: &Path, payload_root: &Path) -> Result<Vec<SystemPackage>, Error> {
-    let path = root.join("registry.toml");
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(Error::failed(format!(
-                "read system app registry {}: {error}",
-                path.display()
-            )));
-        }
-    };
-    let registry: SystemRegistry = toml::from_str(&raw)
-        .map_err(|error| Error::failed(format!("parse system app registry: {error}")))?;
-    let mut out = Vec::with_capacity(registry.entry.len());
-    for row in registry.entry {
-        let bytes = hex::decode(&row.package_id_hex)
-            .map_err(|error| Error::failed(format!("system package {} id: {error}", row.id)))?;
-        let id: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            Error::failed(format!(
-                "system package {} id has {} bytes, expected 32",
-                row.id,
-                bytes.len()
-            ))
-        })?;
-        if !is_within(payload_root, &row.payload_root)
-            || !is_within(payload_root, &row.manifest_path)
-        {
-            return Err(Error::failed(format!(
-                "system package {} escapes payload root {}",
-                row.id,
-                payload_root.display()
-            )));
-        }
-        let manifest_text = fs::read_to_string(&row.manifest_path).map_err(|error| {
-            Error::failed(format!(
-                "read system manifest {}: {error}",
-                row.manifest_path.display()
-            ))
-        })?;
-        let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
-            .map_err(|error| Error::failed(format!("system manifest {}: {error}", row.id)))?;
-        if manifest.package.id != row.id {
-            return Err(Error::failed(format!(
-                "system registry id {} disagrees with manifest {}",
-                row.id, manifest.package.id
-            )));
-        }
-        out.push(SystemPackage {
-            id: PackageId::from_bytes(id),
-            app_id: manifest.package.id,
-            payload_root: row.payload_root,
-            manifest_path: row.manifest_path,
-            manifest_text,
-        });
-    }
-    Ok(out)
-}
-
-fn user_app_ids(rows: &[RegistryEntry]) -> HashSet<String> {
-    rows.iter()
-        .filter_map(|row| tilo_app_package::Manifest::from_toml_str(&row.manifest_text).ok())
-        .map(|manifest| manifest.package.id)
-        .collect()
-}
-
-fn system_as_registry(row: &SystemPackage) -> RegistryEntry {
-    RegistryEntry {
-        id: row.id,
-        pinning: Pinning::Tried,
-        payload_root: row.payload_root.clone(),
-        manifest_text: row.manifest_text.clone(),
-        installed_at_unix: 0,
-        last_used_unix: 0,
-    }
-}
-
-fn visible_entries(
-    user_entries: Vec<RegistryEntry>,
-    system_entries: Vec<SystemPackage>,
-) -> Vec<(RegistryEntry, bool)> {
-    let user_ids = user_app_ids(&user_entries);
-    let mut entries: Vec<(RegistryEntry, bool)> = user_entries
-        .into_iter()
-        .map(|entry| (entry, true))
-        .collect();
-    for system in system_entries {
-        if !user_ids.contains(&system.app_id) {
-            entries.push((system_as_registry(&system), false));
-        }
-    }
-    entries
-}
-
-fn visible_system_for_id(
-    store: &Store,
-    catalog: &SystemCatalog,
-    id: PackageId,
-) -> Result<Option<SystemPackage>, Error> {
-    let user_ids = user_app_ids(&store.list());
-    Ok(catalog
-        .packages()?
-        .into_iter()
-        .find(|entry| entry.id == id && !user_ids.contains(&entry.app_id)))
-}
 
 /// Service state shared across every accepted connection.
 pub struct AppHostServer {
-    store: Arc<Store>,
-    catalog: Arc<SystemCatalog>,
+    store: Arc<PackageStore>,
+    catalog: Arc<Catalog>,
     max_store_bytes: u64,
 }
 
 impl AppHostServer {
-    /// Build a new server backed by `store`, listing the preinstalled
-    /// packages of `catalog` beside it. `max_store_bytes` is the soft cap
-    /// used by the post-install GC sweep; pass `0` to disable GC.
-    pub fn new(store: Arc<Store>, catalog: Arc<SystemCatalog>, max_store_bytes: u64) -> Self {
+    /// Build a new server backed by `store`, listing what `catalog` (the
+    /// same user store plus the image's preinstalled packages) can run.
+    /// `max_store_bytes` is the soft cap used by the post-install sweep;
+    /// pass `0` to disable it.
+    pub fn new(store: Arc<PackageStore>, catalog: Arc<Catalog>, max_store_bytes: u64) -> Self {
         Self {
             store,
             catalog,
@@ -251,40 +58,88 @@ fn parse_pinning(p: WirePinning) -> Pinning {
 
 /// Decode raw 32-byte `Data` id into a [`PackageId`].
 fn parse_id(bytes: &[u8]) -> Result<PackageId, Error> {
-    if bytes.len() != 32 {
+    let raw: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| Error::failed(format!("package id must be 32 bytes, got {}", bytes.len())))?;
+    Ok(PackageId::from_bytes(raw))
+}
+
+fn failed(error: impl std::fmt::Display) -> Error {
+    Error::failed(error.to_string())
+}
+
+/// A visible package with what the wire reports about it.
+struct Listed {
+    package: InstalledPackage,
+    id: PackageId,
+    manifest_text: String,
+    size_bytes: u64,
+}
+
+fn listed(package: InstalledPackage) -> Option<Listed> {
+    // A row without a signed package root has no identity to hand out.
+    let id = package.package_id()?;
+    let manifest_text = std::fs::read_to_string(&package.manifest_path).ok()?;
+    let size_bytes = package_store::tree_size(&package.payload_root);
+    Some(Listed {
+        package,
+        id,
+        manifest_text,
+        size_bytes,
+    })
+}
+
+/// The visible package with signed root `id`.
+fn find(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error> {
+    catalog
+        .find_package(id)
+        .map_err(failed)?
+        .ok_or_else(|| Error::failed(format!("unknown package {id}")))
+}
+
+/// The user-managed package with signed root `id`; system packages cannot
+/// be pinned or removed here.
+fn find_user(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error> {
+    let package = find(catalog, id)?;
+    if !package.user_managed() {
         return Err(Error::failed(format!(
-            "package id must be 32 bytes, got {}",
-            bytes.len()
+            "{} is a system package and cannot be changed here",
+            package.id
         )));
     }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(bytes);
-    Ok(PackageId::from_bytes(out))
+    Ok(package)
 }
 
-/// Populate a wire `PackageEntry` builder from a registry row.
-fn fill_entry(
-    mut out: crate::app_host_capnp::package_entry::Builder<'_>,
-    e: &RegistryEntry,
-    size_bytes: u64,
-    user_managed: bool,
-) {
-    out.set_id(e.id.as_bytes());
-    out.set_pinning(wire_pinning(e.pinning));
-    out.set_payload_root(e.payload_root.to_string_lossy());
-    out.set_manifest_text(&e.manifest_text);
-    out.set_size_bytes(size_bytes);
-    out.set_last_used_unix(e.last_used_unix);
-    out.set_user_managed(user_managed);
+/// Populate a wire `PackageEntry` builder from a listed package.
+fn fill_entry(mut out: crate::app_host_capnp::package_entry::Builder<'_>, row: &Listed) {
+    out.set_id(row.id.as_bytes());
+    out.set_pinning(wire_pinning(row.package.pinning()));
+    out.set_payload_root(row.package.payload_root.to_string_lossy());
+    out.set_manifest_text(&row.manifest_text);
+    out.set_size_bytes(row.size_bytes);
+    out.set_last_used_unix(row.package.last_used);
+    out.set_user_managed(row.package.user_managed());
+    out.set_manifest_path(row.package.manifest_path.to_string_lossy());
 }
 
-/// Best-effort payload-tree size for a given entry. Errors → 0.
-///
-/// Only the eagerly-extracted payload tree is counted; the shared
-/// content-addressed blob store is not attributed per-package because
-/// blobs are (deliberately) shared across packages.
-fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
-    crate::store::dir_size(&entry.payload_root).unwrap_or(0)
+/// Run blocking store work off the capnp event loop.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Error> + Send + 'static,
+) -> Result<T, Error> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| Error::failed(format!("join: {e}")))?
+}
+
+/// The override the build's gate let through, else the image default.
+fn path_or_default(
+    allowed_override: Option<std::ffi::OsString>,
+    default: &str,
+) -> std::path::PathBuf {
+    allowed_override.map_or_else(
+        || std::path::PathBuf::from(default),
+        std::path::PathBuf::from,
+    )
 }
 
 /// The launcher that builds every app's sandbox. `TILO_LAUNCHER_BIN`
@@ -358,22 +213,6 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
     }
 }
 
-#[cfg(test)]
-mod command_tests {
-    use super::safe_host_diagnostic;
-
-    #[test]
-    fn host_diagnostics_are_small_and_strip_terminal_controls() {
-        let mut bytes = vec![b'x'; 8192];
-        bytes.extend_from_slice(b"\n\x1b[31mfailure\0");
-        let diagnostic = safe_host_diagnostic(&bytes);
-        assert!(diagnostic.len() <= 4096);
-        assert!(!diagnostic.contains('\x1b'));
-        assert!(!diagnostic.contains('\0'));
-        assert!(diagnostic.ends_with("[31mfailure"));
-    }
-}
-
 // -------- Server impl -----------------------------------------------
 
 // capnp-rpc capability methods are driven from a single-threaded
@@ -391,35 +230,22 @@ impl app_host::Server for AppHostServer {
         _params: app_host::ListParams,
         mut results: app_host::ListResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
         let catalog = Arc::clone(&self.catalog);
         async move {
-            let entries = tokio::task::spawn_blocking(move || {
-                let user_entries = store.list();
-                let system_entries = catalog.packages()?;
-                let entries = visible_entries(user_entries, system_entries);
-                let sizes: Vec<u64> = entries
-                    .iter()
-                    .map(|(entry, user_managed)| {
-                        if *user_managed {
-                            payload_size(&store, entry)
-                        } else {
-                            crate::store::dir_size(&entry.payload_root).unwrap_or(0)
-                        }
-                    })
-                    .collect();
-                Ok::<_, Error>((entries, sizes))
+            let rows = blocking(move || {
+                Ok(catalog
+                    .list()
+                    .map_err(failed)?
+                    .into_iter()
+                    .filter_map(listed)
+                    .collect::<Vec<_>>())
             })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))?;
-            let (rows, sizes) = entries?;
-            let row_count = u32::try_from(rows.len())
-                .map_err(|_| Error::failed("too many registry entries to list".to_string()))?;
-            let mut list = results.get().init_entries(row_count);
-            for (i, ((row, user_managed), size)) in rows.iter().zip(sizes.iter()).enumerate() {
-                let idx = u32::try_from(i)
-                    .map_err(|_| Error::failed("too many registry entries to list".to_string()))?;
-                fill_entry(list.reborrow().get(idx), row, *size, *user_managed);
+            .await?;
+            let count = u32::try_from(rows.len())
+                .map_err(|_| Error::failed("too many packages to list".to_string()))?;
+            let mut list = results.get().init_entries(count);
+            for (index, row) in (0..count).zip(rows.iter()) {
+                fill_entry(list.reborrow().get(index), row);
             }
             Ok(())
         }
@@ -430,32 +256,15 @@ impl app_host::Server for AppHostServer {
         params: app_host::ResolveParams,
         mut results: app_host::ResolveResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
         let catalog = Arc::clone(&self.catalog);
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p
-                .get_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let id = parse_id(&id_bytes)?;
-            let (entry, size, user_managed) = tokio::task::spawn_blocking(move || {
-                if let Ok(entry) = store.resolve(id) {
-                    let size = payload_size(&store, &entry);
-                    return Ok((entry, size, true));
-                }
-                let system = visible_system_for_id(&store, &catalog, id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("unknown package {id}"))?;
-                let entry = system_as_registry(&system);
-                let size = crate::store::dir_size(&entry.payload_root).unwrap_or(0);
-                Ok((entry, size, false))
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            let row = blocking(move || {
+                listed(find(&catalog, id)?)
+                    .ok_or_else(|| Error::failed(format!("package {id} has no readable manifest")))
             })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))?
-            .map_err(Error::failed)?;
-            let out = results.get().init_entry();
-            fill_entry(out, &entry, size, user_managed);
+            .await?;
+            fill_entry(results.get().init_entry(), &row);
             Ok(())
         }
     }
@@ -465,19 +274,14 @@ impl app_host::Server for AppHostServer {
         params: app_host::PinParams,
         _results: app_host::PinResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p
-                .get_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let id = parse_id(&id_bytes)?;
-            tokio::task::spawn_blocking(move || store.pin(id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(e.to_string()))?;
-            Ok(())
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            blocking(move || {
+                let package = find_user(&catalog, id)?;
+                store.set_pinned(&package.id, true).map_err(failed)
+            })
+            .await
         }
     }
 
@@ -486,19 +290,14 @@ impl app_host::Server for AppHostServer {
         params: app_host::UnpinParams,
         _results: app_host::UnpinResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p
-                .get_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let id = parse_id(&id_bytes)?;
-            tokio::task::spawn_blocking(move || store.unpin(id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(e.to_string()))?;
-            Ok(())
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            blocking(move || {
+                let package = find_user(&catalog, id)?;
+                store.set_pinned(&package.id, false).map_err(failed)
+            })
+            .await
         }
     }
 
@@ -507,19 +306,14 @@ impl app_host::Server for AppHostServer {
         params: app_host::RemoveParams,
         _results: app_host::RemoveResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p
-                .get_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let id = parse_id(&id_bytes)?;
-            tokio::task::spawn_blocking(move || store.remove(id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(e.to_string()))?;
-            Ok(())
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            blocking(move || {
+                let package = find_user(&catalog, id)?;
+                store.remove(&package.id, false).map(drop).map_err(failed)
+            })
+            .await
         }
     }
 
@@ -528,19 +322,14 @@ impl app_host::Server for AppHostServer {
         params: app_host::MarkUsedParams,
         _results: app_host::MarkUsedResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id_bytes = p
-                .get_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let id = parse_id(&id_bytes)?;
-            tokio::task::spawn_blocking(move || store.mark_used(id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(e.to_string()))?;
-            Ok(())
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            blocking(move || {
+                let package = find_user(&catalog, id)?;
+                store.mark_used(&package.id).map_err(failed)
+            })
+            .await
         }
     }
 
@@ -552,55 +341,46 @@ impl app_host::Server for AppHostServer {
         let store = Arc::clone(&self.store);
         let max_bytes = self.max_store_bytes;
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let tapp_bytes = p
-                .get_tapp_bytes()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_vec();
-            let pinning = parse_pinning(p.get_pinning().map_err(|e| Error::failed(e.to_string()))?);
-            let expected_root = parse_id(
-                p.get_expected_root()
-                    .map_err(|e| Error::failed(e.to_string()))?,
-            )?;
-            let publisher_bytes = p
-                .get_expected_publisher()
-                .map_err(|e| Error::failed(e.to_string()))?;
+            let p = params.get().map_err(failed)?;
+            let tapp_bytes = p.get_tapp_bytes().map_err(failed)?.to_vec();
+            let pinning = parse_pinning(p.get_pinning().map_err(failed)?);
+            let expected_root = parse_id(p.get_expected_root().map_err(failed)?)?;
+            let publisher_bytes = p.get_expected_publisher().map_err(failed)?;
             let publisher: [u8; 32] = publisher_bytes.try_into().map_err(|_| {
                 Error::failed(format!(
                     "publisher key must be 32 bytes, got {}",
                     publisher_bytes.len()
                 ))
             })?;
-            let app_id = p
-                .get_expected_app_id()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
-            let version = p
-                .get_expected_version()
-                .map_err(|e| Error::failed(e.to_string()))?
-                .to_string()
-                .map_err(|e| Error::failed(e.to_string()))?;
             let expected = InstallExpectation {
                 package_root: expected_root,
                 publisher,
-                app_id,
-                version,
+                app_id: p
+                    .get_expected_app_id()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
+                version: p
+                    .get_expected_version()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
                 size_bytes: p.get_expected_size_bytes(),
             };
-            let id = tokio::task::spawn_blocking(move || {
-                let id = install_verified_tapp(&store, &tapp_bytes, pinning, &expected)
-                    .map_err(|e| e.to_string())?;
+            let id = blocking(move || {
+                let installed =
+                    install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
+                        .map_err(failed)?;
                 // Best-effort post-install sweep. Errors here should not
-                // fail the install — we already have the bytes on disk.
-                if let Err(e) = gc::sweep(&store, max_bytes) {
-                    tracing::warn!(error = %e, "post-install gc sweep failed");
+                // fail the install — the package is already committed.
+                if let Err(e) = store.sweep(max_bytes) {
+                    tracing::warn!(error = %e, "post-install sweep failed");
                 }
-                Ok::<_, String>(id)
+                installed
+                    .package_id()
+                    .ok_or_else(|| Error::failed("installed package has no package id".into()))
             })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))?
-            .map_err(Error::failed)?;
+            .await?;
             results.get().set_id(id.as_bytes());
             Ok(())
         }
@@ -613,10 +393,7 @@ impl app_host::Server for AppHostServer {
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
         async move {
-            let usage = tokio::task::spawn_blocking(move || store.disk_usage())
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(e.to_string()))?;
+            let usage = blocking(move || store.disk_usage().map_err(failed)).await?;
             let mut out = results.get();
             out.set_total_bytes(usage.total_bytes);
             let mut by = out.init_by_pinning();
@@ -631,51 +408,28 @@ impl app_host::Server for AppHostServer {
         params: app_host::LaunchParams,
         mut results: app_host::LaunchResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
-        let store = Arc::clone(&self.store);
-        let catalog = Arc::clone(&self.catalog);
+        let (store, catalog) = (Arc::clone(&self.store), Arc::clone(&self.catalog));
         async move {
-            let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
-            let id = parse_id(p.get_id().map_err(|e| Error::failed(e.to_string()))?)?;
-            let status = tokio::task::spawn_blocking(move || {
-                let (entry, manifest, user_managed) = if let Ok(entry) = store.resolve(id) {
-                    let manifest = store
-                        .root()
-                        .join("manifests")
-                        .join(format!("{}.toml", id.to_hex()));
-                    if let Some(parent) = manifest.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            Error::failed(format!("create manifest directory: {e}"))
-                        })?;
-                    }
-                    atomic_file::write(&manifest, entry.manifest_text.as_bytes())
-                        .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
-                    (entry, manifest, true)
-                } else {
-                    let system = visible_system_for_id(&store, &catalog, id)?
-                        .ok_or_else(|| Error::failed(format!("unknown package {id}")))?;
-                    let manifest = system.manifest_path.clone();
-                    (system_as_registry(&system), manifest, false)
-                };
+            let id = parse_id(params.get().map_err(failed)?.get_id().map_err(failed)?)?;
+            let status = blocking(move || {
+                let package = find(&catalog, id)?;
                 let mut command = std::process::Command::new(launcher_bin());
                 command
                     .arg("run")
                     .arg("--manifest")
-                    .arg(&manifest)
+                    .arg(&package.manifest_path)
                     .arg("--payload-root")
-                    .arg(&entry.payload_root);
+                    .arg(&package.payload_root);
                 if let Some(socket) = wayland_socket() {
                     command.arg("--wayland-socket").arg(socket);
                 }
                 let status = spawn_detached(command)?;
-                if user_managed {
-                    store
-                        .mark_used(id)
-                        .map_err(|e| Error::failed(e.to_string()))?;
+                if package.user_managed() {
+                    store.mark_used(&package.id).map_err(failed)?;
                 }
-                Ok::<_, Error>(status)
+                Ok(status)
             })
-            .await
-            .map_err(|e| Error::failed(format!("join: {e}")))??;
+            .await?;
             results.get().set_status(&status);
             Ok(())
         }
@@ -815,126 +569,36 @@ impl app_host::Server for AppHostServer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
+mod command_tests {
+    use super::safe_host_diagnostic;
 
     #[test]
-    fn a_release_build_keeps_the_image_store_and_launcher() {
-        use crate::dev_env::{
-            APPS_SYSTEM_DIR_ENV, APPS_SYSTEM_PAYLOAD_DIR_ENV, LAUNCHER_BIN_ENV, dev_override_from,
-        };
-        for (name, default) in [
-            (APPS_SYSTEM_DIR_ENV, SYSTEM_DATA_DIR),
-            (APPS_SYSTEM_PAYLOAD_DIR_ENV, SYSTEM_PAYLOAD_DIR),
-            (LAUNCHER_BIN_ENV, "/usr/bin/tilo-launcher"),
-        ] {
-            let gated = dev_override_from(false, name, Some("/tmp/attacker".into()));
-            assert_eq!(
-                path_or_default(gated, default),
-                PathBuf::from(default),
-                "{name}"
-            );
-            let honoured = dev_override_from(true, name, Some("/dev/overlay".into()));
-            assert_eq!(
-                path_or_default(honoured, default),
-                PathBuf::from("/dev/overlay"),
-                "{name}"
-            );
-        }
+    fn host_diagnostics_are_small_and_strip_terminal_controls() {
+        let mut bytes = vec![b'x'; 8192];
+        bytes.extend_from_slice(b"\n\x1b[31mfailure\0");
+        let diagnostic = safe_host_diagnostic(&bytes);
+        assert!(diagnostic.len() <= 4096);
+        assert!(!diagnostic.contains('\x1b'));
+        assert!(!diagnostic.contains('\0'));
+        assert!(diagnostic.ends_with("[31mfailure"));
     }
+}
 
-    fn system_manifest(id: &str) -> String {
-        format!(
-            r#"[package]
-id = "{id}"
-version = "1.0.0"
-kind = "app"
-
-[publisher]
-identity = "ed25519:{identity}"
-signature = ""
-
-[sandbox]
-namespaces = ["user", "pid", "uts", "ipc", "mount"]
-seccomp = "tilo-default"
-landlock = "strict"
-
-[sandbox.net]
-mode = "off"
-
-[sandbox.services]
-
-[sandbox.portals]
-
-[entrypoint]
-bin = "bin/app"
-type = "gui"
-"#,
-            identity = "0".repeat(64)
-        )
-    }
+#[cfg(test)]
+mod dev_override_tests {
+    use super::path_or_default;
+    use crate::dev_env::{LAUNCHER_BIN_ENV, dev_override_from};
+    use std::path::PathBuf;
 
     #[test]
-    fn system_registry_reads_share_metadata_and_lib_payloads() {
-        let root = tempfile::tempdir().unwrap();
-        let payload_root = tempfile::tempdir().unwrap();
-        let payload = payload_root.path().join("payloads/so.tilo.system");
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        std::fs::write(payload.join("bin/app"), b"app").unwrap();
-        let manifest_path = payload.join("manifest.toml");
-        std::fs::write(&manifest_path, system_manifest("so.tilo.system")).unwrap();
-        let package_id = "ab".repeat(32);
-        let mut registry = std::fs::File::create(root.path().join("registry.toml")).unwrap();
-        writeln!(
-            registry,
-            "[[entry]]\nid = \"so.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"",
-            payload.display(),
-            manifest_path.display()
-        )
-        .unwrap();
-
-        let entries = system_packages_from(root.path(), payload_root.path()).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].app_id, "so.tilo.system");
-        assert_eq!(entries[0].id.to_hex(), package_id);
-        assert_eq!(entries[0].payload_root, payload);
-    }
-
-    #[test]
-    fn system_registry_rejects_payload_path_escape() {
-        let root = tempfile::tempdir().unwrap();
-        let payload_root = tempfile::tempdir().unwrap();
-        let outside = tempfile::NamedTempFile::new().unwrap();
-        let package_id = "cd".repeat(32);
-        std::fs::write(root.path().join("registry.toml"), format!(
-            "[[entry]]\nid = \"so.tilo.system\"\npackage_id_hex = \"{package_id}\"\npayload_root = \"{}\"\nmanifest_path = \"{}\"\n",
-            outside.path().display(), outside.path().display()
-        )).unwrap();
-        let error = system_packages_from(root.path(), payload_root.path()).unwrap_err();
-        assert!(error.to_string().contains("escapes payload root"));
-    }
-
-    #[test]
-    fn user_entry_shadows_system_entry_by_app_id() {
-        let system_id = PackageId::from_bytes([0xab; 32]);
-        let user_id = PackageId::from_bytes([0xcd; 32]);
-        let system = SystemPackage {
-            id: system_id,
-            app_id: "so.tilo.same".into(),
-            payload_root: "/usr/lib/tilo-apps/payloads/system".into(),
-            manifest_path: "/usr/lib/tilo-apps/payloads/system/manifest.toml".into(),
-            manifest_text: system_manifest("so.tilo.same"),
-        };
-        let user = RegistryEntry::new_now(
-            user_id,
-            Pinning::Tried,
-            "/home/user/.local/share/tilo-app-host/payloads/user".into(),
-            system_manifest("so.tilo.same"),
+    fn a_release_build_keeps_the_image_launcher() {
+        let default = "/usr/bin/tilo-launcher";
+        let gated = dev_override_from(false, LAUNCHER_BIN_ENV, Some("/tmp/attacker".into()));
+        assert_eq!(path_or_default(gated, default), PathBuf::from(default));
+        let honoured = dev_override_from(true, LAUNCHER_BIN_ENV, Some("/dev/overlay".into()));
+        assert_eq!(
+            path_or_default(honoured, default),
+            PathBuf::from("/dev/overlay")
         );
-        let visible = visible_entries(vec![user], vec![system]);
-        assert_eq!(visible.len(), 1);
-        assert!(visible[0].1, "the user copy remains mutable");
-        assert_eq!(visible[0].0.id, user_id);
     }
 }

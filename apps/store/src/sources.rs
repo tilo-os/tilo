@@ -8,9 +8,9 @@
 use registry_types::{RegistryImageKind, RegistryVersion};
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
-use crate::installed::InstalledEntry;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 use crate::registry_client::VerifiedEntry;
+use package_store::InstalledPackage;
 
 /// Convert a Tilo registry entry into the unified store item shape.
 ///
@@ -18,8 +18,7 @@ use crate::registry_client::VerifiedEntry;
 /// the user's `registries.toml`, not the wire — the registry
 /// doesn't publish its own name to a fetched entry).
 ///
-/// `installed_index` is the pre-indexed install snapshot from
-/// [`crate::installed`] — passed by-ref so the merge can cheaply
+/// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
 #[allow(
     clippy::unreachable,
@@ -28,7 +27,7 @@ use crate::registry_client::VerifiedEntry;
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
-    installed_index: &[InstalledEntry],
+    installed_index: &[InstalledPackage],
 ) -> StoreItem {
     let entry = &verified.entry;
     let versions: Vec<StoreItemVersion> =
@@ -44,7 +43,7 @@ pub fn tilo_to_store_item(
             version: e.version.clone(),
             available: latest.clone(),
             pinned: e.pinned,
-            user_managed: e.user_managed,
+            user_managed: e.user_managed(),
         });
     let locale = preferred_locale();
     let localized_images = entry.images.resolve(&locale);
@@ -113,7 +112,7 @@ fn preferred_locale() -> String {
 /// is already on their device while its registry is offline or has withdrawn
 /// it. This deliberately publishes no download URL or claimed latest version,
 /// so the UI cannot offer an update based on stale or invented metadata.
-pub fn installed_tilo_to_store_item(entry: &InstalledEntry) -> StoreItem {
+pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
     StoreItem {
         id: entry.id.clone(),
         // Package ids are the only durable local display metadata available
@@ -152,7 +151,7 @@ pub fn installed_tilo_to_store_item(entry: &InstalledEntry) -> StoreItem {
             // "Update" affordance.
             available: entry.version.clone(),
             pinned: entry.pinned,
-            user_managed: entry.user_managed,
+            user_managed: entry.user_managed(),
         },
     }
 }
@@ -405,6 +404,31 @@ mod tests {
         e
     }
 
+    fn installed_package(
+        id: impl Into<String>,
+        version: impl Into<String>,
+        publisher_key_hex: impl Into<String>,
+        pinned: bool,
+        user_managed: bool,
+    ) -> InstalledPackage {
+        InstalledPackage {
+            id: id.into(),
+            version: version.into(),
+            package_id_hex: String::new(),
+            payload_root: std::path::PathBuf::new(),
+            manifest_path: std::path::PathBuf::new(),
+            publisher_key_hex: publisher_key_hex.into(),
+            pinned,
+            installed_at: 0,
+            last_used: 0,
+            attested_by: String::new(),
+            cli_commands: Vec::new(),
+            runtime: String::new(),
+            source: String::new(),
+            system: !user_managed,
+        }
+    }
+
     fn verified(entry: RegistryEntry) -> VerifiedEntry {
         VerifiedEntry {
             entry,
@@ -415,14 +439,13 @@ mod tests {
     #[test]
     fn tilo_entry_deserializes_installed_state() {
         let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
-        let installed = vec![InstalledEntry {
-            id: "so.tilo.notes".into(),
-            version: "0.1.0".into(),
-            publisher_key_hex: entry.publisher_pubkey_hex.clone(),
-            installed_at: 0,
-            pinned: true,
-            user_managed: true,
-        }];
+        let installed = vec![installed_package(
+            "so.tilo.notes",
+            "0.1.0",
+            entry.publisher_pubkey_hex.clone(),
+            true,
+            true,
+        )];
         let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(matches!(item.installed, InstalledState::Installed { .. }));
         // The pin flag from tilo-install's registry must survive the
@@ -435,14 +458,13 @@ mod tests {
     #[test]
     fn tilo_entry_with_newer_registry_version_flags_update() {
         let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
-        let installed = vec![InstalledEntry {
-            id: "so.tilo.notes".into(),
-            version: "0.1.0".into(),
-            publisher_key_hex: entry.publisher_pubkey_hex.clone(),
-            installed_at: 0,
-            pinned: false,
-            user_managed: true,
-        }];
+        let installed = vec![installed_package(
+            "so.tilo.notes",
+            "0.1.0",
+            entry.publisher_pubkey_hex.clone(),
+            false,
+            true,
+        )];
         let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(item.installed.update_available());
     }
@@ -450,14 +472,13 @@ mod tests {
     #[test]
     fn immutable_system_entry_is_installed_but_not_mutable() {
         let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
-        let installed = vec![InstalledEntry {
-            id: entry.package_id.clone(),
-            version: "1.0.0".into(),
-            publisher_key_hex: entry.publisher_pubkey_hex.clone(),
-            installed_at: 0,
-            pinned: false,
-            user_managed: false,
-        }];
+        let installed = vec![installed_package(
+            entry.package_id.clone(),
+            "1.0.0",
+            entry.publisher_pubkey_hex.clone(),
+            false,
+            false,
+        )];
         let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
         assert!(item.installed.is_installed());
         assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
@@ -467,14 +488,13 @@ mod tests {
 
     #[test]
     fn locally_installed_tilo_item_stays_actionable_without_catalogue_metadata() {
-        let item = installed_tilo_to_store_item(&InstalledEntry {
-            id: "so.tilo.offline".into(),
-            version: "1.2.3".into(),
-            publisher_key_hex: "ab".repeat(32),
-            installed_at: 0,
-            pinned: true,
-            user_managed: true,
-        });
+        let item = installed_tilo_to_store_item(&installed_package(
+            "so.tilo.offline",
+            "1.2.3",
+            "ab".repeat(32),
+            true,
+            true,
+        ));
         assert_eq!(item.name, "so.tilo.offline");
         assert!(item.installed.is_installed());
         assert!(item.installed.is_pinned());
