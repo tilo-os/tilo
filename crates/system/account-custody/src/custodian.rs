@@ -9,9 +9,10 @@ use std::time::Duration;
 use accounts::{Account, AccountId, HandoffCredential, HandoffStore, Secret, SecretVault};
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
-use tilo_oauth::{OAuthError, Provider, TokenSet};
+use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
 use zeroize::Zeroizing;
 
+use crate::clients::ClientTable;
 use crate::icloud::{ICloudAuth, ICloudAuthError, ICloudSessionState, UnavailableICloud};
 use crate::providers::{ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, WEBDAV_TYPE};
 
@@ -123,7 +124,9 @@ pub fn is_cloud_type(type_id: &str) -> bool {
 pub struct Custodian {
     config_root: Option<PathBuf>,
     icloud: Arc<dyn ICloudAuth>,
-    overrides: BTreeMap<&'static str, (Provider, String)>,
+    clients: Arc<ClientTable>,
+    overrides: BTreeMap<&'static str, (Provider, Registration)>,
+    storage: BTreeMap<&'static str, serde_json::Value>,
 }
 
 impl Custodian {
@@ -137,7 +140,9 @@ impl Custodian {
         Self {
             config_root,
             icloud: Arc::new(UnavailableICloud),
+            clients: Arc::new(ClientTable::defaults().clone()),
             overrides: BTreeMap::new(),
+            storage: BTreeMap::new(),
         }
     }
 
@@ -148,13 +153,65 @@ impl Custodian {
         self
     }
 
-    /// Replace a provider's descriptor and client id (tests, private
-    /// deployments).
+    /// Replace a provider's descriptor and registration (a client id, or a
+    /// whole [`Registration`]) for tests and private deployments.
     #[must_use]
-    pub fn with_provider(mut self, cloud: OAuthCloud, provider: Provider, client_id: &str) -> Self {
+    pub fn with_provider(
+        mut self,
+        cloud: OAuthCloud,
+        provider: Provider,
+        registration: impl Into<Registration>,
+    ) -> Self {
         self.overrides
-            .insert(cloud.type_id(), (provider, client_id.to_string()));
+            .insert(cloud.type_id(), (provider, registration.into()));
         self
+    }
+
+    /// Use `table` instead of the committed client registrations
+    /// (`oauth-clients.toml`); environment overrides still apply.
+    #[must_use]
+    pub fn with_client_table(mut self, table: ClientTable) -> Self {
+        self.clients = Arc::new(table);
+        self
+    }
+
+    /// Start from `config` (the provider crate's serde configuration: a
+    /// fake server's API origin, a chosen folder) instead of the provider's
+    /// default when resolving a new account's storage.
+    #[must_use]
+    pub fn with_storage_config(mut self, cloud: OAuthCloud, config: serde_json::Value) -> Self {
+        self.storage.insert(cloud.type_id(), config);
+        self
+    }
+
+    /// The non-secret mount configuration of a newly signed-in account,
+    /// asked of the provider once with its fresh access token.
+    ///
+    /// # Errors
+    /// See [`crate::storage::resolve`].
+    pub fn resolve_storage(
+        &self,
+        cloud: OAuthCloud,
+        tokens: &TokenSet,
+    ) -> Result<serde_json::Value, CustodyError> {
+        crate::storage::resolve(
+            cloud,
+            self.storage.get(cloud.type_id()),
+            &tokens.access_token,
+        )
+    }
+
+    /// Use Apple's `iCloud` web sign-in ([`crate::icloud::WebICloud`]) for
+    /// `iCloud` Drive. Settings and the credential helper run with it.
+    #[must_use]
+    pub fn with_apple_icloud(self) -> Self {
+        match crate::icloud::WebICloud::apple() {
+            Ok(auth) => self.with_icloud(Arc::new(auth)),
+            Err(error) => {
+                tracing::warn!(%error, "iCloud sign-in is unavailable");
+                self
+            }
+        }
     }
 
     pub fn icloud(&self) -> &Arc<dyn ICloudAuth> {
@@ -198,22 +255,24 @@ impl Custodian {
         }
     }
 
-    /// The descriptor and client id for a provider, or the "not configured"
-    /// state.
+    /// The descriptor and registration for a provider, or the "not
+    /// configured" state.
     ///
     /// # Errors
     /// [`CustodyError::NotConfigured`].
-    pub fn oauth_config(&self, cloud: OAuthCloud) -> Result<(Provider, String), CustodyError> {
+    pub fn oauth_config(
+        &self,
+        cloud: OAuthCloud,
+    ) -> Result<(Provider, Registration), CustodyError> {
         if let Some(configured) = self.overrides.get(cloud.type_id()) {
             return Ok(configured.clone());
         }
-        let client = cloud.client_id();
-        client
-            .resolve()
-            .map(|id| (cloud.descriptor(), id))
+        self.clients
+            .registration(cloud)
+            .map(|registration| (cloud.descriptor(), registration))
             .ok_or_else(|| CustodyError::NotConfigured {
                 provider: cloud.label(),
-                key: client.key,
+                key: cloud.client_id().key,
             })
     }
 
@@ -228,8 +287,8 @@ impl Custodian {
         cloud: OAuthCloud,
         login_hint: Option<&str>,
     ) -> Result<Authorization, CustodyError> {
-        let (provider, client_id) = self.oauth_config(cloud)?;
-        Authorization::begin(&provider, &client_id, login_hint).map_err(CustodyError::from)
+        let (provider, registration) = self.oauth_config(cloud)?;
+        Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
     /// Wait for the browser and redeem the code. Blocking.
@@ -239,6 +298,25 @@ impl Custodian {
     pub fn finish_sign_in(authorization: Authorization) -> Result<TokenSet, CustodyError> {
         let client = OAuthClient::new()?;
         let tokens = authorization.complete(&client, SIGN_IN_TIMEOUT)?;
+        if tokens.refresh_token.is_empty() {
+            return Err(CustodyError::SignIn(
+                "the provider did not grant offline access; try again".into(),
+            ));
+        }
+        Ok(tokens)
+    }
+
+    /// Redeem the code the provider displayed, for a sign-in that
+    /// [`Authorization::needs_pasted_code`]. Blocking.
+    ///
+    /// # Errors
+    /// See [`OAuthError`], mapped into [`CustodyError`].
+    pub fn finish_sign_in_with_code(
+        authorization: Authorization,
+        code: &str,
+    ) -> Result<TokenSet, CustodyError> {
+        let client = OAuthClient::new()?;
+        let tokens = authorization.complete_with_code(&client, code)?;
         if tokens.refresh_token.is_empty() {
             return Err(CustodyError::SignIn(
                 "the provider did not grant offline access; try again".into(),
@@ -299,21 +377,23 @@ impl Custodian {
                 return Err(CustodyError::NeedsAuthentication);
             }
             if force || tokens.needs_refresh() {
-                let (provider, client_id) = self.oauth_config(cloud)?;
-                let renewed =
-                    match OAuthClient::new()?.refresh(&provider, &client_id, &tokens.refresh_token)
-                    {
-                        Ok(renewed) => renewed.stamp_now(),
-                        Err(OAuthError::InvalidGrant) => {
-                            // The provider revoked the grant: its access token
-                            // must not be handed out again either. Keep the
-                            // account, drop the dead grant until the next sign-in.
-                            vault.put(id, &oauth_secret(&TokenSet::default()));
-                            vault.try_save().map_err(CustodyError::Storage)?;
-                            return Err(CustodyError::NeedsAuthentication);
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
+                let (provider, registration) = self.oauth_config(cloud)?;
+                let renewed = match OAuthClient::new()?.refresh(
+                    &provider,
+                    &registration,
+                    &tokens.refresh_token,
+                ) {
+                    Ok(renewed) => renewed.stamp_now(),
+                    Err(OAuthError::InvalidGrant) => {
+                        // The provider revoked the grant: its access token
+                        // must not be handed out again either. Keep the
+                        // account, drop the dead grant until the next sign-in.
+                        vault.put(id, &oauth_secret(&TokenSet::default()));
+                        vault.try_save().map_err(CustodyError::Storage)?;
+                        return Err(CustodyError::NeedsAuthentication);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 tokens = renewed;
                 vault.put(id, &oauth_secret(&tokens));
                 vault.try_save().map_err(CustodyError::Storage)?;
@@ -374,7 +454,7 @@ impl Custodian {
         }
         let type_id = account.type_id.as_str();
         if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
-            let (Some(Grant::Oauth2 { tokens }), Ok((provider, client_id))) =
+            let (Some(Grant::Oauth2 { tokens }), Ok((provider, registration))) =
                 (grant_of(secret), self.oauth_config(cloud))
             else {
                 return;
@@ -382,8 +462,8 @@ impl Custodian {
             if tokens.access_token.is_empty() && tokens.refresh_token.is_empty() {
                 return;
             }
-            let result =
-                OAuthClient::new().and_then(|client| client.revoke(&provider, &client_id, &tokens));
+            let result = OAuthClient::new()
+                .and_then(|client| client.revoke(&provider, &registration, &tokens));
             if let Err(error) = result {
                 tracing::warn!(provider = cloud.label(), %error, "could not revoke a removed account's grant");
             }

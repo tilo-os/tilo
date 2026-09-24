@@ -2113,6 +2113,7 @@ impl Widget for SettingsApp {
                         .ok_or_else(|| "unsupported account type".to_string())?;
                 crate::panes::accounts::AccountsPane::remove_account(
                     &self.account_root,
+                    &self.account_root.custodian(),
                     account_kind,
                     &id,
                 )?;

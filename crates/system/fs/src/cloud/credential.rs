@@ -1,16 +1,17 @@
 //! The credential handoff between the account service and a mount.
 //!
-//! The service is the only process that opens the account vault. It reads
-//! one account's secret the way Files' former browser did
-//! (`SecretVault::get` for that account id, nothing else) and hands the mount
-//! process just the [`Credential`] its provider needs, as a line on the
-//! mount's stdin. It never appears in arguments, the environment or logs.
+//! Neither side opens Settings' account vault. The service reads one
+//! account's short-lived credential from the handoff store through
+//! [`accounts::HandoffCredentialSource`] (an access token, session headers,
+//! or the Basic credential a `WebDAV` server itself needs) and hands the
+//! mount process just that [`Credential`], as a line on the mount's stdin.
+//! It never appears in arguments, the environment or logs.
 //!
-//! When the server rejects a credential the mount says so on stdout; the
-//! service re-reads the vault (Settings may have refreshed a token or the
-//! person may have signed in again) and sends the new credential, or marks
-//! the account as needing sign-in. Closing the mount's stdin tells it to
-//! unmount.
+//! When the server rejects a credential, or the one the mount holds has
+//! expired, the mount says so on stdout; the service asks the handoff for a
+//! fresh one (which runs Settings' credential helper when needed) and sends
+//! it, or marks the account as needing sign-in. Closing the mount's stdin
+//! tells it to unmount.
 
 use std::io::{BufRead, Write};
 use std::sync::{Condvar, Mutex};
@@ -26,6 +27,10 @@ use super::providers::MountSpec;
 pub const READY_LINE: &str = "TILO_CLOUD_MOUNT_READY_V1";
 /// Printed by a mount when the server rejected its credential.
 pub const REJECTED_LINE: &str = "credential-rejected";
+/// Printed by a mount when the credential it holds has expired.
+pub const EXPIRED_LINE: &str = "credential-expired";
+/// A credential this close to its expiry counts as expired.
+const EXPIRY_SKEW: Duration = Duration::from_secs(30);
 /// Prefix of a health line (`health <state>`).
 pub const HEALTH_PREFIX: &str = "health ";
 
@@ -194,8 +199,40 @@ impl PipeCredential {
     }
 }
 
+fn expired(credential: &Credential) -> bool {
+    let expires = match credential {
+        Credential::Basic { .. } => None,
+        Credential::Bearer { expires, .. } | Credential::Session { expires, .. } => *expires,
+    };
+    expires.is_some_and(|expires| {
+        SystemTime::now()
+            .checked_add(EXPIRY_SKEW)
+            .is_some_and(|soon| soon >= expires)
+    })
+}
+
+impl PipeCredential {
+    /// Mark the current credential as unusable and tell the service once.
+    fn ask(&self, line: &str) {
+        let first = {
+            let mut state = self.lock();
+            let first = state.rejected != Some(state.generation);
+            state.rejected = Some(state.generation);
+            first
+        };
+        if first && let Ok(mut out) = self.out.lock() {
+            let _ = writeln!(out, "{line}");
+            let _ = out.flush();
+        }
+    }
+}
+
 impl CredentialSource for PipeCredential {
     fn credential(&self) -> cloud_source::Result<Credential> {
+        let due = self.lock().current.as_ref().is_some_and(expired);
+        if due {
+            self.ask(EXPIRED_LINE);
+        }
         let state = self.lock();
         let (state, _) = self
             .changed
@@ -210,16 +247,7 @@ impl CredentialSource for PipeCredential {
     }
 
     fn rejected(&self) {
-        let first = {
-            let mut state = self.lock();
-            let first = state.rejected != Some(state.generation);
-            state.rejected = Some(state.generation);
-            first
-        };
-        if first && let Ok(mut out) = self.out.lock() {
-            let _ = writeln!(out, "{REJECTED_LINE}");
-            let _ = out.flush();
-        }
+        self.ask(REJECTED_LINE);
     }
 }
 
@@ -268,5 +296,50 @@ mod tests {
             panic!("bearer");
         };
         assert_eq!(token.as_str(), "new");
+    }
+
+    /// The mount's stdout as the service reads it: one message per line.
+    struct Lines(std::sync::mpsc::Sender<String>);
+
+    impl Write for Lines {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let text = String::from_utf8_lossy(buf);
+            for line in text.lines().filter(|line| !line.is_empty()) {
+                let _ = self.0.send(line.to_owned());
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_expired_credential_is_asked_for_again_before_it_is_used() {
+        let (lines, received) = std::sync::mpsc::channel();
+        let pipe = std::sync::Arc::new(PipeCredential::new(
+            Some(Credential::Bearer {
+                token: Zeroizing::new("expired".into()),
+                expires: Some(SystemTime::now()),
+            }),
+            Box::new(Lines(lines)),
+        ));
+        let service = {
+            let pipe = std::sync::Arc::clone(&pipe);
+            std::thread::spawn(move || {
+                // The service answers the line with a fresh credential.
+                assert_eq!(received.recv().unwrap(), EXPIRED_LINE);
+                pipe.update(Credential::Bearer {
+                    token: Zeroizing::new("fresh".into()),
+                    expires: None,
+                });
+            })
+        };
+        let Credential::Bearer { token, .. } = pipe.credential().unwrap() else {
+            panic!("bearer");
+        };
+        service.join().unwrap();
+        assert_eq!(token.as_str(), "fresh");
     }
 }

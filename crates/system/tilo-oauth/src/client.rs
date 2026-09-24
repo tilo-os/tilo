@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::loopback::{LoopbackCancel, LoopbackServer};
-use crate::{AuthorizationRequest, OAuthError, Pkce, Provider, Revocation, TokenSet};
+use crate::{AuthorizationRequest, OAuthError, Pkce, Provider, Registration, Revocation, TokenSet};
 
 /// Deadline for one token endpoint request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -31,6 +31,8 @@ impl OAuthClient {
     }
 
     /// Redeem an authorization code (with its PKCE verifier) for tokens.
+    /// `redirect_uri` is the one the authorization request carried, `None`
+    /// when the provider displayed the code instead of redirecting.
     ///
     /// # Errors
     /// [`OAuthError::InvalidGrant`] for a rejected code or verifier,
@@ -38,21 +40,20 @@ impl OAuthClient {
     pub fn exchange_code(
         &self,
         provider: &Provider,
-        client_id: &str,
-        redirect_uri: &str,
+        client: &Registration,
+        redirect_uri: Option<&str>,
         code: &str,
         verifier: &str,
     ) -> Result<TokenSet, OAuthError> {
-        self.token_request(
-            provider,
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", client_id),
-                ("redirect_uri", redirect_uri),
-                ("code", code),
-                ("code_verifier", verifier),
-            ],
-        )
+        let mut params = vec![
+            ("grant_type", "authorization_code"),
+            ("client_id", client.client_id.as_str()),
+        ];
+        if let Some(redirect_uri) = redirect_uri {
+            params.push(("redirect_uri", redirect_uri));
+        }
+        params.extend([("code", code), ("code_verifier", verifier)]);
+        self.token_request(provider, client, params)
     }
 
     /// Exchange a refresh token for a fresh access token. The existing
@@ -64,7 +65,7 @@ impl OAuthClient {
     pub fn refresh(
         &self,
         provider: &Provider,
-        client_id: &str,
+        client: &Registration,
         refresh_token: &str,
     ) -> Result<TokenSet, OAuthError> {
         if refresh_token.is_empty() {
@@ -72,9 +73,10 @@ impl OAuthClient {
         }
         let mut tokens = self.token_request(
             provider,
-            &[
+            client,
+            vec![
                 ("grant_type", "refresh_token"),
-                ("client_id", client_id),
+                ("client_id", client.client_id.as_str()),
                 ("refresh_token", refresh_token),
             ],
         )?;
@@ -93,7 +95,7 @@ impl OAuthClient {
     pub fn revoke(
         &self,
         provider: &Provider,
-        client_id: &str,
+        client: &Registration,
         tokens: &TokenSet,
     ) -> Result<bool, OAuthError> {
         let request = match &provider.revocation {
@@ -107,7 +109,7 @@ impl OAuthClient {
                 self.http
                     .post(endpoint)
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(form(&[("token", token), ("client_id", client_id)]))
+                    .body(form(&[("token", token), ("client_id", &client.client_id)]))
             }
             Revocation::BearerPost { endpoint } => {
                 self.http.post(endpoint).bearer_auth(&tokens.access_token)
@@ -128,18 +130,22 @@ impl OAuthClient {
         }
     }
 
-    fn token_request(
+    fn token_request<'a>(
         &self,
         provider: &Provider,
-        params: &[(&str, &str)],
+        client: &'a Registration,
+        mut params: Vec<(&str, &'a str)>,
     ) -> Result<TokenSet, OAuthError> {
         use std::io::Read as _;
+        if let Some(secret) = client.secret() {
+            params.push(("client_secret", secret));
+        }
         let response = self
             .http
             .post(&provider.token_endpoint)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
-            .body(form(params))
+            .body(form(&params))
             .send()
             .map_err(|error| OAuthError::Network(error.without_url().to_string()))?;
         let status = response.status().as_u16();
@@ -169,16 +175,25 @@ fn form(params: &[(&str, &str)]) -> String {
     body.finish()
 }
 
-/// One browser sign-in in progress: the bound loopback redirect, the PKCE
-/// pair, the `state`, and the URL to open.
+/// How the authorization code comes back.
+enum Return {
+    /// The browser is redirected to this listener.
+    Loopback(LoopbackServer),
+    /// The provider displays the code; the person pastes it.
+    Pasted,
+}
+
+/// One browser sign-in in progress: the bound loopback redirect (or, when
+/// every registered port is taken and the provider allows it, a code to be
+/// pasted), the PKCE pair, the `state`, and the URL to open.
 ///
 /// [`Authorization::begin`] is cheap and non-blocking, so the UI thread can
 /// start it, open [`Authorization::url`] through the desktop's URI opener and
 /// hand the value to a worker for [`Authorization::complete`].
 pub struct Authorization {
     provider: Provider,
-    client_id: String,
-    server: LoopbackServer,
+    client: Registration,
+    code_return: Return,
     pkce: Pkce,
     state: String,
     url: String,
@@ -186,19 +201,27 @@ pub struct Authorization {
 
 impl Authorization {
     /// # Errors
-    /// [`OAuthError::Loopback`] or [`OAuthError::Randomness`].
+    /// [`OAuthError::Loopback`], [`OAuthError::RedirectPortsBusy`] (when the
+    /// registration has no paste fallback) or [`OAuthError::Randomness`].
     pub fn begin(
         provider: &Provider,
-        client_id: &str,
+        client: &Registration,
         login_hint: Option<&str>,
     ) -> Result<Self, OAuthError> {
-        let server = LoopbackServer::bind()?;
+        let code_return = match LoopbackServer::bind_to(&client.redirect_ports) {
+            Ok(server) => Return::Loopback(server),
+            Err(OAuthError::RedirectPortsBusy) if client.paste_code_fallback => Return::Pasted,
+            Err(error) => return Err(error),
+        };
         let pkce = Pkce::generate()?;
         let state = crate::random_token()?;
-        let redirect_uri = server.redirect_uri();
+        let redirect_uri = match &code_return {
+            Return::Loopback(server) => server.redirect_uri(),
+            Return::Pasted => String::new(),
+        };
         let url = AuthorizationRequest {
             provider,
-            client_id,
+            client_id: &client.client_id,
             redirect_uri: &redirect_uri,
             code_challenge: &pkce.challenge,
             state: &state,
@@ -207,8 +230,8 @@ impl Authorization {
         .url();
         Ok(Self {
             provider: provider.clone(),
-            client_id: client_id.to_string(),
-            server,
+            client: client.clone(),
+            code_return,
             pkce,
             state,
             url,
@@ -220,26 +243,67 @@ impl Authorization {
         &self.url
     }
 
-    pub fn redirect_uri(&self) -> String {
-        self.server.redirect_uri()
+    /// The loopback redirect URI, `None` when the code is to be pasted.
+    pub fn redirect_uri(&self) -> Option<String> {
+        match &self.code_return {
+            Return::Loopback(server) => Some(server.redirect_uri()),
+            Return::Pasted => None,
+        }
     }
 
-    /// Cancels [`Authorization::complete`] from another thread.
-    pub fn canceller(&self) -> LoopbackCancel {
-        self.server.canceller()
+    /// Whether the provider will display the code for the person to paste
+    /// ([`Authorization::complete_with_code`]) instead of redirecting.
+    pub fn needs_pasted_code(&self) -> bool {
+        matches!(self.code_return, Return::Pasted)
+    }
+
+    /// Cancels [`Authorization::complete`] from another thread; `None` when
+    /// nothing waits for a redirect.
+    pub fn canceller(&self) -> Option<LoopbackCancel> {
+        match &self.code_return {
+            Return::Loopback(server) => Some(server.canceller()),
+            Return::Pasted => None,
+        }
     }
 
     /// Wait for the redirect, check `state`, and redeem the code.
     ///
     /// # Errors
-    /// Any [`OAuthError`] of the redirect wait or the code exchange.
+    /// Any [`OAuthError`] of the redirect wait or the code exchange;
+    /// [`OAuthError::NeedsPastedCode`] when the code is to be pasted.
     pub fn complete(self, client: &OAuthClient, timeout: Duration) -> Result<TokenSet, OAuthError> {
-        let code = self.server.wait_for_code(&self.state, timeout)?;
+        let Return::Loopback(server) = &self.code_return else {
+            return Err(OAuthError::NeedsPastedCode);
+        };
+        let code = server.wait_for_code(&self.state, timeout)?;
         client.exchange_code(
             &self.provider,
-            &self.client_id,
-            &self.server.redirect_uri(),
+            &self.client,
+            Some(&server.redirect_uri()),
             &code,
+            &self.pkce.verifier,
+        )
+    }
+
+    /// Redeem a code the provider displayed and the person pasted.
+    ///
+    /// # Errors
+    /// [`OAuthError::InvalidGrant`] for a wrong code, or any other
+    /// [`OAuthError`] of the exchange.
+    pub fn complete_with_code(
+        self,
+        client: &OAuthClient,
+        code: &str,
+    ) -> Result<TokenSet, OAuthError> {
+        let code = code.trim();
+        if code.is_empty() {
+            return Err(OAuthError::NeedsPastedCode);
+        }
+        client.exchange_code(
+            &self.provider,
+            &self.client,
+            self.redirect_uri().as_deref(),
+            code,
             &self.pkce.verifier,
         )
     }

@@ -166,7 +166,13 @@ pub fn refresh_tokens(
     refresh_token: &str,
 ) -> Result<OAuthTokens, String> {
     tilo_oauth::client::OAuthClient::new()
-        .and_then(|client| client.refresh(&provider.descriptor(), client_id, refresh_token))
+        .and_then(|client| {
+            client.refresh(
+                &provider.descriptor(),
+                &tilo_oauth::Registration::public(client_id),
+                refresh_token,
+            )
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -186,9 +192,12 @@ pub fn run_loopback_authorization(
     timeout: std::time::Duration,
 ) -> Result<OAuthTokens, String> {
     let descriptor = provider.descriptor();
-    let authorization =
-        tilo_oauth::client::Authorization::begin(&descriptor, client_id, Some(login_hint))
-            .map_err(|error| error.to_string())?;
+    let authorization = tilo_oauth::client::Authorization::begin(
+        &descriptor,
+        &tilo_oauth::Registration::public(client_id),
+        Some(login_hint),
+    )
+    .map_err(|error| error.to_string())?;
     open_browser(authorization.url())
         .map_err(|error| format!("could not open sign-in browser: {error}"))?;
     let client = tilo_oauth::client::OAuthClient::new().map_err(|error| error.to_string())?;

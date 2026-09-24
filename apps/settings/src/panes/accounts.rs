@@ -1461,6 +1461,7 @@ impl AccountsPane {
     /// Remove an account of `kind` by id from its owning store, persisting.
     pub(crate) fn remove_account(
         account_root: &AccountRoot,
+        custodian: &account_custody::Custodian,
         kind: AccountKind,
         id: &str,
     ) -> Result<(), String> {
@@ -1537,7 +1538,7 @@ impl AccountsPane {
             && account_custody::is_cloud_type(account.type_id.as_str())
         {
             let account = account.clone();
-            let custodian = account_root.custodian();
+            let custodian = custodian.clone();
             std::thread::spawn(move || custodian.revoke(&account, &secret));
         }
         Ok(())
@@ -1857,7 +1858,7 @@ impl AccountsPane {
                 automerge::ScalarValue::Boolean(false),
             );
             if let Some((kind, id)) = self.pending_remove.take() {
-                match Self::remove_account(&self.account_root, kind, &id) {
+                match Self::remove_account(&self.account_root, &self.custodian, kind, &id) {
                     Ok(()) => {
                         self.removed.push(id);
                         self.reload();

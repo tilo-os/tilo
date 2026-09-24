@@ -97,7 +97,9 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const LIST_BATCH: usize = 32;
 
 /// Where a source finds the account, and which folder is its root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Contains no secret: it is the non-secret mount configuration a daemon
+/// persists.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ICloudConfig {
     /// `https://setup.icloud.com/setup/ws/1`.
     pub setup: Url,

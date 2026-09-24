@@ -37,6 +37,27 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Account type ids of the cloud storage accounts Settings connects and the
+/// storage daemon mounts. One definition, so the two sides cannot disagree.
+pub mod cloud_types {
+    /// Google Drive.
+    pub const GOOGLE_DRIVE: &str = "google-drive";
+    /// `OneDrive` (personal or work/school) and `SharePoint` libraries.
+    pub const ONEDRIVE: &str = "onedrive";
+    /// Dropbox.
+    pub const DROPBOX: &str = "dropbox";
+    /// `iCloud` Drive.
+    pub const ICLOUD_DRIVE: &str = "icloud-drive";
+    /// Nextcloud (files, calendars, contacts).
+    pub const NEXTCLOUD: &str = "nextcloud";
+    /// A plain `WebDAV` server.
+    pub const WEBDAV: &str = "webdav";
+
+    /// The key of an account's resolved mount configuration in its
+    /// non-secret `config`: the provider crate's own serde configuration.
+    pub const MOUNT_CONFIG_KEY: &str = "mount";
+}
+
 pub mod handoff;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,

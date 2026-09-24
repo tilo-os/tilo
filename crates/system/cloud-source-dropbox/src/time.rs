@@ -23,6 +23,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
         .checked_sub(719_468)
 }
 
+#[cfg(any(test, feature = "fake-server"))]
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "bounded calendar arithmetic on day counts of representable times"
@@ -81,6 +82,7 @@ pub fn parse(text: &str) -> Option<SystemTime> {
 }
 
 /// Format as `YYYY-MM-DDTHH:MM:SSZ`.
+#[cfg(any(test, feature = "fake-server"))]
 pub fn format(time: SystemTime) -> String {
     let seconds = time
         .duration_since(UNIX_EPOCH)

@@ -35,11 +35,14 @@
     )
 )]
 
+mod clients;
 mod custodian;
 pub mod icloud;
 pub mod nextcloud;
 pub mod providers;
+pub mod storage;
 
+pub use clients::{ClientEntry, ClientTable};
 pub use custodian::{
     Custodian, CustodyError, SIGN_IN_TIMEOUT, icloud_apple_id, icloud_secret, is_cloud_type,
     oauth_secret,
@@ -47,6 +50,7 @@ pub use custodian::{
 pub use providers::OAuthCloud;
 pub use tilo_oauth::client::Authorization;
 pub use tilo_oauth::loopback::LoopbackCancel;
+pub use tilo_oauth::{Registration, TokenSet};
 
 #[cfg(test)]
 mod tests;

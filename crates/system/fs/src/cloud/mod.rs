@@ -15,7 +15,8 @@
 //! every app and POSIX tool can use. The pieces:
 //!
 //! - [`service`]: the per-user service that follows the account store,
-//!   holds the vault handoff and runs one mount per account;
+//!   reads each account's short-lived credential from the handoff store
+//!   and runs one mount per account;
 //! - [`volume`]: one account's engine — cached metadata, ranged hydration,
 //!   write-back through a persisted queue, conflict copies;
 //! - [`cache`]: the bounded BLAKE3-keyed content cache;

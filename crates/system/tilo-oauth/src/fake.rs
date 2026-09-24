@@ -37,6 +37,11 @@ struct State {
     /// Every verifier the token endpoint was offered.
     verifiers: Vec<String>,
     refreshes: usize,
+    /// When set, every access token issued is this one (so a provider fake
+    /// that accepts one fixed token accepts the tokens issued here).
+    access_token: Option<String>,
+    /// When set, token requests must carry this `client_secret`.
+    client_secret: Option<String>,
 }
 
 /// See the module docs.
@@ -104,6 +109,17 @@ impl FakeAuthorizationServer {
         lock(&self.state).token_lifetime = seconds;
     }
 
+    /// Issue `token` as every access token from now on.
+    pub fn issue_access_token(&self, token: &str) {
+        lock(&self.state).access_token = Some(token.to_string());
+    }
+
+    /// Refuse token requests without this `client_secret`, as Google does
+    /// for installed-app clients.
+    pub fn require_client_secret(&self, secret: &str) {
+        lock(&self.state).client_secret = Some(secret.to_string());
+    }
+
     /// Make the redirect carry `state` instead of the request's own.
     pub fn forge_state(&self, state: &str) {
         lock(&self.state).forged = Some(state.to_string());
@@ -162,13 +178,13 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
 }
 
 fn authorize(shared: &Mutex<State>, query: &BTreeMap<String, String>) -> Reply {
-    let (Some(redirect), Some(challenge), Some(client)) = (
-        query.get("redirect_uri"),
-        query.get("code_challenge"),
-        query.get("client_id"),
-    ) else {
+    let (Some(challenge), Some(client)) = (query.get("code_challenge"), query.get("client_id"))
+    else {
         return Reply::status(400);
     };
+    // Without a redirect URI the code is displayed for pasting, the way
+    // Dropbox does.
+    let redirect = query.get("redirect_uri").cloned().unwrap_or_default();
     if query.get("code_challenge_method").map(String::as_str) != Some("S256")
         || query.get("response_type").map(String::as_str) != Some("code")
     {
@@ -181,6 +197,11 @@ fn authorize(shared: &Mutex<State>, query: &BTreeMap<String, String>) -> Reply {
         code.clone(),
         (challenge.clone(), redirect.clone(), client.clone()),
     );
+    if redirect.is_empty() {
+        return Reply::status(200)
+            .header("Content-Type", "text/plain")
+            .body(code);
+    }
     let returned_state = state
         .forged
         .clone()
@@ -196,6 +217,17 @@ fn authorize(shared: &Mutex<State>, query: &BTreeMap<String, String>) -> Reply {
 fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
     let invalid_grant = || json(400, &serde_json::json!({"error": "invalid_grant"}));
     let mut state = lock(shared);
+    if let Some(secret) = &state.client_secret
+        && form.get("client_secret") != Some(secret)
+    {
+        return json(401, &serde_json::json!({"error": "invalid_client"}));
+    }
+    let issued = |state: &State| {
+        state
+            .access_token
+            .clone()
+            .unwrap_or_else(|| format!("access-{}", state.next))
+    };
     match form.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
             let verifier = form.get("code_verifier").cloned().unwrap_or_default();
@@ -206,13 +238,13 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
                 return invalid_grant();
             };
             if crate::s256_challenge(&verifier) != challenge
-                || form.get("redirect_uri") != Some(&redirect)
+                || form.get("redirect_uri").map_or("", String::as_str) != redirect
                 || form.get("client_id") != Some(&client)
             {
                 return invalid_grant();
             }
             state.next = state.next.saturating_add(1);
-            let access = format!("access-{}", state.next);
+            let access = issued(&state);
             let refresh = format!("refresh-{}", state.next);
             state.refresh_tokens.insert(refresh.clone());
             json(
@@ -237,7 +269,7 @@ fn token(shared: &Mutex<State>, form: &BTreeMap<String, String>) -> Reply {
             json(
                 200,
                 &serde_json::json!({
-                    "access_token": format!("access-{}", state.next),
+                    "access_token": issued(&state),
                     "expires_in": state.token_lifetime,
                     "token_type": "Bearer",
                 }),

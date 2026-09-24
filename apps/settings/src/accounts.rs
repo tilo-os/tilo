@@ -90,7 +90,7 @@ impl AccountRoot {
 
     /// Credential custody for cloud accounts over the same stores.
     pub fn custodian(&self) -> account_custody::Custodian {
-        account_custody::Custodian::for_root(self.explicit.clone())
+        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     /// The config root, `None` when the live root has no usable home.

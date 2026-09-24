@@ -466,7 +466,7 @@ enum Command {
         fs_binary: Option<PathBuf>,
     },
     /// Run the per-user cloud account service: one mount per enabled
-    /// WebDAV/Nextcloud account under `--mounts-root` (`~/Remote`).
+    /// cloud storage account under `--mounts-root` (`~/Remote`).
     #[cfg(target_os = "linux")]
     CloudService {
         /// Where account folders appear.
@@ -640,6 +640,12 @@ async fn run_command() -> Result<()> {
             tokio::task::spawn_blocking(move || {
                 fs::cloud::CloudService::new(
                     fs::cloud::ServiceConfig {
+                        // Settings' credential helper, the only process that
+                        // opens the account vault, publishes fresh handoff
+                        // credentials.
+                        refresher: std::sync::Arc::new(accounts::CommandRefresher::new(
+                            config_root.clone(),
+                        )),
                         config_root,
                         mounts_root,
                         state_root,

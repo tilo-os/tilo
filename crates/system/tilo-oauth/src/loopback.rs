@@ -1,7 +1,8 @@
 //! The one-shot loopback redirect listener (RFC 8252 §7.3).
 //!
-//! [`LoopbackServer::bind`] takes an ephemeral port on `127.0.0.1` before the
-//! browser is opened, so its [`LoopbackServer::redirect_uri`] can go into the
+//! [`LoopbackServer::bind`] takes an ephemeral port on `127.0.0.1` (or
+//! [`LoopbackServer::bind_to`] the first free registered port, for providers
+//! that match redirect URIs exactly) before the browser is opened, so its [`LoopbackServer::redirect_uri`] can go into the
 //! authorization request. [`LoopbackServer::wait_for_code`] then blocks in
 //! `accept` until the browser arrives with `code` and `state`. The deadline
 //! and a UI-side [`LoopbackCancel`] both end the wait by connecting to the
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::OAuthError;
+use crate::{OAuthError, RedirectPorts};
 
 /// Path the provider redirects to.
 pub const REDIRECT_PATH: &str = "/oauth";
@@ -69,6 +70,30 @@ impl LoopbackServer {
     pub fn bind() -> Result<Self, OAuthError> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|error| OAuthError::Loopback(error.to_string()))?;
+        Self::listen(listener)
+    }
+
+    /// Bind as `ports` allows: an ephemeral port, or the first free one of
+    /// the registered ports.
+    ///
+    /// # Errors
+    /// [`OAuthError::RedirectPortsBusy`] when every registered port is
+    /// taken, [`OAuthError::Loopback`] for any other failure.
+    pub fn bind_to(ports: &RedirectPorts) -> Result<Self, OAuthError> {
+        let RedirectPorts::Registered(ports) = ports else {
+            return Self::bind();
+        };
+        for &port in ports {
+            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                Ok(listener) => return Self::listen(listener),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(error) => return Err(OAuthError::Loopback(error.to_string())),
+            }
+        }
+        Err(OAuthError::RedirectPortsBusy)
+    }
+
+    fn listen(listener: TcpListener) -> Result<Self, OAuthError> {
         let address = listener
             .local_addr()
             .map_err(|error| OAuthError::Loopback(error.to_string()))?;

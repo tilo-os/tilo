@@ -14,7 +14,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
-use account_custody::{Custodian, CustodyError, LoopbackCancel, OAuthCloud};
+use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthCloud};
 use ui::widget::{Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
@@ -72,6 +72,12 @@ enum Stage {
         challenge: ICloudChallenge,
         apple_id: String,
     },
+    /// Every redirect port registered for the provider was taken, so the
+    /// provider shows the code on its own page for the person to paste.
+    PastedCode {
+        cloud: OAuthCloud,
+        authorization: Box<Authorization>,
+    },
 }
 
 /// See the module docs.
@@ -90,6 +96,45 @@ pub struct SignInFlow {
     /// next [`SignInFlow::poll`].
     ready: Option<Outcome>,
     message: Option<String>,
+}
+
+/// The account configuration of an `OAuth` sign-in: the provider and its
+/// storage as the provider describes it (drive ids, a team space root),
+/// asked once with the fresh access token.
+fn oauth_completed(
+    custodian: &Custodian,
+    cloud: OAuthCloud,
+    kind: AccountKind,
+    existing_id: Option<String>,
+    display_name: String,
+    tokens: &account_custody::TokenSet,
+) -> Result<Outcome, CustodyError> {
+    let mount = custodian.resolve_storage(cloud, tokens)?;
+    Ok(Outcome::Completed(Completed {
+        kind,
+        existing_id,
+        display_name,
+        config: serde_json::json!({
+            "provider": cloud.type_id(),
+            accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
+        }),
+        secret: account_custody::oauth_secret(tokens),
+    }))
+}
+
+/// The account configuration of an `iCloud` sign-in: the Apple ID and where
+/// the storage daemon finds the account.
+fn icloud_config(
+    auth: &dyn account_custody::icloud::ICloudAuth,
+    apple_id: &str,
+) -> serde_json::Value {
+    let mut config = serde_json::Map::new();
+    config.insert("identity".into(), apple_id.into());
+    let mount = auth.storage_config();
+    if !mount.is_null() {
+        config.insert(accounts::cloud_types::MOUNT_CONFIG_KEY.into(), mount);
+    }
+    serde_json::Value::Object(config)
 }
 
 /// Why this kind cannot start a sign-in in this build, if it cannot.
@@ -152,7 +197,7 @@ impl SignInFlow {
     }
 
     pub fn awaiting_code(&self) -> bool {
-        matches!(self.stage, Stage::Code { .. })
+        matches!(self.stage, Stage::Code { .. } | Stage::PastedCode { .. })
     }
 
     #[doc(hidden)]
@@ -187,6 +232,17 @@ impl SignInFlow {
             return;
         }
         self.message = None;
+        if matches!(self.stage, Stage::PastedCode { .. }) {
+            let Stage::PastedCode {
+                cloud,
+                authorization,
+            } = std::mem::replace(&mut self.stage, Stage::Form)
+            else {
+                return;
+            };
+            self.redeem_pasted_code(cloud, *authorization);
+            return;
+        }
         if let Stage::Code {
             challenge,
             apple_id,
@@ -214,23 +270,35 @@ impl SignInFlow {
             }
         };
         let launch = self.opener.open(authorization.url());
-        let cancel = Cancel::Loopback(authorization.canceller());
+        let Some(canceller) = authorization.canceller() else {
+            // The provider will show the code instead of redirecting.
+            self.message = Some(format!(
+                "Another program is using the ports Tilo listens on for {}'s answer. Sign in \
+                 and allow access in your browser, then paste the code {} shows you here.",
+                cloud.sign_in_with(),
+                cloud.sign_in_with()
+            ));
+            self.code.set(String::new());
+            self.stage = Stage::PastedCode {
+                cloud,
+                authorization: Box::new(authorization),
+            };
+            // The opener's outcome is not awaited here; a failure to open
+            // shows as no code to paste.
+            drop(launch);
+            return;
+        };
+        let cancel = Cancel::Loopback(canceller);
         let (sender, result) = mpsc::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
+        let custodian = self.custodian.clone();
         std::thread::spawn(move || {
-            let outcome = match Custodian::finish_sign_in(authorization) {
-                Ok(tokens) => Outcome::Completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name,
-                    config: serde_json::json!({ "provider": cloud.type_id() }),
-                    secret: account_custody::oauth_secret(&tokens),
-                }),
-                Err(error) => Outcome::Failed(error.to_string()),
-            };
-            let _ = sender.send(outcome);
+            let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
+                oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+            });
+            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
         });
         self.message = Some(format!(
             "Continue in your browser: sign in with {} and allow access. This page updates when you are done.",
@@ -241,6 +309,41 @@ impl SignInFlow {
             launch: Some(launch),
             result,
             cancel: Some(cancel),
+        };
+    }
+
+    fn redeem_pasted_code(&mut self, cloud: OAuthCloud, authorization: Authorization) {
+        let code = self.code.with(|code| code.trim().to_string());
+        if code.is_empty() {
+            self.message = Some(format!(
+                "paste the code {} showed you",
+                cloud.sign_in_with()
+            ));
+            self.stage = Stage::PastedCode {
+                cloud,
+                authorization: Box::new(authorization),
+            };
+            return;
+        }
+        let (sender, result) = mpsc::sync_channel(1);
+        let kind = self.kind;
+        let existing_id = self.existing_id.clone();
+        let display_name = self.display_name();
+        let custodian = self.custodian.clone();
+        std::thread::spawn(move || {
+            let outcome =
+                Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
+                    oauth_completed(&custodian, cloud, kind, existing_id, display_name, &tokens)
+                });
+            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+        });
+        self.code.set(String::new());
+        self.message = Some("Checking the code…".into());
+        self.stage = Stage::Waiting {
+            urls: None,
+            launch: None,
+            result,
+            cancel: None,
         };
     }
 
@@ -312,7 +415,7 @@ impl SignInFlow {
                     kind,
                     existing_id,
                     display_name,
-                    config: serde_json::json!({ "identity": apple_id }),
+                    config: icloud_config(auth.as_ref(), &apple_id),
                     secret: account_custody::icloud_secret(&apple_id, &session),
                 }),
                 Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
@@ -351,7 +454,7 @@ impl SignInFlow {
                     kind,
                     existing_id,
                     display_name,
-                    config: serde_json::json!({ "identity": apple_id }),
+                    config: icloud_config(auth.as_ref(), &apple_id),
                     secret: account_custody::icloud_secret(&apple_id, &session),
                 }),
                 Err(error) => Outcome::Failed(error.to_string()),
@@ -528,6 +631,17 @@ impl SignInFlow {
             fields.push(caption(reason));
         } else if !waiting {
             match &self.stage {
+                Stage::PastedCode { .. } => fields.push(setting_row(
+                    "Code",
+                    Box::new(
+                        TextInput::from_state(&self.code)
+                            .with_kind(TextInputKind::Code)
+                            .with_id("accounts.signin.code")
+                            .with_accessible_name("Code from the provider")
+                            .with_placeholder("Paste the code")
+                            .with_font_size(13.0),
+                    ),
+                )),
                 Stage::Code { .. } => fields.push(setting_row(
                     "Verification code",
                     Box::new(
@@ -555,7 +669,7 @@ impl SignInFlow {
         let mut buttons = Row::new();
         if unavailable.is_none() && !waiting {
             let label = match (&self.stage, self.kind) {
-                (Stage::Code { .. }, _) => "Verify",
+                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "Verify",
                 (_, AccountKind::ICloudDrive) => "Sign in",
                 _ => "Continue in browser",
             };
