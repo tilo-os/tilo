@@ -5,7 +5,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use iroh_blobs::Hash;
@@ -14,6 +13,7 @@ use runtime_fs::storage::{
     SyncStorageSnapshot, SyncedFileState,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use tilo_clock::unix_now_ms;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
@@ -271,7 +271,7 @@ impl StorageAuthority {
         // Only rows that can plausibly be allowed enter the expensive exact
         // payload catalog.  The coordinator still adds every resident, pinned,
         // and retained root needed to prove shared-chunk safety.
-        let target_ids = snapshot_candidate_ids(&logical, &dirty, &records, now_ms());
+        let target_ids = snapshot_candidate_ids(&logical, &dirty, &records, unix_now_ms());
         let plans = match self.coordinator() {
             Ok(coordinator) => coordinator
                 .batch_safe_plans(&target_ids)
@@ -492,7 +492,7 @@ fn effective_pinned(records: &[RecordAvailability], record_id: collab_types::Fil
 }
 
 fn has_fresh_signed_ack(record: &RecordAvailability) -> bool {
-    has_fresh_signed_ack_at(record, now_ms())
+    has_fresh_signed_ack_at(record, unix_now_ms())
 }
 
 fn has_fresh_signed_ack_at(record: &RecordAvailability, now: u64) -> bool {
@@ -566,15 +566,6 @@ fn validate_live_eviction_token(
         anyhow::bail!("workspace changed during eviction authorization");
     }
     Ok(())
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn aggregate<'a>(
@@ -776,6 +767,6 @@ mod tests {
         dirty.insert(7);
         let mut record = RecordAvailability::new(record_id, crate::availability::RecordKind::File);
         record.current_version = Some(collab_types::FileVersionId::new());
-        assert!(snapshot_candidate_ids(&logical, &dirty, &[record], now_ms()).is_empty());
+        assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
     }
 }

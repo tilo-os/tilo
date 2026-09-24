@@ -8,11 +8,11 @@
 //! current authorized record graph.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
 use collab_types::{Ed25519PublicKey, FileRecordId};
 use thiserror::Error;
+use tilo_clock::{Clock, MonotonicClock};
 use uuid::Uuid;
 
 use crate::peer_auth::AuthenticatedFsPeer;
@@ -21,22 +21,6 @@ use crate::share_session::ShareSession;
 
 pub const MAX_RECORD_ACCESS_ENTRIES: usize = 4_096;
 pub const MAX_RECORD_ACCESS_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
-
-/// Monotonic millisecond source for registry-local lifetimes. Implementations
-/// must never move backwards.
-pub trait RecordAccessClock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-#[derive(Debug, Default)]
-pub struct SystemRecordAccessClock;
-
-impl RecordAccessClock for SystemRecordAccessClock {
-    fn now_ms(&self) -> u64 {
-        static START: OnceLock<Instant> = OnceLock::new();
-        u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RecordAccessSessionId(pub Uuid);
@@ -69,7 +53,7 @@ struct State {
 pub struct RecordAccessRegistry {
     capacity: usize,
     ttl_ms: u64,
-    clock: Arc<dyn RecordAccessClock>,
+    clock: Arc<dyn Clock>,
     state: Mutex<State>,
 }
 
@@ -88,7 +72,7 @@ impl RecordAccessRegistry {
     ///
     /// Returns an error when capacity or TTL lies outside its configured bound.
     pub fn new(capacity: usize, ttl_ms: u64) -> Result<Self, RecordAccessRegistryError> {
-        Self::with_clock(capacity, ttl_ms, Arc::new(SystemRecordAccessClock))
+        Self::with_clock(capacity, ttl_ms, Arc::new(MonotonicClock))
     }
 
     /// Construct a registry using an injected monotonic clock.
@@ -99,7 +83,7 @@ impl RecordAccessRegistry {
     pub fn with_clock(
         capacity: usize,
         ttl_ms: u64,
-        clock: Arc<dyn RecordAccessClock>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, RecordAccessRegistryError> {
         if capacity == 0 || capacity > MAX_RECORD_ACCESS_ENTRIES {
             return Err(RecordAccessRegistryError::InvalidCapacity);
@@ -191,7 +175,10 @@ impl RecordAccessRegistry {
         self.readable_record_ids_matching(workspace_id, device, None)
     }
 
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard is already confined to the block that collects candidates"
+    )]
     fn readable_record_ids_matching(
         &self,
         workspace_id: Uuid,
@@ -303,7 +290,7 @@ impl RecordAccessRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     use collab_types::{
@@ -315,23 +302,10 @@ mod tests {
     use super::*;
     use crate::peer_auth::AuthenticatedFsPeer;
     use crate::share_authority::ShareAuthority;
-    use crate::share_session::{LiveActorCertification, ShareSession, ShareSessionClock};
+    use crate::share_session::{LiveActorCertification, ShareSession};
+    use tilo_clock::ManualClock;
 
     const NOW_MS: u64 = 2_000;
-
-    struct TestClock(AtomicU64);
-
-    impl RecordAccessClock for TestClock {
-        fn now_ms(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
-
-    impl ShareSessionClock for TestClock {
-        fn now_ms(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
 
     struct LiveCertification(AtomicBool);
 
@@ -350,7 +324,7 @@ mod tests {
         workspace: Uuid,
         authority: Arc<ShareAuthority>,
         live: Arc<LiveCertification>,
-        clock: Arc<TestClock>,
+        clock: Arc<ManualClock>,
     }
 
     impl Fixture {
@@ -387,7 +361,7 @@ mod tests {
                 workspace: Uuid::new_v4(),
                 authority,
                 live: Arc::new(LiveCertification(AtomicBool::new(true))),
-                clock: Arc::new(TestClock(AtomicU64::new(NOW_MS))),
+                clock: Arc::new(ManualClock::new(NOW_MS)),
             }
         }
 
@@ -470,7 +444,7 @@ mod tests {
         let fixture = Fixture::new();
         let registry = fixture.registry(2, 50);
         registry.register(fixture.session(FileRecordId::new()));
-        fixture.clock.0.store(NOW_MS + 50, Ordering::SeqCst);
+        fixture.clock.set(NOW_MS + 50);
         assert!(
             registry
                 .readable_record_ids(fixture.workspace, &fixture.peer)

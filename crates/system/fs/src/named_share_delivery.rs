@@ -24,6 +24,7 @@ use tilo_user_identity::RevocationList;
 use uuid::Uuid;
 
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
+use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
 
 pub const NAMED_SHARE_ENVELOPE_VERSION: u16 = 1;
@@ -236,7 +237,10 @@ impl NamedShareOutbox {
     ///
     /// Returns an error for invalid input, collisions, capacity exhaustion, or
     /// persistence failure.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across persist so the file and the in-memory map change together"
+    )]
     pub fn enqueue(
         &self,
         envelope: NamedShareEnvelopeV1,
@@ -305,7 +309,10 @@ impl NamedShareOutbox {
     ///
     /// Returns an error for an unknown grant, an unlisted device, or a
     /// persistence failure.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across persist so the file and the in-memory map change together"
+    )]
     pub fn record_attempt(
         &self,
         grant_id: Uuid,
@@ -352,7 +359,10 @@ impl NamedShareOutbox {
     /// # Errors
     ///
     /// Returns an error when the updated outbox cannot be persisted.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across persist so the file and the in-memory map change together"
+    )]
     pub fn cancel(&self, grant_id: Uuid) -> Result<bool, NamedShareInboxError> {
         let mut current = self
             .entries
@@ -666,13 +676,6 @@ async fn read_wire<R: tokio::io::AsyncRead + Unpin, T: for<'de> Deserialize<'de>
         .map_err(|_| NamedShareDeliveryError::MalformedWire)
 }
 
-fn unix_now_ms() -> u64 {
-    crate::clock::unix_now_ms()
-}
-fn unix_now_ns() -> u64 {
-    crate::clock::unix_now_ns()
-}
-
 #[derive(Debug, Error)]
 pub enum NamedShareDeliveryError {
     #[error("named-share local identity does not match endpoint/inbox")]
@@ -741,7 +744,10 @@ impl NamedShareInbox {
     ///
     /// Returns an error for invalid input, collisions, capacity exhaustion, or
     /// persistence failure.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across persist so the file and the in-memory map change together"
+    )]
     pub fn accept_at(
         &self,
         envelope: NamedShareEnvelopeV1,

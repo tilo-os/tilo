@@ -13,7 +13,6 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
@@ -55,11 +54,18 @@ pub fn install_test_clock_file(path: &Path) -> Result<(), ClockConfigurationErro
 pub fn unix_now_ms() -> u64 {
     match TEST_CLOCK_FILE.get() {
         Some(clock) => clock.read().unwrap_or(u64::MAX),
-        None => SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(u64::MAX, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            }),
+        None => tilo_clock::try_unix_now_ms().unwrap_or(u64::MAX),
+    }
+}
+
+/// [`tilo_clock::Clock`] over [`unix_now_ms`], for components that take an
+/// injected clock but must honour the daemon's test-clock override.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DaemonClock;
+
+impl tilo_clock::Clock for DaemonClock {
+    fn now_ms(&self) -> u64 {
+        unix_now_ms()
     }
 }
 
