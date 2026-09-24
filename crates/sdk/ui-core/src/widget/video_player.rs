@@ -2373,15 +2373,7 @@ fn draw_fullscreen_glyph(
 }
 
 fn format_ms(ms: u64) -> String {
-    let total = ms / 1000;
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
-    }
+    crate::format::timecode(ms / 1000)
 }
 
 impl Default for VideoPlayer {

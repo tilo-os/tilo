@@ -282,11 +282,7 @@ pub(crate) fn action_directory_page_at(
 /// not repeat the same short label twice.
 pub(crate) fn humanize_control_id(id: &str) -> String {
     let tail = id.rsplit('.').next().unwrap_or(id);
-    let words = tail.replace(['_', '-'], " ");
-    let mut chars = words.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+    crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
