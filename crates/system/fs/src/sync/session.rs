@@ -604,7 +604,38 @@ impl SessionProtocol {
             return write_frame(send, &SessionFrameV1::Denied).await;
         }
         write_frame(send, &SessionFrameV1::Done).await?;
+        let before = self
+            .namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .heads();
         let mut state = automerge::sync::State::new();
+        let exchanged = self.namespace_rounds(peer, &mut state, send, recv).await;
+        // Records that arrived before the placements this exchange brought
+        // are projected now, not at this device's next pass.
+        let changed = self
+            .namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .heads()
+            != before;
+        if changed
+            && let Some(records) = &self.records
+            && let Some(materializer) = &records.materializer
+            && let Err(error) = materializer.reconcile_repository(&records.repository)
+        {
+            eprintln!("projecting records after a namespace exchange failed: {error}");
+        }
+        exchanged
+    }
+
+    async fn namespace_rounds(
+        &self,
+        peer: &AuthenticatedFsPeer,
+        state: &mut automerge::sync::State,
+        send: &mut SendStream,
+        recv: &mut RecvStream,
+    ) -> Result<()> {
         for _ in 0..MAX_SYNC_ROUNDS {
             // The authority handle is live: a revocation cuts a connected
             // writer off at the next round.
@@ -622,13 +653,13 @@ impl SessionProtocol {
                     .namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_receive(&mut state, &message);
+                    .sync_receive(state, &message);
             }
             let reply = self
                 .namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .sync_generate(&mut state);
+                .sync_generate(state);
             let done = message.is_empty() && reply.is_none();
             write_frame(send, &SessionFrameV1::Sync(reply.unwrap_or_default())).await?;
             if done {

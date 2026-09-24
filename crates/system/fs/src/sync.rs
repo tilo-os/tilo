@@ -2633,8 +2633,8 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     loop {
         // A local change or a peer's announcement starts a pass at once;
         // otherwise the timer does.
-        let local_change = tokio::select! {
-            () = tokio::time::sleep(RECONCILE_INTERVAL) => false,
+        let (local_change, timer) = tokio::select! {
+            () = tokio::time::sleep(RECONCILE_INTERVAL) => (false, true),
             mutation = async {
                 match &mut local_rx {
                     Some(receiver) => receiver.recv().await,
@@ -2644,9 +2644,9 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 if mutation.is_none() {
                     local_rx = None;
                 }
-                true
+                (true, false)
             }
-            Some(_) = announcements.recv() => false,
+            Some(_) = announcements.recv() => (false, false),
         };
         // A burst of changes is one pass: what arrived meanwhile is covered.
         let local_change = local_change
@@ -2677,7 +2677,10 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 records: records.as_ref(),
                 exchange_namespace: may_write && remote_may_write,
                 read_only: !may_write,
-                heal: first_pass,
+                // Namespace changes can also arrive through a peer's own
+                // exchange with this device; timer passes heal whatever
+                // they placed.
+                heal: first_pass || timer,
             };
             match sessions.get(&peer).await {
                 Ok(Some(session)) => {
