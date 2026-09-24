@@ -21,11 +21,11 @@ fn room(n: u8) -> RoomId {
     RoomId::parse(&format!("00000000-0000-4000-8000-0000000000{n:02x}")).expect("room uuid")
 }
 
-fn tab(id: u64, title: &str, tile: TileContent) -> Tab {
+fn tab(id: u64, title: &str, content: TileContent) -> Tab {
     Tab {
         id,
         title: title.into(),
-        tile,
+        tile: content,
     }
 }
 
