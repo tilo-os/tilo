@@ -43,7 +43,6 @@ apps/containers/src/draw.rs pixel_const 2
 apps/containers/src/panels.rs pixel_const 3
 apps/db-client/src/app.rs pixel_const 12
 apps/db-client/src/grid.rs pixel_const 4
-apps/db-client/src/schema_tree.rs pixel_const 3
 apps/db-client/src/structure.rs pixel_const 2
 apps/diffmerge/src/app.rs pixel_const 7
 apps/diffmerge/src/diff_view.rs pixel_const 9
