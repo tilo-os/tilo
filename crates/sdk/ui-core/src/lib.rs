@@ -166,6 +166,7 @@ pub mod interaction;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
+pub mod location;
 pub mod math;
 pub mod mpris;
 #[cfg(feature = "native")]

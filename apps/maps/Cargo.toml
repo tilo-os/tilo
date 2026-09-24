@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
@@ -31,11 +31,6 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # Explicit rustls ring provider so we can install_default() at startup.
 rustls.workspace = true
 png.workspace = true
-# Device location through the XDG Location portal (GeoClue2). Runs off the UI
-# thread and reports unavailable/error states when no position is available.
-ashpd.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-futures-util.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
 chrono = { workspace = true, default-features = true }
 
