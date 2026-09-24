@@ -123,16 +123,6 @@ pub fn role_label(role: CapRole) -> &'static str {
     }
 }
 
-/// Seconds since the Unix epoch, for capability expiry. An unset clock
-/// reads as 0, making every `AtUnix` capability look live — safe for a
-/// *grant*, unsafe for a *restriction*, so write restrictions without
-/// an expiry.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WorkspaceDefaultError {
     #[error("only a workspace administrator may change workspace policy")]
@@ -143,6 +133,11 @@ pub enum WorkspaceDefaultError {
     InvalidSelection(desktop_policy::DefaultAppError),
 }
 
+/// Every authority question takes the caller's clock as `now`, Unix
+/// seconds: capabilities expire, and the model does not read a clock of its
+/// own. An unset clock reads as 0, making every `AtUnix` capability look
+/// live — safe for a *grant*, unsafe for a *restriction*, so hosts write
+/// restrictions without an expiry.
 impl Workspace {
     /// Set the administrator layer of default-app policy. The shell supplies
     /// the authenticated local identity; a caller cannot widen policy by
@@ -154,14 +149,15 @@ impl Workspace {
     /// not hold administrator authority in this workspace, or
     /// [`WorkspaceDefaultError::InvalidSelection`] if `policy` names an app
     /// package the resolver rejects for `resource`.
-    pub fn set_default_app_policy_as(
+    pub fn set_default_app_policy_as_at(
         &mut self,
         actor: &UserId,
         resource: desktop_policy::ResourceKind,
         policy: desktop_policy::WorkspaceDefaultPolicy,
         resolver: &desktop_policy::DefaultAppResolver<'_>,
+        now: u64,
     ) -> Result<(), WorkspaceDefaultError> {
-        if !self.may_administer(actor) {
+        if !self.may_administer_at(actor, now) {
             return Err(WorkspaceDefaultError::NotAdministrator);
         }
         if let desktop_policy::WorkspaceDefaultPolicy::App(package) = &policy {
@@ -225,24 +221,24 @@ impl Workspace {
             .collect()
     }
 
-    pub fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
+    pub fn app_capabilities_at(&self, app_id: &str, now: u64) -> Vec<&CapOverride> {
         let want = Subject::app(app_id);
-        let now = Some(now_unix());
+        let live_at = Some(now);
         self.capabilities
             .iter()
-            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(now))
+            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(live_at))
             .collect()
     }
 
     /// A **snapshot** of app grants in the portal's `Capability` shape.
     /// Rebuilt from [`Self::capabilities`] on every call — mutating the
     /// returned map edits a temporary and stores nothing. To grant, use
-    /// [`Self::grant_app`] or [`Self::grant_as`].
-    pub fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        let now = Some(now_unix());
+    /// [`Self::grant_app`] or [`Self::grant_as_at`].
+    pub fn app_grants_snapshot_at(&self, now: u64) -> HashMap<AppId, Vec<Capability>> {
+        let live_at = Some(now);
         let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
         for c in &self.capabilities {
-            if c.effect != Effect::Grant || !c.is_live_at(now) {
+            if c.effect != Effect::Grant || !c.is_live_at(live_at) {
                 continue;
             }
             let Subject::Principal(Principal::App(app)) = &c.subject else {
@@ -257,11 +253,11 @@ impl Workspace {
 
     /// Does any app hold a grant in this room? Drives the Permissions
     /// tab's visibility.
-    pub fn has_app_grants(&self) -> bool {
-        let now = Some(now_unix());
+    pub fn has_app_grants_at(&self, now: u64) -> bool {
+        let live_at = Some(now);
         self.capabilities.iter().any(|c| {
             c.effect == Effect::Grant
-                && c.is_live_at(now)
+                && c.is_live_at(live_at)
                 && matches!(&c.subject, Subject::Principal(Principal::App(_)))
                 && Capability::from_capability(c).is_some()
         })
@@ -270,15 +266,15 @@ impl Workspace {
     /// Ids of the capabilities backing app `app_id`'s grants, in the
     /// same order [`Self::grants`] renders them, so a Revoke button
     /// that knows a row index can name the capability it removes.
-    pub fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        let now = Some(now_unix());
+    pub fn app_grant_ids_at(&self, app_id: &str, now: u64) -> Vec<String> {
+        let live_at = Some(now);
         let want = Subject::app(app_id);
         self.capabilities
             .iter()
             .filter(|c| {
                 c.subject == want
                     && c.effect == Effect::Grant
-                    && c.is_live_at(now)
+                    && c.is_live_at(live_at)
                     && Capability::from_capability(c).is_some()
             })
             .map(|c| c.id.clone())
@@ -290,19 +286,25 @@ impl Workspace {
 
     /// Decide whether `actor` may apply `verb` to `resource` in this
     /// room. Fail-closed: denies unless something explicitly permits.
-    pub fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
+    pub fn decide_at(
+        &self,
+        actor: &Actor,
+        resource: &ResourceRef,
+        verb: Verb,
+        now: u64,
+    ) -> CapDecision {
+        decide_capability(actor, resource, verb, &self.capabilities, Some(now))
     }
 
-    /// [`Self::decide`] reduced to a bool, for call sites that only
+    /// [`Self::decide_at`] reduced to a bool, for call sites that only
     /// gate an action rather than explaining a denial.
-    pub fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.decide(actor, resource, verb) == CapDecision::Allow
+    pub fn allows_at(&self, actor: &Actor, resource: &ResourceRef, verb: Verb, now: u64) -> bool {
+        self.decide_at(actor, resource, verb, now) == CapDecision::Allow
     }
 
     /// Record a capability, minting an id if the caller didn't supply
     /// one. Authority to *make* the grant is checked by the caller
-    /// ([`Self::grant_as`]), not here.
+    /// ([`Self::grant_as_at`]), not here.
     pub fn grant_capability(&mut self, mut cap: CapOverride) -> String {
         if cap.id.is_empty() {
             cap.id = mint_capability_id();
@@ -337,8 +339,8 @@ impl Workspace {
     /// the grantor actually holds authority to delegate it — a peer
     /// without `Admin` cannot widen anyone's access, including their
     /// own. `None` when the grantor lacks that authority.
-    pub fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        if !self.may_administer(grantor) {
+    pub fn grant_as_at(&mut self, grantor: &UserId, cap: CapOverride, now: u64) -> Option<String> {
+        if !self.may_administer_at(grantor, now) {
             return None;
         }
         let cap = cap.granted_by(Principal::Person(grantor.clone()));
@@ -350,13 +352,18 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// See [`Self::save_permission_profile_as_actor`].
-    pub fn save_permission_profile_as(
+    /// See [`Self::save_permission_profile_as_actor_at`].
+    pub fn save_permission_profile_as_at(
         &mut self,
         actor: &UserId,
         profile: PermissionProfile,
+        now: u64,
     ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor(&self.actor_for_person(actor), profile)
+        self.save_permission_profile_as_actor_at(
+            &self.actor_for_person_at(actor, now),
+            profile,
+            now,
+        )
     }
 
     /// Actor-general form used by the broker. Agents and apps have no ambient
@@ -368,18 +375,20 @@ impl Workspace {
     /// [`PermissionProfileMutationError::NotAdministrator`] when `actor` may
     /// not manage profiles here, or [`PermissionProfileMutationError::Invalid`]
     /// when `profile` does not validate.
-    pub fn save_permission_profile_as_actor(
+    pub fn save_permission_profile_as_actor_at(
         &mut self,
         actor: &Actor,
         profile: PermissionProfile,
+        now: u64,
     ) -> Result<(), PermissionProfileMutationError> {
-        if !self.allows(
+        if !self.allows_at(
             actor,
             &ResourceRef::Action {
                 app: WORKSPACE_GOVERNANCE_APP_ID.into(),
                 action: PROFILE_SAVE_ACTION_ID.into(),
             },
             Verb::Admin,
+            now,
         ) {
             return Err(PermissionProfileMutationError::NotAdministrator);
         }
@@ -404,23 +413,25 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// See [`Self::assign_permission_profile_as_actor`].
-    pub fn assign_permission_profile_as(
+    /// See [`Self::assign_permission_profile_as_actor_at`].
+    pub fn assign_permission_profile_as_at(
         &mut self,
         actor: &UserId,
         profile_name: &str,
         subject: &Subject,
         expiry: Expiry,
+        now: u64,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor(
-            &self.actor_for_person(actor),
+        self.assign_permission_profile_as_actor_at(
+            &self.actor_for_person_at(actor, now),
             profile_name,
             subject,
             expiry,
+            now,
         )
     }
 
-    /// [`Self::assign_permission_profile_as`] for any actor, as the broker
+    /// [`Self::assign_permission_profile_as_at`] for any actor, as the broker
     /// calls it.
     ///
     /// # Errors
@@ -431,20 +442,22 @@ impl Workspace {
     /// when `actor` carries no assignable identity, or
     /// [`PermissionProfileMutationError::Invalid`] when the assignment does
     /// not validate.
-    pub fn assign_permission_profile_as_actor(
+    pub fn assign_permission_profile_as_actor_at(
         &mut self,
         actor: &Actor,
         profile_name: &str,
         subject: &Subject,
         expiry: Expiry,
+        now: u64,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        if !self.allows(
+        if !self.allows_at(
             actor,
             &ResourceRef::Action {
                 app: WORKSPACE_GOVERNANCE_APP_ID.into(),
                 action: PROFILE_ASSIGN_ACTION_ID.into(),
             },
             Verb::Admin,
+            now,
         ) {
             return Err(PermissionProfileMutationError::NotAdministrator);
         }
@@ -476,9 +489,9 @@ impl Workspace {
     }
 
     /// Revoke on behalf of `revoker`, enforcing the same authority as
-    /// [`Self::grant_as`].
-    pub fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.may_administer(revoker) && self.revoke_capability(id)
+    /// [`Self::grant_as_at`].
+    pub fn revoke_as_at(&mut self, revoker: &UserId, id: &str, now: u64) -> bool {
+        self.may_administer_at(revoker, now) && self.revoke_capability(id)
     }
 
     /// Drop every capability matching `pred`. Returns the ids removed,
@@ -501,14 +514,15 @@ impl Workspace {
     /// Is `user` the owner, or a delegated co-owner (`Admin` over the
     /// room)? An ownerless workspace has no administrators, not
     /// everyone-is-an-administrator.
-    pub fn may_administer(&self, user: &UserId) -> bool {
+    pub fn may_administer_at(&self, user: &UserId, now: u64) -> bool {
         if self.owner.as_deref() == Some(user.as_str()) {
             return true;
         }
-        self.allows(
-            &self.actor_for_person(user),
+        self.allows_at(
+            &self.actor_for_person_at(user, now),
             &ResourceRef::Workspace,
             Verb::Admin,
+            now,
         )
     }
 
@@ -542,10 +556,15 @@ impl Workspace {
     /// must already be an administrator.  The latter makes transfer an
     /// explicit two-step ceremony (promote, then transfer) and avoids handing
     /// the workspace to a mistyped or stale identity.
-    pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+    pub fn transfer_owner_as_at(
+        &mut self,
+        current_owner: &UserId,
+        new_owner: &UserId,
+        now: u64,
+    ) -> bool {
         if current_owner == new_owner
             || self.owner.as_ref() != Some(current_owner)
-            || self.role_of(new_owner) != Some(CapRole::Owner)
+            || self.role_of_at(new_owner, now) != Some(CapRole::Owner)
         {
             return false;
         }
@@ -555,7 +574,7 @@ impl Workspace {
 
     /// Give up administration because this workspace joined a room it
     /// did not mint — drops both the recorded owner and every admin
-    /// capability, or [`Self::may_administer`] would still answer yes
+    /// capability, or [`Self::may_administer_at`] would still answer yes
     /// for a room this machine doesn't own.
     pub fn surrender_governance(&mut self) -> bool {
         let had_owner = self.owner.take().is_some();
@@ -574,7 +593,7 @@ impl Workspace {
     /// The role `user` holds. Not stored separately — it *is* the verb
     /// on their membership capability, so "in the room" and "allowed
     /// to do something" can't drift apart. `None` means not a member.
-    pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
+    pub fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole> {
         if self.owner.as_deref() == Some(user.as_str()) {
             return Some(CapRole::Owner);
         }
@@ -582,11 +601,11 @@ impl Workspace {
             Subject::Principal(Principal::Person(p)) => p == user,
             _ => false,
         };
-        let now = Some(now_unix());
+        let live_at = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
         for c in &self.capabilities {
-            if !subject_is_user(c) || !c.is_live_at(now) {
+            if !subject_is_user(c) || !c.is_live_at(live_at) {
                 continue;
             }
             let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
@@ -618,8 +637,8 @@ impl Workspace {
     }
 
     /// Build the [`Actor`] for a person acting in this room.
-    pub fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
+    pub fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor {
+        Actor::person(self.role_of_at(user, now), user.clone()).in_room(self.room.to_string())
     }
 
     /// Build the [`Actor`] for an app running in this room. Carries the
@@ -637,12 +656,12 @@ impl Workspace {
 
     /// The room roster: the people who are *members*. Built from
     /// room-scoped capabilities only — someone with a capability on one
-    /// file and nothing else is **not** here. See [`Self::shares_of`].
-    pub fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let now = Some(now_unix());
+    /// file and nothing else is **not** here. See [`Self::shares_of_at`].
+    pub fn roster_at(&self, now: u64) -> Vec<(UserId, CapRole)> {
+        let live_at = Some(now);
         let mut seen: Vec<UserId> = Vec::new();
         for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
+            if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
             let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
@@ -661,14 +680,14 @@ impl Workspace {
             seen.insert(0, owner.clone());
         }
         seen.into_iter()
-            .filter_map(|u| self.role_of(&u).map(|r| (u, r)))
+            .filter_map(|u| self.role_of_at(&u, now).map(|r| (u, r)))
             .collect()
     }
 
-    /// The role an *agent* holds — same derivation as [`Self::role_of`]
+    /// The role an *agent* holds — same derivation as [`Self::role_of_at`]
     /// minus the owner short-circuit, since an agent is never the owner.
-    pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let now = Some(now_unix());
+    pub fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole> {
+        let live_at = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
         for c in &self.capabilities {
@@ -676,7 +695,7 @@ impl Workspace {
                 &c.subject,
                 Subject::Principal(Principal::Agent(a)) if a == agent
             );
-            if !subject_matches || !c.is_live_at(now) {
+            if !subject_matches || !c.is_live_at(live_at) {
                 continue;
             }
             let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
@@ -706,13 +725,13 @@ impl Workspace {
     }
 
     /// The agents that hold membership in this room — a *second* list
-    /// from [`Self::roster`], since an agent is not a person and
+    /// from [`Self::roster_at`], since an agent is not a person and
     /// rendering them undifferentiated would misrepresent who's present.
-    pub fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let now = Some(now_unix());
+    pub fn agent_members_at(&self, now: u64) -> Vec<(String, CapRole)> {
+        let live_at = Some(now);
         let mut seen: Vec<String> = Vec::new();
         for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
+            if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
             let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
@@ -726,19 +745,19 @@ impl Workspace {
             }
         }
         seen.into_iter()
-            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
+            .filter_map(|a| self.role_of_agent_at(&a, now).map(|r| (a, r)))
             .collect()
     }
 
     /// The share list for one resource. Room-scoped capabilities are
-    /// excluded (those belong in [`Self::roster`]) so the UI can never
+    /// excluded (those belong in [`Self::roster_at`]) so the UI can never
     /// present "shared one file with Bob" as "Bob is a collaborator".
-    pub fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        let now = Some(now_unix());
+    pub fn shares_of_at(&self, resource: &ResourceRef, now: u64) -> Vec<&CapOverride> {
+        let live_at = Some(now);
         self.capabilities
             .iter()
             .filter(|c| {
-                c.is_live_at(now)
+                c.is_live_at(live_at)
                     && c.effect == Effect::Grant
                     && c.subject_is_person()
                     && !c.is_room_membership()

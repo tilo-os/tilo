@@ -13,6 +13,7 @@
 //! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
 //! trusted, since a peer naming itself could name anybody.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

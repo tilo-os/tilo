@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -422,7 +423,10 @@ fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
 }
 
 // Imported for symmetry with the wider chrome-state API, unused here.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "keeps imports shared with sibling fixtures referenced in this file"
+)]
 fn _suppress_unused() {
     let _ = OverlayFlags::default();
     let _ = Duration::from_secs(1);

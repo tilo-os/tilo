@@ -5,6 +5,7 @@
 //! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`] and
 //! paints the bar onto the root scene.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;

@@ -235,6 +235,7 @@ mod tests {
 
     use super::*;
     use crate::network::hub::Hub;
+    use crate::shell::state::WorkspaceAuthority as _;
     use automerge::{ROOT, ReadDoc, ScalarValue};
 
     /// Proxy that forwards `TopicSubscriber` calls into a shared replica

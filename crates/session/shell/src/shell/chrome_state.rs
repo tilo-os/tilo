@@ -6,6 +6,7 @@
 //! root. Kept out of the automerge doc deliberately: overlay visibility
 //! is local UI state that must not sync to peers.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;

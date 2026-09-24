@@ -31,7 +31,7 @@ pub use tilo_desktop_model::{
     TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
     WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    compose_id, counter_of, now_unix, peer_salt_of, role_label,
+    compose_id, counter_of, peer_salt_of, role_label,
 };
 pub use tilo_desktop_model::{DesktopTree, DropTarget, STATE_SCHEMA_VERSION, TabMove};
 
@@ -491,6 +491,186 @@ pub struct GovernedPeerIdentity {
     /// remove an already-governed revocation.
     #[serde(default)]
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
+}
+
+/// Seconds since the Unix epoch — the clock this compositor answers
+/// capability expiry against. An unset clock reads as 0, making every
+/// `AtUnix` capability look live — safe for a *grant*, unsafe for a
+/// *restriction*, so write restrictions without an expiry.
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The model's authority questions answered at this machine's clock. The
+/// model takes `now` explicitly; this is the one place the compositor
+/// supplies it.
+pub trait WorkspaceAuthority {
+    /// See [`Workspace::set_default_app_policy_as_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Workspace::set_default_app_policy_as_at`].
+    fn set_default_app_policy_as(
+        &mut self,
+        actor: &UserId,
+        resource: desktop_policy::ResourceKind,
+        policy: desktop_policy::WorkspaceDefaultPolicy,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError>;
+    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride>;
+    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
+    fn has_app_grants(&self) -> bool;
+    fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
+    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
+    /// See [`Workspace::save_permission_profile_as_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Workspace::save_permission_profile_as_at`].
+    fn save_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError>;
+    /// See [`Workspace::save_permission_profile_as_actor_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Workspace::save_permission_profile_as_actor_at`].
+    fn save_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError>;
+    /// See [`Workspace::assign_permission_profile_as_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Workspace::assign_permission_profile_as_at`].
+    fn assign_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile_name: &str,
+        subject: &Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError>;
+    /// See [`Workspace::assign_permission_profile_as_actor_at`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Workspace::assign_permission_profile_as_actor_at`].
+    fn assign_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile_name: &str,
+        subject: &Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError>;
+    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
+    fn may_administer(&self, user: &UserId) -> bool;
+    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
+    fn role_of(&self, user: &UserId) -> Option<CapRole>;
+    fn actor_for_person(&self, user: &UserId) -> Actor;
+    fn roster(&self) -> Vec<(UserId, CapRole)>;
+    fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
+    fn agent_members(&self) -> Vec<(String, CapRole)>;
+    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
+}
+
+impl WorkspaceAuthority for Workspace {
+    fn set_default_app_policy_as(
+        &mut self,
+        actor: &UserId,
+        resource: desktop_policy::ResourceKind,
+        policy: desktop_policy::WorkspaceDefaultPolicy,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError> {
+        self.set_default_app_policy_as_at(actor, resource, policy, resolver, now_unix())
+    }
+    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
+        self.app_capabilities_at(app_id, now_unix())
+    }
+    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
+        self.app_grants_snapshot_at(now_unix())
+    }
+    fn has_app_grants(&self) -> bool {
+        self.has_app_grants_at(now_unix())
+    }
+    fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
+        self.app_grant_ids_at(app_id, now_unix())
+    }
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
+        self.decide_at(actor, resource, verb, now_unix())
+    }
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
+        self.allows_at(actor, resource, verb, now_unix())
+    }
+    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
+        self.grant_as_at(grantor, cap, now_unix())
+    }
+    fn save_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError> {
+        self.save_permission_profile_as_at(actor, profile, now_unix())
+    }
+    fn save_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError> {
+        self.save_permission_profile_as_actor_at(actor, profile, now_unix())
+    }
+    fn assign_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile_name: &str,
+        subject: &Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError> {
+        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, now_unix())
+    }
+    fn assign_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile_name: &str,
+        subject: &Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError> {
+        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, now_unix())
+    }
+    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
+        self.revoke_as_at(revoker, id, now_unix())
+    }
+    fn may_administer(&self, user: &UserId) -> bool {
+        self.may_administer_at(user, now_unix())
+    }
+    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+        self.transfer_owner_as_at(current_owner, new_owner, now_unix())
+    }
+    fn role_of(&self, user: &UserId) -> Option<CapRole> {
+        self.role_of_at(user, now_unix())
+    }
+    fn actor_for_person(&self, user: &UserId) -> Actor {
+        self.actor_for_person_at(user, now_unix())
+    }
+    fn roster(&self) -> Vec<(UserId, CapRole)> {
+        self.roster_at(now_unix())
+    }
+    fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
+        self.role_of_agent_at(agent, now_unix())
+    }
+    fn agent_members(&self) -> Vec<(String, CapRole)> {
+        self.agent_members_at(now_unix())
+    }
+    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
+        self.shares_of_at(resource, now_unix())
+    }
 }
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};

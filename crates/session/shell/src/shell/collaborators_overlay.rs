@@ -4,6 +4,7 @@
 //! shell host supplies a policy-filtered model and applies the semantic action
 //! returned by [`CollaboratorsOverlay::hit_test`].
 
+use crate::shell::state::WorkspaceAuthority as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};

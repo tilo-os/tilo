@@ -16,6 +16,7 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;

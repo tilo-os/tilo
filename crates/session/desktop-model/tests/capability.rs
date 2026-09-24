@@ -4,6 +4,9 @@
 
 use std::path::PathBuf;
 
+/// The clock these fixtures run at, Unix seconds.
+const NOW: u64 = 1_800_000_000;
+
 use collab_types::caps::{ResourceRef, Verb};
 use tilo_desktop_model::*;
 
@@ -17,17 +20,18 @@ fn a_new_workspace_holds_no_capabilities_and_grants_nothing() {
         Workspace::new(WorkspaceId::from(1), "Demo"),
     ] {
         assert!(ws.capabilities.is_empty());
-        assert!(ws.app_grants_snapshot().is_empty());
-        assert!(!ws.has_app_grants());
+        assert!(ws.app_grants_snapshot_at(NOW).is_empty());
+        assert!(!ws.has_app_grants_at(NOW));
         assert!(
-            !ws.may_administer(&"anyone".to_string()),
+            !ws.may_administer_at(&"anyone".to_string(), NOW),
             "a room with no owner has no administrators"
         );
         assert!(
-            !ws.allows(
+            !ws.allows_at(
                 &ws.actor_for_app("org.gnome.gedit"),
                 &ResourceRef::FsPath("/home/u/work".into()),
-                Verb::Read
+                Verb::Read,
+                NOW
             ),
             "an app with no capability is denied"
         );
@@ -93,7 +97,7 @@ fn grants_round_trip_via_serde_json() {
     let json = serde_json::to_string(&ws).expect("serialize");
     let round: Workspace = serde_json::from_str(&json).expect("deserialize");
 
-    let view = round.app_grants_snapshot();
+    let view = round.app_grants_snapshot_at(NOW);
     assert_eq!(view.len(), 1);
     let caps = view.get("org.gnome.gedit").expect("app present");
     assert_eq!(caps.len(), 2);
@@ -109,29 +113,33 @@ fn grants_round_trip_via_serde_json() {
 
     // And the decision function agrees after the round-trip.
     let app = round.actor_for_app("org.gnome.gedit");
-    assert!(round.allows(
+    assert!(round.allows_at(
         &app,
         &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
-        Verb::Write
+        Verb::Write,
+        NOW
     ));
     assert!(
-        !round.allows(
+        !round.allows_at(
             &app,
             &ResourceRef::FsPath("/home/u/secrets".into()),
-            Verb::Read
+            Verb::Read,
+            NOW
         ),
         "a path outside the grant stays denied across serialisation"
     );
-    assert!(round.allows(
+    assert!(round.allows_at(
         &app,
         &ResourceRef::NetHost("github.com".into()),
-        Verb::Write
+        Verb::Write,
+        NOW
     ));
     assert!(
-        !round.allows(
+        !round.allows_at(
             &app,
             &ResourceRef::NetHost("evil.example".into()),
-            Verb::Write
+            Verb::Write,
+            NOW
         ),
         "and a host outside the allowlist stays denied"
     );
@@ -147,7 +155,7 @@ fn legacy_workspace_without_grants_field_deserialises() {
     }"#;
     let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
     assert!(ws.capabilities.is_empty());
-    assert!(ws.app_grants_snapshot().is_empty());
+    assert!(ws.app_grants_snapshot_at(NOW).is_empty());
     assert_eq!(ws.owner, None, "a legacy workspace records no owner");
     assert_eq!(ws.id, WorkspaceId::from(1));
     assert_eq!(ws.name, "Old");

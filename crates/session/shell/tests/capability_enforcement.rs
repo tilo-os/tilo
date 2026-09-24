@@ -19,6 +19,7 @@
 
 use shell::shell::persist;
 use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use shell::shell::state::{
     CapOverride, Capability, Effect, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
     Principal, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,

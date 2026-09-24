@@ -6,6 +6,9 @@ use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::*;
 
+/// The clock these fixtures run at, Unix seconds.
+const NOW: u64 = 1_800_000_000;
+
 fn room() -> Workspace {
     let mut ws = Workspace::new(WorkspaceId(1), "Demo");
     ws.set_owner("quinten");
@@ -18,36 +21,37 @@ fn room() -> Workspace {
 /// would all show up here.
 #[test]
 fn a_room_with_no_grant_has_no_agents() {
-    assert!(room().agent_members().is_empty());
+    assert!(room().agent_members_at(NOW).is_empty());
 }
 
 #[test]
 fn a_room_grant_admits_the_agent_and_a_revoke_removes_it() {
     let mut ws = room();
     let id = ws
-        .grant_as(
+        .grant_as_at(
             &"quinten".to_string(),
             CapOverride::membership(
                 Subject::agent("scribe"),
                 ws.id.raw().to_string(),
                 Verb::Write,
             ),
+            NOW,
         )
         .expect("the owner may administer the room");
 
     assert_eq!(
-        ws.agent_members(),
+        ws.agent_members_at(NOW),
         vec![("scribe".to_string(), CapRole::Editor)],
         "the verb on the membership capability is the role",
     );
-    assert_eq!(ws.role_of_agent("scribe"), Some(CapRole::Editor));
+    assert_eq!(ws.role_of_agent_at("scribe", NOW), Some(CapRole::Editor));
 
-    assert!(ws.revoke_as(&"quinten".to_string(), &id));
+    assert!(ws.revoke_as_at(&"quinten".to_string(), &id, NOW));
     assert!(
-        ws.agent_members().is_empty(),
+        ws.agent_members_at(NOW).is_empty(),
         "revoking the capability is the whole of taking the agent out",
     );
-    assert_eq!(ws.role_of_agent("scribe"), None);
+    assert_eq!(ws.role_of_agent_at("scribe", NOW), None);
 }
 
 #[test]
@@ -59,13 +63,14 @@ fn replicated_membership_does_not_depend_on_the_local_workspace_handle() {
         Verb::Write,
     ));
     assert_eq!(
-        ws.role_of(&"remote-editor".to_string()),
+        ws.role_of_at(&"remote-editor".to_string(), NOW),
         Some(CapRole::Editor)
     );
-    assert!(ws.allows(
-        &ws.actor_for_person(&"remote-editor".to_string()),
+    assert!(ws.allows_at(
+        &ws.actor_for_person_at(&"remote-editor".to_string(), NOW),
         &ResourceRef::App("so.tilo.notes".into()),
         Verb::Write,
+        NOW,
     ));
 }
 
@@ -76,33 +81,39 @@ fn replicated_membership_does_not_depend_on_the_local_workspace_handle() {
 #[test]
 fn people_and_agents_do_not_leak_into_each_others_lists() {
     let mut ws = room();
-    ws.grant_as(
+    ws.grant_as_at(
         &"quinten".to_string(),
         CapOverride::membership(
             Subject::person("xaver"),
             ws.id.raw().to_string(),
             Verb::Write,
         ),
+        NOW,
     )
     .expect("owner grants");
-    ws.grant_as(
+    ws.grant_as_at(
         &"quinten".to_string(),
         CapOverride::membership(
             Subject::agent("scribe"),
             ws.id.raw().to_string(),
             Verb::Write,
         ),
+        NOW,
     )
     .expect("owner grants");
 
-    let people: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
+    let people: Vec<String> = ws.roster_at(NOW).into_iter().map(|(u, _)| u).collect();
     assert!(people.contains(&"xaver".to_string()));
     assert!(
         !people.contains(&"scribe".to_string()),
         "an agent must not be listed as a person: {people:?}",
     );
 
-    let agents: Vec<String> = ws.agent_members().into_iter().map(|(a, _)| a).collect();
+    let agents: Vec<String> = ws
+        .agent_members_at(NOW)
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
     assert_eq!(agents, vec!["scribe".to_string()]);
 }
 
@@ -113,17 +124,18 @@ fn people_and_agents_do_not_leak_into_each_others_lists() {
 #[test]
 fn a_grant_on_one_app_is_not_membership() {
     let mut ws = room();
-    ws.grant_as(
+    ws.grant_as_at(
         &"quinten".to_string(),
         CapOverride::grant(
             Subject::agent("scribe"),
             Scope::App("so.tilo.word-processor".into()),
             Verb::Write,
         ),
+        NOW,
     )
     .expect("owner grants");
     assert!(
-        ws.agent_members().is_empty(),
+        ws.agent_members_at(NOW).is_empty(),
         "a scope naming one app is a share, not membership",
     );
 }
@@ -132,7 +144,7 @@ fn a_grant_on_one_app_is_not_membership() {
 #[test]
 fn an_expired_grant_admits_nobody() {
     let mut ws = room();
-    ws.grant_as(
+    ws.grant_as_at(
         &"quinten".to_string(),
         CapOverride::membership(
             Subject::agent("scribe"),
@@ -140,7 +152,8 @@ fn an_expired_grant_admits_nobody() {
             Verb::Write,
         )
         .with_expiry(1),
+        NOW,
     )
     .expect("owner grants");
-    assert!(ws.agent_members().is_empty());
+    assert!(ws.agent_members_at(NOW).is_empty());
 }

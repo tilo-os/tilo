@@ -10,6 +10,7 @@
 //! the layout-and-paint core, so both paths render through the same
 //! builder and their pixel output is byte-identical.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 

@@ -9,6 +9,7 @@
 //! tells a caller what to pass rather than leaving it to be inferred.
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use crate::shell::state::WorkspaceAuthority as _;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
