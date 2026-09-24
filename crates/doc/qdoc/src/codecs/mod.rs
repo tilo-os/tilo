@@ -24,6 +24,9 @@ pub mod sheet_common;
 pub mod xlsx;
 pub mod xml_escape;
 
+#[cfg(test)]
+mod bulk_equivalence;
+
 pub use docx::DocxCodec;
 pub use html::HtmlCodec;
 pub use markdown::MarkdownCodec;

@@ -16,6 +16,8 @@ mod blob_reference;
 mod blob_state;
 #[path = "blobstore_fixture.rs"]
 mod blobstore_fixture;
+#[path = "codec_scaling.rs"]
+mod codec_scaling;
 #[path = "convergence.rs"]
 mod convergence;
 #[path = "docx_header_footer.rs"]
