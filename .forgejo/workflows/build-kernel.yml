@@ -302,8 +302,10 @@ jobs:
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
 
+      # The build step never fails the job itself (continue-on-error), so
+      # this runs whenever the build ran and is skipped with it otherwise.
       - name: Report kernel build resource metrics
-        if: ${{ always() }}
+        if: ${{ steps.build.outcome != 'skipped' }}
         run: |
           set -euo pipefail
           cpu_max=unavailable
